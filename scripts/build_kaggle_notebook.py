@@ -27,7 +27,7 @@ fixed split seed.
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
 
-REPO_URL = "https://github.com/duyh80456-code/counterfactual-projection.git"
+REPO_URL = "https://github.com/duyh80456-code/Counterfactual-Projection.git"
 BRANCH = "main"
 REPO = Path("/kaggle/working/counterfactual-projection")
 OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2")
@@ -202,4 +202,3 @@ destination = Path("notebooks/kaggle_counterfactual_projection_t4x2.ipynb")
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
 print(destination)
-
