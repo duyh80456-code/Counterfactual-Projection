@@ -37,6 +37,25 @@ train/eval modes are also restored.
 python3 -m pytest
 ```
 
+## Kaggle T4 x2 pilot
+
+Use
+[`notebooks/kaggle_counterfactual_projection_t4x2.ipynb`](notebooks/kaggle_counterfactual_projection_t4x2.ipynb).
+Before running it:
+
+1. enable the **T4 x2** accelerator;
+2. attach a CIFAR-100 dataset containing `cifar-100-python`;
+3. create a Kaggle Secret named `github_token` with read access to this repo.
+
+The notebook never embeds the token in the clone URL or prints it. It creates a
+short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
+
+The quick gate schedules `vanilla`, `random_projection`, `e_repopt`, and
+`e_projection` for two seeds. A dynamic queue gives each GPU one independent
+arm at a time. This avoids DDP synchronization and keeps method failures and
+artifacts isolated. Outputs are restart-safe at the completed-arm level and
+are aggregated into `summary.json` plus a downloadable `.tar.gz` archive.
+
 ## Reference implementation
 
 The local, ignored checkout at `third_party/One-Shot-TAS-CCIL` points to
@@ -44,4 +63,3 @@ The local, ignored checkout at `third_party/One-Shot-TAS-CCIL` points to
 `ec3ebc4ca7e468835935848016233204e0025b4a`. Ideas reused at the interface
 level are transactional virtual directions, explicit RepOpt gradient handlers,
 and invariant-focused tests. No Gromo source is copied into this project.
-
