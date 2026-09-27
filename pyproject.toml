@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "counterfactual-projection"
+version = "0.1.0"
+description = "Project a virtual expansion's functional direction back to the original model."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["torch>=2.1"]
+
+[project.optional-dependencies]
+vision = ["torchvision>=0.16"]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["probe*", "projection*", "methods*", "training*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
