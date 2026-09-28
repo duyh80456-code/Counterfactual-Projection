@@ -145,3 +145,22 @@ def test_projector_retries_with_stronger_damping(monkeypatch):
     assert result.damping_requested == 1e-3
     assert result.damping_used == 1e-2
     assert [attempt.damping for attempt in result.cg_attempts] == [1e-3, 1e-2]
+
+
+def test_projection_normalizes_a_tiny_functional_target_for_cg():
+    torch.manual_seed(44)
+    model = nn.Linear(3, 2, bias=False).eval()
+    inputs = torch.randn(5, 3)
+    known = torch.randn_like(model.weight) * 1e-10
+
+    def function(weight):
+        return functional_call(model, {"weight": weight}, (inputs,))
+
+    target = jvp(function, (model.weight.detach(),), (known,))[1]
+    result = FunctionalProjector(
+        damping=1e-12, max_iter=30, tolerance=1e-6,
+        max_damping_retries=0).project(
+            model, inputs, target, block="")
+    assert result.cg.converged
+    assert 0 < result.target_scale < 1e-8
+    assert result.relative_residual < 1e-3

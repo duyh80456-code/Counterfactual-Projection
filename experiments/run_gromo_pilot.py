@@ -314,6 +314,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
             "cg_residual_norm_at_50": None,
             "cg_damping_requested": None, "cg_damping_used": None,
             "cg_attempt_count": 0, "cg_attempts": [],
+            "cg_target_scale": None,
         }
     history = projection.cg.residual_history
 
@@ -329,6 +330,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
         "cg_damping_requested": projection.damping_requested,
         "cg_damping_used": projection.damping_used,
         "cg_attempt_count": len(projection.cg_attempts),
+        "cg_target_scale": projection.target_scale,
         "cg_attempts": [
             {"damping": attempt.damping,
              "iterations": attempt.iterations,

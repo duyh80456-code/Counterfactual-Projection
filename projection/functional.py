@@ -45,6 +45,7 @@ class ProjectionResult:
     damping_requested: float
     damping_used: float
     cg_attempts: tuple[CGAttempt, ...]
+    target_scale: float
 
     @property
     def projection_ratio(self) -> float:
@@ -104,6 +105,8 @@ class FunctionalProjector:
         sizes = [parameter.numel() for _, parameter in selected]
         base = torch.cat([parameter.detach().reshape(-1) for _, parameter in selected])
         target = target_delta.detach().reshape(-1).to(base)
+        target_scale = float(torch.linalg.vector_norm(target).clamp_min(1e-12))
+        normalized_target = target / target_scale
         jvp_calls = 0
         vjp_calls = 0
 
@@ -127,7 +130,11 @@ class FunctionalProjector:
             vjp_calls += 1
             return pullback(vector.detach())[0].detach()
 
-        rhs = transpose_jacobian(target).detach()
+        # CG is scale invariant in exact arithmetic, but an almost
+        # function-preserving structural E can make J^T target so small that
+        # float32 dot products stagnate. Solve the identical unit-scale system
+        # and restore the physical scale on the solution/residual diagnostics.
+        rhs = transpose_jacobian(normalized_target).detach()
 
         cg_attempts = []
         cg = None
@@ -141,9 +148,17 @@ class FunctionalProjector:
                 return (transpose_jacobian(jacobian_vector(vector)) +
                         damping_used * vector.detach()).detach()
 
-            cg = conjugate_gradient(
+            normalized_cg = conjugate_gradient(
                 normal_matrix, rhs, max_iter=self.max_iter,
                 tolerance=self.tolerance)
+            cg = CGResult(
+                solution=normalized_cg.solution * target_scale,
+                iterations=normalized_cg.iterations,
+                residual_norm=normalized_cg.residual_norm * target_scale,
+                converged=normalized_cg.converged,
+                residual_history=tuple(
+                    value * target_scale
+                    for value in normalized_cg.residual_history))
             cg_attempts.append(CGAttempt(
                 damping=damping_used, iterations=cg.iterations,
                 residual_norm=cg.residual_norm, converged=cg.converged))
@@ -169,7 +184,7 @@ class FunctionalProjector:
             cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg,
             jvp_calls=jvp_calls, vjp_calls=vjp_calls,
             damping_requested=self.damping, damping_used=damping_used,
-            cg_attempts=tuple(cg_attempts))
+            cg_attempts=tuple(cg_attempts), target_scale=target_scale)
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
