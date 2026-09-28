@@ -56,12 +56,16 @@ def save_checkpoint(path, *, model, optimizer, scheduler, history,
                     phase, opt1_epochs, opt2_epochs, train3_epochs,
                     opt2_steps, projection_loss_jump, contraction_at_projection,
                     elapsed, extension_paths, peak_train_params,
-                    peak_gpu_memory, opt2_soft_cap_exceeded):
+                    peak_gpu_memory, opt2_soft_cap_exceeded,
+                    train_indices, validation_indices, tuning_indices):
     atomic_torch_save({
         "format_version": 1, "model": model.state_dict(),
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "history": history, "post_epoch": post_epoch,
         "shared_checkpoint_hash": shared_hash, "protocol": run_protocol,
+        "train_indices": train_indices,
+        "validation_indices": validation_indices,
+        "tuning_indices": tuning_indices,
         "rng": rng_state(),
         "train_loader_generator_state": train_loader.generator.get_state(),
         "phase": phase, "opt1_epochs": opt1_epochs,
@@ -245,7 +249,10 @@ def main():
             elapsed=elapsed, extension_paths=extension_paths,
             peak_train_params=peak_train_params,
             peak_gpu_memory=peak_gpu_memory,
-            opt2_soft_cap_exceeded=opt2_soft_cap_exceeded)
+            opt2_soft_cap_exceeded=opt2_soft_cap_exceeded,
+            train_indices=train_indices,
+            validation_indices=validation_indices,
+            tuning_indices=tuning_indices)
         atomic_json_save({"method": "bypass", "phase": phase,
                           "completed_post_fork_epochs": post_epoch + 1,
                           "latest": row}, output / "progress.json")

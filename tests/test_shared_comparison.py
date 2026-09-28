@@ -1,7 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import torch
 from torch import nn
 
@@ -10,9 +9,8 @@ from baselines.bypass import (
     embed_relaxed_bypass, extension_parameters, project_relaxed_bypass_,
     remove_extension_parameters_, transition_from_opt2_)
 from experiments.shared_protocol import (
-    BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS,
-    load_shared_checkpoint, rebase_scheduler_after_epoch50, restore_rng,
-    save_shared_checkpoint)
+    FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS, load_shared_checkpoint,
+    restore_rng, save_shared_checkpoint)
 
 
 class ToyResidualModel(nn.Module):
@@ -162,18 +160,3 @@ def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):
     assert len(restored) == 1
     assert restored[0].device.type == "cpu"
     assert restored[0].dtype == torch.uint8
-
-
-def test_epoch50_scheduler_rebase_preserves_lr_and_ends_at_epoch200():
-    model = nn.Linear(2, 1)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
-    optimizer.param_groups[0]["initial_lr"] = 0.1
-
-    scheduler = rebase_scheduler_after_epoch50(optimizer)
-
-    assert scheduler.get_last_lr() == [0.05]
-    assert scheduler.T_max == TOTAL_EPOCHS - BOOTSTRAP_EPOCH
-    for _ in range(TOTAL_EPOCHS - BOOTSTRAP_EPOCH):
-        optimizer.step()
-        scheduler.step()
-    assert scheduler.get_last_lr()[0] == pytest.approx(0.0, abs=1e-12)

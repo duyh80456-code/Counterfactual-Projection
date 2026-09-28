@@ -60,10 +60,9 @@ The comparison uses one randomly initialized full-width CIFAR-ResNet18 at
 epoch, exact train/validation/tuning indices, loader-generator state, and all
 RNG states. Its SHA-256 is checked by every arm.
 
-The existing epoch-50 checkpoint is reused with its optimizer momentum and
-continued under Vanilla for another 100 epochs. The cosine schedule is smoothly
-rebased from the LR stored at epoch 50 and reaches zero at epoch 200. If the
-epoch-50 checkpoint is absent, the notebook recreates that first segment.
+The shared model is trained uninterrupted from random initialization to epoch
+150 with one `CosineAnnealingLR(T_max=200)` schedule. It does not bootstrap from
+the earlier epoch-50 experiment.
 
 All three trajectories therefore have the same 200-epoch budget:
 
@@ -76,9 +75,11 @@ theta_150
 
 Wave 1 runs Ours on GPU 0 and Bypass on GPU 1. Wave 2 runs the cheaper vanilla
 continuation on GPU 0. Each arm atomically saves `checkpoint_latest.pt` after
-every epoch, including optimizer, scheduler, RNG, phase, and loader state, so a
-new Kaggle session can resume by attaching the previous output as an input
-dataset. The official CIFAR-100 test set is never constructed.
+every epoch, including model, optimizer, scheduler, complete history, exact
+split indices, RNG, phase, and loader-generator state. Burn-in likewise writes
+a full rolling `shared_seed1_progress.pt`; a new Kaggle session can resume by
+attaching the previous output as an input dataset. The official CIFAR-100 test
+set is never constructed.
 
 Ours retains the fixed `stages.2.blocks.0`, rank 4, epsilon 0.05, residual-path
 projection protocol. It logs both tangent fit and the realized nonlinear

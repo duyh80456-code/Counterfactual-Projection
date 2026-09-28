@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader, Subset
 
 
 SPLIT_SEED = 20260928
-BOOTSTRAP_EPOCH = 50
 FORK_EPOCH = 150
 TOTAL_EPOCHS = 200
 POST_FORK_EPOCHS = TOTAL_EPOCHS - FORK_EPOCH
@@ -142,16 +141,8 @@ def build_optimizer_scheduler(model, lr: float = 0.1,
     optimizer = torch.optim.SGD(
         model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=100)
+        optimizer, T_max=TOTAL_EPOCHS)
     return optimizer, scheduler
-
-
-def rebase_scheduler_after_epoch50(optimizer):
-    """Continue smoothly from theta_50's LR and reach zero at epoch 200."""
-    for group in optimizer.param_groups:
-        group["initial_lr"] = group["lr"]
-    return torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=TOTAL_EPOCHS - BOOTSTRAP_EPOCH)
 
 
 def protocol(seed, train_indices, validation_indices, tuning_indices,
@@ -162,9 +153,7 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "fork_epoch": FORK_EPOCH, "total_epochs": TOTAL_EPOCHS,
         "post_fork_epochs": POST_FORK_EPOCHS, "batch_size": batch_size,
         "learning_rate": lr, "weight_decay": weight_decay,
-        "scheduler": (
-            "cosine T_max=100 through epoch50; rebase current LR with "
-            "T_max=150 through epoch200"),
+        "scheduler": "CosineAnnealingLR(T_max=200), uninterrupted",
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),

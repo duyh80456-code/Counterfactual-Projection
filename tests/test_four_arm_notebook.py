@@ -13,7 +13,8 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert "FORK_EPOCH = 150" in source
     assert "POST_FORK_EPOCHS = 50" in source
     assert "shared_seed1_epoch150.pt" in source
-    assert "--bootstrap-checkpoint" in source
+    assert "--bootstrap-checkpoint" not in source
+    assert "counterfactual_shared_theta150_fresh_200ep_v2" in source
     assert "SHARED_HASH" in source
     assert "checkpoint_latest.pt" in source
     assert "Restored prior run" in source

@@ -18,13 +18,11 @@ from experiments.run_gromo_pilot import (
     evaluate_heldout_direction, eval_logits, heldout_metrics,
     projection_application_gate, reset_projected_momentum, synchronize)
 from experiments.shared_protocol import (
-    BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS,
-    atomic_json_save, atomic_torch_save,
+    FORK_EPOCH, POST_FORK_EPOCHS, atomic_json_save, atomic_torch_save,
     build_cifar_gromo_resnet18, build_optimizer_scheduler,
     datasets_and_indices, evaluate, load_shared_checkpoint, make_eval_loader,
     make_train_loader, protocol, restore_rng, rng_state,
-    rebase_scheduler_after_epoch50, save_shared_checkpoint, seed_everything,
-    sha256_file, train_epoch)
+    save_shared_checkpoint, seed_everything, sha256_file, train_epoch)
 from methods import EProjection
 from probe import CandidateExpansionProbe, CounterfactualTinyProbe
 from projection import FunctionalProjector
@@ -41,8 +39,6 @@ def arguments():
     parser.add_argument("--output", required=True)
     parser.add_argument("--shared-checkpoint", required=True)
     parser.add_argument("--shared-checkpoint-hash", default="")
-    parser.add_argument("--bootstrap-checkpoint", default="")
-    parser.add_argument("--bootstrap-checkpoint-hash", default="")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
@@ -115,25 +111,6 @@ def prepare_shared(args, device, model, optimizer, scheduler, train_set,
         history = saved["history"]
         start_epoch = int(saved["epoch"])
         generator_state = saved["train_loader_generator_state"]
-    elif args.bootstrap_checkpoint:
-        bootstrap_path = Path(args.bootstrap_checkpoint)
-        actual_hash = sha256_file(bootstrap_path)
-        if actual_hash != args.bootstrap_checkpoint_hash:
-            raise RuntimeError("theta_50 bootstrap checkpoint hash mismatch")
-        saved = torch.load(bootstrap_path, map_location=device)
-        if int(saved.get("epoch", -1)) != BOOTSTRAP_EPOCH:
-            raise RuntimeError("bootstrap checkpoint is not theta_50")
-        if (saved["train_indices"] != train_indices or
-                saved["validation_indices"] != validation_indices or
-                saved["tuning_indices"] != tuning_indices):
-            raise RuntimeError("theta_50 bootstrap data split mismatch")
-        model.load_state_dict(saved["model"], strict=True)
-        optimizer.load_state_dict(saved["optimizer"])
-        restore_rng(saved["rng"])
-        history = saved["history"]
-        start_epoch = BOOTSTRAP_EPOCH
-        generator_state = saved["train_loader_generator_state"]
-        scheduler = rebase_scheduler_after_epoch50(optimizer)
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         generator_state, args.seed)
@@ -142,8 +119,6 @@ def prepare_shared(args, device, model, optimizer, scheduler, train_set,
     for epoch in range(start_epoch, FORK_EPOCH):
         train = train_epoch(model, train_loader, optimizer, device)
         scheduler.step()
-        if epoch + 1 == BOOTSTRAP_EPOCH:
-            scheduler = rebase_scheduler_after_epoch50(optimizer)
         validation = evaluate(model, validation_loader, device)
         row = {"epoch": epoch + 1, "train_loss": train["task_loss"],
                "train_accuracy": train["accuracy"],
@@ -151,9 +126,13 @@ def prepare_shared(args, device, model, optimizer, scheduler, train_set,
                "validation_accuracy": validation["accuracy"]}
         history.append(row)
         atomic_torch_save({
+            "format_version": 1, "kind": "shared_burnin_progress",
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "epoch": epoch + 1,
             "history": history, "protocol": run_protocol,
+            "train_indices": train_indices,
+            "validation_indices": validation_indices,
+            "tuning_indices": tuning_indices,
             "rng": rng_state(),
             "train_loader_generator_state": train_loader.generator.get_state(),
         }, progress)
@@ -169,12 +148,16 @@ def prepare_shared(args, device, model, optimizer, scheduler, train_set,
 
 def save_arm_checkpoint(path, *, model, optimizer, scheduler, history,
                         post_epoch, shared_hash, train_loader, run_protocol,
-                        elapsed, peak_gpu_memory):
+                        elapsed, peak_gpu_memory, train_indices,
+                        validation_indices, tuning_indices):
     atomic_torch_save({
         "format_version": 1, "model": model.state_dict(),
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
         "history": history, "post_epoch": post_epoch,
         "shared_checkpoint_hash": shared_hash, "protocol": run_protocol,
+        "train_indices": train_indices,
+        "validation_indices": validation_indices,
+        "tuning_indices": tuning_indices,
         "rng": rng_state(),
         "train_loader_generator_state": train_loader.generator.get_state(),
         "training_seconds": elapsed,
@@ -319,7 +302,9 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
             scheduler=scheduler, history=history, post_epoch=post_epoch + 1,
             shared_hash=shared_hash, train_loader=train_loader,
             run_protocol=arm_protocol, elapsed=elapsed,
-            peak_gpu_memory=peak_gpu_memory)
+            peak_gpu_memory=peak_gpu_memory, train_indices=train_indices,
+            validation_indices=validation_indices,
+            tuning_indices=tuning_indices)
         atomic_json_save({"method": args.method, "completed_post_fork_epochs":
                           post_epoch + 1, "latest": row},
                          output / "progress.json")
