@@ -83,3 +83,11 @@ def test_shared_checkpoint_contains_exact_fork_state_and_hash(tmp_path):
     assert "rng" in checkpoint and "train_loader_generator_state" in checkpoint
     for name, value in model.state_dict().items():
         assert torch.equal(value, restored_model.state_dict()[name])
+
+
+def test_bypass_never_force_projects_at_the_soft_opt2_cap():
+    source = Path("baselines/run_bypass.py").read_text()
+    assert "if criterion_met:" in source
+    assert "if criterion_met or reached_cap:" not in source
+    assert "elif reached_cap:" in source
+    assert "opt2_soft_cap_exceeded = True" in source

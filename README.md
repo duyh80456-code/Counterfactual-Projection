@@ -66,7 +66,7 @@ All three trajectories therefore have the same 80-epoch budget:
 theta_20
   +-- vanilla_continue: 60 epochs
   +-- ours_e_driven_o: 60 epochs
-  +-- bypass: opt1 20, opt2 <= 10, train3 for the remainder
+  +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
 ```
 
 Wave 1 runs Ours on GPU 0 and Bypass on GPU 1. Wave 2 runs the cheaper vanilla
@@ -86,8 +86,12 @@ the residual stages is embedded as `ReLU(x) + D x` with `D=0`; opt1 trains task
 loss in the extended space; opt2 adds `gamma(t) * sum(||D||)` and projects
 activations whose contraction norm reaches epsilon; the final projection drops
 the remaining D coordinates and train3 continues in the original ResNet. The
-20/10/remainder split and shared SGD/cosine optimizer are explicitly a pilot
-scaling, not the paper's original long-run Adam hyperparameter schedule.
+Epoch 10 of opt2 is a soft warning boundary, never a forced projection. If the
+criterion is still false, opt2 continues within the remaining 60-epoch budget.
+If contraction still has not succeeded at epoch 80, the expanded checkpoint is
+preserved but aggregation rejects Bypass as an invalid comparator. The shared
+SGD/cosine optimizer is pilot scaling, not the paper's original long-run Adam
+hyperparameter schedule.
 
 ## Reference implementation
 

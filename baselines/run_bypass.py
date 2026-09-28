@@ -56,7 +56,7 @@ def save_checkpoint(path, *, model, optimizer, scheduler, history,
                     phase, opt1_epochs, opt2_epochs, train3_epochs,
                     opt2_steps, projection_loss_jump, contraction_at_projection,
                     elapsed, extension_paths, peak_train_params,
-                    peak_gpu_memory):
+                    peak_gpu_memory, opt2_soft_cap_exceeded):
     atomic_torch_save({
         "format_version": 1, "model": model.state_dict(),
         "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
@@ -73,6 +73,7 @@ def save_checkpoint(path, *, model, optimizer, scheduler, history,
         "peak_train_params": peak_train_params,
         "training_seconds": elapsed,
         "peak_gpu_memory": peak_gpu_memory,
+        "opt2_soft_cap_exceeded": opt2_soft_cap_exceeded,
     }, path)
 
 
@@ -96,6 +97,9 @@ def main():
         "bypass_schedule": {
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,
+            "max_opt2_epochs_semantics": (
+                "soft cap; continue opt2 within the 60-epoch budget until "
+                "contraction succeeds"),
             "contraction_epsilon": args.contraction_epsilon,
             "gamma_t": f"{args.gamma_slope} * opt2_step",
             "schedule_status": "pilot scaling, not paper hyperparameters",
@@ -131,6 +135,7 @@ def main():
     contraction_at_projection = None
     prior_seconds = 0.0
     prior_peak_gpu_memory = 0
+    opt2_soft_cap_exceeded = False
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -147,6 +152,8 @@ def main():
         contraction_at_projection = saved["contraction_at_projection"]
         prior_seconds = float(saved.get("training_seconds", 0.0))
         prior_peak_gpu_memory = int(saved.get("peak_gpu_memory", 0))
+        opt2_soft_cap_exceeded = bool(
+            saved.get("opt2_soft_cap_exceeded", False))
         extension_paths = saved.get("extension_paths", extension_paths)
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
@@ -187,7 +194,7 @@ def main():
             current_norm = float(contraction_norm(model).detach())
             criterion_met = current_norm < args.contraction_epsilon
             reached_cap = opt2_done >= args.max_opt2_epochs
-            if criterion_met or reached_cap:
+            if criterion_met:
                 contraction_at_projection = current_norm
                 before_logits, before_loss = logits_and_loss(
                     model, projection_batch)
@@ -201,6 +208,11 @@ def main():
                 phase = "train3"
                 if projected_count != len(extension_paths):
                     raise RuntimeError("Bypass projection did not remove every D")
+            elif reached_cap:
+                # The nominal 10-epoch pilot split is only a warning boundary.
+                # Dropping a non-contracted D would violate relaxed Bypass, so
+                # opt2 consumes the remaining common budget until it succeeds.
+                opt2_soft_cap_exceeded = True
         else:
             train = train_epoch(model, train_loader, optimizer, device)
             train3_done += 1
@@ -218,6 +230,7 @@ def main():
             "contraction_norm": (float(contraction_norm(model).detach())
                                  if phase in {"opt1", "opt2"} else 0.0),
             "contraction_criterion_met": criterion_met,
+            "opt2_soft_cap_exceeded": opt2_soft_cap_exceeded,
             "projection_loss_jump": projection_loss_jump,
         }
         history.append(row)
@@ -236,7 +249,8 @@ def main():
             contraction_at_projection=contraction_at_projection,
             elapsed=elapsed, extension_paths=extension_paths,
             peak_train_params=peak_train_params,
-            peak_gpu_memory=peak_gpu_memory)
+            peak_gpu_memory=peak_gpu_memory,
+            opt2_soft_cap_exceeded=opt2_soft_cap_exceeded)
         atomic_json_save({"method": "bypass", "phase": phase,
                           "completed_post_fork_epochs": post_epoch + 1,
                           "latest": row}, output / "progress.json")
@@ -251,7 +265,9 @@ def main():
             "https://www.donghunlee.com/papers/"
             "Jung_Lee_Bypass__IEEE_TNNLS.pdf"),
         "implementation": "relaxed Bypass for ResNet, Algorithm 1",
-        "schedule_status": "20/10/remainder pilot scaling with shared SGD",
+        "schedule_status": (
+            "20 opt1 + 10-epoch opt2 soft cap; opt2 continues within budget "
+            "until contraction, using shared SGD"),
         "fork_epoch": FORK_EPOCH, "post_fork_epochs": len(history),
         "final_validation_accuracy": last["validation_accuracy"],
         "best_validation_accuracy": max(
@@ -271,6 +287,9 @@ def main():
         "contraction_criterion_met": bool(
             contraction_at_projection is not None and
             contraction_at_projection < args.contraction_epsilon),
+        "bypass_complete": phase == "train3",
+        "projection_performed": contraction_at_projection is not None,
+        "opt2_soft_cap_exceeded": opt2_soft_cap_exceeded,
         "projection_loss_jump": projection_loss_jump,
         "learnable_activations": len(extension_paths),
         "shared_extension_paths": extension_paths,
