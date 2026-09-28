@@ -33,6 +33,8 @@ def test_functional_projection_recovers_tangent_direction():
     assert result.solver_space == "dual_output"
     assert result.linear_system_dimension == target.numel()
     assert result.solver_dtype == "float64"
+    assert result.preconditioner == "hutchinson_jacobi"
+    assert result.preconditioner_probes == 8
     assert not result.cg.solution.requires_grad
     assert not result.fitted_delta.requires_grad
     assert len(result.cg.residual_history) == result.cg.iterations + 1

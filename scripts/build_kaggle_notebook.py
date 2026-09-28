@@ -185,6 +185,9 @@ SITE = "stages.2.blocks.0"
 CANDIDATE_SITES = ""  # Used only when SITE="auto"; empty means all blocks.
 RANK = 4
 CG_ITERATIONS = 200
+CG_RELATIVE_TOLERANCE = 1e-2
+CG_PRECONDITIONER_PROBES = 8
+SOLVER_REVISION = "dual-pcg-hutchinson-jacobi-rel1e-2-v1"
 IMAGE_SIZE = 128
 STATISTICS_SAMPLES = 256
 PROJECTION_SAMPLES = 32
@@ -241,6 +244,31 @@ print("Shared warm-up checkpoints:", WARMUP_CHECKPOINTS)
 """),
     code("""# Dynamic two-worker queue: each GPU immediately picks up the next arm.
 # This is faster for independent ablations than synchronizing both T4s with DDP.
+# Reuse the expensive shared warm-up checkpoints from fair_v15, but archive
+# completed CG-arm results produced by the old 1e-5 unpreconditioned solver.
+def solver_config_is_current(result):
+    config = result.get("config", {})
+    return (
+        config.get("solver_revision") == SOLVER_REVISION and
+        config.get("cg_relative_tolerance") == CG_RELATIVE_TOLERANCE and
+        config.get("cg_preconditioner_probes") == CG_PRECONDITIONER_PROBES)
+
+for method, seed, epsilon in jobs:
+    if method not in CG_METHODS:
+        continue
+    epsilon_label = str(epsilon).replace(".", "p")
+    arm_dir = OUTPUT / f"{method}_eps{epsilon_label}_seed{seed}"
+    result_path = arm_dir / "result.json"
+    if not result_path.is_file():
+        continue
+    previous = json.loads(result_path.read_text())
+    if not solver_config_is_current(previous):
+        archived = arm_dir / "result.pre_dual_pcg.json"
+        if archived.exists():
+            archived.unlink()
+        result_path.rename(archived)
+        print(f"[{arm_dir.name}] archived stale solver result; reusing warm-up")
+
 job_queue = queue.Queue()
 for job in jobs:
     job_queue.put(job)
@@ -278,6 +306,9 @@ def run_worker(gpu):
             "--candidate-sites", CANDIDATE_SITES,
             "--probe-epsilon", str(epsilon),
             "--cg-iterations", str(CG_ITERATIONS),
+            "--cg-relative-tolerance", str(CG_RELATIVE_TOLERANCE),
+            "--cg-preconditioner-probes", str(CG_PRECONDITIONER_PROBES),
+            "--solver-revision", SOLVER_REVISION,
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
         env = os.environ.copy()
@@ -379,6 +410,13 @@ def run_final_test_worker(gpu):
         label = f"final_test_{method}_eps{epsilon_label}_seed{seed}"
         arm_dir = OUTPUT / label
         result_path = arm_dir / "result.json"
+        if result_path.is_file() and method in CG_METHODS:
+            previous = json.loads(result_path.read_text())
+            if not solver_config_is_current(previous):
+                archived = arm_dir / "result.pre_dual_pcg.json"
+                if archived.exists():
+                    archived.unlink()
+                result_path.rename(archived)
         if not result_path.is_file():
             command = [
                 sys.executable, "-m", "experiments.run_gromo_pilot",
@@ -396,6 +434,9 @@ def run_final_test_worker(gpu):
                 "--candidate-sites", CANDIDATE_SITES,
                 "--rank", str(RANK), "--probe-epsilon", str(epsilon),
                 "--cg-iterations", str(CG_ITERATIONS),
+                "--cg-relative-tolerance", str(CG_RELATIVE_TOLERANCE),
+                "--cg-preconditioner-probes", str(CG_PRECONDITIONER_PROBES),
+                "--solver-revision", SOLVER_REVISION,
                 "--evaluate-official-test", "--data-root", str(DATA_ROOT),
                 "--output", str(arm_dir),
             ]
@@ -583,6 +624,8 @@ for method, epsilon in groups:
                              if cg_rows else None),
         "mean_cg_final_residual_norm": (statistics.mean(
             row["cg_residual_norm"] for row in cg_rows) if cg_rows else None),
+        "mean_cg_relative_residual": (statistics.mean(
+            row["cg_relative_residual"] for row in cg_rows) if cg_rows else None),
         "mean_cg_damping_used": (statistics.mean(
             row["cg_damping_used"] for row in cg_rows) if cg_rows else None),
         "max_cg_damping_used": (max(
@@ -622,6 +665,12 @@ for method, epsilon in groups:
         "cg_solver_dtypes": sorted({
             row["cg_solver_dtype"] for row in cg_rows
             if row["cg_solver_dtype"] is not None}),
+        "cg_preconditioners": sorted({
+            row["cg_preconditioner"] for row in cg_rows
+            if row["cg_preconditioner"] is not None}),
+        "cg_preconditioner_probes": sorted({
+            row["cg_preconditioner_probes"] for row in cg_rows
+            if row["cg_preconditioner_probes"] is not None}),
         "mean_cg_system_dimension": (statistics.mean(
             row["cg_system_dimension"] for row in cg_rows)
             if cg_rows else None),

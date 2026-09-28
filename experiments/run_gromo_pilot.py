@@ -83,6 +83,11 @@ def arguments():
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--cg-iterations", type=int, default=200)
+    parser.add_argument("--cg-relative-tolerance", type=float, default=1e-2)
+    parser.add_argument("--cg-preconditioner-probes", type=int, default=8)
+    parser.add_argument(
+        "--solver-revision",
+        default="dual-pcg-hutchinson-jacobi-rel1e-2-v1")
     parser.add_argument("--projection-scale", type=float, default=0.0,
                         help="0 applies the fitted direction at probe epsilon")
     parser.add_argument("--expanded-train-steps", type=int, default=2)
@@ -104,6 +109,10 @@ def validate_arguments(args) -> None:
         raise ValueError("probe epsilon must be in (0, 1]")
     if args.projection_scale < 0 or args.warmup_epochs < 0:
         raise ValueError("projection scale and warm-up epochs must be non-negative")
+    if not 0 < args.cg_relative_tolerance < 1:
+        raise ValueError("CG relative tolerance must be in (0, 1)")
+    if args.cg_preconditioner_probes < 0:
+        raise ValueError("CG preconditioner probes must be non-negative")
     if args.prepare_warmup and not args.warmup_checkpoint:
         raise ValueError("--prepare-warmup requires --warmup-checkpoint")
 
@@ -309,6 +318,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
     if projection is None:
         return {
             "cg_converged": None, "cg_residual_norm": None,
+            "cg_relative_residual": None,
             "cg_residual_norm_at_12": None,
             "cg_residual_norm_at_25": None,
             "cg_residual_norm_at_50": None,
@@ -319,6 +329,8 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
             "cg_target_scale": None,
             "cg_solver_space": None, "cg_system_dimension": None,
             "cg_solver_dtype": None,
+            "cg_preconditioner": None,
+            "cg_preconditioner_probes": None,
         }
     history = projection.cg.residual_history
 
@@ -328,6 +340,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
     return {
         "cg_converged": projection.cg.converged,
         "cg_residual_norm": projection.cg.residual_norm,
+        "cg_relative_residual": projection.cg.relative_residual,
         "cg_residual_norm_at_12": at(12),
         "cg_residual_norm_at_25": at(25),
         "cg_residual_norm_at_50": at(50),
@@ -340,10 +353,13 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
         "cg_solver_space": projection.solver_space,
         "cg_system_dimension": projection.linear_system_dimension,
         "cg_solver_dtype": projection.solver_dtype,
+        "cg_preconditioner": projection.preconditioner,
+        "cg_preconditioner_probes": projection.preconditioner_probes,
         "cg_attempts": [
             {"damping": attempt.damping,
              "iterations": attempt.iterations,
              "residual_norm": attempt.residual_norm,
+             "relative_residual": attempt.relative_residual,
              "converged": attempt.converged}
             for attempt in projection.cg_attempts],
     }
@@ -527,7 +543,9 @@ def main():
     train_loader = make_train_loader(train_set, train_indices, args)
     initial_parameters = sum(parameter.numel() for parameter in model.parameters())
     projector = FunctionalProjector(
-        args.damping, args.cg_iterations, tolerance=1e-5)
+        args.damping, args.cg_iterations,
+        tolerance=args.cg_relative_tolerance,
+        preconditioner_probes=args.cg_preconditioner_probes)
     e_projection = EProjection(projector=projector)
     history = []
     start = time.perf_counter()

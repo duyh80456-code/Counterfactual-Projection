@@ -83,6 +83,10 @@ deploy parameters.
 Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
+The PCG revision keeps the existing `fair_v15` output root: shared warm-up
+model/optimizer checkpoints are reused, while result files carrying the older
+solver configuration are archived as `result.pre_dual_pcg.json` and only those
+post-warm-up arms are rerun.
 The notebook pins the main checkout, `gromo/src`, and the One-Shot-TAS checkout
 in both the live kernel's `sys.path` and every child process's `PYTHONPATH`.
 It asserts the resolved source path of `probe`, `gromo`, and `dual_growth`
@@ -118,7 +122,13 @@ leaves the ridge solution unchanged while preventing nearly
 function-preserving E signals from falling below float32 numerical scale. The
 network JVP/VJP remains in the model's native dtype, while the small dual CG
 vectors, dot products, and recurrence use float64 to prevent loss of Krylov
-conjugacy on the real ResNet operator. Gromo's optional forward caches are
+conjugacy on the real ResNet operator. The pilot uses matrix-free
+preconditioned CG with an eight-probe Hutchinson estimate of
+`diag(J J^T)`, and accepts convergence by the explicit relative linear-system
+residual `||b - A u|| / ||b|| <= 1e-2`; both the achieved ratio and the
+preconditioner configuration are logged. This tolerance concerns the inner
+ridge solve only—held-out tangent and realized nonlinear functional residuals
+remain the scientific fit metrics. Gromo's optional forward caches are
 disabled transactionally during JVP/VJP and restored afterward. Registered
 parameters and buffers are likewise restored by object identity, preventing
 functorch tensor wrappers from leaking into a later real-growth commit. The

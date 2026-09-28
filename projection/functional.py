@@ -70,6 +70,7 @@ class CGAttempt:
     damping: float
     iterations: int
     residual_norm: float
+    relative_residual: float
     converged: bool
 
 
@@ -92,6 +93,8 @@ class ProjectionResult:
     solver_space: str
     linear_system_dimension: int
     solver_dtype: str
+    preconditioner: str
+    preconditioner_probes: int
 
     @property
     def projection_ratio(self) -> float:
@@ -110,14 +113,17 @@ class ProjectionResult:
 class FunctionalProjector:
     def __init__(self, damping: float = 1e-3, max_iter: int = 200,
                  tolerance: float = 1e-6, max_damping_retries: int = 4,
-                 damping_multiplier: float = 10.0):
-        if damping < 0 or max_damping_retries < 0 or damping_multiplier <= 1:
+                 damping_multiplier: float = 10.0,
+                 preconditioner_probes: int = 8):
+        if (damping < 0 or max_damping_retries < 0 or
+                damping_multiplier <= 1 or preconditioner_probes < 0):
             raise ValueError("invalid damping/retry configuration")
         self.damping = float(damping)
         self.max_iter = int(max_iter)
         self.tolerance = float(tolerance)
         self.max_damping_retries = int(max_damping_retries)
         self.damping_multiplier = float(damping_multiplier)
+        self.preconditioner_probes = int(preconditioner_probes)
 
     def project(self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
                 *, block: str,
@@ -185,6 +191,26 @@ class FunctionalProjector:
             vjp_calls += 1
             return pullback(vector.detach())[0].detach()
 
+        def gram_matrix(vector: Tensor) -> Tensor:
+            operator_vector = vector.detach().to(normalized_target)
+            return jacobian_vector(
+                transpose_jacobian(operator_vector)).to(vector).detach()
+
+        # Hutchinson gives a cheap matrix-free estimate of diag(J J^T).
+        # A positive diagonal floor keeps the PCG preconditioner SPD even when
+        # a finite-probe estimate is noisy.
+        gram_diagonal = None
+        if self.preconditioner_probes:
+            generator = torch.Generator(device=solver_rhs.device).manual_seed(2027)
+            diagonal_sum = torch.zeros_like(solver_rhs)
+            for _ in range(self.preconditioner_probes):
+                signs = torch.empty_like(solver_rhs).bernoulli_(
+                    0.5, generator=generator).mul_(2).sub_(1)
+                diagonal_sum.add_(signs * gram_matrix(signs))
+            estimate = diagonal_sum / self.preconditioner_probes
+            scale = estimate.abs().mean().clamp_min(1e-12)
+            gram_diagonal = estimate.clamp_min(scale * 1e-3).detach()
+
         cg_attempts = []
         cg = None
         first_cg = None
@@ -203,14 +229,19 @@ class FunctionalProjector:
             # The implementation remains matrix-free: every matvec is one
             # VJP followed by one JVP.
             def dual_matrix(vector: Tensor) -> Tensor:
-                operator_vector = vector.detach().to(normalized_target)
-                image = jacobian_vector(
-                    transpose_jacobian(operator_vector)).to(vector)
-                return (image + damping_used * vector.detach()).detach()
+                return (gram_matrix(vector) +
+                        damping_used * vector.detach()).detach()
+
+            preconditioner = None
+            if gram_diagonal is not None:
+                inverse_diagonal = (gram_diagonal + damping_used).reciprocal()
+
+                def preconditioner(vector: Tensor) -> Tensor:
+                    return (inverse_diagonal * vector.detach()).detach()
 
             dual_cg = conjugate_gradient(
                 dual_matrix, solver_rhs, max_iter=self.max_iter,
-                tolerance=self.tolerance)
+                tolerance=self.tolerance, preconditioner=preconditioner)
             normalized_parameter_solution = transpose_jacobian(
                 dual_cg.solution.to(normalized_target)).detach()
             cg = CGResult(
@@ -220,10 +251,13 @@ class FunctionalProjector:
                 converged=dual_cg.converged,
                 residual_history=tuple(
                     value * target_scale
-                    for value in dual_cg.residual_history))
+                    for value in dual_cg.residual_history),
+                relative_residual=dual_cg.relative_residual)
             cg_attempts.append(CGAttempt(
                 damping=damping_used, iterations=cg.iterations,
-                residual_norm=cg.residual_norm, converged=cg.converged))
+                residual_norm=cg.residual_norm,
+                relative_residual=cg.relative_residual,
+                converged=cg.converged))
             if first_cg is None:
                 first_cg = cg
             if cg.converged or self.damping == 0:
@@ -249,7 +283,10 @@ class FunctionalProjector:
             cg_attempts=tuple(cg_attempts), target_scale=target_scale,
             solver_space="dual_output",
             linear_system_dimension=normalized_target.numel(),
-            solver_dtype=str(solver_dtype).removeprefix("torch."))
+            solver_dtype=str(solver_dtype).removeprefix("torch."),
+            preconditioner=("hutchinson_jacobi" if gram_diagonal is not None
+                            else "none"),
+            preconditioner_probes=self.preconditioner_probes)
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
