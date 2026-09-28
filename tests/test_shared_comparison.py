@@ -10,7 +10,7 @@ from baselines.bypass import (
     remove_extension_parameters_, transition_from_opt2_)
 from experiments.shared_protocol import (
     FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS, load_shared_checkpoint,
-    save_shared_checkpoint)
+    restore_rng, save_shared_checkpoint)
 
 
 class ToyResidualModel(nn.Module):
@@ -133,3 +133,30 @@ def test_bypass_projects_contracted_extension_and_enters_train3():
 def test_bypass_result_uses_explicit_completed_field():
     source = Path("baselines/run_bypass.py").read_text()
     assert '"bypass_completed": phase == "train3"' in source
+
+
+def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):
+    class MappedCudaState:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return torch.tensor([1, 2, 3], dtype=torch.uint8)
+
+    restored = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda, "set_rng_state_all",
+        lambda values: restored.extend(values))
+    state = {
+        "python": __import__("random").getstate(),
+        "torch": torch.get_rng_state(),
+        "cuda": [MappedCudaState()],
+    }
+
+    restore_rng(state)
+
+    assert len(restored) == 1
+    assert restored[0].device.type == "cpu"
+    assert restored[0].dtype == torch.uint8

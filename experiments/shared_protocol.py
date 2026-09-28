@@ -65,7 +65,21 @@ def rng_state() -> dict:
 def restore_rng(state: dict) -> None:
     random.setstate(state["python"])
     torch.set_rng_state(state["torch"].cpu())
-    torch.cuda.set_rng_state_all(state["cuda"])
+    if not torch.cuda.is_available():
+        return
+    # ``torch.load(..., map_location=device)`` recursively moves checkpoint
+    # tensors, including RNG snapshots, onto CUDA. PyTorch's RNG restoration
+    # API explicitly requires CPU uint8 tensors. A shared checkpoint may also
+    # have been written with a different number of visible GPUs than an arm.
+    cuda_states = [value.detach().cpu() for value in state.get("cuda", [])]
+    visible_devices = torch.cuda.device_count()
+    if len(cuda_states) == visible_devices:
+        torch.cuda.set_rng_state_all(cuda_states)
+    elif cuda_states:
+        for device_index in range(visible_devices):
+            torch.cuda.set_rng_state(
+                cuda_states[min(device_index, len(cuda_states) - 1)],
+                device=device_index)
 
 
 def datasets_and_indices(data_root: str, validation_samples: int = 5000,
