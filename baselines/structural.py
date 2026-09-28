@@ -54,10 +54,11 @@ class ExpandedTrainProjectResult:
     expansion_train_losses: tuple[float, ...]
     heldout_delta_logits: Tensor | None = None
     heldout_loss_gain: float | None = None
+    temporary_base_parameter_update_norm: float = 0.0
 
 
 class ExpandedTrainProject:
-    """RepAn/Bypass-like control: train E temporarily, then contract via Pi_E."""
+    """Train theta + E temporarily, roll back theta, then contract via Pi_E."""
 
     def __init__(self, steps: int = 1, learning_rate: float = 1e-2,
                  projector: FunctionalProjector | None = None):
@@ -79,6 +80,14 @@ class ExpandedTrainProject:
         base_ids = {id(parameter) for parameter in base_parameters}
         base_state = {name: value.detach().clone()
                       for name, value in model.state_dict().items()}
+        base_named_parameters = dict(model.named_parameters())
+        base_parameter_state = {
+            name: value.detach().clone()
+            for name, value in base_named_parameters.items()}
+        base_gradients = {
+            parameter: (None if parameter.grad is None else
+                        parameter.grad.detach().clone())
+            for parameter in base_parameters}
         old_requires_grad = {parameter: parameter.requires_grad
                              for parameter in base_parameters}
         try:
@@ -98,10 +107,11 @@ class ExpandedTrainProject:
                 if not extension_parameters:
                     raise RuntimeError(
                         "candidate did not register trainable expansion parameters")
-                for parameter in base_parameters:
-                    parameter.requires_grad_(False)
+                trainable_parameters = [
+                    parameter for parameter in model.parameters()
+                    if parameter.requires_grad]
                 optimizer = torch.optim.SGD(
-                    extension_parameters, lr=self.learning_rate)
+                    trainable_parameters, lr=self.learning_rate)
                 losses = []
                 for _ in range(self.steps):
                     optimizer.zero_grad(set_to_none=True)
@@ -118,13 +128,22 @@ class ExpandedTrainProject:
                         heldout_expanded = model(heldout_batch[0])
                         heldout_expanded_loss = F.cross_entropy(
                             heldout_expanded.float(), heldout_batch[1])
+                base_update_squared = sum(
+                    torch.sum((parameter.detach() -
+                               base_parameter_state[name]).square())
+                    for name, parameter in base_named_parameters.items())
+                base_update_norm = float(torch.sqrt(base_update_squared))
             delta = (expanded - baseline).detach()
             signal = ProbeSignal(
                 block=str(candidate.module_name), A_E=None, B_E=None,
                 delta_feature=None, delta_logits=delta,
                 predicted_gain=float((baseline_loss - expanded_loss).item()),
-                singular_values=None, source="expanded_train_then_contract",
+                singular_values=None,
+                source="expanded_model_train_then_contract",
                 is_structural_expansion=True)
+            # Projection must be linearized at the original fixed-size state,
+            # not at the temporary theta update used to create the target.
+            model.load_state_dict(base_state, strict=True)
             projection_block = block or candidate_projection_block(model, candidate)
             parameter_names = candidate_projection_parameter_names(
                 model, candidate, projection_scope)
@@ -136,10 +155,16 @@ class ExpandedTrainProject:
             heldout_gain = (None if heldout_batch is None else float(
                 (heldout_baseline_loss - heldout_expanded_loss).item()))
             return ExpandedTrainProjectResult(
-                signal, projection, tuple(losses), heldout_delta, heldout_gain)
+                signal=signal, projection=projection,
+                expansion_train_losses=tuple(losses),
+                heldout_delta_logits=heldout_delta,
+                heldout_loss_gain=heldout_gain,
+                temporary_base_parameter_update_norm=base_update_norm)
         finally:
+            model.load_state_dict(base_state, strict=True)
             for parameter, requires_grad in old_requires_grad.items():
                 parameter.requires_grad_(requires_grad)
+                parameter.grad = base_gradients[parameter]
             for module, training in modes.items():
                 module.training = training
             after = model.state_dict()

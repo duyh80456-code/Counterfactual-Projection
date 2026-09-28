@@ -65,10 +65,12 @@ short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 The structural gate schedules `vanilla`, `vanilla_matched_compute` (runs and
 discards the exact TINY + projection computation), `vanilla_extra_sgd` (uses
 the same extra labeled samples for ordinary SGD), `vanilla_momentum_reset`,
-parameter-norm-matched `random_projection`, `tiny_projection`,
+global-norm-matched `random_projection`, tensor-norm-preserving
+`sign_randomized_projection`, `tiny_projection`,
 `tiny_projection_conv_only` and `tiny_projection_whole_block` (ablations),
-`expand_train_project` (explicitly a RepAn/Bypass-like control, not a
-reproduction), and `real_e_growth` for two seeds. The main arm sweeps epsilon
+`expand_train_project` (jointly trains the temporary `theta + theta_E` space;
+still a RepAn/Bypass-like control rather than an official reproduction), and
+`real_e_growth` for two seeds. The main arm sweeps epsilon
 over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
 projection, and held-out checks use distinct batches. Statistics and projection
 batches are freshly sampled at every intervention from the same training pool
@@ -110,13 +112,21 @@ unseen tuning batch and comparing it with that batch's independently measured
 structural delta; fit-batch residuals are secondary diagnostics.
 The momentum-reset control targets that same residual conv+BN parameter set.
 `expand_train_project` measures its held-out target from the trained temporary
-expansion itself, before the expansion transaction is removed. All controls
+expansion itself, before the expansion transaction is removed. It rolls the
+temporary base-parameter update back before projecting that functional delta
+at the original fixed-size state. All controls
 whose behavior depends on the finite-difference E gate use the epsilon selected
 for the main arm in the final frozen comparison; `expand_train_project` remains
 the explicitly defined gate-1 trained-expansion control.
 
 Each run reports `corrections_applied / correction_attempts` and its application
 rate; the Kaggle gate rejects any projection arm below 100%.
+
+The committed notebook is an intentionally small mechanism pilot (12k training
+examples and 3 warm-up + 3 intervention epochs). It can establish whether the
+projection behaves coherently, but must not support performance-superiority
+claims. Such claims require a separately frozen full-CIFAR-100, long-schedule
+experiment after this gate passes.
 
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it

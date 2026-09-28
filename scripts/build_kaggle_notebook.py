@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v6")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v7")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -119,24 +119,29 @@ print("CIFAR-100 root:", DATA_ROOT)
     code("""# Structural-E gate. Increase seeds/epochs only after the measured
 # residual, cosine alignment and loss gains look sensible.
 METHODS = ["vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
-           "vanilla_momentum_reset", "random_projection", "tiny_projection",
+           "vanilla_momentum_reset", "random_projection",
+           "sign_randomized_projection", "tiny_projection",
            "tiny_projection_conv_only", "tiny_projection_whole_block",
            "expand_train_project",
            "real_e_growth"]
 PROBE_METHODS = {"vanilla_matched_compute", "vanilla_extra_sgd",
-                 "random_projection", "tiny_projection",
+                 "random_projection", "sign_randomized_projection",
+                 "tiny_projection",
                  "tiny_projection_conv_only", "tiny_projection_whole_block",
                  "expand_train_project",
                  "real_e_growth"}
 CG_METHODS = {"vanilla_matched_compute", "random_projection",
+              "sign_randomized_projection",
               "tiny_projection", "tiny_projection_conv_only",
               "tiny_projection_whole_block",
               "expand_train_project", "real_e_growth"}
 E_MATCHED_METHODS = {"vanilla_matched_compute", "random_projection",
+                     "sign_randomized_projection",
                      "tiny_projection", "tiny_projection_conv_only",
                      "tiny_projection_whole_block",
                      "real_e_growth"}
-APPLY_METHODS = {"random_projection", "tiny_projection",
+APPLY_METHODS = {"random_projection", "sign_randomized_projection",
+                 "tiny_projection",
                  "tiny_projection_conv_only", "tiny_projection_whole_block",
                  "expand_train_project"}
 SEEDS = [0, 1]

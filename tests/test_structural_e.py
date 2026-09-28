@@ -262,10 +262,11 @@ def test_structural_controls_train_temporarily_or_commit_real_e():
         projector=FunctionalProjector(damping=1e-3, max_iter=10))
     result = control.discover(
         model, candidate, batch, heldout_batch=heldout_batch)
-    assert result.signal.source == "expanded_train_then_contract"
+    assert result.signal.source == "expanded_model_train_then_contract"
     assert len(result.expansion_train_losses) == 2
     assert result.heldout_delta_logits is not None
     assert result.heldout_loss_gain is not None
+    assert result.temporary_base_parameter_update_norm > 0
     assert not torch.allclose(
         result.heldout_delta_logits, untrained_heldout.delta_logits)
     assert all(torch.equal(value, before[name])

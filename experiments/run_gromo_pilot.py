@@ -28,6 +28,7 @@ from projection import FunctionalProjector, ProjectionResult
 METHODS = (
     "vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
     "vanilla_momentum_reset", "random_projection", "tiny_projection",
+    "sign_randomized_projection",
     "tiny_projection_conv_only", "tiny_projection_whole_block",
     "expand_train_project", "real_e_growth")
 FULL_WIDTHS = [64, 64, 128, 128, 256, 256, 512, 512]
@@ -326,6 +327,18 @@ def parameter_delta_norm(parameter_delta: dict[str, torch.Tensor]) -> torch.Tens
                           for value in parameter_delta.values()))
 
 
+def sign_randomized_parameter_delta(
+        parameter_delta: dict[str, torch.Tensor], *,
+        generator: torch.Generator) -> dict[str, torch.Tensor]:
+    """Randomize coordinate signs while preserving every tensor's norm."""
+    randomized = {}
+    for name, value in parameter_delta.items():
+        signs = torch.empty_like(value).bernoulli_(
+            0.5, generator=generator).mul_(2).sub_(1)
+        randomized[name] = value * signs
+    return randomized
+
+
 def heldout_metrics(evaluation) -> dict[str, float]:
     return {
         "heldout_fitted_norm_ratio": evaluation.fitted_norm_ratio,
@@ -622,21 +635,35 @@ def main():
                     "cosine_alignment": projection_result.cosine_alignment,
                     **heldout_metrics(heldout),
                 }
-            elif args.method == "random_projection":
+            elif args.method in {"random_projection",
+                                 "sign_randomized_projection"}:
                 started = time.perf_counter()
                 e_step = e_projection.discover_candidate(
                     model, candidate, projection_batch,
                     gate=args.probe_epsilon,
                     projection_scope=projection_scope)
-                e_norm = parameter_delta_norm(e_step.projection.parameter_delta)
-                random_parameter_delta = {
-                    name: torch.randn_like(value)
-                    for name, value in e_step.projection.parameter_delta.items()}
-                random_norm = parameter_delta_norm(random_parameter_delta)
-                scale = e_norm / random_norm.clamp_min(1e-12)
-                random_parameter_delta = {
-                    name: value * scale
-                    for name, value in random_parameter_delta.items()}
+                e_delta = e_step.projection.parameter_delta
+                e_norm = parameter_delta_norm(e_delta)
+                if args.method == "sign_randomized_projection":
+                    generator = torch.Generator(device=device).manual_seed(
+                        970_001 + args.seed * 10_000 + epoch)
+                    random_parameter_delta = sign_randomized_parameter_delta(
+                        e_delta, generator=generator)
+                    source = "sign_randomized_e_delta_tensor_norm_matched"
+                else:
+                    random_parameter_delta = {
+                        name: torch.randn_like(value)
+                        for name, value in e_delta.items()}
+                    random_norm = parameter_delta_norm(random_parameter_delta)
+                    scale = e_norm / random_norm.clamp_min(1e-12)
+                    random_parameter_delta = {
+                        name: value * scale
+                        for name, value in random_parameter_delta.items()}
+                    source = "random_parameter_delta_global_norm_matched_to_e"
+                per_tensor_relative_norm_error = max(
+                    float(abs(random_parameter_delta[name].norm() - value.norm()) /
+                          value.norm().clamp_min(1e-12))
+                    for name, value in e_delta.items())
                 projection_result = replace(
                     e_step.projection, parameter_delta=random_parameter_delta)
                 synchronize(device)
@@ -651,7 +678,7 @@ def main():
                     momentum_resets = reset_projected_momentum(
                         optimizer, model, projection_result)
                 diagnostics = {
-                    "source": "random_parameter_delta_norm_matched_to_e",
+                    "source": source,
                     "probe_gate": args.probe_epsilon,
                     "applied_scale": projection_scale,
                     "correction_applied": correction_applied,
@@ -661,6 +688,8 @@ def main():
                     "e_parameter_delta_norm": float(e_norm),
                     "random_parameter_delta_norm": float(
                         parameter_delta_norm(random_parameter_delta)),
+                    "max_per_tensor_relative_norm_error":
+                        per_tensor_relative_norm_error,
                     **heldout_metrics(heldout),
                 }
             elif args.method == "expand_train_project":
@@ -696,6 +725,8 @@ def main():
                     "correction_applied": correction_applied,
                     "correction_was_attempted": True,
                     "expanded_train_losses": control_result.expansion_train_losses,
+                    "temporary_base_parameter_update_norm":
+                        control_result.temporary_base_parameter_update_norm,
                     "tuning_expanded_trained_loss_gain":
                         control_result.heldout_loss_gain,
                     "heldout_target_source": "expanded_trained_e",

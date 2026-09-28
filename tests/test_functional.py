@@ -4,7 +4,8 @@ from torch.func import functional_call, jvp
 
 from projection import FunctionalProjector
 from experiments.run_gromo_pilot import (
-    reset_projected_momentum, reset_residual_path_momentum)
+    reset_projected_momentum, reset_residual_path_momentum,
+    sign_randomized_parameter_delta)
 
 
 def test_functional_projection_recovers_tangent_direction():
@@ -88,3 +89,18 @@ def test_momentum_reset_control_matches_residual_path_projection_scope():
                for module in (block.conv1, block.bn1, block.conv2, block.bn2)
                for parameter in module.parameters())
     assert all(parameter in optimizer.state for parameter in block.downsample.parameters())
+
+
+def test_sign_randomized_control_preserves_each_tensor_norm():
+    delta = {
+        "conv.weight": torch.randn(4, 3, 3, 3),
+        "bn.weight": torch.randn(4) * 0.01,
+        "bn.bias": torch.randn(4) * 10,
+    }
+    randomized = sign_randomized_parameter_delta(
+        delta, generator=torch.Generator().manual_seed(91))
+    assert randomized.keys() == delta.keys()
+    assert all(torch.equal(randomized[name].abs(), value.abs())
+               for name, value in delta.items())
+    assert any(not torch.equal(randomized[name], value)
+               for name, value in delta.items())
