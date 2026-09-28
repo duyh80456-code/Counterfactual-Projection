@@ -8,6 +8,7 @@ import json
 import random
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -15,9 +16,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 
-from baselines import ExpandedTrainProject, RealEOracle
+from baselines import ExpandedTrainProject, RealEGrowth
 from methods import EProjection
-from methods.e_projection import candidate_projection_block
 from probe import (
     CandidateExpansionProbe, CounterfactualTinyProbe,
     build_pretrained_gromo_resnet18)
@@ -27,7 +27,7 @@ from projection import FunctionalProjector, ProjectionResult
 METHODS = (
     "vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
     "vanilla_momentum_reset", "random_projection", "tiny_projection",
-    "expand_train_project", "real_e_oracle")
+    "tiny_projection_whole_block", "expand_train_project", "real_e_growth")
 FULL_WIDTHS = [64, 64, 128, 128, 256, 256, 512, 512]
 
 
@@ -286,6 +286,30 @@ def recovery_fraction(projected_gain: float, structural_gain: float | None):
     return projected_gain / structural_gain
 
 
+def parameter_delta_norm(parameter_delta: dict[str, torch.Tensor]) -> torch.Tensor:
+    return torch.sqrt(sum(torch.sum(value.square())
+                          for value in parameter_delta.values()))
+
+
+def heldout_metrics(evaluation) -> dict[str, float]:
+    return {
+        "heldout_fitted_norm_ratio": evaluation.fitted_norm_ratio,
+        "heldout_relative_residual": evaluation.relative_residual,
+        "heldout_cosine_alignment": evaluation.cosine_alignment,
+    }
+
+
+def evaluate_heldout_direction(projector, model, tuning_batch,
+                               target_delta, parameter_delta, device):
+    """Measure out-of-sample tangent fit and its cost separately."""
+    synchronize(device)
+    started = time.perf_counter()
+    evaluation = projector.evaluate_direction(
+        model, tuning_batch[0], target_delta, parameter_delta)
+    synchronize(device)
+    return evaluation, time.perf_counter() - started
+
+
 def main():
     args = arguments()
     validate_arguments(args)
@@ -466,17 +490,26 @@ def main():
             synchronize(device)
             signal_seconds = time.perf_counter() - signal_started
             projection_result = None
+            heldout = None
             projection_seconds = 0.0
+            heldout_evaluation_seconds = 0.0
             momentum_resets = 0
+            projection_scope = (
+                "whole_block" if args.method == "tiny_projection_whole_block"
+                else "conv_path")
 
             if args.method == "vanilla_matched_compute":
                 started = time.perf_counter()
                 matched_step = e_projection.discover_candidate(
                     model, candidate, projection_batch,
-                    gate=args.probe_epsilon)
+                    gate=args.probe_epsilon,
+                    projection_scope=projection_scope)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
                 projection_result = matched_step.projection
+                heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    projection_result.parameter_delta, device)
                 diagnostics = {
                     "source": "vanilla_exact_probe_compute_discarded",
                     "probe_gate": args.probe_epsilon,
@@ -487,16 +520,22 @@ def main():
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
+                    **heldout_metrics(heldout),
                 }
-            elif args.method == "tiny_projection":
+            elif args.method in {"tiny_projection",
+                                 "tiny_projection_whole_block"}:
                 tuning_loss_before = batch_loss(model, tuning_batch)
                 started = time.perf_counter()
                 step = e_projection.discover_candidate(
                     model, candidate, projection_batch,
-                    gate=args.probe_epsilon)
+                    gate=args.probe_epsilon,
+                    projection_scope=projection_scope)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
                 projection_result = step.projection
+                heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    projection_result.parameter_delta, device)
                 projection_result.apply_(model, projection_scale)
                 momentum_resets = reset_projected_momentum(
                     optimizer, model, projection_result)
@@ -504,6 +543,7 @@ def main():
                     tuning_loss_before - batch_loss(model, tuning_batch))
                 diagnostics = {
                     "source": step.signal.source,
+                    "projection_scope": projection_scope,
                     "probe_gate": args.probe_epsilon,
                     "applied_scale": projection_scale,
                     "structural_loss_gain": step.structural_loss_gain,
@@ -516,43 +556,58 @@ def main():
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
+                    **heldout_metrics(heldout),
                 }
             elif args.method == "random_projection":
-                fit_signal = CandidateExpansionProbe()(
-                    model, candidate=candidate, batch=projection_batch,
-                    gate=args.probe_epsilon)
-                random_delta = torch.randn_like(fit_signal.delta_logits)
-                random_delta.mul_(fit_signal.delta_logits.norm() /
-                                  random_delta.norm().clamp_min(1e-12))
-                block = candidate_projection_block(model, candidate)
                 started = time.perf_counter()
-                projection_result = projector.project(
-                    model, projection_batch[0], random_delta, block=block)
+                e_step = e_projection.discover_candidate(
+                    model, candidate, projection_batch,
+                    gate=args.probe_epsilon,
+                    projection_scope=projection_scope)
+                e_norm = parameter_delta_norm(e_step.projection.parameter_delta)
+                random_parameter_delta = {
+                    name: torch.randn_like(value)
+                    for name, value in e_step.projection.parameter_delta.items()}
+                random_norm = parameter_delta_norm(random_parameter_delta)
+                scale = e_norm / random_norm.clamp_min(1e-12)
+                random_parameter_delta = {
+                    name: value * scale
+                    for name, value in random_parameter_delta.items()}
+                projection_result = replace(
+                    e_step.projection, parameter_delta=random_parameter_delta)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
+                heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    random_parameter_delta, device)
                 tuning_loss_before = batch_loss(model, tuning_batch)
                 projection_result.apply_(model, projection_scale)
                 momentum_resets = reset_projected_momentum(
                     optimizer, model, projection_result)
                 diagnostics = {
-                    "source": "random_matched_to_structural_norm",
+                    "source": "random_parameter_delta_norm_matched_to_e",
                     "probe_gate": args.probe_epsilon,
                     "applied_scale": projection_scale,
                     "tuning_projected_loss_gain":
                         tuning_loss_before - batch_loss(model, tuning_batch),
-                    "fitted_norm_ratio": projection_result.fitted_norm_ratio,
-                    "relative_residual": projection_result.relative_residual,
-                    "cosine_alignment": projection_result.cosine_alignment,
+                    "e_parameter_delta_norm": float(e_norm),
+                    "random_parameter_delta_norm": float(
+                        parameter_delta_norm(random_parameter_delta)),
+                    **heldout_metrics(heldout),
                 }
             elif args.method == "expand_train_project":
                 control = ExpandedTrainProject(
                     args.expanded_train_steps, args.lr, projector)
                 started = time.perf_counter()
                 control_result = control.discover(
-                    model, candidate, projection_batch)
+                    model, candidate, projection_batch,
+                    projection_scope=projection_scope)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
                 projection_result = control_result.projection
+                heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    projection_result.parameter_delta, device)
                 control_scale = (1.0 if args.projection_scale == 0
                                  else args.projection_scale)
                 tuning_loss_before = batch_loss(model, tuning_batch)
@@ -569,31 +624,36 @@ def main():
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
+                    **heldout_metrics(heldout),
                 }
-            elif args.method == "real_e_oracle":
+            elif args.method == "real_e_growth":
                 started = time.perf_counter()
                 local_step = e_projection.discover_candidate(
                     model, candidate, projection_batch,
-                    gate=args.probe_epsilon)
+                    gate=args.probe_epsilon,
+                    projection_scope=projection_scope)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
                 projection_result = local_step.projection
+                heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    projection_result.parameter_delta, device)
                 local_projected_gain = preview_projected_gain(
                     model, projection_result, projection_scale, tuning_batch)
                 commit_started = time.perf_counter()
-                commit = RealEOracle.commit_(model, candidate)
+                commit = RealEGrowth.commit_(model, candidate)
                 committed_second = commit.committed_module.second_layer
-                oracle_current_width = int(committed_second.in_neurons)
-                oracle_target_width = int(committed_second.target_in_neurons)
-                if oracle_current_width != oracle_target_width:
+                growth_current_width = int(committed_second.in_neurons)
+                growth_target_width = int(committed_second.target_in_neurons)
+                if growth_current_width != growth_target_width:
                     raise RuntimeError(
-                        "oracle commit left current width different from target")
+                        "growth commit left current width different from target")
                 optimizer, migrated = rebuild_sgd_after_growth(
                     model, optimizer, args)
                 synchronize(device)
                 commit_seconds = time.perf_counter() - commit_started
                 diagnostics = {
-                    "source": "tiny_gromo_committed_oracle",
+                    "source": "tiny_gromo_committed_e_growth",
                     "probe_gate": args.probe_epsilon,
                     "local_structural_loss_gain": local_step.structural_loss_gain,
                     "tuning_structural_loss_gain": tuning_signal.observed_loss_gain,
@@ -603,11 +663,12 @@ def main():
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
+                    **heldout_metrics(heldout),
                     "deploy_parameter_delta_this_intervention":
                         commit.deploy_parameter_delta,
                     "optimizer_migrations": migrated,
-                    "oracle_current_width": oracle_current_width,
-                    "oracle_target_width": oracle_target_width,
+                    "growth_current_width": growth_current_width,
+                    "growth_target_width": growth_target_width,
                     "commit_seconds": commit_seconds,
                 }
 
@@ -615,12 +676,15 @@ def main():
             diagnostics.update({
                 "statistics_from_training_pool": True,
                 "tuning_batch_is_held_out_from_updates": True,
+                "projection_scope": projection_scope,
                 "candidate_extra_flops": float(candidate.extra_flops),
                 "e_statistics_solve_seconds": e_seconds,
                 "structural_signal_seconds": signal_seconds,
                 "projection_seconds": projection_seconds,
+                "heldout_evaluation_seconds": heldout_evaluation_seconds,
                 "jvp_calls": (0 if projection_result is None
-                              else projection_result.jvp_calls),
+                              else projection_result.jvp_calls +
+                              (0 if heldout is None else heldout.jvp_calls)),
                 "vjp_calls": (0 if projection_result is None
                               else projection_result.vjp_calls),
                 "cg_iterations": (0 if projection_result is None

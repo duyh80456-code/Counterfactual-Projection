@@ -24,6 +24,17 @@ def test_functional_projection_recovers_tangent_direction():
     assert abs(result.fitted_norm_ratio - 1.0) < 1e-4
     assert result.jvp_calls >= 2
     assert result.vjp_calls >= 2
+    heldout_inputs = torch.randn(5, 3)
+
+    def heldout_function(weight):
+        return functional_call(model, {"0.weight": weight}, (heldout_inputs,))
+
+    heldout_target = jvp(
+        heldout_function, (parameter,), (known,))[1]
+    heldout = FunctionalProjector().evaluate_direction(
+        model, heldout_inputs, heldout_target, result.parameter_delta)
+    assert heldout.relative_residual < 1e-4
+    assert heldout.cosine_alignment > 0.999
 
 
 def test_direct_projection_clears_only_touched_momentum():

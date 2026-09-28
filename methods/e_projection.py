@@ -29,6 +29,32 @@ def candidate_projection_block(model: nn.Module, candidate) -> str:
     return _module_path(model, resolver(logical_name))
 
 
+def candidate_projection_parameter_names(
+        model: nn.Module, candidate, scope: str = "conv_path") -> tuple[str, ...] | None:
+    """Select only the two residual-path convolutions unless ablating scope."""
+    if scope == "whole_block":
+        return None
+    if scope != "conv_path":
+        raise ValueError(f"unknown projection scope {scope!r}")
+    block_path = candidate_projection_block(model, candidate)
+    block = dict(model.named_modules())[block_path]
+    if hasattr(block, "first_layer") and hasattr(block, "second_layer"):
+        convolution_modules = (
+            block.first_layer.layer, block.second_layer.layer)
+    elif hasattr(block, "conv1") and hasattr(block, "conv2"):
+        convolution_modules = (block.conv1, block.conv2)
+    else:
+        raise TypeError("candidate block does not expose its two-convolution path")
+    parameter_ids = {
+        id(parameter) for module in convolution_modules
+        for parameter in module.parameters(recurse=False)}
+    names = tuple(name for name, parameter in model.named_parameters()
+                  if id(parameter) in parameter_ids)
+    if not names:
+        raise RuntimeError("conv-path projection selected no parameters")
+    return names
+
+
 def _eval_loss(model: nn.Module, batch: tuple[Tensor, Tensor]) -> float:
     modes = {module: module.training for module in model.modules()}
     try:
@@ -76,15 +102,19 @@ class EProjection:
 
     def discover_candidate(self, model: nn.Module, candidate,
                            batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
-                           block: str | None = None) -> ProjectionStep:
+                           block: str | None = None,
+                           projection_scope: str = "conv_path") -> ProjectionStep:
         baseline_loss = _eval_loss(model, batch)
         signal = self.structural_probe(
             model, candidate=candidate, batch=batch, gate=gate)
         if not signal.is_structural_expansion:
             raise RuntimeError("main E-projection requires a structural E signal")
         projection_block = block or candidate_projection_block(model, candidate)
+        parameter_names = candidate_projection_parameter_names(
+            model, candidate, projection_scope)
         result = self.projector.project(
-            model, batch[0], signal.delta_logits, block=projection_block)
+            model, batch[0], signal.delta_logits, block=projection_block,
+            parameter_names=parameter_names)
         return ProjectionStep(
             signal, result, baseline_loss,
             baseline_loss - float(signal.observed_loss_gain))
@@ -92,9 +122,11 @@ class EProjection:
     def step_candidate_(self, model: nn.Module, candidate,
                         batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
                         block: str | None = None,
+                        projection_scope: str = "conv_path",
                         scale: float = 1.0) -> ProjectionStep:
         step = self.discover_candidate(
-            model, candidate, batch, gate=gate, block=block)
+            model, candidate, batch, gate=gate, block=block,
+            projection_scope=projection_scope)
         step.projection.apply_(model, scale)
         return replace(step, projected_loss=_eval_loss(model, batch))
 

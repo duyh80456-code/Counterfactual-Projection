@@ -18,12 +18,14 @@ class ExpandableBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 2, 3, padding=1)
         self.conv2 = nn.Conv2d(2, 3, 1)
+        self.downsample = nn.Conv2d(1, 3, 1)
         self.extension_in = None
         self.extension_out = None
         self.extension_gate = None
 
     def forward(self, inputs):
-        output = self.conv2(torch.relu(self.conv1(inputs)))
+        output = (self.conv2(torch.relu(self.conv1(inputs))) +
+                  self.downsample(inputs))
         if self.extension_in is not None:
             output = output + self.extension_gate * self.extension_out(
                 torch.relu(self.extension_in(inputs)))
@@ -220,6 +222,14 @@ def test_structural_projection_and_auxiliary_transfer_are_concrete():
     step = EProjection(projector=projector).discover_candidate(
         model, candidate, batch, gate=0.1)
     assert step.signal.is_structural_expansion
+    assert all("downsample" not in name
+               for name in step.projection.parameter_delta)
+    assert {name.rsplit(".", 1)[0] for name in step.projection.parameter_delta} == {
+        "block.conv1", "block.conv2"}
+    whole_block = EProjection(projector=projector).discover_candidate(
+        model, candidate, batch, gate=0.1, projection_scope="whole_block")
+    assert any("downsample" in name
+               for name in whole_block.projection.parameter_delta)
     assert -1.0 <= step.projection.cosine_alignment <= 1.0
     transfer = StructuralExpansionTransfer(
         model, batch[0], step.signal, "block", projector)

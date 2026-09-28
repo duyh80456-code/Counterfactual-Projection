@@ -25,7 +25,8 @@ TINY/Gromo beyond that full width, not a low-rank factorization of an existing
 kernel. Statistics and projection fitting use fresh disjoint batches sampled
 from the common training pool; epsilon tuning uses validation data. Unselected
 epsilon-sweep arms never construct the official CIFAR-100 test set. After
-selection, the chosen configuration is rerun and evaluated on test once.
+selection, all frozen comparison configurations are rerun and evaluated on
+test once.
 """),
     code("""import json, os, queue, shutil, subprocess, sys, threading
 from pathlib import Path
@@ -40,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v3")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v4")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -119,10 +120,12 @@ print("CIFAR-100 root:", DATA_ROOT)
 # residual, cosine alignment and loss gains look sensible.
 METHODS = ["vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
            "vanilla_momentum_reset", "random_projection", "tiny_projection",
-           "expand_train_project", "real_e_oracle"]
+           "tiny_projection_whole_block", "expand_train_project",
+           "real_e_growth"]
 PROBE_METHODS = {"vanilla_matched_compute", "vanilla_extra_sgd",
                  "random_projection", "tiny_projection",
-                 "expand_train_project", "real_e_oracle"}
+                 "tiny_projection_whole_block", "expand_train_project",
+                 "real_e_growth"}
 SEEDS = [0, 1]
 EPOCHS = 3
 WARMUP_EPOCHS = 3
@@ -226,8 +229,6 @@ def run_worker(gpu):
             "--cg-iterations", str(CG_ITERATIONS),
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
-        if method != "tiny_projection":
-            command.append("--evaluate-official-test")
         env = os.environ.copy()
         env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
                    OMP_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false")
@@ -260,9 +261,11 @@ for method, seed, epsilon in jobs:
     epsilon_label = str(epsilon).replace(".", "p")
     path = OUTPUT / f"{method}_eps{epsilon_label}_seed{seed}" / "result.json"
     result = json.loads(path.read_text())
-    expected_growth = method == "real_e_oracle"
+    expected_growth = method == "real_e_growth"
     if (result["deploy_parameter_delta"] > 0) != expected_growth:
         raise RuntimeError(f"Deploy-size invariant failed: {path}")
+    if result["official_test_accuracy"] is not None:
+        raise RuntimeError(f"development arm touched official test: {path}")
     rows.append(result)
 
 for seed in SEEDS:
@@ -284,8 +287,8 @@ for seed in SEEDS:
     if len(set(epoch_audits)) != EPOCHS:
         raise RuntimeError(f"Projection batches were reused for seed {seed}")
 
-# Select epsilon without touching official-test metrics, then rerun only the
-# selected main-method configuration with final test evaluation enabled.
+# Select epsilon without touching official-test metrics, freeze every method's
+# configuration, then rerun all comparisons with final test evaluation enabled.
 validation_by_epsilon = {
     epsilon: statistics.mean(
         row["validation_accuracy"] for row in rows
@@ -293,58 +296,84 @@ validation_by_epsilon = {
            row["config"]["probe_epsilon"] == epsilon)
     for epsilon in EPSILONS}
 SELECTED_EPSILON = max(validation_by_epsilon, key=validation_by_epsilon.get)
-selected_processes = []
-selected_test_rows = []
-for gpu, seed in enumerate(SEEDS):
-    epsilon_label = str(SELECTED_EPSILON).replace(".", "p")
-    arm_dir = OUTPUT / f"tiny_projection_selected_eps{epsilon_label}_seed{seed}"
-    result_path = arm_dir / "result.json"
-    if result_path.is_file():
-        selected_test_rows.append(json.loads(result_path.read_text()))
-        continue
-    command = [
-        sys.executable, "-m", "experiments.run_gromo_pilot",
-        "--method", "tiny_projection", "--seed", str(seed),
-        "--epochs", str(EPOCHS), "--batch-size", str(BATCH_SIZE),
-        "--warmup-epochs", str(WARMUP_EPOCHS),
-        "--warmup-checkpoint", str(WARMUP_CHECKPOINTS[seed]),
-        "--reference-root", str(REFERENCE),
-        "--train-samples", str(TRAIN_SAMPLES),
-        "--validation-samples", str(VALIDATION_SAMPLES),
-        "--statistics-samples", str(STATISTICS_SAMPLES),
-        "--projection-samples", str(PROJECTION_SAMPLES),
-        "--tuning-samples", str(TUNING_SAMPLES),
-        "--image-size", str(IMAGE_SIZE), "--site", SITE, "--rank", str(RANK),
-        "--probe-epsilon", str(SELECTED_EPSILON),
-        "--cg-iterations", str(CG_ITERATIONS), "--evaluate-official-test",
-        "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
-    ]
-    env = os.environ.copy()
-    env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
-               OMP_NUM_THREADS="2")
-    arm_dir.mkdir(parents=True, exist_ok=True)
-    log = (arm_dir / "run.log").open("a")
-    process = subprocess.Popen(
-        command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
-    selected_processes.append((seed, process, log, result_path))
-for seed, process, log, result_path in selected_processes:
-    return_code = process.wait()
-    log.close()
-    if return_code:
-        raise RuntimeError(f"Selected epsilon test run failed for seed {seed}")
-    selected_test_rows.append(json.loads(result_path.read_text()))
-if len(selected_test_rows) != len(SEEDS):
-    raise RuntimeError("selected epsilon does not have one official-test run per seed")
-for test_row in selected_test_rows:
+FINAL_CONFIGS = [
+    (method, SELECTED_EPSILON if method == "tiny_projection" else 0.05)
+    for method in METHODS]
+final_queue = queue.Queue()
+for seed in SEEDS:
+    for method, epsilon in FINAL_CONFIGS:
+        final_queue.put((method, seed, epsilon))
+final_failures = []
+final_lock = threading.Lock()
+
+def run_final_test_worker(gpu):
+    while True:
+        try:
+            method, seed, epsilon = final_queue.get_nowait()
+        except queue.Empty:
+            return
+        epsilon_label = str(epsilon).replace(".", "p")
+        label = f"final_test_{method}_eps{epsilon_label}_seed{seed}"
+        arm_dir = OUTPUT / label
+        result_path = arm_dir / "result.json"
+        if not result_path.is_file():
+            command = [
+                sys.executable, "-m", "experiments.run_gromo_pilot",
+                "--method", method, "--seed", str(seed),
+                "--epochs", str(EPOCHS), "--batch-size", str(BATCH_SIZE),
+                "--warmup-epochs", str(WARMUP_EPOCHS),
+                "--warmup-checkpoint", str(WARMUP_CHECKPOINTS[seed]),
+                "--reference-root", str(REFERENCE),
+                "--train-samples", str(TRAIN_SAMPLES),
+                "--validation-samples", str(VALIDATION_SAMPLES),
+                "--statistics-samples", str(STATISTICS_SAMPLES),
+                "--projection-samples", str(PROJECTION_SAMPLES),
+                "--tuning-samples", str(TUNING_SAMPLES),
+                "--image-size", str(IMAGE_SIZE), "--site", SITE,
+                "--rank", str(RANK), "--probe-epsilon", str(epsilon),
+                "--cg-iterations", str(CG_ITERATIONS),
+                "--evaluate-official-test", "--data-root", str(DATA_ROOT),
+                "--output", str(arm_dir),
+            ]
+            env = os.environ.copy()
+            env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
+                       OMP_NUM_THREADS="2")
+            arm_dir.mkdir(parents=True, exist_ok=True)
+            with (arm_dir / "run.log").open("a") as log:
+                return_code = subprocess.run(
+                    command, cwd=REPO, env=env, stdout=log,
+                    stderr=subprocess.STDOUT).returncode
+            if return_code:
+                with final_lock:
+                    final_failures.append((label, return_code))
+        final_queue.task_done()
+
+final_workers = [threading.Thread(
+    target=run_final_test_worker, args=(gpu,), daemon=True) for gpu in range(2)]
+for worker in final_workers: worker.start()
+for worker in final_workers: worker.join()
+if final_failures:
+    raise RuntimeError(f"Final official-test runs failed: {final_failures}")
+final_test_rows = []
+for seed in SEEDS:
+    for method, epsilon in FINAL_CONFIGS:
+        epsilon_label = str(epsilon).replace(".", "p")
+        path = OUTPUT / f"final_test_{method}_eps{epsilon_label}_seed{seed}" / "result.json"
+        final_result = json.loads(path.read_text())
+        if final_result["official_test_accuracy"] is None:
+            raise RuntimeError(f"final arm did not evaluate official test: {path}")
+        final_test_rows.append(final_result)
+
+for test_row in final_test_rows:
     tuning_row = next(
         row for row in rows
-        if row["method"] == "tiny_projection" and
+        if row["method"] == test_row["method"] and
            row["seed"] == test_row["seed"] and
-           row["config"]["probe_epsilon"] == SELECTED_EPSILON)
+           row["config"]["probe_epsilon"] == test_row["config"]["probe_epsilon"])
     if test_row["initial_model_sha256"] != tuning_row["initial_model_sha256"]:
-        raise RuntimeError("selected test rerun did not load the tuning checkpoint")
+        raise RuntimeError("final test rerun did not load the tuning checkpoint")
     if abs(test_row["validation_accuracy"] - tuning_row["validation_accuracy"]) > 1e-3:
-        raise RuntimeError("selected test rerun materially diverged from tuning")
+        raise RuntimeError("final test rerun materially diverged from tuning")
 
 summary = {"repo_commit": commit, "official_test_evaluated_final_only": True,
            "arms": {}}
@@ -357,21 +386,28 @@ for method, epsilon in groups:
                 if row["method"] == method and
                    row["config"]["probe_epsilon"] == epsilon]
     values = [row["validation_accuracy"] for row in selected]
-    official_values = [row["official_test_accuracy"] for row in selected
-                       if row["official_test_accuracy"] is not None]
-    if method == "tiny_projection" and epsilon == SELECTED_EPSILON:
-        official_values = [row["official_test_accuracy"]
-                           for row in selected_test_rows]
-    residuals = [epoch["diagnostics"]["relative_residual"]
+    official_values = [
+        row["official_test_accuracy"] for row in final_test_rows
+        if row["method"] == method and
+           row["config"]["probe_epsilon"] == epsilon]
+    fit_residuals = [epoch["diagnostics"]["relative_residual"]
                  for row in selected
                  for epoch in row["history"]
                  if epoch["diagnostics"] and
                     "relative_residual" in epoch["diagnostics"]]
-    cosines = [epoch["diagnostics"]["cosine_alignment"]
+    fit_cosines = [epoch["diagnostics"]["cosine_alignment"]
                for row in selected
                for epoch in row["history"]
                if epoch["diagnostics"] and
                   "cosine_alignment" in epoch["diagnostics"]]
+    heldout_residuals = [epoch["diagnostics"]["heldout_relative_residual"]
+                         for row in selected for epoch in row["history"]
+                         if epoch["diagnostics"] and
+                            "heldout_relative_residual" in epoch["diagnostics"]]
+    heldout_cosines = [epoch["diagnostics"]["heldout_cosine_alignment"]
+                       for row in selected for epoch in row["history"]
+                       if epoch["diagnostics"] and
+                          "heldout_cosine_alignment" in epoch["diagnostics"]]
     structural_gains = [epoch["diagnostics"].get(
                             "structural_loss_gain",
                             epoch["diagnostics"].get("local_structural_loss_gain"))
@@ -428,8 +464,10 @@ for method, epsilon in groups:
         "validation_accuracy_std": statistics.stdev(values) if len(values) > 1 else 0.0,
         "official_test_accuracy_mean": (
             statistics.mean(official_values) if official_values else None),
-        "mean_projection_residual": statistics.mean(residuals) if residuals else None,
-        "mean_cosine_alignment": statistics.mean(cosines) if cosines else None,
+        "mean_heldout_projection_residual": statistics.mean(heldout_residuals) if heldout_residuals else None,
+        "mean_heldout_cosine_alignment": statistics.mean(heldout_cosines) if heldout_cosines else None,
+        "mean_fit_projection_residual": statistics.mean(fit_residuals) if fit_residuals else None,
+        "mean_fit_cosine_alignment": statistics.mean(fit_cosines) if fit_cosines else None,
         "mean_projection_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,
         "mean_tuning_structural_loss_gain": statistics.mean(tuning_structural_gains) if tuning_structural_gains else None,
         "mean_tuning_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,

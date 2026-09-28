@@ -27,8 +27,10 @@ def _optional_imports():
 def test_full_model_tiny_overexpansion_to_functional_projection():
     TinyAdapter, GrowthBudget = _optional_imports()
     from methods import EProjection
-    from baselines import RealEOracle
-    from probe import CounterfactualTinyProbe, build_pretrained_gromo_resnet18
+    from baselines import RealEGrowth
+    from probe import (
+        CandidateExpansionProbe, CounterfactualTinyProbe,
+        build_pretrained_gromo_resnet18)
     from projection import FunctionalProjector
 
     torch.manual_seed(31415)
@@ -62,8 +64,20 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert torch.isfinite(step.projection.fitted_delta).all()
     assert step.projection.jvp_calls >= 2
     assert step.projection.vjp_calls >= 2
+    assert all("downsample" not in name
+               for name in step.projection.parameter_delta)
+    heldout_inputs = torch.randn(2, 3, 64, 64, device=device)
+    heldout_targets = torch.tensor([11, 29], device=device)
+    heldout_signal = CandidateExpansionProbe()(
+        model, candidate=candidate,
+        batch=(heldout_inputs, heldout_targets), gate=0.05)
+    heldout = FunctionalProjector().evaluate_direction(
+        model, heldout_inputs, heldout_signal.delta_logits,
+        step.projection.parameter_delta)
+    assert torch.isfinite(torch.tensor(heldout.relative_residual))
+    assert torch.isfinite(torch.tensor(heldout.cosine_alignment))
     assert int(block.second_layer.in_neurons) == 256
     assert int(block.second_layer.target_in_neurons) == 256
-    committed = RealEOracle.commit_(model, candidate).committed_module
+    committed = RealEGrowth.commit_(model, candidate).committed_module
     assert int(committed.second_layer.in_neurons) == 257
     assert int(committed.second_layer.target_in_neurons) == 257

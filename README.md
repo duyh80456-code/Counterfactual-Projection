@@ -65,16 +65,18 @@ short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 The structural gate schedules `vanilla`, `vanilla_matched_compute` (runs and
 discards the exact TINY + projection computation), `vanilla_extra_sgd` (uses
 the same extra labeled samples for ordinary SGD), `vanilla_momentum_reset`,
-norm-matched `random_projection`, `tiny_projection`,
+parameter-norm-matched `random_projection`, `tiny_projection`,
+`tiny_projection_whole_block` (ablation only),
 `expand_train_project` (explicitly a RepAn/Bypass-like control, not a
-reproduction), and `real_e_oracle` for two seeds. The main arm sweeps epsilon
+reproduction), and `real_e_growth` for two seeds. The main arm sweeps epsilon
 over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
 projection, and held-out checks use distinct batches. Statistics and projection
 batches are freshly sampled at every intervention from the same training pool
 used by every arm; only the fixed check batch is held out. Two seed-specific
 warm-up checkpoints include both model and SGD state, and every arm starts from
 the exact same checkpoint hash for its seed. A dynamic queue gives each GPU one
-independent arm at a time. Only the oracle may increase deploy parameters.
+independent arm at a time. Only the committed-E growth control may increase
+deploy parameters.
 Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
@@ -87,16 +89,23 @@ from `current_width` to `current_width + rank` while TINY constructs E, then
 restores the configured target.
 
 The fixed tuning batch and the larger validation split may be observed during
-development. Epsilon is selected only by validation accuracy. The official
-CIFAR-100 test partition is evaluated once after training, never inside an
-intervention or for epsilon selection.
+development. Epsilon is selected only by validation accuracy. No development
+arm constructs the official CIFAR-100 test set. After every choice is frozen,
+all selected method configurations are rerun and evaluated on test once.
 
 Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
 counts, CG iterations, peak allocated GPU memory, and any SGD momentum states
-reset after a direct projected parameter jump. The real-E oracle intervenes at
+reset after a direct projected parameter jump. The real-E growth control intervenes at
 the same epoch frequency as the main method and logs structural and projected
-local gains before every irreversible commit. Oracle commits synchronize the
+local gains before every irreversible commit. Real-E growth commits synchronize the
 new current width back to the target width before the next intervention.
+
+The primary projection scope contains only the two residual-path convolution
+layers that surround E. BatchNorm and shortcut/downsample parameters are
+excluded. Whole-block projection is reported separately as an ablation. The
+main fit metric is evaluated by applying the fitted parameter tangent on the
+unseen tuning batch and comparing it with that batch's independently measured
+structural delta; fit-batch residuals are secondary diagnostics.
 
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it

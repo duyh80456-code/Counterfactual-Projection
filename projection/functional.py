@@ -13,6 +13,16 @@ from .metrics import cosine_alignment, fitted_norm_ratio, relative_residual
 
 
 @dataclass(frozen=True)
+class FunctionalEvaluation:
+    fitted_delta: Tensor
+    target_delta: Tensor
+    fitted_norm_ratio: float
+    relative_residual: float
+    cosine_alignment: float
+    jvp_calls: int = 1
+
+
+@dataclass(frozen=True)
 class ProjectionResult:
     block: str
     parameter_delta: dict[str, Tensor]
@@ -49,20 +59,30 @@ class FunctionalProjector:
         self.tolerance = float(tolerance)
 
     def project(self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
-                *, block: str) -> ProjectionResult:
+                *, block: str,
+                parameter_names: tuple[str, ...] | None = None) -> ProjectionResult:
         modes = {module: module.training for module in model.modules()}
         model.eval()
         try:
-            return self._project_eval(model, inputs, target_delta, block=block)
+            return self._project_eval(
+                model, inputs, target_delta, block=block,
+                parameter_names=parameter_names)
         finally:
             for module, training in modes.items():
                 module.training = training
 
     def _project_eval(self, model: nn.Module, inputs: Tensor,
-                      target_delta: Tensor, *, block: str) -> ProjectionResult:
+                      target_delta: Tensor, *, block: str,
+                      parameter_names: tuple[str, ...] | None) -> ProjectionResult:
         prefix = f"{block}." if block else ""
-        selected = [(name, parameter) for name, parameter in model.named_parameters()
-                    if name.startswith(prefix)]
+        requested = None if parameter_names is None else set(parameter_names)
+        selected = [
+            (name, parameter) for name, parameter in model.named_parameters()
+            if ((requested is None and name.startswith(prefix)) or
+                (requested is not None and name in requested))]
+        if requested is not None and {name for name, _ in selected} != requested:
+            missing = requested - {name for name, _ in selected}
+            raise KeyError(f"unknown projection parameters: {sorted(missing)}")
         if not selected:
             raise KeyError(f"block {block!r} has no parameters")
         names = [name for name, _ in selected]
@@ -110,3 +130,37 @@ class FunctionalProjector:
             relative_residual=relative_residual(fitted, target_delta),
             cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg,
             jvp_calls=jvp_calls, vjp_calls=vjp_calls)
+
+    def evaluate_direction(
+            self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
+            parameter_delta: dict[str, Tensor]) -> FunctionalEvaluation:
+        """Evaluate a fitted parameter direction on inputs never used to fit it."""
+        if not parameter_delta:
+            raise ValueError("parameter direction is empty")
+        parameters = dict(model.named_parameters())
+        names = tuple(parameter_delta)
+        missing = set(names) - set(parameters)
+        if missing:
+            raise KeyError(f"model no longer contains {sorted(missing)}")
+        modes = {module: module.training for module in model.modules()}
+        try:
+            model.eval()
+            primals = tuple(parameters[name].detach() for name in names)
+            tangents = tuple(parameter_delta[name].to(parameters[name])
+                             for name in names)
+
+            def function(*values):
+                replacements = dict(zip(names, values))
+                return functional_call(
+                    model, replacements, (inputs,), strict=False)
+
+            fitted = jvp(function, primals, tangents)[1].detach()
+        finally:
+            for module, training in modes.items():
+                module.training = training
+        target = target_delta.detach()
+        return FunctionalEvaluation(
+            fitted_delta=fitted, target_delta=target,
+            fitted_norm_ratio=fitted_norm_ratio(fitted, target),
+            relative_residual=relative_residual(fitted, target),
+            cosine_alignment=cosine_alignment(fitted, target))

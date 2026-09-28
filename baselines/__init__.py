@@ -1,4 +1,3 @@
-from .structural import ExpandedTrainProject, RealEOracle
+from .structural import ExpandedTrainProject, RealEGrowth, RealEOracle
 
-__all__ = ["ExpandedTrainProject", "RealEOracle"]
-
+__all__ = ["ExpandedTrainProject", "RealEGrowth", "RealEOracle"]

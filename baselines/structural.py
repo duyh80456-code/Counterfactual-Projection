@@ -8,36 +8,43 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from methods.e_projection import candidate_projection_block
+from methods.e_projection import (
+    candidate_projection_block, candidate_projection_parameter_names)
 from probe import ProbeSignal
 from projection import FunctionalProjector, ProjectionResult
 
 
 @dataclass(frozen=True)
-class OracleCommit:
+class GrowthCommit:
     train_parameter_delta: int
     deploy_parameter_delta: int
     committed_module: nn.Module
 
 
-class RealEOracle:
-    """Commit the TINY/Gromo candidate; this intentionally grows deployment."""
+class RealEGrowth:
+    """Commit function-preserving TINY/Gromo E and train the grown model."""
 
     @staticmethod
-    def commit_(model: nn.Module, candidate) -> OracleCommit:
+    def commit_(model: nn.Module, candidate) -> GrowthCommit:
         before = sum(parameter.numel() for parameter in model.parameters())
         committed = candidate.commit()
         second = getattr(committed, "second_layer", None)
         if (second is not None and hasattr(second, "in_neurons") and
                 hasattr(second, "target_in_neurons")):
-            # A committed counterfactual over-expansion becomes the oracle's
+            # A committed counterfactual over-expansion becomes the grown model's
             # new full-width baseline. Never leave current_width > target.
             second.target_in_neurons = int(second.in_neurons)
         after = sum(parameter.numel() for parameter in model.parameters())
-        return OracleCommit(
+        return GrowthCommit(
             train_parameter_delta=after - before,
             deploy_parameter_delta=after - before,
             committed_module=committed)
+
+
+# Compatibility alias. Reports and experiment names use ``real_e_growth``;
+# virtual structural gain at the same state is the actual local oracle metric.
+RealEOracle = RealEGrowth
+OracleCommit = GrowthCommit
 
 
 @dataclass(frozen=True)
@@ -60,7 +67,8 @@ class ExpandedTrainProject:
 
     def discover(self, model: nn.Module, candidate,
                  batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
-                 block: str | None = None) -> ExpandedTrainProjectResult:
+                 block: str | None = None,
+                 projection_scope: str = "conv_path") -> ExpandedTrainProjectResult:
         inputs, targets = batch
         modes = {module: module.training for module in model.modules()}
         base_parameters = tuple(model.parameters())
@@ -102,8 +110,11 @@ class ExpandedTrainProject:
                 singular_values=None, source="expanded_train_then_contract",
                 is_structural_expansion=True)
             projection_block = block or candidate_projection_block(model, candidate)
+            parameter_names = candidate_projection_parameter_names(
+                model, candidate, projection_scope)
             projection = self.projector.project(
-                model, inputs, delta, block=projection_block)
+                model, inputs, delta, block=projection_block,
+                parameter_names=parameter_names)
             return ExpandedTrainProjectResult(signal, projection, tuple(losses))
         finally:
             for parameter, requires_grad in old_requires_grad.items():
