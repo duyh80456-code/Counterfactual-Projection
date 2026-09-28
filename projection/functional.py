@@ -22,6 +22,8 @@ class ProjectionResult:
     relative_residual: float
     cosine_alignment: float
     cg: CGResult
+    jvp_calls: int
+    vjp_calls: int
 
     @property
     def projection_ratio(self) -> float:
@@ -68,6 +70,8 @@ class FunctionalProjector:
         sizes = [parameter.numel() for _, parameter in selected]
         base = torch.cat([parameter.detach().reshape(-1) for _, parameter in selected])
         target = target_delta.detach().reshape(-1).to(base)
+        jvp_calls = 0
+        vjp_calls = 0
 
         def unpack(vector: Tensor) -> dict[str, Tensor]:
             return {name: piece.reshape(shape) for name, shape, piece in zip(
@@ -78,11 +82,15 @@ class FunctionalProjector:
                 model, unpack(vector), (inputs,), strict=False).reshape(-1)
 
         def jacobian_vector(vector: Tensor) -> Tensor:
+            nonlocal jvp_calls
+            jvp_calls += 1
             return jvp(function, (base,), (vector,))[1]
 
         _, pullback = vjp(function, base)
 
         def transpose_jacobian(vector: Tensor) -> Tensor:
+            nonlocal vjp_calls
+            vjp_calls += 1
             return pullback(vector)[0]
 
         rhs = transpose_jacobian(target)
@@ -100,4 +108,5 @@ class FunctionalProjector:
             fitted_delta=fitted, target_delta=target_delta.detach(),
             fitted_norm_ratio=fitted_norm_ratio(fitted, target_delta),
             relative_residual=relative_residual(fitted, target_delta),
-            cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg)
+            cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg,
+            jvp_calls=jvp_calls, vjp_calls=vjp_calls)

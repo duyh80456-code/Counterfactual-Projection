@@ -39,7 +39,7 @@ class RepOptGradientHandler:
 
 
 class ERepOpt:
-    """Optimizer decorator whose geometry comes from the current E probe."""
+    """Gradient-SVD control only; structural TINY E is not supported yet."""
 
     def __init__(self, optimizer: torch.optim.Optimizer,
                  handler: RepOptGradientHandler):
@@ -49,13 +49,14 @@ class ERepOpt:
     @classmethod
     def from_signal(cls, optimizer: torch.optim.Optimizer, model: nn.Module,
                     signal: ProbeSignal, strength: float = 1.0) -> "ERepOpt":
+        if signal.A_E is None:
+            raise NotImplementedError(
+                "TINY structural candidates expose delta-f_E but not their "
+                "rank-r A_E coordinates; E->RepOpt is excluded from the "
+                "structural pipeline until those coordinates are extracted")
         module = dict(model.named_modules())[signal.block]
         if not isinstance(module, nn.Conv2d):
             raise TypeError("E->RepOpt currently supports Conv2d probes")
-        if signal.A_E is None:
-            raise ValueError(
-                "this structural candidate does not expose A_E; functional "
-                "projection can use delta-f_E directly")
         directions = signal.A_E.reshape(signal.rank, -1)
         return cls(optimizer, RepOptGradientHandler(
             module.weight, directions, strength))

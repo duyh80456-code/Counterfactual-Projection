@@ -37,6 +37,12 @@ The core invariant is checked on every probe: every parameter and buffer before
 the probe must be bitwise identical afterward. Existing `.grad` tensors and
 train/eval modes are also restored.
 
+`StructuralAuxiliarySpace` is currently only a one-dimensional scalar-gate
+diagnostic with user-supplied curvature. It is not presented as the full
+rank-r auxiliary-space method. Likewise, `ERepOpt` remains a gradient-SVD
+control: structural TINY candidates do not yet expose the rank-r coordinates
+needed by that optimizer.
+
 ## Test
 
 ```bash
@@ -60,9 +66,13 @@ The structural gate schedules `vanilla`, norm-matched `random_projection`,
 `tiny_projection`, `expand_train_project` (explicitly a RepAn/Bypass-like
 control, not a reproduction), and `real_e_oracle` for two seeds. The main arm
 sweeps epsilon over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
-projection, and held-out checks use three disjoint subsets. A dynamic queue
-gives each GPU one independent arm at a time. Only the oracle may increase
-deploy parameters. Outputs are
+projection, and held-out checks use distinct batches. Statistics and projection
+batches are freshly sampled at every intervention from the same training pool
+used by every arm; only the fixed check batch is held out. Two seed-specific
+warm-up checkpoints include both model and SGD state, and every arm starts from
+the exact same checkpoint hash for its seed. A dynamic queue gives each GPU one
+independent arm at a time. Only the oracle may increase deploy parameters.
+Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
 
@@ -72,6 +82,12 @@ starts at full `64/128/256/512` width (`missing_neurons() == 0`); a
 `CounterfactualTinyProbe` temporarily raises only the selected block's target
 from `current_width` to `current_width + rank` while TINY constructs E, then
 restores the configured target.
+
+Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
+counts, CG iterations, peak allocated GPU memory, and any SGD momentum states
+reset after a direct projected parameter jump. The real-E oracle intervenes at
+the same epoch frequency as the main method and logs structural and projected
+local gains before every irreversible commit.
 
 ## Reference implementation
 

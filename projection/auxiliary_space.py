@@ -21,7 +21,11 @@ class AuxiliarySpaceProjector:
 
 @dataclass(frozen=True)
 class StructuralAuxiliarySpace:
-    """One-dimensional B_E = Pi_E H_E^-1 Pi_E^T realization."""
+    """Experimental scalar-gate diagnostic, not the full auxiliary method.
+
+    This class has ``V_E = R`` and a user-supplied scalar curvature. It must
+    not be reported as a rank-r estimate of ``Pi_E H_E^-1 Pi_E^T``.
+    """
 
     transfer: StructuralExpansionTransfer
     curvature: float = 1.0
