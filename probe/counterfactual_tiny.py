@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
+
 from .gromo_adapter import TransactionalCandidateSource
 
 
@@ -23,7 +25,41 @@ class CounterfactualTinyProbe:
         if self.rank < 1:
             raise ValueError("counterfactual probe rank must be positive")
 
-    def propose(self, adapter, model, statistics_loader, budget):
+    @staticmethod
+    def _measure_extension_flops(model, block, sample_inputs, rank: int) -> float:
+        first, second = block.first_layer.layer, block.second_layer.layer
+        spatial = {}
+
+        def capture(name):
+            def hook(_module, _inputs, output):
+                spatial[name] = tuple(output.shape[-2:])
+            return hook
+
+        handles = [first.register_forward_hook(capture("first")),
+                   second.register_forward_hook(capture("second"))]
+        modes = {module: module.training for module in model.modules()}
+        try:
+            model.eval()
+            device = next(model.parameters()).device
+            with torch.no_grad():
+                model(sample_inputs[:1].to(device))
+        finally:
+            for handle in handles:
+                handle.remove()
+            for module, training in modes.items():
+                module.training = training
+        if spatial.keys() != {"first", "second"}:
+            raise RuntimeError("could not measure the selected block's spatial sizes")
+        first_kernel = first.kernel_size[0] * first.kernel_size[1]
+        second_kernel = second.kernel_size[0] * second.kernel_size[1]
+        first_macs = (spatial["first"][0] * spatial["first"][1] *
+                      first.in_channels * first_kernel)
+        second_macs = (spatial["second"][0] * spatial["second"][1] *
+                       second.out_channels * second_kernel)
+        return float(2 * rank * (first_macs + second_macs))
+
+    def propose(self, adapter, model, statistics_loader, budget,
+                sample_inputs=None):
         block = model.block(self.module_name)
         second = block.second_layer
         current_width = int(second.in_neurons)
@@ -47,5 +83,13 @@ class CounterfactualTinyProbe:
             "base_hidden_width": current_width,
             "counterfactual_target_width": current_width + self.rank,
         })
+        if sample_inputs is not None:
+            actual_flops = self._measure_extension_flops(
+                model, block, sample_inputs, effective)
+            candidate.extra_flops = actual_flops
+            candidate.payload.update({
+                "actual_extension_flops": actual_flops,
+                "flops_measured_from_runtime_spatial_shape": True,
+                "probe_input_shape": list(sample_inputs.shape[1:]),
+            })
         return candidate
-

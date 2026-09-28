@@ -62,10 +62,13 @@ Before running it:
 The notebook never embeds the token in the clone URL or prints it. It creates a
 short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 
-The structural gate schedules `vanilla`, norm-matched `random_projection`,
-`tiny_projection`, `expand_train_project` (explicitly a RepAn/Bypass-like
-control, not a reproduction), and `real_e_oracle` for two seeds. The main arm
-sweeps epsilon over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
+The structural gate schedules `vanilla`, `vanilla_matched_compute` (runs and
+discards the exact TINY + projection computation), `vanilla_extra_sgd` (uses
+the same extra labeled samples for ordinary SGD), `vanilla_momentum_reset`,
+norm-matched `random_projection`, `tiny_projection`,
+`expand_train_project` (explicitly a RepAn/Bypass-like control, not a
+reproduction), and `real_e_oracle` for two seeds. The main arm sweeps epsilon
+over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
 projection, and held-out checks use distinct batches. Statistics and projection
 batches are freshly sampled at every intervention from the same training pool
 used by every arm; only the fixed check batch is held out. Two seed-specific
@@ -83,11 +86,27 @@ starts at full `64/128/256/512` width (`missing_neurons() == 0`); a
 from `current_width` to `current_width + rank` while TINY constructs E, then
 restores the configured target.
 
+The fixed tuning batch and the larger validation split may be observed during
+development. Epsilon is selected only by validation accuracy. The official
+CIFAR-100 test partition is evaluated once after training, never inside an
+intervention or for epsilon selection.
+
 Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
 counts, CG iterations, peak allocated GPU memory, and any SGD momentum states
 reset after a direct projected parameter jump. The real-E oracle intervenes at
 the same epoch frequency as the main method and logs structural and projected
-local gains before every irreversible commit.
+local gains before every irreversible commit. Oracle commits synchronize the
+new current width back to the target width before the next intervention.
+
+The Kaggle test gate includes a real CUDA integration test of the complete
+full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it
+cannot silently skip that test. Candidate FLOPs are recomputed from runtime
+feature-map sizes and convolution kernels rather than using TINY's legacy
+32x32 CIFAR estimate.
+
+The current experiment deliberately fixes `stages.2.blocks.0`. This is a
+single-site pilot, not yet a general layer-selection algorithm; a positive
+result must be followed by multi-site probing or an explicit argmax rule.
 
 ## Reference implementation
 

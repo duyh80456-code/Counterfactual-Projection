@@ -161,6 +161,56 @@ def test_counterfactual_probe_overrides_full_width_ceiling_temporarily():
     assert candidate.payload["counterfactual_target_width"] == 260
 
 
+def test_counterfactual_probe_replaces_legacy_flops_with_runtime_spatial_flops():
+    class Layer(nn.Module):
+        def __init__(self, convolution, width=None):
+            super().__init__()
+            self.layer = convolution
+            if width is not None:
+                self.in_neurons = width
+                self.target_in_neurons = width
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first_layer = Layer(nn.Conv2d(3, 4, 3, padding=1))
+            self.second_layer = Layer(nn.Conv2d(4, 5, 3, padding=1), 4)
+
+        def forward(self, inputs):
+            return self.second_layer.layer(torch.relu(
+                self.first_layer.layer(inputs)))
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.site = Block()
+
+        def forward(self, inputs):
+            return self.site(inputs).mean((2, 3))
+
+        def block(self, _name):
+            return self.site
+
+    candidate = type("Candidate", (), {
+        "payload": {"effective_rank": 2}, "extra_flops": 1.0})()
+
+    class Adapter:
+        def schedule_site(self, _name, _rank):
+            pass
+
+        def propose_all(self, _model, _loader, _budget):
+            return [candidate]
+
+    inputs = torch.randn(2, 3, 8, 8)
+    model = Model()
+    result = CounterfactualTinyProbe(2, "site").propose(
+        Adapter(), model, [(inputs, torch.tensor([0, 1]))], object(),
+        sample_inputs=inputs)
+    expected = 2 * 2 * (8 * 8 * 3 * 3 * 3 + 8 * 8 * 5 * 3 * 3)
+    assert result.extra_flops == expected
+    assert result.payload["actual_extension_flops"] == expected
+
+
 def test_structural_projection_and_auxiliary_transfer_are_concrete():
     torch.manual_seed(13)
     model = ExpandableModel().eval()
@@ -200,3 +250,21 @@ def test_structural_controls_train_temporarily_or_commit_real_e():
     oracle = RealEOracle.commit_(
         oracle_model, StructuralCandidate(oracle_model))
     assert oracle.deploy_parameter_delta > 0
+
+
+def test_oracle_commit_synchronizes_target_to_grown_current_width():
+    class Second:
+        in_neurons = 260
+        target_in_neurons = 256
+
+    class Committed:
+        second_layer = Second()
+
+    class Candidate:
+        @staticmethod
+        def commit():
+            return Committed()
+
+    model = nn.Linear(2, 2)
+    result = RealEOracle.commit_(model, Candidate())
+    assert result.committed_module.second_layer.target_in_neurons == 260

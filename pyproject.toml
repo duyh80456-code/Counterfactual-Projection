@@ -20,3 +20,6 @@ include = ["probe*", "projection*", "methods*", "training*", "baselines*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "gromo_integration: real full-width Gromo/TINY integration test",
+]

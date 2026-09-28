@@ -23,8 +23,9 @@ across both T4 GPUs. The model is a full-width ImageNet-pretrained ResNet-18;
 the primary E signal is a counterfactual temporary hidden-width extension from
 TINY/Gromo beyond that full width, not a low-rank factorization of an existing
 kernel. Statistics and projection fitting use fresh disjoint batches sampled
-from the common training pool; checking uses a fixed held-out batch. The
-CIFAR-100 test partition is not evaluated.
+from the common training pool; epsilon tuning uses validation data. Unselected
+epsilon-sweep arms never construct the official CIFAR-100 test set. After
+selection, the chosen configuration is rerun and evaluated on test once.
 """),
     code("""import json, os, queue, shutil, subprocess, sys, threading
 from pathlib import Path
@@ -39,7 +40,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v2")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v3")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -81,7 +82,12 @@ subprocess.run(["git", "-C", str(GROMO), "checkout", "--detach", GROMO_COMMIT],
                check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)],
                check=True)
-subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO, check=True)
+test_env = os.environ.copy()
+test_env.update(
+    PYTHONPATH=str(REFERENCE) + os.pathsep + test_env.get("PYTHONPATH", ""),
+    REQUIRE_GROMO_INTEGRATION="1")
+subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO,
+               env=test_env, check=True)
 """),
     code("""import torch
 
@@ -111,8 +117,12 @@ print("CIFAR-100 root:", DATA_ROOT)
 """),
     code("""# Structural-E gate. Increase seeds/epochs only after the measured
 # residual, cosine alignment and loss gains look sensible.
-METHODS = ["vanilla", "random_projection", "tiny_projection",
+METHODS = ["vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
+           "vanilla_momentum_reset", "random_projection", "tiny_projection",
            "expand_train_project", "real_e_oracle"]
+PROBE_METHODS = {"vanilla_matched_compute", "vanilla_extra_sgd",
+                 "random_projection", "tiny_projection",
+                 "expand_train_project", "real_e_oracle"}
 SEEDS = [0, 1]
 EPOCHS = 3
 WARMUP_EPOCHS = 3
@@ -125,7 +135,7 @@ CG_ITERATIONS = 12
 IMAGE_SIZE = 128
 STATISTICS_SAMPLES = 256
 PROJECTION_SAMPLES = 32
-CHECK_SAMPLES = 128
+TUNING_SAMPLES = 128
 EPSILONS = [0.01, 0.05, 0.1]
 
 jobs = []
@@ -156,7 +166,7 @@ for gpu, seed in enumerate(SEEDS):
         "--validation-samples", str(VALIDATION_SAMPLES),
         "--statistics-samples", str(STATISTICS_SAMPLES),
         "--projection-samples", str(PROJECTION_SAMPLES),
-        "--check-samples", str(CHECK_SAMPLES),
+        "--tuning-samples", str(TUNING_SAMPLES),
         "--image-size", str(IMAGE_SIZE),
         "--data-root", str(DATA_ROOT), "--output", str(warmup_output),
     ]
@@ -209,13 +219,15 @@ def run_worker(gpu):
             "--validation-samples", str(VALIDATION_SAMPLES),
             "--statistics-samples", str(STATISTICS_SAMPLES),
             "--projection-samples", str(PROJECTION_SAMPLES),
-            "--check-samples", str(CHECK_SAMPLES),
+            "--tuning-samples", str(TUNING_SAMPLES),
             "--image-size", str(IMAGE_SIZE),
             "--site", SITE, "--rank", str(RANK),
             "--probe-epsilon", str(epsilon),
             "--cg-iterations", str(CG_ITERATIONS),
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
+        if method != "tiny_projection":
+            command.append("--evaluate-official-test")
         env = os.environ.copy()
         env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
                    OMP_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false")
@@ -260,7 +272,8 @@ for seed in SEEDS:
     for epoch in range(1, EPOCHS + 1):
         audits = {(row["history"][epoch - 1]["diagnostics"]["statistics_indices_sha256"],
                    row["history"][epoch - 1]["diagnostics"]["projection_indices_sha256"])
-                  for row in rows if row["seed"] == seed and row["method"] != "vanilla"}
+                  for row in rows if row["seed"] == seed and
+                     row["method"] in PROBE_METHODS}
         if len(audits) != 1:
             raise RuntimeError(
                 f"Probe batches differ across methods for seed {seed}, epoch {epoch}")
@@ -271,7 +284,70 @@ for seed in SEEDS:
     if len(set(epoch_audits)) != EPOCHS:
         raise RuntimeError(f"Projection batches were reused for seed {seed}")
 
-summary = {"repo_commit": commit, "test_evaluated": False, "arms": {}}
+# Select epsilon without touching official-test metrics, then rerun only the
+# selected main-method configuration with final test evaluation enabled.
+validation_by_epsilon = {
+    epsilon: statistics.mean(
+        row["validation_accuracy"] for row in rows
+        if row["method"] == "tiny_projection" and
+           row["config"]["probe_epsilon"] == epsilon)
+    for epsilon in EPSILONS}
+SELECTED_EPSILON = max(validation_by_epsilon, key=validation_by_epsilon.get)
+selected_processes = []
+selected_test_rows = []
+for gpu, seed in enumerate(SEEDS):
+    epsilon_label = str(SELECTED_EPSILON).replace(".", "p")
+    arm_dir = OUTPUT / f"tiny_projection_selected_eps{epsilon_label}_seed{seed}"
+    result_path = arm_dir / "result.json"
+    if result_path.is_file():
+        selected_test_rows.append(json.loads(result_path.read_text()))
+        continue
+    command = [
+        sys.executable, "-m", "experiments.run_gromo_pilot",
+        "--method", "tiny_projection", "--seed", str(seed),
+        "--epochs", str(EPOCHS), "--batch-size", str(BATCH_SIZE),
+        "--warmup-epochs", str(WARMUP_EPOCHS),
+        "--warmup-checkpoint", str(WARMUP_CHECKPOINTS[seed]),
+        "--reference-root", str(REFERENCE),
+        "--train-samples", str(TRAIN_SAMPLES),
+        "--validation-samples", str(VALIDATION_SAMPLES),
+        "--statistics-samples", str(STATISTICS_SAMPLES),
+        "--projection-samples", str(PROJECTION_SAMPLES),
+        "--tuning-samples", str(TUNING_SAMPLES),
+        "--image-size", str(IMAGE_SIZE), "--site", SITE, "--rank", str(RANK),
+        "--probe-epsilon", str(SELECTED_EPSILON),
+        "--cg-iterations", str(CG_ITERATIONS), "--evaluate-official-test",
+        "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
+    ]
+    env = os.environ.copy()
+    env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
+               OMP_NUM_THREADS="2")
+    arm_dir.mkdir(parents=True, exist_ok=True)
+    log = (arm_dir / "run.log").open("a")
+    process = subprocess.Popen(
+        command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
+    selected_processes.append((seed, process, log, result_path))
+for seed, process, log, result_path in selected_processes:
+    return_code = process.wait()
+    log.close()
+    if return_code:
+        raise RuntimeError(f"Selected epsilon test run failed for seed {seed}")
+    selected_test_rows.append(json.loads(result_path.read_text()))
+if len(selected_test_rows) != len(SEEDS):
+    raise RuntimeError("selected epsilon does not have one official-test run per seed")
+for test_row in selected_test_rows:
+    tuning_row = next(
+        row for row in rows
+        if row["method"] == "tiny_projection" and
+           row["seed"] == test_row["seed"] and
+           row["config"]["probe_epsilon"] == SELECTED_EPSILON)
+    if test_row["initial_model_sha256"] != tuning_row["initial_model_sha256"]:
+        raise RuntimeError("selected test rerun did not load the tuning checkpoint")
+    if abs(test_row["validation_accuracy"] - tuning_row["validation_accuracy"]) > 1e-3:
+        raise RuntimeError("selected test rerun materially diverged from tuning")
+
+summary = {"repo_commit": commit, "official_test_evaluated_final_only": True,
+           "arms": {}}
 groups = [(method, epsilon)
           for method in METHODS
           for epsilon in (EPSILONS if method == "tiny_projection" else [0.05])]
@@ -281,6 +357,11 @@ for method, epsilon in groups:
                 if row["method"] == method and
                    row["config"]["probe_epsilon"] == epsilon]
     values = [row["validation_accuracy"] for row in selected]
+    official_values = [row["official_test_accuracy"] for row in selected
+                       if row["official_test_accuracy"] is not None]
+    if method == "tiny_projection" and epsilon == SELECTED_EPSILON:
+        official_values = [row["official_test_accuracy"]
+                           for row in selected_test_rows]
     residuals = [epoch["diagnostics"]["relative_residual"]
                  for row in selected
                  for epoch in row["history"]
@@ -299,60 +380,76 @@ for method, epsilon in groups:
                         if epoch["diagnostics"] and
                            ("structural_loss_gain" in epoch["diagnostics"] or
                             "local_structural_loss_gain" in epoch["diagnostics"])]
-    check_structural_gains = [epoch["diagnostics"]["check_structural_loss_gain"]
+    tuning_structural_gains = [epoch["diagnostics"]["tuning_structural_loss_gain"]
                               for row in selected
                               for epoch in row["history"]
                               if epoch["diagnostics"] and
-                                 epoch["diagnostics"].get("check_structural_loss_gain") is not None]
+                                 epoch["diagnostics"].get("tuning_structural_loss_gain") is not None]
     projected_gains = [epoch["diagnostics"].get(
-                           "check_projected_loss_gain",
-                           epoch["diagnostics"].get("check_local_projected_loss_gain"))
+                           "tuning_projected_loss_gain",
+                           epoch["diagnostics"].get("tuning_local_projected_loss_gain"))
                        for row in selected
                        for epoch in row["history"]
                        if epoch["diagnostics"] and
-                          (epoch["diagnostics"].get("check_projected_loss_gain") is not None or
-                           epoch["diagnostics"].get("check_local_projected_loss_gain") is not None)]
+                          (epoch["diagnostics"].get("tuning_projected_loss_gain") is not None or
+                           epoch["diagnostics"].get("tuning_local_projected_loss_gain") is not None)]
     e_times = [epoch["diagnostics"]["e_statistics_solve_seconds"]
                for row in selected for epoch in row["history"]
-               if epoch["diagnostics"]]
+               if epoch["diagnostics"] and
+                  "e_statistics_solve_seconds" in epoch["diagnostics"]]
     projection_times = [epoch["diagnostics"]["projection_seconds"]
                         for row in selected for epoch in row["history"]
-                        if epoch["diagnostics"]]
+                        if epoch["diagnostics"] and
+                           "projection_seconds" in epoch["diagnostics"]]
     peak_memory = [epoch["diagnostics"]["gpu_peak_allocated_bytes"]
                    for row in selected for epoch in row["history"]
-                   if epoch["diagnostics"]]
+                   if epoch["diagnostics"] and
+                      "gpu_peak_allocated_bytes" in epoch["diagnostics"]]
     peak_reserved = [epoch["diagnostics"]["gpu_peak_reserved_bytes"]
                      for row in selected for epoch in row["history"]
-                     if epoch["diagnostics"]]
+                     if epoch["diagnostics"] and
+                        "gpu_peak_reserved_bytes" in epoch["diagnostics"]]
     jvp_calls = [epoch["diagnostics"]["jvp_calls"]
                  for row in selected for epoch in row["history"]
-                 if epoch["diagnostics"]]
+                 if epoch["diagnostics"] and
+                    "jvp_calls" in epoch["diagnostics"]]
     vjp_calls = [epoch["diagnostics"]["vjp_calls"]
                  for row in selected for epoch in row["history"]
-                 if epoch["diagnostics"]]
-    recovery = [epoch["diagnostics"]["check_local_recovery_fraction"]
+                 if epoch["diagnostics"] and
+                    "vjp_calls" in epoch["diagnostics"]]
+    recovery = [epoch["diagnostics"]["tuning_local_recovery_fraction"]
                 for row in selected for epoch in row["history"]
                 if epoch["diagnostics"] and
-                   epoch["diagnostics"].get("check_local_recovery_fraction") is not None]
+                   epoch["diagnostics"].get("tuning_local_recovery_fraction") is not None]
     summary["arms"][key] = {
         "method": method,
         "probe_epsilon": epsilon,
         "validation_accuracy_mean": statistics.mean(values),
         "validation_accuracy_std": statistics.stdev(values) if len(values) > 1 else 0.0,
+        "official_test_accuracy_mean": (
+            statistics.mean(official_values) if official_values else None),
         "mean_projection_residual": statistics.mean(residuals) if residuals else None,
         "mean_cosine_alignment": statistics.mean(cosines) if cosines else None,
         "mean_projection_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,
-        "mean_held_out_structural_loss_gain": statistics.mean(check_structural_gains) if check_structural_gains else None,
-        "mean_held_out_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,
+        "mean_tuning_structural_loss_gain": statistics.mean(tuning_structural_gains) if tuning_structural_gains else None,
+        "mean_tuning_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,
         "mean_e_statistics_solve_seconds": statistics.mean(e_times) if e_times else None,
         "mean_projection_seconds": statistics.mean(projection_times) if projection_times else None,
         "max_gpu_peak_allocated_bytes": max(peak_memory) if peak_memory else None,
         "max_gpu_peak_reserved_bytes": max(peak_reserved) if peak_reserved else None,
         "mean_jvp_calls": statistics.mean(jvp_calls) if jvp_calls else None,
         "mean_vjp_calls": statistics.mean(vjp_calls) if vjp_calls else None,
-        "mean_held_out_local_recovery_fraction": statistics.mean(recovery) if recovery else None,
+        "mean_tuning_local_recovery_fraction": statistics.mean(recovery) if recovery else None,
         "seeds": len(values),
     }
+selected_tiny_key = f"tiny_projection@epsilon={SELECTED_EPSILON}"
+summary["epsilon_selection"] = {
+    "criterion": "mean final validation accuracy; official test excluded",
+    "selected_arm": selected_tiny_key,
+    "selected_epsilon": summary["arms"][selected_tiny_key]["probe_epsilon"],
+    "official_test_accuracy_mean_after_selection":
+        summary["arms"][selected_tiny_key]["official_test_accuracy_mean"],
+}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
 

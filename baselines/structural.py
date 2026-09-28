@@ -27,6 +27,12 @@ class RealEOracle:
     def commit_(model: nn.Module, candidate) -> OracleCommit:
         before = sum(parameter.numel() for parameter in model.parameters())
         committed = candidate.commit()
+        second = getattr(committed, "second_layer", None)
+        if (second is not None and hasattr(second, "in_neurons") and
+                hasattr(second, "target_in_neurons")):
+            # A committed counterfactual over-expansion becomes the oracle's
+            # new full-width baseline. Never leave current_width > target.
+            second.target_in_neurons = int(second.in_neurons)
         after = sum(parameter.numel() for parameter in model.parameters())
         return OracleCommit(
             train_parameter_delta=after - before,
@@ -110,4 +116,3 @@ class ExpandedTrainProject:
             if changed:
                 raise RuntimeError(
                     f"temporary expanded training mutated base model: {changed[:3]}")
-

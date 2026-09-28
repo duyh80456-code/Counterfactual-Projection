@@ -25,7 +25,8 @@ from projection import FunctionalProjector, ProjectionResult
 
 
 METHODS = (
-    "vanilla", "random_projection", "tiny_projection",
+    "vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
+    "vanilla_momentum_reset", "random_projection", "tiny_projection",
     "expand_train_project", "real_e_oracle")
 FULL_WIDTHS = [64, 64, 128, 128, 256, 256, 512, 512]
 
@@ -57,6 +58,7 @@ def arguments():
     parser.add_argument("--warmup-epochs", type=int, default=3)
     parser.add_argument("--warmup-checkpoint", default="")
     parser.add_argument("--prepare-warmup", action="store_true")
+    parser.add_argument("--evaluate-official-test", action="store_true")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--image-size", type=int, default=128)
@@ -64,7 +66,8 @@ def arguments():
     parser.add_argument("--validation-samples", type=int, default=5000)
     parser.add_argument("--statistics-samples", type=int, default=256)
     parser.add_argument("--projection-samples", type=int, default=32)
-    parser.add_argument("--check-samples", type=int, default=128)
+    parser.add_argument("--tuning-samples", "--check-samples",
+                        dest="tuning_samples", type=int, default=128)
     parser.add_argument("--site", default="stages.2.blocks.0")
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
@@ -79,11 +82,11 @@ def arguments():
 
 def validate_arguments(args) -> None:
     if min(args.statistics_samples, args.projection_samples,
-           args.check_samples, args.validation_samples) < 1:
-        raise ValueError("validation/statistics/projection/check sizes must be positive")
-    if args.validation_samples + args.check_samples >= 50000:
+           args.tuning_samples, args.validation_samples) < 1:
+        raise ValueError("validation/statistics/projection/tuning sizes must be positive")
+    if args.validation_samples + args.tuning_samples >= 50000:
         raise ValueError("held-out splits leave no CIFAR-100 training examples")
-    available = 50000 - args.validation_samples - args.check_samples
+    available = 50000 - args.validation_samples - args.tuning_samples
     used = available if args.train_samples == 0 else min(args.train_samples, available)
     if args.statistics_samples + args.projection_samples > used:
         raise ValueError("one intervention needs more examples than the training pool")
@@ -111,15 +114,19 @@ def datasets_and_indices(args):
         args.data_root, train=True, transform=train_transform, download=False)
     eval_set = datasets.CIFAR100(
         args.data_root, train=True, transform=eval_transform, download=False)
+    test_set = (datasets.CIFAR100(
+        args.data_root, train=False, transform=eval_transform, download=False)
+        if args.evaluate_official_test else None)
     order = torch.randperm(
         len(train_set), generator=torch.Generator().manual_seed(20260928)).tolist()
     validation_indices = order[:args.validation_samples]
-    check_start = args.validation_samples
-    check_indices = order[check_start:check_start + args.check_samples]
-    train_indices = order[check_start + args.check_samples:]
+    tuning_start = args.validation_samples
+    tuning_indices = order[tuning_start:tuning_start + args.tuning_samples]
+    train_indices = order[tuning_start + args.tuning_samples:]
     if args.train_samples:
         train_indices = train_indices[:args.train_samples]
-    return train_set, eval_set, train_indices, validation_indices, check_indices
+    return (train_set, eval_set, test_set, train_indices,
+            validation_indices, tuning_indices)
 
 
 def make_train_loader(dataset, indices, args):
@@ -205,6 +212,15 @@ def reset_projected_momentum(optimizer, model, projection: ProjectionResult) -> 
     reset = 0
     for name in projection.parameter_delta:
         parameter = parameters[name]
+        if parameter in optimizer.state:
+            optimizer.state.pop(parameter)
+            reset += 1
+    return reset
+
+
+def reset_module_momentum(optimizer, module: nn.Module) -> int:
+    reset = 0
+    for parameter in module.parameters():
         if parameter in optimizer.state:
             optimizer.state.pop(parameter)
             reset += 1
@@ -297,14 +313,18 @@ def main():
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     device = torch.device("cuda:0")
-    (train_set, eval_set, train_indices,
-     validation_indices, check_indices) = datasets_and_indices(args)
+    (train_set, eval_set, test_set, train_indices,
+     validation_indices, tuning_indices) = datasets_and_indices(args)
     validation_loader = make_eval_loader(
         eval_set, validation_indices, args.batch_size * 2, args)
-    check_loader = make_eval_loader(
-        eval_set, check_indices, args.check_samples, args)
-    check_batch = tuple(
-        value.to(device, non_blocking=True) for value in next(iter(check_loader)))
+    tuning_loader = make_eval_loader(
+        eval_set, tuning_indices, args.tuning_samples, args)
+    tuning_batch = tuple(
+        value.to(device, non_blocking=True) for value in next(iter(tuning_loader)))
+    test_loader = (None if test_set is None else DataLoader(
+        test_set, args.batch_size * 2, shuffle=False,
+        num_workers=args.workers, pin_memory=True,
+        persistent_workers=args.workers > 0))
 
     model = build_pretrained_gromo_resnet18(100, device=device).to(device)
     block_refs = model.growing_blocks()
@@ -325,7 +345,7 @@ def main():
         "warmup_epochs": args.warmup_epochs,
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
-        "check_indices_sha256": index_sha256(check_indices),
+        "tuning_indices_sha256": index_sha256(tuning_indices),
         "train_samples": len(train_indices),
         "image_size": args.image_size,
         "batch_size": args.batch_size,
@@ -395,11 +415,40 @@ def main():
             quantum_params=10**9,
             max_statistics_batches=len(statistics_loader))
         return CounterfactualTinyProbe(args.rank, args.site).propose(
-            adapter, model, statistics_loader, GrowthBudget(10**9))
+            adapter, model, statistics_loader, GrowthBudget(10**9),
+            sample_inputs=statistics_loader[0][0])
 
     for epoch in range(args.epochs):
         diagnostics = None
-        if args.method != "vanilla":
+        if args.method == "vanilla_momentum_reset":
+            reset = reset_module_momentum(optimizer, model.block(args.site))
+            diagnostics = {
+                "source": "vanilla_momentum_reset_control",
+                "momentum_states_reset": reset,
+                "uses_additional_labels": False,
+            }
+        elif args.method == "vanilla_extra_sgd":
+            statistics_loader, projection_batch, batch_audit = intervention_batches(
+                eval_set, train_indices, args, epoch, device)
+            extra_losses = []
+            model.train()
+            for inputs, targets in list(statistics_loader) + [projection_batch]:
+                inputs = inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)
+                loss = F.cross_entropy(model(inputs).float(), targets)
+                loss.backward()
+                optimizer.step()
+                extra_losses.append(float(loss.detach()))
+            diagnostics = {
+                "source": "vanilla_extra_sgd_data_exposure_control",
+                "extra_sgd_steps": len(extra_losses),
+                "extra_sgd_mean_loss": sum(extra_losses) / len(extra_losses),
+                "extra_supervised_samples":
+                    args.statistics_samples + args.projection_samples,
+                **batch_audit,
+            }
+        elif args.method != "vanilla":
             statistics_loader, projection_batch, batch_audit = intervention_batches(
                 eval_set, train_indices, args, epoch, device)
             synchronize(device)
@@ -411,8 +460,8 @@ def main():
             synchronize(device)
             e_seconds = time.perf_counter() - started
             signal_started = time.perf_counter()
-            check_signal = CandidateExpansionProbe()(
-                model, candidate=candidate, batch=check_batch,
+            tuning_signal = CandidateExpansionProbe()(
+                model, candidate=candidate, batch=tuning_batch,
                 gate=args.probe_epsilon)
             synchronize(device)
             signal_seconds = time.perf_counter() - signal_started
@@ -420,8 +469,27 @@ def main():
             projection_seconds = 0.0
             momentum_resets = 0
 
-            if args.method == "tiny_projection":
-                check_loss_before = batch_loss(model, check_batch)
+            if args.method == "vanilla_matched_compute":
+                started = time.perf_counter()
+                matched_step = e_projection.discover_candidate(
+                    model, candidate, projection_batch,
+                    gate=args.probe_epsilon)
+                synchronize(device)
+                projection_seconds = time.perf_counter() - started
+                projection_result = matched_step.projection
+                diagnostics = {
+                    "source": "vanilla_exact_probe_compute_discarded",
+                    "probe_gate": args.probe_epsilon,
+                    "correction_applied": False,
+                    "structural_loss_gain": matched_step.structural_loss_gain,
+                    "tuning_structural_loss_gain":
+                        tuning_signal.observed_loss_gain,
+                    "fitted_norm_ratio": projection_result.fitted_norm_ratio,
+                    "relative_residual": projection_result.relative_residual,
+                    "cosine_alignment": projection_result.cosine_alignment,
+                }
+            elif args.method == "tiny_projection":
+                tuning_loss_before = batch_loss(model, tuning_batch)
                 started = time.perf_counter()
                 step = e_projection.discover_candidate(
                     model, candidate, projection_batch,
@@ -432,19 +500,19 @@ def main():
                 projection_result.apply_(model, projection_scale)
                 momentum_resets = reset_projected_momentum(
                     optimizer, model, projection_result)
-                check_projected_gain = (
-                    check_loss_before - batch_loss(model, check_batch))
+                tuning_projected_gain = (
+                    tuning_loss_before - batch_loss(model, tuning_batch))
                 diagnostics = {
                     "source": step.signal.source,
                     "probe_gate": args.probe_epsilon,
                     "applied_scale": projection_scale,
                     "structural_loss_gain": step.structural_loss_gain,
                     "structural_directional_gain": step.structural_directional_gain,
-                    "check_structural_loss_gain": check_signal.observed_loss_gain,
-                    "check_structural_directional_gain": check_signal.predicted_gain,
-                    "check_projected_loss_gain": check_projected_gain,
-                    "check_local_recovery_fraction": recovery_fraction(
-                        check_projected_gain, check_signal.observed_loss_gain),
+                    "tuning_structural_loss_gain": tuning_signal.observed_loss_gain,
+                    "tuning_structural_directional_gain": tuning_signal.predicted_gain,
+                    "tuning_projected_loss_gain": tuning_projected_gain,
+                    "tuning_local_recovery_fraction": recovery_fraction(
+                        tuning_projected_gain, tuning_signal.observed_loss_gain),
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
@@ -462,7 +530,7 @@ def main():
                     model, projection_batch[0], random_delta, block=block)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
-                check_loss_before = batch_loss(model, check_batch)
+                tuning_loss_before = batch_loss(model, tuning_batch)
                 projection_result.apply_(model, projection_scale)
                 momentum_resets = reset_projected_momentum(
                     optimizer, model, projection_result)
@@ -470,8 +538,8 @@ def main():
                     "source": "random_matched_to_structural_norm",
                     "probe_gate": args.probe_epsilon,
                     "applied_scale": projection_scale,
-                    "check_projected_loss_gain":
-                        check_loss_before - batch_loss(model, check_batch),
+                    "tuning_projected_loss_gain":
+                        tuning_loss_before - batch_loss(model, tuning_batch),
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
@@ -487,7 +555,7 @@ def main():
                 projection_result = control_result.projection
                 control_scale = (1.0 if args.projection_scale == 0
                                  else args.projection_scale)
-                check_loss_before = batch_loss(model, check_batch)
+                tuning_loss_before = batch_loss(model, tuning_batch)
                 projection_result.apply_(model, control_scale)
                 momentum_resets = reset_projected_momentum(
                     optimizer, model, projection_result)
@@ -496,8 +564,8 @@ def main():
                     "signal_source": control_result.signal.source,
                     "applied_scale": control_scale,
                     "expanded_train_losses": control_result.expansion_train_losses,
-                    "check_projected_loss_gain":
-                        check_loss_before - batch_loss(model, check_batch),
+                    "tuning_projected_loss_gain":
+                        tuning_loss_before - batch_loss(model, tuning_batch),
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
@@ -511,9 +579,15 @@ def main():
                 projection_seconds = time.perf_counter() - started
                 projection_result = local_step.projection
                 local_projected_gain = preview_projected_gain(
-                    model, projection_result, projection_scale, check_batch)
+                    model, projection_result, projection_scale, tuning_batch)
                 commit_started = time.perf_counter()
                 commit = RealEOracle.commit_(model, candidate)
+                committed_second = commit.committed_module.second_layer
+                oracle_current_width = int(committed_second.in_neurons)
+                oracle_target_width = int(committed_second.target_in_neurons)
+                if oracle_current_width != oracle_target_width:
+                    raise RuntimeError(
+                        "oracle commit left current width different from target")
                 optimizer, migrated = rebuild_sgd_after_growth(
                     model, optimizer, args)
                 synchronize(device)
@@ -522,23 +596,26 @@ def main():
                     "source": "tiny_gromo_committed_oracle",
                     "probe_gate": args.probe_epsilon,
                     "local_structural_loss_gain": local_step.structural_loss_gain,
-                    "check_structural_loss_gain": check_signal.observed_loss_gain,
-                    "check_local_projected_loss_gain": local_projected_gain,
-                    "check_local_recovery_fraction": recovery_fraction(
-                        local_projected_gain, check_signal.observed_loss_gain),
+                    "tuning_structural_loss_gain": tuning_signal.observed_loss_gain,
+                    "tuning_local_projected_loss_gain": local_projected_gain,
+                    "tuning_local_recovery_fraction": recovery_fraction(
+                        local_projected_gain, tuning_signal.observed_loss_gain),
                     "fitted_norm_ratio": projection_result.fitted_norm_ratio,
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
                     "deploy_parameter_delta_this_intervention":
                         commit.deploy_parameter_delta,
                     "optimizer_migrations": migrated,
+                    "oracle_current_width": oracle_current_width,
+                    "oracle_target_width": oracle_target_width,
                     "commit_seconds": commit_seconds,
                 }
 
             diagnostics.update(batch_audit)
             diagnostics.update({
                 "statistics_from_training_pool": True,
-                "check_is_held_out": True,
+                "tuning_batch_is_held_out_from_updates": True,
+                "candidate_extra_flops": float(candidate.extra_flops),
                 "e_statistics_solve_seconds": e_seconds,
                 "structural_signal_seconds": signal_seconds,
                 "projection_seconds": projection_seconds,
@@ -571,6 +648,12 @@ def main():
         history.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
 
+    # Hyperparameter-sweep arms do not construct or iterate the official test
+    # set. The selected configuration is rerun with this explicit flag.
+    if test_loader is None:
+        test_loss = test_accuracy = None
+    else:
+        test_loss, test_accuracy = evaluate(model, test_loader, device)
     final_parameters = sum(parameter.numel() for parameter in model.parameters())
     result = {
         "method": args.method, "seed": args.seed,
@@ -579,6 +662,8 @@ def main():
         "warmup_history": warmup_history,
         "validation_accuracy": history[-1]["validation_accuracy"],
         "best_validation_accuracy": max(x["validation_accuracy"] for x in history),
+        "official_test_loss": test_loss,
+        "official_test_accuracy": test_accuracy,
         "deploy_parameters_before": initial_parameters,
         "deploy_parameters_after": final_parameters,
         "deploy_parameter_delta": final_parameters - initial_parameters,
@@ -589,7 +674,9 @@ def main():
         "data_protocol": {
             **protocol,
             "probe_pool_equals_training_pool": True,
-            "check_never_used_for_updates": True,
+            "tuning_batch_never_used_for_updates": True,
+            "official_test_evaluated_once_after_training":
+                args.evaluate_official_test,
         },
         "elapsed_seconds": time.perf_counter() - start,
         "history": history, "config": vars(args),
