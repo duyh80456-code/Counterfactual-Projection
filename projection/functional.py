@@ -72,6 +72,9 @@ class CGAttempt:
     residual_norm: float
     relative_residual: float
     converged: bool
+    solution_is_finite: bool
+    functional_relative_residual: float
+    functional_cosine_alignment: float
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,8 @@ class ProjectionResult:
     solver_dtype: str
     preconditioner: str
     preconditioner_probes: int
+    selected_attempt: int
+    selection_rule: str
 
     @property
     def projection_ratio(self) -> float:
@@ -212,8 +217,7 @@ class FunctionalProjector:
             gram_diagonal = estimate.clamp_min(scale * 1e-3).detach()
 
         cg_attempts = []
-        cg = None
-        first_cg = None
+        candidate_solutions = []
         damping_used = self.damping
         for attempt in range(self.max_damping_retries + 1):
             damping_used = (self.damping * self.damping_multiplier ** attempt
@@ -253,23 +257,38 @@ class FunctionalProjector:
                     value * target_scale
                     for value in dual_cg.residual_history),
                 relative_residual=dual_cg.relative_residual)
+            candidate_fitted = jacobian_vector(cg.solution).reshape_as(
+                target_delta).detach()
+            solution_is_finite = bool(
+                torch.isfinite(cg.solution).all() and
+                torch.isfinite(candidate_fitted).all())
+            candidate_functional_residual = (
+                relative_residual(candidate_fitted, target_delta)
+                if solution_is_finite else float("inf"))
+            candidate_functional_cosine = (
+                cosine_alignment(candidate_fitted, target_delta)
+                if solution_is_finite else float("-inf"))
             cg_attempts.append(CGAttempt(
                 damping=damping_used, iterations=cg.iterations,
                 residual_norm=cg.residual_norm,
                 relative_residual=cg.relative_residual,
-                converged=cg.converged))
-            if first_cg is None:
-                first_cg = cg
+                converged=cg.converged,
+                solution_is_finite=solution_is_finite,
+                functional_relative_residual=candidate_functional_residual,
+                functional_cosine_alignment=candidate_functional_cosine))
+            if solution_is_finite:
+                candidate_solutions.append((
+                    candidate_functional_residual,
+                    -candidate_functional_cosine,
+                    0 if cg.converged else 1,
+                    len(cg_attempts) - 1,
+                    damping_used, cg, candidate_fitted))
             if cg.converged or self.damping == 0:
                 break
-        assert cg is not None
-        if not cg.converged and first_cg is not None:
-            # Retries are allowed to change the accepted regularized problem
-            # only when they actually converge. Otherwise retain the requested
-            # damping's diagnostic solution; callers will refuse to apply it.
-            cg = first_cg
-            damping_used = self.damping
-        fitted = jacobian_vector(cg.solution).reshape_as(target_delta).detach()
+        if not candidate_solutions:
+            raise RuntimeError("all projection attempts produced non-finite solutions")
+        (_, _, _, selected_attempt, damping_used,
+         cg, fitted) = min(candidate_solutions, key=lambda item: item[:4])
         return ProjectionResult(
             block=block,
             parameter_delta={name: value.detach()
@@ -286,7 +305,9 @@ class FunctionalProjector:
             solver_dtype=str(solver_dtype).removeprefix("torch."),
             preconditioner=("hutchinson_jacobi" if gram_diagonal is not None
                             else "none"),
-            preconditioner_probes=self.preconditioner_probes)
+            preconditioner_probes=self.preconditioner_probes,
+            selected_attempt=selected_attempt,
+            selection_rule="minimum_finite_functional_relative_residual")
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,

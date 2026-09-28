@@ -17,16 +17,12 @@ def code(source):
 cells = [
     markdown("""# Counterfactual Projection — CIFAR-100 T4x2 pilot
 
-This notebook clones the private method repository plus the audited
-One-Shot-TAS-CCIL/Gromo references, then schedules independent method/seed arms
-across both T4 GPUs. The model is a full-width ImageNet-pretrained ResNet-18;
-the primary E signal is a counterfactual temporary hidden-width extension from
-TINY/Gromo beyond that full width, not a low-rank factorization of an existing
-kernel. Statistics and projection fitting use fresh disjoint batches sampled
-from the common training pool; epsilon tuning uses validation data. Unselected
-epsilon-sweep arms never construct the official CIFAR-100 test set. After
-selection, all frozen comparison configurations are rerun and evaluated on
-test once.
+This focused notebook runs only `tiny_projection` for 3 post-warm-up epochs on
+the two existing seeds. It reuses the shared fair-v15 warm-up model/optimizer
+checkpoints and does not rerun baselines or touch the official CIFAR-100 test.
+The fixed configuration is TINY/Gromo at `stages.2.blocks.0`, rank 4, epsilon
+0.05, with residual-path functional projection. Its sole question is whether
+an E-driven correction that is actually applied improves validation accuracy.
 """),
     code("""import json, os, queue, shutil, subprocess, sys, threading
 from pathlib import Path
@@ -147,34 +143,12 @@ if not cifar_dirs:
 DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
-    code("""# Structural-E gate. Increase seeds/epochs only after the measured
-# residual, cosine alignment and loss gains look sensible.
-METHODS = ["vanilla", "vanilla_matched_compute", "vanilla_extra_sgd",
-           "vanilla_momentum_reset", "random_projection",
-           "sign_randomized_projection", "tiny_projection",
-           "tiny_projection_conv_only", "tiny_projection_whole_block",
-           "expand_train_project",
-           "real_e_growth"]
-PROBE_METHODS = {"vanilla_matched_compute", "vanilla_extra_sgd",
-                 "random_projection", "sign_randomized_projection",
-                 "tiny_projection",
-                 "tiny_projection_conv_only", "tiny_projection_whole_block",
-                 "expand_train_project",
-                 "real_e_growth"}
-CG_METHODS = {"vanilla_matched_compute", "random_projection",
-              "sign_randomized_projection",
-              "tiny_projection", "tiny_projection_conv_only",
-              "tiny_projection_whole_block",
-              "expand_train_project", "real_e_growth"}
-E_MATCHED_METHODS = {"vanilla_matched_compute", "random_projection",
-                     "sign_randomized_projection",
-                     "tiny_projection", "tiny_projection_conv_only",
-                     "tiny_projection_whole_block",
-                     "real_e_growth"}
-APPLY_METHODS = {"random_projection", "sign_randomized_projection",
-                 "tiny_projection",
-                 "tiny_projection_conv_only", "tiny_projection_whole_block",
-                 "expand_train_project"}
+    code("""# Focused E-driven O run: no epsilon sweep and no baseline reruns.
+METHODS = ["tiny_projection"]
+CG_METHODS = {"tiny_projection"}
+PROBE_METHODS = {"tiny_projection"}
+APPLY_METHODS = {"tiny_projection"}
+E_MATCHED_METHODS = {"tiny_projection"}
 SEEDS = [0, 1]
 EPOCHS = 3
 WARMUP_EPOCHS = 3
@@ -187,19 +161,20 @@ RANK = 4
 CG_ITERATIONS = 200
 CG_RELATIVE_TOLERANCE = 1e-2
 CG_PRECONDITIONER_PROBES = 8
-SOLVER_REVISION = "dual-pcg-hutchinson-jacobi-rel1e-2-v1"
+SOLVER_REVISION = "e-driven-o-best-functional-fit-v1"
+APPLICATION_MAX_HELDOUT_RESIDUAL = 1.0
+APPLICATION_MIN_HELDOUT_COSINE = 0.0
 IMAGE_SIZE = 128
 STATISTICS_SAMPLES = 256
 PROJECTION_SAMPLES = 32
 TUNING_SAMPLES = 128
-EPSILONS = [0.01, 0.05, 0.1]
+EPSILONS = [0.05]
 
 jobs = []
 for seed in SEEDS:
     for method in METHODS:
-        gates = EPSILONS if method == "tiny_projection" else [0.05]
-        jobs.extend((method, seed, epsilon) for epsilon in gates)
-print(f"Scheduled {len(jobs)} arms in {len(jobs) / 2:.0f} two-GPU waves")
+        jobs.append((method, seed, 0.05))
+print(f"Scheduled only {len(jobs)} focused tiny_projection arms")
 """),
     code("""# Create exactly one warm-up checkpoint per seed. All method arms load
 # both model weights and SGD momentum from this shared artifact.
@@ -251,7 +226,11 @@ def solver_config_is_current(result):
     return (
         config.get("solver_revision") == SOLVER_REVISION and
         config.get("cg_relative_tolerance") == CG_RELATIVE_TOLERANCE and
-        config.get("cg_preconditioner_probes") == CG_PRECONDITIONER_PROBES)
+        config.get("cg_preconditioner_probes") == CG_PRECONDITIONER_PROBES and
+        config.get("application_max_heldout_residual") ==
+            APPLICATION_MAX_HELDOUT_RESIDUAL and
+        config.get("application_min_heldout_cosine") ==
+            APPLICATION_MIN_HELDOUT_COSINE)
 
 for method, seed, epsilon in jobs:
     if method not in CG_METHODS:
@@ -263,7 +242,7 @@ for method, seed, epsilon in jobs:
         continue
     previous = json.loads(result_path.read_text())
     if not solver_config_is_current(previous):
-        archived = arm_dir / "result.pre_dual_pcg.json"
+        archived = arm_dir / "result.pre_e_driven_o.json"
         if archived.exists():
             archived.unlink()
         result_path.rename(archived)
@@ -309,6 +288,10 @@ def run_worker(gpu):
             "--cg-relative-tolerance", str(CG_RELATIVE_TOLERANCE),
             "--cg-preconditioner-probes", str(CG_PRECONDITIONER_PROBES),
             "--solver-revision", SOLVER_REVISION,
+            "--application-max-heldout-residual",
+            str(APPLICATION_MAX_HELDOUT_RESIDUAL),
+            "--application-min-heldout-cosine",
+            str(APPLICATION_MIN_HELDOUT_COSINE),
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
         env = os.environ.copy()
@@ -349,17 +332,23 @@ for method, seed, epsilon in jobs:
         raise RuntimeError(f"Deploy-size invariant failed: {path}")
     if result["official_test_accuracy"] is not None:
         raise RuntimeError(f"development arm touched official test: {path}")
-    if method in CG_METHODS:
-        failed_epochs = [epoch["epoch"] for epoch in result["history"]
-                         if epoch["diagnostics"].get("cg_converged") is not True]
-        if failed_epochs:
-            raise RuntimeError(
-                f"CG did not converge for {path} at epochs {failed_epochs}; "
-                "no unconverged correction was applied")
     if method in APPLY_METHODS and result["correction_application_rate"] != 1.0:
         raise RuntimeError(
             f"incomplete correction application rate for {path}: "
             f"{result['corrections_applied']}/{result['correction_attempts']}")
+    required = {
+        "correction_applied", "parameter_delta_norm",
+        "actual_cosine_alignment", "actual_relative_residual",
+        "loss_before", "loss_after", "validation_accuracy"}
+    for epoch in result["history"]:
+        missing = required - set(epoch["diagnostics"])
+        if missing:
+            raise RuntimeError(
+                f"missing E-driven O diagnostics {sorted(missing)} in {path}")
+        if epoch["diagnostics"]["correction_applied"] is not True:
+            raise RuntimeError(
+                f"E-driven correction was not applied in {path}, "
+                f"epoch {epoch['epoch']}")
     rows.append(result)
 
 for seed in SEEDS:
@@ -381,8 +370,9 @@ for seed in SEEDS:
     if len(set(epoch_audits)) != EPOCHS:
         raise RuntimeError(f"Projection batches were reused for seed {seed}")
 
-# Select epsilon without touching official-test metrics, freeze every method's
-# configuration, then rerun all comparisons with final test evaluation enabled.
+# Epsilon is fixed a priori for this focused mechanism run. Do not launch the
+# baseline/final-test matrix; the only question here is whether applied E-driven
+# O improves validation performance over the existing table.
 validation_by_epsilon = {
     epsilon: statistics.mean(
         row["validation_accuracy"] for row in rows
@@ -390,9 +380,7 @@ validation_by_epsilon = {
            row["config"]["probe_epsilon"] == epsilon)
     for epsilon in EPSILONS}
 SELECTED_EPSILON = max(validation_by_epsilon, key=validation_by_epsilon.get)
-FINAL_CONFIGS = [
-    (method, SELECTED_EPSILON if method in E_MATCHED_METHODS else 0.05)
-    for method in METHODS]
+FINAL_CONFIGS = []
 final_queue = queue.Queue()
 for seed in SEEDS:
     for method, epsilon in FINAL_CONFIGS:
@@ -413,7 +401,7 @@ def run_final_test_worker(gpu):
         if result_path.is_file() and method in CG_METHODS:
             previous = json.loads(result_path.read_text())
             if not solver_config_is_current(previous):
-                archived = arm_dir / "result.pre_dual_pcg.json"
+                archived = arm_dir / "result.pre_e_driven_o.json"
                 if archived.exists():
                     archived.unlink()
                 result_path.rename(archived)
@@ -497,7 +485,17 @@ for test_row in final_test_rows:
             f"final correction application rate is incomplete for "
             f"{test_row['method']}")
 
-summary = {"repo_commit": commit, "official_test_evaluated_final_only": True,
+historical_summary = OUTPUT / "summary.pre_e_driven_o.json"
+current_summary = OUTPUT / "summary.json"
+if current_summary.is_file():
+    previous_summary = json.loads(current_summary.read_text())
+    if not previous_summary.get("focused_e_driven_o_only"):
+        shutil.copy2(current_summary, historical_summary)
+
+summary = {"repo_commit": commit, "official_test_evaluated_final_only": False,
+           "focused_e_driven_o_only": True,
+           "historical_comparison_summary": (
+               str(historical_summary) if historical_summary.is_file() else None),
            "arms": {}}
 groups = sorted(
     {(row["method"], row["config"]["probe_epsilon"]) for row in rows} |
@@ -683,13 +681,13 @@ for method, epsilon in groups:
     }
 selected_tiny_key = f"tiny_projection@epsilon={SELECTED_EPSILON}"
 summary["epsilon_selection"] = {
-    "criterion": "mean final validation accuracy; official test excluded",
+    "criterion": "fixed a priori for focused E-driven O run",
     "selected_arm": selected_tiny_key,
     "selected_epsilon": summary["arms"][selected_tiny_key]["probe_epsilon"],
     "official_test_accuracy_mean_after_selection":
         summary["arms"][selected_tiny_key]["official_test_accuracy_mean"],
 }
-(OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
+current_summary.write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
 
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)

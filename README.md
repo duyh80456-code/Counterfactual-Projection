@@ -63,30 +63,23 @@ Before running it:
 The notebook never embeds the token in the clone URL or prints it. It creates a
 short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 
-The structural gate schedules `vanilla`, `vanilla_matched_compute` (runs and
-discards the exact TINY + projection computation), `vanilla_extra_sgd` (uses
-the same extra labeled samples for ordinary SGD), `vanilla_momentum_reset`,
-global-norm-matched `random_projection`, tensor-norm-preserving
-`sign_randomized_projection`, `tiny_projection`,
-`tiny_projection_conv_only` and `tiny_projection_whole_block` (ablations),
-`expand_train_project` (jointly trains the temporary `theta + theta_E` space;
-still a RepAn/Bypass-like control rather than an official reproduction), and
-`real_e_growth` for two seeds. The main arm sweeps epsilon
-over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
-projection, and held-out checks use distinct batches. Statistics and projection
-batches are freshly sampled at every intervention from the same training pool
-used by every arm; only the fixed check batch is held out. Two seed-specific
-warm-up checkpoints include both model and SGD state, and every arm starts from
-the exact same checkpoint hash for its seed. A dynamic queue gives each GPU one
-independent arm at a time. Only the committed-E growth control may increase
-deploy parameters.
+The current notebook is intentionally narrow: it schedules only
+`tiny_projection` at `stages.2.blocks.0`, rank 4, epsilon 0.05 and residual-path
+scope for the two existing seeds. TINY statistics, functional projection, and
+held-out checks use distinct batches, with fresh statistics/projection batches
+at each intervention. The seed-specific warm-up checkpoints include both model
+and SGD state, and the two GPUs run one seed each. No baseline or official-test
+arm is launched in this mechanism check.
 Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
-The PCG revision keeps the existing `fair_v15` output root: shared warm-up
-model/optimizer checkpoints are reused, while result files carrying the older
-solver configuration are archived as `result.pre_dual_pcg.json` and only those
-post-warm-up arms are rerun.
+The focused E-driven O revision keeps the existing `fair_v15` output root:
+shared warm-up model/optimizer checkpoints are reused, while prior
+`tiny_projection` results are archived as `result.pre_e_driven_o.json`. Only
+the two fixed epsilon-0.05 tiny-projection seed arms run for three post-warm-up
+epochs; baselines and official-test arms are not launched. An existing full
+`summary.json`, when present, is preserved as `summary.pre_e_driven_o.json`
+before the focused validation summary is written.
 The notebook pins the main checkout, `gromo/src`, and the One-Shot-TAS checkout
 in both the live kernel's `sys.path` and every child process's `PYTHONPATH`.
 It asserts the resolved source path of `probe`, `gromo`, and `dual_growth`
@@ -100,20 +93,21 @@ starts at full `64/128/256/512` width (`missing_neurons() == 0`); a
 from `current_width` to `current_width + rank` while TINY constructs E, then
 restores the configured target.
 
-The fixed tuning batch and the larger validation split may be observed during
-development. Epsilon is selected only by validation accuracy. No development
-arm constructs the official CIFAR-100 test set. After every choice is frozen,
-all selected method configurations are rerun and evaluated on test once.
+The fixed tuning batch checks whether the fitted direction transfers before it
+is applied; the larger validation split supplies the reported performance.
+Epsilon is fixed a priori at 0.05 and the official CIFAR-100 test is untouched.
 
 Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
 counts, CG convergence and residual norms (including iterations
 12/25/50/100/200),
 peak allocated GPU memory, and any SGD momentum states reset after a direct
-projected parameter jump. CG runs for at most 200 iterations and an unconverged
-correction is never applied. If the requested damping does not converge, the
-solver retries transparently through at most `10000x` damping; every attempt,
-residual, and effective damping is logged, and only a converged final
-attempt may be applied. The dual output-space system is algebraically
+projected parameter jump. CG runs for at most 200 iterations and retries
+through at most `10000x` damping. Every attempt logs both its solver residual
+and functional fit. The finite candidate with minimum functional relative
+residual is selected; `cg_converged` remains a diagnostic and is not the update
+gate. The selected direction is applied only when it is finite and its held-out
+functional residual is at most 1.0 with non-negative cosine alignment. The
+dual output-space system is algebraically
 equivalent to the parameter-space normal equation for positive damping, but
 avoids the poorly scaled `J^T delta_logits` right-hand side and a CG vector with
 millions of block parameters. Before CG, the structural target is normalized

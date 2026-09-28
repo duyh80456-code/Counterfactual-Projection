@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import sys
 import time
@@ -87,7 +88,11 @@ def arguments():
     parser.add_argument("--cg-preconditioner-probes", type=int, default=8)
     parser.add_argument(
         "--solver-revision",
-        default="dual-pcg-hutchinson-jacobi-rel1e-2-v1")
+        default="e-driven-o-best-functional-fit-v1")
+    parser.add_argument("--application-max-heldout-residual", type=float,
+                        default=1.0)
+    parser.add_argument("--application-min-heldout-cosine", type=float,
+                        default=0.0)
     parser.add_argument("--projection-scale", type=float, default=0.0,
                         help="0 applies the fitted direction at probe epsilon")
     parser.add_argument("--expanded-train-steps", type=int, default=2)
@@ -113,6 +118,10 @@ def validate_arguments(args) -> None:
         raise ValueError("CG relative tolerance must be in (0, 1)")
     if args.cg_preconditioner_probes < 0:
         raise ValueError("CG preconditioner probes must be non-negative")
+    if args.application_max_heldout_residual <= 0:
+        raise ValueError("application held-out residual threshold must be positive")
+    if not -1 <= args.application_min_heldout_cosine <= 1:
+        raise ValueError("application held-out cosine threshold must be in [-1, 1]")
     if args.prepare_warmup and not args.warmup_checkpoint:
         raise ValueError("--prepare-warmup requires --warmup-checkpoint")
 
@@ -331,6 +340,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
             "cg_solver_dtype": None,
             "cg_preconditioner": None,
             "cg_preconditioner_probes": None,
+            "cg_selected_attempt": None, "cg_selection_rule": None,
         }
     history = projection.cg.residual_history
 
@@ -355,12 +365,19 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
         "cg_solver_dtype": projection.solver_dtype,
         "cg_preconditioner": projection.preconditioner,
         "cg_preconditioner_probes": projection.preconditioner_probes,
+        "cg_selected_attempt": projection.selected_attempt,
+        "cg_selection_rule": projection.selection_rule,
         "cg_attempts": [
             {"damping": attempt.damping,
              "iterations": attempt.iterations,
              "residual_norm": attempt.residual_norm,
              "relative_residual": attempt.relative_residual,
-             "converged": attempt.converged}
+             "converged": attempt.converged,
+             "solution_is_finite": attempt.solution_is_finite,
+             "functional_relative_residual":
+                 attempt.functional_relative_residual,
+             "functional_cosine_alignment":
+                 attempt.functional_cosine_alignment}
             for attempt in projection.cg_attempts],
     }
 
@@ -368,6 +385,27 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
 def parameter_delta_norm(parameter_delta: dict[str, torch.Tensor]) -> torch.Tensor:
     return torch.sqrt(sum(torch.sum(value.square())
                           for value in parameter_delta.values()))
+
+
+def projection_application_gate(parameter_delta, heldout, *,
+                                max_relative_residual: float,
+                                min_cosine_alignment: float) -> dict:
+    """Gate an update by finite parameters and held-out functional transfer."""
+    delta_norm = float(parameter_delta_norm(parameter_delta))
+    solution_is_finite = bool(
+        delta_norm > 0 and math.isfinite(delta_norm) and
+        all(torch.isfinite(value).all() for value in parameter_delta.values()))
+    functional_fit_accepted = bool(
+        math.isfinite(heldout.relative_residual) and
+        math.isfinite(heldout.cosine_alignment) and
+        heldout.relative_residual <= max_relative_residual and
+        heldout.cosine_alignment >= min_cosine_alignment)
+    return {
+        "apply": solution_is_finite and functional_fit_accepted,
+        "parameter_delta_norm": delta_norm,
+        "solution_is_finite": solution_is_finite,
+        "functional_fit_accepted": functional_fit_accepted,
+    }
 
 
 def sign_randomized_parameter_delta(
@@ -412,6 +450,9 @@ def actual_update_metrics(model, inputs, baseline_logits, target_delta,
         "actual_heldout_fitted_norm_ratio": fitted_norm_ratio(realized, target),
         "actual_heldout_relative_residual": relative_residual(realized, target),
         "actual_heldout_cosine_alignment": cosine_alignment(realized, target),
+        "actual_relative_residual": relative_residual(realized, target),
+        "actual_cosine_alignment": cosine_alignment(realized, target),
+        "actual_functional_delta_norm": float(realized.norm()),
     }
 
 
@@ -679,7 +720,16 @@ def main():
                 heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
                     projector, model, tuning_batch, tuning_signal.delta_logits,
                     projection_result.parameter_delta, device)
-                correction_applied = projection_result.cg.converged
+                application = projection_application_gate(
+                    projection_result.parameter_delta, heldout,
+                    max_relative_residual=
+                        args.application_max_heldout_residual,
+                    min_cosine_alignment=
+                        args.application_min_heldout_cosine)
+                # CG convergence is a solver diagnostic, not the application
+                # gate. A finite direction that demonstrably transfers to the
+                # held-out functional batch is the relevant safety criterion.
+                correction_applied = application["apply"]
                 tuning_logits_before = eval_logits(model, tuning_batch[0])
                 actual_metrics = {}
                 if correction_applied:
@@ -689,8 +739,13 @@ def main():
                     actual_metrics = actual_update_metrics(
                         model, tuning_batch[0], tuning_logits_before,
                         tuning_signal.delta_logits, projection_scale)
-                tuning_projected_gain = (
-                    tuning_loss_before - batch_loss(model, tuning_batch))
+                    if (not math.isfinite(
+                            actual_metrics["actual_functional_delta_norm"]) or
+                            actual_metrics["actual_functional_delta_norm"] <= 0):
+                        raise RuntimeError(
+                            "projected correction had no finite functional effect")
+                tuning_loss_after = batch_loss(model, tuning_batch)
+                tuning_projected_gain = tuning_loss_before - tuning_loss_after
                 diagnostics = {
                     "source": step.signal.source,
                     "projection_scope": projection_scope,
@@ -698,6 +753,19 @@ def main():
                     "applied_scale": projection_scale,
                     "correction_applied": correction_applied,
                     "correction_was_attempted": True,
+                    "application_gate": "finite_and_heldout_functional_fit",
+                    "application_ignored_cg_converged_flag": True,
+                    "solution_is_finite": application["solution_is_finite"],
+                    "functional_fit_accepted":
+                        application["functional_fit_accepted"],
+                    "application_max_heldout_residual":
+                        args.application_max_heldout_residual,
+                    "application_min_heldout_cosine":
+                        args.application_min_heldout_cosine,
+                    "parameter_delta_norm":
+                        application["parameter_delta_norm"],
+                    "loss_before": tuning_loss_before,
+                    "loss_after": tuning_loss_after,
                     "structural_loss_gain": step.structural_loss_gain,
                     "structural_directional_gain": step.structural_directional_gain,
                     "tuning_structural_loss_gain": tuning_signal.observed_loss_gain,
@@ -928,6 +996,8 @@ def main():
             "validation_accuracy": validation_accuracy,
             "diagnostics": diagnostics,
         }
+        if diagnostics is not None:
+            diagnostics["validation_accuracy"] = validation_accuracy
         history.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
 

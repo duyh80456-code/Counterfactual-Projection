@@ -1,4 +1,5 @@
 import copy
+from types import SimpleNamespace
 
 import torch
 from torch import nn
@@ -9,7 +10,7 @@ from projection.cg import CGResult
 from experiments.run_gromo_pilot import (
     actual_update_metrics, eval_logits, reset_projected_momentum,
     reset_residual_path_momentum,
-    sign_randomized_parameter_delta)
+    sign_randomized_parameter_delta, projection_application_gate)
 
 
 def test_functional_projection_recovers_tangent_direction():
@@ -191,6 +192,25 @@ def test_actual_update_metrics_measure_realized_function_change():
     metrics = actual_update_metrics(model, inputs, baseline, target, scale)
     assert metrics["actual_heldout_relative_residual"] < 1e-4
     assert metrics["actual_heldout_cosine_alignment"] > 0.999
+    assert metrics["actual_relative_residual"] < 1e-4
+    assert metrics["actual_cosine_alignment"] > 0.999
+    assert metrics["actual_functional_delta_norm"] > 0
+
+
+def test_application_gate_uses_heldout_fit_not_cg_status():
+    heldout = SimpleNamespace(relative_residual=0.4, cosine_alignment=0.6)
+    accepted = projection_application_gate(
+        {"weight": torch.ones(2, 2)}, heldout,
+        max_relative_residual=1.0, min_cosine_alignment=0.0)
+    assert accepted["apply"]
+    assert accepted["solution_is_finite"]
+    assert accepted["functional_fit_accepted"]
+
+    rejected = projection_application_gate(
+        {"weight": torch.ones(2, 2)},
+        SimpleNamespace(relative_residual=1.1, cosine_alignment=0.6),
+        max_relative_residual=1.0, min_cosine_alignment=0.0)
+    assert not rejected["apply"]
 
 
 def test_projector_retries_with_stronger_damping(monkeypatch):
@@ -216,6 +236,37 @@ def test_projector_retries_with_stronger_damping(monkeypatch):
     assert result.damping_requested == 1e-3
     assert result.damping_used == 1e-2
     assert [attempt.damping for attempt in result.cg_attempts] == [1e-3, 1e-2]
+
+
+def test_projector_selects_best_finite_fit_when_no_cg_attempt_converges(
+        monkeypatch):
+    import projection.functional as functional_module
+
+    calls = 0
+
+    def fake_cg(_matvec, rhs, **_kwargs):
+        nonlocal calls
+        calls += 1
+        solution = torch.zeros_like(rhs) if calls == 1 else rhs.clone()
+        return CGResult(
+            solution=solution, iterations=1, residual_norm=0.5,
+            converged=False, residual_history=(1.0, 0.5),
+            relative_residual=0.5)
+
+    monkeypatch.setattr(functional_module, "conjugate_gradient", fake_cg)
+    model = nn.Linear(2, 2, bias=False).eval()
+    inputs = torch.eye(2)
+    target = torch.tensor([[0.3, -0.2], [0.1, 0.4]])
+    result = FunctionalProjector(
+        damping=1e-3, max_iter=1, max_damping_retries=1,
+        preconditioner_probes=0).project(
+            model, inputs, target, block="")
+    assert not result.cg.converged
+    assert result.selected_attempt == 1
+    assert result.damping_used == 1e-2
+    assert result.selection_rule == "minimum_finite_functional_relative_residual"
+    assert (result.relative_residual <
+            result.cg_attempts[0].functional_relative_residual)
 
 
 def test_projection_normalizes_a_tiny_functional_target_for_cg():
