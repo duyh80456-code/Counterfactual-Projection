@@ -56,14 +56,19 @@ the private-repository token as the Kaggle Secret `github_token`.
 
 The comparison uses one randomly initialized full-width CIFAR-ResNet18 at
 32x32. Vanilla training produces the sole fork checkpoint
-`warmup/shared_seed1_epoch50.pt`, containing the model, SGD, cosine scheduler,
+`warmup/shared_seed1_epoch150.pt`, containing the model, SGD, cosine scheduler,
 epoch, exact train/validation/tuning indices, loader-generator state, and all
 RNG states. Its SHA-256 is checked by every arm.
 
-All three trajectories therefore have the same 100-epoch budget:
+The existing epoch-50 checkpoint is reused with its optimizer momentum and
+continued under Vanilla for another 100 epochs. The cosine schedule is smoothly
+rebased from the LR stored at epoch 50 and reaches zero at epoch 200. If the
+epoch-50 checkpoint is absent, the notebook recreates that first segment.
+
+All three trajectories therefore have the same 200-epoch budget:
 
 ```text
-theta_50
+theta_150
   +-- vanilla_continue: 50 epochs
   +-- ours_e_driven_o: 50 epochs
   +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
@@ -88,7 +93,7 @@ activations whose contraction norm reaches epsilon; the final projection drops
 the remaining D coordinates and train3 continues in the original ResNet. The
 Epoch 10 of opt2 is a soft warning boundary, never a forced projection. If the
 criterion is still false, opt2 continues within the remaining 50-epoch budget.
-If contraction still has not succeeded at epoch 100, the expanded checkpoint is
+If contraction still has not succeeded at epoch 200, the expanded checkpoint is
 preserved but aggregation rejects Bypass as an invalid comparator. The shared
 SGD/cosine optimizer is pilot scaling, not the paper's original long-run Adam
 hyperparameter schedule.

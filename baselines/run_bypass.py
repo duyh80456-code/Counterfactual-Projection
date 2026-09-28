@@ -1,4 +1,4 @@
-"""Pilot-scaled relaxed Bypass (Jung & Lee, Algorithm 1) from shared theta_50."""
+"""Pilot-scaled relaxed Bypass (Jung & Lee, Algorithm 1) from shared theta_150."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ def main():
     phase = "opt1"
     if saved is not None:
         if saved["shared_checkpoint_hash"] != shared_hash:
-            raise RuntimeError("Bypass checkpoint came from another theta_50")
+            raise RuntimeError("Bypass checkpoint came from another theta_150")
         if saved["protocol"] != run_protocol:
             raise RuntimeError("Bypass resume protocol mismatch")
         phase = saved["phase"]

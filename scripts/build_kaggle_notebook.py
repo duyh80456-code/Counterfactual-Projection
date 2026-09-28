@@ -1,4 +1,4 @@
-"""Build the restart-safe shared-theta50 Kaggle T4x2 notebook."""
+"""Build the restart-safe shared-theta150 Kaggle T4x2 notebook."""
 
 import json
 from pathlib import Path
@@ -17,18 +17,20 @@ def code(source):
 cells = [
     markdown("""# Shared-checkpoint CIFAR-100 comparison
 
-One CIFAR-ResNet18 is trained from scratch for 50 vanilla epochs. The exact
+The existing theta_50 (including optimizer momentum) is continued with vanilla
+training for 100 epochs. The exact
 model, optimizer, scheduler, data split, loader generator, and RNG state at
-`theta_50` are hashed and forked into three 50-epoch arms:
+`theta_150` are hashed and forked into three 50-epoch arms:
 
 - `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1), concurrently;
 - `vanilla_continue` (GPU 0) in wave 2.
 
-The total budget is 100 epochs for every arm. The official CIFAR-100 test set is
+The total budget is 200 epochs for every arm. If theta_50 is unavailable, the
+notebook recreates it from scratch. The official CIFAR-100 test set is
 never constructed. Every process saves a resumable checkpoint each epoch.
 Bypass treats opt2 epoch 10 as a soft cap: it never force-projects a nonzero D,
 continues opt2 within the remaining budget, and is rejected by aggregation if
-the contraction criterion is still unmet at epoch 100.
+the contraction criterion is still unmet at epoch 200.
 """),
     code("""import json, os, shutil, subprocess, sys
 from pathlib import Path
@@ -41,7 +43,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta50_100ep_v1")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta150_200ep_v1")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -105,20 +107,21 @@ DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
     code("""SEED = 1
-FORK_EPOCH = 50
-TOTAL_EPOCHS = 100
+BOOTSTRAP_EPOCH = 50
+FORK_EPOCH = 150
+TOTAL_EPOCHS = 200
 POST_FORK_EPOCHS = 50
 BATCH_SIZE = 64
 VALIDATION_SAMPLES = 5000
 TUNING_SAMPLES = 128
 LR = 0.1
 WEIGHT_DECAY = 5e-4
-SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch50.pt"
+SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch150.pt"
 
 # Restore a previous Kaggle output archive/dataset before deciding what to run.
-for prior_manifest in Path("/kaggle/input").rglob("shared_seed1_epoch50.json"):
+for prior_manifest in Path("/kaggle/input").rglob("shared_seed1_epoch150.json"):
     prior_root = prior_manifest.parent.parent
-    if (prior_root / "warmup" / "shared_seed1_epoch50.pt").is_file():
+    if (prior_root / "warmup" / "shared_seed1_epoch150.pt").is_file():
         for child in prior_root.iterdir():
             destination = OUTPUT / child.name
             if destination.exists(): continue
@@ -135,17 +138,33 @@ def base_args(output):
         "--tuning-samples", str(TUNING_SAMPLES), "--lr", str(LR),
         "--weight-decay", str(WEIGHT_DECAY)]
 
+# Reuse theta_50 from the preceding run, including its optimizer/RNG state.
+bootstrap_manifest = None
+local_theta50 = Path("/kaggle/working/counterfactual_shared_theta50_100ep_v1/warmup/shared_seed1_epoch50.json")
+if local_theta50.is_file():
+    bootstrap_manifest = local_theta50
+else:
+    bootstrap_manifest = next(
+        Path("/kaggle/input").rglob("shared_seed1_epoch50.json"), None)
+bootstrap_args = []
+if bootstrap_manifest is not None and not SHARED_CHECKPOINT.is_file():
+    bootstrap = json.loads(bootstrap_manifest.read_text())
+    bootstrap_path = bootstrap_manifest.with_suffix(".pt")
+    bootstrap_args = ["--bootstrap-checkpoint", str(bootstrap_path),
+        "--bootstrap-checkpoint-hash", bootstrap["sha256"]]
+    print("Continuing from theta_50:", bootstrap_path)
+
 env = os.environ.copy()
 env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
            PYTHONPATH=RUNTIME_PYTHONPATH)
 prepare = [sys.executable, "-m", "experiments.run_shared_comparison",
-           "--method", "prepare_shared"] + base_args(OUTPUT / "warmup")
+           "--method", "prepare_shared"] + base_args(OUTPUT / "warmup") + bootstrap_args
 subprocess.run(prepare, cwd=REPO, env=env, check=True)
 manifest = json.loads(SHARED_CHECKPOINT.with_suffix(".json").read_text())
 SHARED_HASH = manifest["sha256"]
 if manifest["epoch"] != FORK_EPOCH:
     raise RuntimeError(f"shared checkpoint is at epoch {manifest['epoch']}")
-print("theta_50 SHA-256:", SHARED_HASH)
+print("theta_150 SHA-256:", SHARED_HASH)
 """),
     code("""def run_wave(assignments):
     running = []
@@ -200,9 +219,9 @@ for name in ("ours_e_driven_o", "bypass", "vanilla_continue"):
     missing = sorted(required - result.keys())
     if missing: raise RuntimeError(f"{name} missing result fields: {missing}")
     if result["shared_checkpoint_hash"] != SHARED_HASH:
-        raise RuntimeError(f"{name} did not fork from theta_50")
+        raise RuntimeError(f"{name} did not fork from theta_150")
     if result["fork_epoch"] != FORK_EPOCH or result["post_fork_epochs"] != POST_FORK_EPOCHS:
-        raise RuntimeError(f"{name} did not complete the 50+50 protocol")
+        raise RuntimeError(f"{name} did not complete the 150+50 protocol")
     if name == "bypass" and (
             result.get("contraction_criterion_met") is not True or
             result.get("bypass_completed") is not True):
