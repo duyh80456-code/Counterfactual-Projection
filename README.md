@@ -83,9 +83,11 @@ deploy parameters.
 Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
-The notebook also adds both cloned checkouts to the live kernel's `sys.path`;
-an editable install performed after kernel startup is otherwise visible only
-to newly launched Python processes.
+The notebook pins the main checkout, `gromo/src`, and the One-Shot-TAS checkout
+in both the live kernel's `sys.path` and every child process's `PYTHONPATH`.
+It asserts the resolved source path of `probe`, `gromo`, and `dual_growth`
+before constructing a model; editable installs performed after kernel startup
+are otherwise visible only to newly launched Python processes.
 
 The input pipeline uses ImageNet normalization and resized CIFAR-100 images so
 the pretrained backbone sees its expected input distribution. The deploy model

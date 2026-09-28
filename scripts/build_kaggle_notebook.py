@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v14")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v15")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -83,9 +83,12 @@ subprocess.run(["git", "-C", str(GROMO), "checkout", "--detach", GROMO_COMMIT],
                check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)],
                check=True)
+GROMO_SRC = GROMO / "src"
+RUNTIME_PYTHONPATH = os.pathsep.join(filter(None, (
+    str(REPO), str(GROMO_SRC), str(REFERENCE), os.environ.get("PYTHONPATH", ""))))
 test_env = os.environ.copy()
 test_env.update(
-    PYTHONPATH=str(REFERENCE) + os.pathsep + test_env.get("PYTHONPATH", ""),
+    PYTHONPATH=RUNTIME_PYTHONPATH,
     REQUIRE_GROMO_INTEGRATION="1")
 subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO,
                env=test_env, check=True)
@@ -100,11 +103,35 @@ if gpu_count != 2:
     raise RuntimeError(f"Select the Kaggle T4 x2 accelerator; found {gpu_count} GPU(s)")
 # Populate the shared weight cache and verify torchvision/Gromo parity before
 # launching two independent processes.
-# The editable install happened after this notebook kernel started, so its
-# newly written .pth file is only discovered by child interpreters. Add both
-# checkouts explicitly for imports executed in the current kernel as well.
-sys.path.insert(0, str(REFERENCE))
-sys.path.insert(0, str(REPO))
+# Editable installs happened after this notebook kernel started, so their new
+# .pth files are only discovered by child interpreters. Pin all three import
+# roots explicitly. Purging gromo also makes rerunning this cell safe after a
+# prior failed import cached an unrelated top-level package of the same name.
+for root in reversed((REPO, GROMO_SRC, REFERENCE)):
+    root_text = str(root)
+    while root_text in sys.path:
+        sys.path.remove(root_text)
+    sys.path.insert(0, root_text)
+for module_name in tuple(sys.modules):
+    if any(module_name == package or module_name.startswith(package + ".")
+           for package in ("probe", "gromo", "dual_growth")):
+        del sys.modules[module_name]
+
+import dual_growth, gromo, probe
+
+def assert_import_root(module, expected_root):
+    origin = Path(module.__file__).resolve()
+    expected = expected_root.resolve()
+    if not origin.is_relative_to(expected):
+        raise ImportError(
+            f"{module.__name__} resolved to {origin}, expected under {expected}")
+    print(f"{module.__name__}: {origin}")
+
+assert_import_root(probe, REPO)
+assert_import_root(gromo, GROMO_SRC)
+assert_import_root(dual_growth, REFERENCE)
+from gromo.containers.resnet import init_full_resnet_structure  # noqa: F401
+from dual_growth.adapters import GromoResNet18, TinyAdapter  # noqa: F401
 from probe import build_pretrained_gromo_resnet18
 smoke_model = build_pretrained_gromo_resnet18(100, device="cuda:0")
 assert [int(ref.module.hidden_neurons) for ref in smoke_model.growing_blocks()] == [
@@ -198,7 +225,7 @@ for gpu, seed in enumerate(SEEDS):
     ]
     env = os.environ.copy()
     env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
-               OMP_NUM_THREADS="2")
+               OMP_NUM_THREADS="2", PYTHONPATH=RUNTIME_PYTHONPATH)
     warmup_output.mkdir(parents=True, exist_ok=True)
     log = (warmup_output / "run.log").open("a")
     process = subprocess.Popen(
@@ -255,7 +282,8 @@ def run_worker(gpu):
         ]
         env = os.environ.copy()
         env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
-                   OMP_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false")
+                   OMP_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false",
+                   PYTHONPATH=RUNTIME_PYTHONPATH)
         arm_dir.mkdir(parents=True, exist_ok=True)
         with (arm_dir / "run.log").open("a") as log:
             process = subprocess.Popen(
@@ -373,7 +401,7 @@ def run_final_test_worker(gpu):
             ]
             env = os.environ.copy()
             env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
-                       OMP_NUM_THREADS="2")
+                       OMP_NUM_THREADS="2", PYTHONPATH=RUNTIME_PYTHONPATH)
             arm_dir.mkdir(parents=True, exist_ok=True)
             with (arm_dir / "run.log").open("a") as log:
                 return_code = subprocess.run(
