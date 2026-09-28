@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader, Subset
 
 
 SPLIT_SEED = 20260928
-FORK_EPOCH = 20
-TOTAL_EPOCHS = 80
+FORK_EPOCH = 50
+TOTAL_EPOCHS = 100
 POST_FORK_EPOCHS = TOTAL_EPOCHS - FORK_EPOCH
 
 
@@ -139,7 +139,7 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "fork_epoch": FORK_EPOCH, "total_epochs": TOTAL_EPOCHS,
         "post_fork_epochs": POST_FORK_EPOCHS, "batch_size": batch_size,
         "learning_rate": lr, "weight_decay": weight_decay,
-        "scheduler": "CosineAnnealingLR(T_max=80)",
+        "scheduler": "CosineAnnealingLR(T_max=100)",
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),
@@ -222,7 +222,7 @@ def load_shared_checkpoint(path: Path, expected_hash: str, *, device,
     if checkpoint.get("kind") != "shared_fork_checkpoint":
         raise RuntimeError("not a shared fork checkpoint")
     if int(checkpoint["epoch"]) != FORK_EPOCH:
-        raise RuntimeError("shared checkpoint is not at epoch 20")
+        raise RuntimeError(f"shared checkpoint is not at epoch {FORK_EPOCH}")
     model.load_state_dict(checkpoint["model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])

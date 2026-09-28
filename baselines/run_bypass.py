@@ -1,4 +1,4 @@
-"""Pilot-scaled relaxed Bypass (Jung & Lee, Algorithm 1) from shared theta_20."""
+"""Pilot-scaled relaxed Bypass (Jung & Lee, Algorithm 1) from shared theta_50."""
 
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def main():
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,
             "max_opt2_epochs_semantics": (
-                "soft cap; continue opt2 within the 60-epoch budget until "
+                "soft cap; continue opt2 within the 50-epoch budget until "
                 "contraction succeeds"),
             "contraction_epsilon": args.contraction_epsilon,
             "gamma_t": f"{args.gamma_slope} * opt2_step",
@@ -120,7 +120,7 @@ def main():
     phase = "opt1"
     if saved is not None:
         if saved["shared_checkpoint_hash"] != shared_hash:
-            raise RuntimeError("Bypass checkpoint came from another theta_20")
+            raise RuntimeError("Bypass checkpoint came from another theta_50")
         if saved["protocol"] != run_protocol:
             raise RuntimeError("Bypass resume protocol mismatch")
         phase = saved["phase"]

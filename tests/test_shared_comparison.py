@@ -60,7 +60,7 @@ def test_shared_checkpoint_contains_exact_fork_state_and_hash(tmp_path):
         optimizer, T_max=TOTAL_EPOCHS)
     loader = SimpleNamespace(generator=torch.Generator().manual_seed(17))
     protocol = {"fork_epoch": FORK_EPOCH, "post_fork_epochs": POST_FORK_EPOCHS}
-    path = tmp_path / "shared_seed1_epoch20.pt"
+    path = tmp_path / "shared_seed1_epoch50.pt"
     digest = save_shared_checkpoint(
         path, model=model, optimizer=optimizer, scheduler=scheduler,
         epoch=FORK_EPOCH, train_indices=[3, 5], validation_indices=[7],
