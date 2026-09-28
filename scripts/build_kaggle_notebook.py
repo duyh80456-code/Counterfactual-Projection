@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v13")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v14")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -100,7 +100,11 @@ if gpu_count != 2:
     raise RuntimeError(f"Select the Kaggle T4 x2 accelerator; found {gpu_count} GPU(s)")
 # Populate the shared weight cache and verify torchvision/Gromo parity before
 # launching two independent processes.
+# The editable install happened after this notebook kernel started, so its
+# newly written .pth file is only discovered by child interpreters. Add both
+# checkouts explicitly for imports executed in the current kernel as well.
 sys.path.insert(0, str(REFERENCE))
+sys.path.insert(0, str(REPO))
 from probe import build_pretrained_gromo_resnet18
 smoke_model = build_pretrained_gromo_resnet18(100, device="cuda:0")
 assert [int(ref.module.hidden_neurons) for ref in smoke_model.growing_blocks()] == [
