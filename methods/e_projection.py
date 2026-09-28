@@ -1,37 +1,116 @@
-"""Probe, discover, and functionally project in one orchestration object."""
+"""Project a real TINY/Gromo structural delta-f into the original model."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
-from probe import ProbeSignal, VirtualExpansionProbe
+from probe import CandidateExpansionProbe, ProbeSignal
 from projection import FunctionalProjector, ProjectionResult
+
+
+def _module_path(model: nn.Module, target: nn.Module) -> str:
+    matches = [name for name, module in model.named_modules() if module is target]
+    if len(matches) != 1:
+        raise RuntimeError("candidate block is not uniquely registered on model")
+    return matches[0]
+
+
+def candidate_projection_block(model: nn.Module, candidate) -> str:
+    logical_name = str(candidate.module_name)
+    if logical_name in dict(model.named_modules()):
+        return logical_name
+    resolver = getattr(model, "block", None)
+    if resolver is None:
+        raise KeyError(f"cannot resolve candidate block {logical_name!r}")
+    return _module_path(model, resolver(logical_name))
+
+
+def _eval_loss(model: nn.Module, batch: tuple[Tensor, Tensor]) -> float:
+    modes = {module: module.training for module in model.modules()}
+    try:
+        model.eval()
+        with torch.no_grad():
+            return float(F.cross_entropy(model(batch[0]).float(), batch[1]))
+    finally:
+        for module, training in modes.items():
+            module.training = training
 
 
 @dataclass(frozen=True)
 class ProjectionStep:
     signal: ProbeSignal
     projection: ProjectionResult
+    baseline_loss: float
+    expanded_loss: float
+    projected_loss: float | None = None
+
+    @property
+    def structural_loss_gain(self) -> float:
+        return self.baseline_loss - self.expanded_loss
+
+    @property
+    def projected_loss_gain(self) -> float | None:
+        return (None if self.projected_loss is None else
+                self.baseline_loss - self.projected_loss)
 
 
 class EProjection:
-    def __init__(self, probe: VirtualExpansionProbe | None = None,
-                 projector: FunctionalProjector | None = None):
-        self.probe = probe or VirtualExpansionProbe()
+    """Functional projection whose primary source is a structural candidate.
+
+    A non-structural control probe can still be passed explicitly, but there is
+    intentionally no gradient-SVD default.
+    """
+
+    def __init__(self, probe=None, projector: FunctionalProjector | None = None):
+        self.probe = probe
+        self.structural_probe = CandidateExpansionProbe()
         self.projector = projector or FunctionalProjector()
+
+    def discover_candidate(self, model: nn.Module, candidate,
+                           batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
+                           block: str | None = None) -> ProjectionStep:
+        baseline_loss = _eval_loss(model, batch)
+        signal = self.structural_probe(
+            model, candidate=candidate, batch=batch, gate=gate)
+        if not signal.is_structural_expansion:
+            raise RuntimeError("main E-projection requires a structural E signal")
+        projection_block = block or candidate_projection_block(model, candidate)
+        result = self.projector.project(
+            model, batch[0], signal.delta_logits, block=projection_block)
+        return ProjectionStep(
+            signal, result, baseline_loss,
+            baseline_loss - signal.predicted_gain)
+
+    def step_candidate_(self, model: nn.Module, candidate,
+                        batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
+                        block: str | None = None,
+                        scale: float = 1.0) -> ProjectionStep:
+        step = self.discover_candidate(
+            model, candidate, batch, gate=gate, block=block)
+        step.projection.apply_(model, scale)
+        return replace(step, projected_loss=_eval_loss(model, batch))
 
     def discover(self, model: nn.Module, batch: tuple[Tensor, Tensor], *,
                  block: str, rank: int) -> ProjectionStep:
+        if self.probe is None:
+            raise RuntimeError(
+                "no control probe configured; use discover_candidate with "
+                "a TINY/Gromo candidate")
+        baseline_loss = _eval_loss(model, batch)
         signal = self.probe(model, block=block, rank=rank, batch=batch)
         result = self.projector.project(
             model, batch[0], signal.delta_logits, block=block)
-        return ProjectionStep(signal, result)
+        return ProjectionStep(
+            signal, result, baseline_loss,
+            baseline_loss - signal.predicted_gain)
 
     def step_(self, model: nn.Module, batch: tuple[Tensor, Tensor], *,
               block: str, rank: int, scale: float = 1.0) -> ProjectionStep:
-        result = self.discover(model, batch, block=block, rank=rank)
-        result.projection.apply_(model, scale)
-        return result
+        step = self.discover(model, batch, block=block, rank=rank)
+        step.projection.apply_(model, scale)
+        return replace(step, projected_loss=_eval_loss(model, batch))
 

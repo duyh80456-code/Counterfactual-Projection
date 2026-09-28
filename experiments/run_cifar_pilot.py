@@ -17,7 +17,9 @@ from probe import VirtualExpansionProbe
 from projection import FunctionalProjector
 
 
-METHODS = ("vanilla", "random_projection", "e_repopt", "e_projection")
+METHODS = (
+    "vanilla", "gradient_random_projection", "gradient_repopt_control",
+    "gradient_projection_control")
 
 
 def parse_args():
@@ -55,8 +57,13 @@ def seed_everything(seed: int) -> None:
 def datasets(args):
     from torchvision import datasets as tv_datasets, transforms
 
-    normalize = transforms.Normalize(
-        (0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
+    # Match the initialization: ImageNet-pretrained weights must receive the
+    # normalization they were trained with. CIFAR statistics are used only
+    # for the explicitly random-initialized control.
+    mean, std = ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) \
+        if args.no_pretrained else ((0.485, 0.456, 0.406),
+                                    (0.229, 0.224, 0.225))
+    normalize = transforms.Normalize(mean, std)
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(args.image_size, scale=(0.7, 1.0)),
         transforms.RandomHorizontalFlip(), transforms.ToTensor(), normalize])
@@ -146,13 +153,13 @@ def main():
         repopt_handler = None
         if epoch % args.projection_interval == 0 and args.method != "vanilla":
             signal = probe(model, block=args.block, rank=args.rank, batch=probe_batch)
-            if args.method == "e_repopt":
+            if args.method == "gradient_repopt_control":
                 repopt_handler = ERepOpt.from_signal(
                     optimizer, model, signal).handler
                 projection_metrics = {"predicted_gain": signal.predicted_gain}
             else:
                 target = signal.delta_logits
-                if args.method == "random_projection":
+                if args.method == "gradient_random_projection":
                     random_generator = torch.Generator(device=device).manual_seed(
                         100000 + args.seed * 1000 + epoch)
                     target = random_target(signal, random_generator)
@@ -161,7 +168,8 @@ def main():
                 projection.apply_(model, args.projection_scale)
                 projection_metrics = {
                     "predicted_gain": signal.predicted_gain,
-                    "projection_ratio": projection.projection_ratio,
+                    "fitted_norm_ratio": projection.fitted_norm_ratio,
+                    "cosine_alignment": projection.cosine_alignment,
                     "relative_residual": projection.relative_residual,
                     "cg_iterations": projection.cg.iterations,
                     "cg_converged": projection.cg.converged,

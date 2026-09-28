@@ -20,5 +20,4 @@ def test_functional_projection_recovers_tangent_direction():
         damping=1e-8, max_iter=30, tolerance=1e-7).project(
             model, inputs, target, block="0")
     assert result.relative_residual < 1e-4
-    assert abs(result.projection_ratio - 1.0) < 1e-4
-
+    assert abs(result.fitted_norm_ratio - 1.0) < 1e-4

@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch.func import functional_call, jvp, vjp
 
 from .cg import CGResult, conjugate_gradient
+from .metrics import cosine_alignment, fitted_norm_ratio, relative_residual
 
 
 @dataclass(frozen=True)
@@ -17,9 +18,15 @@ class ProjectionResult:
     parameter_delta: dict[str, Tensor]
     fitted_delta: Tensor
     target_delta: Tensor
-    projection_ratio: float
+    fitted_norm_ratio: float
     relative_residual: float
+    cosine_alignment: float
     cg: CGResult
+
+    @property
+    def projection_ratio(self) -> float:
+        """Compatibility alias; this is only a norm ratio under damping."""
+        return self.fitted_norm_ratio
 
     @torch.no_grad()
     def apply_(self, model: nn.Module, scale: float = 1.0) -> None:
@@ -86,12 +93,11 @@ class FunctionalProjector:
         cg = conjugate_gradient(normal_matrix, rhs, max_iter=self.max_iter,
                                 tolerance=self.tolerance)
         fitted = jacobian_vector(cg.solution).reshape_as(target_delta).detach()
-        target_norm = torch.linalg.vector_norm(target_delta.detach()).clamp_min(1e-12)
-        ratio = float(torch.linalg.vector_norm(fitted) / target_norm)
-        residual = float(torch.linalg.vector_norm(target_delta.detach() - fitted) / target_norm)
         return ProjectionResult(
             block=block,
             parameter_delta={name: value.detach()
                              for name, value in unpack(cg.solution).items()},
             fitted_delta=fitted, target_delta=target_delta.detach(),
-            projection_ratio=ratio, relative_residual=residual, cg=cg)
+            fitted_norm_ratio=fitted_norm_ratio(fitted, target_delta),
+            relative_residual=relative_residual(fitted, target_delta),
+            cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg)

@@ -1,4 +1,9 @@
-"""One-shot, non-persistent low-rank expansion probes for convolutions."""
+"""Gradient low-rank control probe.
+
+This is deliberately not the paper's structural E probe. It factorizes a
+gradient in the current convolution's coordinates and is kept only as a
+diagnostic control.
+"""
 
 from __future__ import annotations
 
@@ -13,16 +18,18 @@ from torch import Tensor, nn
 @dataclass(frozen=True)
 class ProbeSignal:
     block: str
-    A_E: Tensor
-    B_E: Tensor
-    delta_feature: Tensor
+    A_E: Tensor | None
+    B_E: Tensor | None
+    delta_feature: Tensor | None
     delta_logits: Tensor
     predicted_gain: float
-    singular_values: Tensor
+    singular_values: Tensor | None
+    source: str = "unknown"
+    is_structural_expansion: bool = False
 
     @property
     def rank(self) -> int:
-        return int(self.A_E.shape[0])
+        return 0 if self.A_E is None else int(self.A_E.shape[0])
 
 
 def _resolve_module(model: nn.Module, path: str) -> nn.Module:
@@ -46,8 +53,8 @@ def _assert_state_unchanged(model: nn.Module, before: Mapping[str, Tensor]) -> N
         raise RuntimeError(f"probe mutated model state: {changed[:3]}")
 
 
-class VirtualExpansionProbe:
-    """Discover a rank-r virtual Conv2d branch in one backward pass.
+class GradientLowRankControlProbe:
+    """Factorize the current Conv2d gradient; not a structural expansion.
 
     The negative weight gradient is truncated by SVD and factorized as
     ``B_E @ A_E``. A hook previews this low-rank branch exactly once. No
@@ -127,7 +134,9 @@ class VirtualExpansionProbe:
                 delta_feature=preview["feature"].detach(),
                 delta_logits=delta_logits.detach(),
                 predicted_gain=predicted_gain,
-                singular_values=S[:effective_rank].detach())
+                singular_values=S[:effective_rank].detach(),
+                source="gradient_low_rank_control",
+                is_structural_expansion=False)
         finally:
             handle.remove()
             for item, training in modes.items():
@@ -136,3 +145,7 @@ class VirtualExpansionProbe:
                 parameter.grad = old_grad
             _assert_state_unchanged(model, before)
 
+
+# Compatibility for old configs. Scientific experiments must instead use
+# CandidateExpansionProbe with a TINY/Gromo GrowthCandidate.
+VirtualExpansionProbe = GradientLowRankControlProbe

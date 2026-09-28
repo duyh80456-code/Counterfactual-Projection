@@ -15,9 +15,8 @@ vision = ["torchvision>=0.16"]
 test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
-include = ["probe*", "projection*", "methods*", "training*"]
+include = ["probe*", "projection*", "methods*", "training*", "baselines*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-

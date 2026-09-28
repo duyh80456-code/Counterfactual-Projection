@@ -52,6 +52,10 @@ class ERepOpt:
         module = dict(model.named_modules())[signal.block]
         if not isinstance(module, nn.Conv2d):
             raise TypeError("E->RepOpt currently supports Conv2d probes")
+        if signal.A_E is None:
+            raise ValueError(
+                "this structural candidate does not expose A_E; functional "
+                "projection can use delta-f_E directly")
         directions = signal.A_E.reshape(signal.rank, -1)
         return cls(optimizer, RepOptGradientHandler(
             module.weight, directions, strength))
@@ -72,4 +76,3 @@ class ERepOpt:
 
     def load_state_dict(self, state):
         return self.optimizer.load_state_dict(state)
-

@@ -4,16 +4,18 @@ Look into a larger model without becoming one.
 
 This repository implements the first block-local pilot for:
 
-1. creating a temporary rank-r expansion direction at a `Conv2d` block;
+1. asking TINY/Gromo for a temporary rank-r hidden-width expansion;
 2. measuring its functional change `delta_logits` without installing or
    training the expansion;
 3. solving `(J^T J + mu I) delta_theta = J^T delta_logits` with matrix-free
    JVP/VJP products and conjugate gradient;
 4. applying the correction to the original block, with unchanged deploy size.
 
-The initial expansion source is a one-backward-pass truncated-SVD direction of
-the negative convolution weight gradient. `probe/gromo_adapter.py` is the
-boundary for plugging in a TINY/Gromo candidate from the reference repository.
+The primary expansion source is the real TINY/Gromo transaction
+`candidate.virtual_direction(gate)`. The expanded hidden channels exist only
+inside that context. The old convolution-gradient SVD is retained under the
+explicit name `GradientLowRankControlProbe`; it is not evidence for the main
+hypothesis.
 
 ## Quick start
 
@@ -21,9 +23,10 @@ boundary for plugging in a TINY/Gromo candidate from the reference repository.
 from methods import EProjection
 
 method = EProjection()
-step = method.discover(model, (images, labels), block="layer3.1.conv2", rank=4)
-print(step.projection.projection_ratio)
+step = method.discover_candidate(model, tiny_candidate, (images, labels))
+print(step.projection.fitted_norm_ratio)
 print(step.projection.relative_residual)
+print(step.projection.cosine_alignment)
 step.projection.apply_(model)
 ```
 
@@ -50,11 +53,17 @@ Before running it:
 The notebook never embeds the token in the clone URL or prints it. It creates a
 short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 
-The quick gate schedules `vanilla`, `random_projection`, `e_repopt`, and
-`e_projection` for two seeds. A dynamic queue gives each GPU one independent
-arm at a time. This avoids DDP synchronization and keeps method failures and
-artifacts isolated. Outputs are restart-safe at the completed-arm level and
-are aggregated into `summary.json` plus a downloadable `.tar.gz` archive.
+The structural gate schedules `vanilla`, norm-matched `random_projection`,
+`tiny_projection`, `expand_train_project` (RepAn/Bypass-like), and
+`real_e_oracle` for two seeds. A dynamic queue gives each GPU one independent
+arm at a time. Only the oracle may increase deploy parameters. Outputs are
+restart-safe at the completed-arm level and are aggregated into `summary.json`
+plus a downloadable `.tar.gz` archive.
+
+This first structural gate uses the audited Gromo CIFAR ResNet because its
+hidden-width transaction is exact. The separate torchvision control runner
+uses ImageNet normalization for pretrained weights, but its gradient-SVD arms
+are controls rather than the primary method.
 
 ## Reference implementation
 

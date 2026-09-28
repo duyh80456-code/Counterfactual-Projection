@@ -17,11 +17,11 @@ def code(source):
 cells = [
     markdown("""# Counterfactual Projection — CIFAR-100 T4x2 pilot
 
-This notebook clones the private research repository with the Kaggle Secret
-`github_token`, verifies the implementation, and schedules independent
-method/seed arms across both T4 GPUs. The official CIFAR-100 test partition is
-not evaluated; 5,000 examples from the training partition are held out using a
-fixed split seed.
+This notebook clones the private method repository plus the audited
+One-Shot-TAS-CCIL/Gromo references, then schedules independent method/seed arms
+across both T4 GPUs. The primary E signal is a real temporary hidden-width
+extension from TINY/Gromo, not a low-rank factorization of an existing kernel.
+The CIFAR-100 test partition is not evaluated.
 """),
     code("""import json, os, queue, shutil, subprocess, sys, threading
 from pathlib import Path
@@ -30,10 +30,16 @@ from kaggle_secrets import UserSecretsClient
 REPO_URL = "https://github.com/duyh80456-code/Counterfactual-Projection.git"
 BRANCH = "main"
 REPO = Path("/kaggle/working/counterfactual-projection")
+REFERENCE_URL = "https://github.com/duyh80456-code/One-Shot-TAS-CCIL.git"
+REFERENCE_BRANCH = "ccil-residual-capacity"
+REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
+GROMO_URL = "https://github.com/growingnet/gromo.git"
+GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
+GROMO = Path("/kaggle/working/gromo")
 OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2")
 
-if REPO.exists():
-    shutil.rmtree(REPO)
+for checkout in (REPO, REFERENCE, GROMO):
+    if checkout.exists(): shutil.rmtree(checkout)
 token = UserSecretsClient().get_secret("github_token").strip()
 if not token:
     raise RuntimeError("Kaggle Secret github_token is empty or unavailable")
@@ -50,6 +56,9 @@ clone_env.update(GITHUB_TOKEN_RUNTIME=token, GIT_ASKPASS=str(askpass),
 try:
     subprocess.run(["git", "clone", "--branch", BRANCH, "--single-branch",
                     REPO_URL, str(REPO)], env=clone_env, check=True)
+    subprocess.run(["git", "clone", "--branch", REFERENCE_BRANCH,
+                    "--single-branch", REFERENCE_URL, str(REFERENCE)],
+                   env=clone_env, check=True)
 finally:
     askpass.unlink(missing_ok=True)
     clone_env.pop("GITHUB_TOKEN_RUNTIME", None)
@@ -60,6 +69,14 @@ commit = subprocess.check_output(
 print("Repository revision:", commit)
 OUTPUT.mkdir(parents=True, exist_ok=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO)],
+               check=True)
+subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",
+                GROMO_URL, str(GROMO)], check=True)
+subprocess.run(["git", "-C", str(GROMO), "fetch", "--depth", "1", "origin",
+                GROMO_COMMIT], check=True)
+subprocess.run(["git", "-C", str(GROMO), "checkout", "--detach", GROMO_COMMIT],
+               check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)],
                check=True)
 subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO, check=True)
 """),
@@ -80,16 +97,16 @@ if not cifar_dirs:
 DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
-    code("""# Quick gate: 4 methods x 2 seeds x 3 epochs. Increase to 3-5 seeds and
-# 20+ epochs only after projection_ratio/residual and runtime look sensible.
-METHODS = ["vanilla", "random_projection", "e_repopt", "e_projection"]
+    code("""# Structural-E gate. Increase seeds/epochs only after the measured
+# residual, cosine alignment and loss gains look sensible.
+METHODS = ["vanilla", "random_projection", "tiny_projection",
+           "expand_train_project", "real_e_oracle"]
 SEEDS = [0, 1]
 EPOCHS = 3
 BATCH_SIZE = 64
-IMAGE_SIZE = 128
 TRAIN_SAMPLES = 12000       # Set 0 for all non-validation training examples.
 VALIDATION_SAMPLES = 5000
-BLOCK = "layer3.1.conv2"
+SITE = "stages.2.blocks.0"
 RANK = 4
 CG_ITERATIONS = 12
 
@@ -118,13 +135,13 @@ def run_worker(gpu):
             job_queue.task_done()
             continue
         command = [
-            sys.executable, "-m", "experiments.run_cifar_pilot",
+            sys.executable, "-m", "experiments.run_gromo_pilot",
             "--method", method, "--seed", str(seed),
             "--epochs", str(EPOCHS), "--batch-size", str(BATCH_SIZE),
-            "--image-size", str(IMAGE_SIZE),
+            "--reference-root", str(REFERENCE),
             "--train-samples", str(TRAIN_SAMPLES),
             "--validation-samples", str(VALIDATION_SAMPLES),
-            "--block", BLOCK, "--rank", str(RANK),
+            "--site", SITE, "--rank", str(RANK),
             "--cg-iterations", str(CG_ITERATIONS),
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
@@ -159,23 +176,47 @@ rows = []
 for method, seed in jobs:
     path = OUTPUT / f"{method}_seed{seed}" / "result.json"
     result = json.loads(path.read_text())
-    if result["deploy_parameter_delta"] != 0:
+    expected_growth = method == "real_e_oracle"
+    if (result["deploy_parameter_delta"] > 0) != expected_growth:
         raise RuntimeError(f"Deploy-size invariant failed: {path}")
     rows.append(result)
+
+for seed in SEEDS:
+    hashes = {row["initial_model_sha256"] for row in rows if row["seed"] == seed}
+    if len(hashes) != 1:
+        raise RuntimeError(f"Methods do not share initialization for seed {seed}: {hashes}")
 
 summary = {"repo_commit": commit, "test_evaluated": False, "methods": {}}
 for method in METHODS:
     values = [row["validation_accuracy"] for row in rows
               if row["method"] == method]
-    residuals = [epoch["projection"]["relative_residual"]
+    residuals = [epoch["diagnostics"]["relative_residual"]
                  for row in rows if row["method"] == method
                  for epoch in row["history"]
-                 if epoch["projection"] and
-                    "relative_residual" in epoch["projection"]]
+                 if epoch["diagnostics"] and
+                    "relative_residual" in epoch["diagnostics"]]
+    cosines = [epoch["diagnostics"]["cosine_alignment"]
+               for row in rows if row["method"] == method
+               for epoch in row["history"]
+               if epoch["diagnostics"] and
+                  "cosine_alignment" in epoch["diagnostics"]]
+    structural_gains = [epoch["diagnostics"]["structural_loss_gain"]
+                        for row in rows if row["method"] == method
+                        for epoch in row["history"]
+                        if epoch["diagnostics"] and
+                           "structural_loss_gain" in epoch["diagnostics"]]
+    projected_gains = [epoch["diagnostics"]["projected_loss_gain"]
+                       for row in rows if row["method"] == method
+                       for epoch in row["history"]
+                       if epoch["diagnostics"] and
+                          epoch["diagnostics"].get("projected_loss_gain") is not None]
     summary["methods"][method] = {
         "validation_accuracy_mean": statistics.mean(values),
         "validation_accuracy_std": statistics.stdev(values) if len(values) > 1 else 0.0,
         "mean_projection_residual": statistics.mean(residuals) if residuals else None,
+        "mean_cosine_alignment": statistics.mean(cosines) if cosines else None,
+        "mean_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,
+        "mean_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,
         "seeds": len(values),
     }
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
