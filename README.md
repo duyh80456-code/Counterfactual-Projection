@@ -4,8 +4,10 @@ Look into a larger model without becoming one.
 
 This repository implements the first block-local pilot for:
 
-1. asking TINY/Gromo for a temporary rank-r hidden-width expansion;
-2. measuring its functional change `delta_logits` without installing or
+1. starting from a full-width ImageNet-pretrained ResNet-18 and asking
+   TINY/Gromo for a temporary rank-r over-expansion beyond its target width;
+2. measuring the finite-difference direction
+   `delta_logits = (f_E(epsilon) - f) / epsilon` without installing or
    training the expansion;
 3. solving `(J^T J + mu I) delta_theta = J^T delta_logits` with matrix-free
    JVP/VJP products and conjugate gradient;
@@ -23,11 +25,12 @@ hypothesis.
 from methods import EProjection
 
 method = EProjection()
-step = method.discover_candidate(model, tiny_candidate, (images, labels))
+step = method.discover_candidate(
+    model, counterfactual_tiny_candidate, projection_batch, gate=0.05)
 print(step.projection.fitted_norm_ratio)
 print(step.projection.relative_residual)
 print(step.projection.cosine_alignment)
-step.projection.apply_(model)
+step.projection.apply_(model, scale=0.05)
 ```
 
 The core invariant is checked on every probe: every parameter and buffer before
@@ -54,16 +57,21 @@ The notebook never embeds the token in the clone URL or prints it. It creates a
 short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 
 The structural gate schedules `vanilla`, norm-matched `random_projection`,
-`tiny_projection`, `expand_train_project` (RepAn/Bypass-like), and
-`real_e_oracle` for two seeds. A dynamic queue gives each GPU one independent
-arm at a time. Only the oracle may increase deploy parameters. Outputs are
+`tiny_projection`, `expand_train_project` (explicitly a RepAn/Bypass-like
+control, not a reproduction), and `real_e_oracle` for two seeds. The main arm
+sweeps epsilon over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
+projection, and held-out checks use three disjoint subsets. A dynamic queue
+gives each GPU one independent arm at a time. Only the oracle may increase
+deploy parameters. Outputs are
 restart-safe at the completed-arm level and are aggregated into `summary.json`
 plus a downloadable `.tar.gz` archive.
 
-This first structural gate uses the audited Gromo CIFAR ResNet because its
-hidden-width transaction is exact. The separate torchvision control runner
-uses ImageNet normalization for pretrained weights, but its gradient-SVD arms
-are controls rather than the primary method.
+The input pipeline uses ImageNet normalization and resized CIFAR-100 images so
+the pretrained backbone sees its expected input distribution. The deploy model
+starts at full `64/128/256/512` width (`missing_neurons() == 0`); a
+`CounterfactualTinyProbe` temporarily raises only the selected block's target
+from `current_width` to `current_width + rank` while TINY constructs E, then
+restores the configured target.
 
 ## Reference implementation
 

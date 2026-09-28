@@ -5,7 +5,9 @@ from torch import nn
 
 from methods import EProjection
 from baselines import ExpandedTrainProject, RealEOracle
-from probe import CandidateExpansionProbe, TransactionalCandidateSource
+from probe import (
+    CandidateExpansionProbe, CounterfactualTinyProbe,
+    TransactionalCandidateSource)
 from projection import (
     FunctionalProjector, StructuralAuxiliarySpace,
     StructuralExpansionTransfer)
@@ -84,10 +86,16 @@ def test_candidate_probe_uses_transaction_without_factor_payload():
     before = {name: value.clone() for name, value in model.state_dict().items()}
     signal = CandidateExpansionProbe()(
         model, candidate=candidate, batch=batch, gate=0.2)
+    smaller_gate = CandidateExpansionProbe()(
+        model, candidate=candidate, batch=batch, gate=0.1)
     assert signal.is_structural_expansion
     assert signal.source == "tiny_gromo_structural"
     assert signal.A_E is None and signal.B_E is None
     assert signal.delta_logits.norm() > 0
+    assert signal.probe_gate == 0.2
+    assert signal.observed_loss_gain is not None
+    assert torch.allclose(signal.delta_logits, smaller_gate.delta_logits,
+                          atol=1e-5, rtol=1e-5)
     assert model.training
     assert all(torch.equal(value, before[name])
                for name, value in model.state_dict().items())
@@ -112,6 +120,45 @@ def test_candidate_statistics_are_transactional():
     assert model.training
     assert all(torch.equal(value, before[name])
                for name, value in model.state_dict().items())
+
+
+def test_counterfactual_probe_overrides_full_width_ceiling_temporarily():
+    class Second:
+        in_neurons = 256
+        target_in_neurons = 256
+
+    class Block:
+        second_layer = Second()
+
+    class FullModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(1))
+            self.site = Block()
+
+        def block(self, name):
+            assert name == "layer3.1"
+            return self.site
+
+    model = FullModel()
+    candidate = type("Candidate", (), {
+        "payload": {"effective_rank": 4},
+    })()
+
+    class Adapter:
+        def schedule_site(self, name, rank):
+            assert (name, rank) == ("layer3.1", 4)
+
+        def propose_all(self, target, _loader, _budget):
+            assert target.site.second_layer.target_in_neurons == 260
+            return [candidate]
+
+    result = CounterfactualTinyProbe(4, "layer3.1").propose(
+        Adapter(), model, [], object())
+    assert result is candidate
+    assert model.site.second_layer.target_in_neurons == 256
+    assert candidate.payload["base_hidden_width"] == 256
+    assert candidate.payload["counterfactual_target_width"] == 260
 
 
 def test_structural_projection_and_auxiliary_transfer_are_concrete():

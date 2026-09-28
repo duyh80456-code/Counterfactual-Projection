@@ -33,10 +33,13 @@ class CandidateExpansionProbe:
     """Measure delta-f from a real temporary structural expansion candidate."""
 
     def __call__(self, model: nn.Module, *, candidate, batch: tuple[Tensor, Tensor],
-                 gate: float | Tensor = 1.0, loss_fn=None) -> ProbeSignal:
+                 gate: float = 0.05, loss_fn=None) -> ProbeSignal:
         if not hasattr(candidate, "virtual_direction"):
             raise TypeError("candidate must provide virtual_direction(gate)")
         inputs, targets = batch
+        gate = float(gate)
+        if not 0 < gate <= 1:
+            raise ValueError("finite-difference gate must be in (0, 1]")
         loss_fn = loss_fn or F.cross_entropy
         before = _snapshot(model)
         modes = {module: module.training for module in model.modules()}
@@ -50,7 +53,8 @@ class CandidateExpansionProbe:
                 with candidate.virtual_direction(gate):
                     expanded = model(inputs)
                     expanded_loss = loss_fn(expanded.float(), targets)
-            delta = expanded - baseline
+            raw_delta = expanded - baseline
+            delta = raw_delta / gate
             if not torch.isfinite(delta).all() or float(delta.norm()) == 0:
                 raise RuntimeError("TINY/Gromo candidate produced zero/nonfinite delta-f")
             payload = getattr(candidate, "payload", {})
@@ -60,11 +64,12 @@ class CandidateExpansionProbe:
                 A_E=None if A_E is None else torch.as_tensor(A_E).detach(),
                 B_E=None if B_E is None else torch.as_tensor(B_E).detach(),
                 delta_feature=None, delta_logits=delta.detach(),
-                predicted_gain=float((baseline_loss - expanded_loss).item()),
+                predicted_gain=float((baseline_loss - expanded_loss).item() / gate),
                 singular_values=(None if "tiny_eigenvalues" not in payload else
                                  torch.as_tensor(payload["tiny_eigenvalues"])),
                 source="tiny_gromo_structural",
-                is_structural_expansion=True)
+                is_structural_expansion=True, probe_gate=gate,
+                observed_loss_gain=float((baseline_loss - expanded_loss).item()))
         finally:
             for module, training in modes.items():
                 module.training = training
@@ -98,6 +103,6 @@ class TransactionalCandidateSource:
 
 
 def signal_from_candidate(model: nn.Module, candidate, inputs: Tensor,
-                          targets: Tensor, gate: float = 1.0) -> ProbeSignal:
+                          targets: Tensor, gate: float = 0.05) -> ProbeSignal:
     return CandidateExpansionProbe()(
         model, candidate=candidate, batch=(inputs, targets), gate=gate)

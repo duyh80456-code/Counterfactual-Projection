@@ -19,8 +19,10 @@ cells = [
 
 This notebook clones the private method repository plus the audited
 One-Shot-TAS-CCIL/Gromo references, then schedules independent method/seed arms
-across both T4 GPUs. The primary E signal is a real temporary hidden-width
-extension from TINY/Gromo, not a low-rank factorization of an existing kernel.
+across both T4 GPUs. The model is a full-width ImageNet-pretrained ResNet-18;
+the primary E signal is a counterfactual temporary hidden-width extension from
+TINY/Gromo beyond that full width, not a low-rank factorization of an existing
+kernel. Statistics, projection fitting, and held-out checking use disjoint data.
 The CIFAR-100 test partition is not evaluated.
 """),
     code("""import json, os, queue, shutil, subprocess, sys, threading
@@ -88,6 +90,15 @@ print(subprocess.check_output(
      "--format=csv,noheader"], text=True))
 if gpu_count != 2:
     raise RuntimeError(f"Select the Kaggle T4 x2 accelerator; found {gpu_count} GPU(s)")
+# Populate the shared weight cache and verify torchvision/Gromo parity before
+# launching two independent processes.
+sys.path.insert(0, str(REFERENCE))
+from probe import build_pretrained_gromo_resnet18
+smoke_model = build_pretrained_gromo_resnet18(100, device="cuda:0")
+assert [int(ref.module.hidden_neurons) for ref in smoke_model.growing_blocks()] == [
+    64, 64, 128, 128, 256, 256, 512, 512]
+del smoke_model
+torch.cuda.empty_cache()
 
 input_root = Path("/kaggle/input")
 cifar_dirs = sorted({p.parent.resolve() for p in input_root.rglob("cifar-100-python")})
@@ -109,8 +120,17 @@ VALIDATION_SAMPLES = 5000
 SITE = "stages.2.blocks.0"
 RANK = 4
 CG_ITERATIONS = 12
+IMAGE_SIZE = 128
+STATISTICS_SAMPLES = 256
+PROJECTION_SAMPLES = 32
+CHECK_SAMPLES = 128
+EPSILONS = [0.01, 0.05, 0.1]
 
-jobs = [(method, seed) for seed in SEEDS for method in METHODS]
+jobs = []
+for seed in SEEDS:
+    for method in METHODS:
+        gates = EPSILONS if method == "tiny_projection" else [0.05]
+        jobs.extend((method, seed, epsilon) for epsilon in gates)
 print(f"Scheduled {len(jobs)} arms in {len(jobs) / 2:.0f} two-GPU waves")
 """),
     code("""# Dynamic two-worker queue: each GPU immediately picks up the next arm.
@@ -124,10 +144,11 @@ lock = threading.Lock()
 def run_worker(gpu):
     while True:
         try:
-            method, seed = job_queue.get_nowait()
+            method, seed, epsilon = job_queue.get_nowait()
         except queue.Empty:
             return
-        label = f"{method}_seed{seed}"
+        epsilon_label = str(epsilon).replace(".", "p")
+        label = f"{method}_eps{epsilon_label}_seed{seed}"
         arm_dir = OUTPUT / label
         result = arm_dir / "result.json"
         if result.is_file():
@@ -141,7 +162,12 @@ def run_worker(gpu):
             "--reference-root", str(REFERENCE),
             "--train-samples", str(TRAIN_SAMPLES),
             "--validation-samples", str(VALIDATION_SAMPLES),
+            "--statistics-samples", str(STATISTICS_SAMPLES),
+            "--projection-samples", str(PROJECTION_SAMPLES),
+            "--check-samples", str(CHECK_SAMPLES),
+            "--image-size", str(IMAGE_SIZE),
             "--site", SITE, "--rank", str(RANK),
+            "--probe-epsilon", str(epsilon),
             "--cg-iterations", str(CG_ITERATIONS),
             "--data-root", str(DATA_ROOT), "--output", str(arm_dir),
         ]
@@ -173,8 +199,9 @@ print("All arms completed")
     code("""import statistics
 
 rows = []
-for method, seed in jobs:
-    path = OUTPUT / f"{method}_seed{seed}" / "result.json"
+for method, seed, epsilon in jobs:
+    epsilon_label = str(epsilon).replace(".", "p")
+    path = OUTPUT / f"{method}_eps{epsilon_label}_seed{seed}" / "result.json"
     result = json.loads(path.read_text())
     expected_growth = method == "real_e_oracle"
     if (result["deploy_parameter_delta"] > 0) != expected_growth:
@@ -186,37 +213,51 @@ for seed in SEEDS:
     if len(hashes) != 1:
         raise RuntimeError(f"Methods do not share initialization for seed {seed}: {hashes}")
 
-summary = {"repo_commit": commit, "test_evaluated": False, "methods": {}}
-for method in METHODS:
-    values = [row["validation_accuracy"] for row in rows
-              if row["method"] == method]
+summary = {"repo_commit": commit, "test_evaluated": False, "arms": {}}
+groups = [(method, epsilon)
+          for method in METHODS
+          for epsilon in (EPSILONS if method == "tiny_projection" else [0.05])]
+for method, epsilon in groups:
+    key = f"{method}@epsilon={epsilon}"
+    selected = [row for row in rows
+                if row["method"] == method and
+                   row["config"]["probe_epsilon"] == epsilon]
+    values = [row["validation_accuracy"] for row in selected]
     residuals = [epoch["diagnostics"]["relative_residual"]
-                 for row in rows if row["method"] == method
+                 for row in selected
                  for epoch in row["history"]
                  if epoch["diagnostics"] and
                     "relative_residual" in epoch["diagnostics"]]
     cosines = [epoch["diagnostics"]["cosine_alignment"]
-               for row in rows if row["method"] == method
+               for row in selected
                for epoch in row["history"]
                if epoch["diagnostics"] and
                   "cosine_alignment" in epoch["diagnostics"]]
     structural_gains = [epoch["diagnostics"]["structural_loss_gain"]
-                        for row in rows if row["method"] == method
+                        for row in selected
                         for epoch in row["history"]
                         if epoch["diagnostics"] and
                            "structural_loss_gain" in epoch["diagnostics"]]
-    projected_gains = [epoch["diagnostics"]["projected_loss_gain"]
-                       for row in rows if row["method"] == method
+    check_structural_gains = [epoch["diagnostics"]["check_structural_loss_gain"]
+                              for row in selected
+                              for epoch in row["history"]
+                              if epoch["diagnostics"] and
+                                 epoch["diagnostics"].get("check_structural_loss_gain") is not None]
+    projected_gains = [epoch["diagnostics"]["check_projected_loss_gain"]
+                       for row in selected
                        for epoch in row["history"]
                        if epoch["diagnostics"] and
-                          epoch["diagnostics"].get("projected_loss_gain") is not None]
-    summary["methods"][method] = {
+                          epoch["diagnostics"].get("check_projected_loss_gain") is not None]
+    summary["arms"][key] = {
+        "method": method,
+        "probe_epsilon": epsilon,
         "validation_accuracy_mean": statistics.mean(values),
         "validation_accuracy_std": statistics.stdev(values) if len(values) > 1 else 0.0,
         "mean_projection_residual": statistics.mean(residuals) if residuals else None,
         "mean_cosine_alignment": statistics.mean(cosines) if cosines else None,
-        "mean_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,
-        "mean_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,
+        "mean_projection_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,
+        "mean_held_out_structural_loss_gain": statistics.mean(check_structural_gains) if check_structural_gains else None,
+        "mean_held_out_projected_loss_gain": statistics.mean(projected_gains) if projected_gains else None,
         "seeds": len(values),
     }
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))

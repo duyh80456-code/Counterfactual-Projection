@@ -53,6 +53,10 @@ class ProjectionStep:
         return self.baseline_loss - self.expanded_loss
 
     @property
+    def structural_directional_gain(self) -> float:
+        return self.signal.predicted_gain
+
+    @property
     def projected_loss_gain(self) -> float | None:
         return (None if self.projected_loss is None else
                 self.baseline_loss - self.projected_loss)
@@ -71,7 +75,7 @@ class EProjection:
         self.projector = projector or FunctionalProjector()
 
     def discover_candidate(self, model: nn.Module, candidate,
-                           batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
+                           batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
                            block: str | None = None) -> ProjectionStep:
         baseline_loss = _eval_loss(model, batch)
         signal = self.structural_probe(
@@ -83,10 +87,10 @@ class EProjection:
             model, batch[0], signal.delta_logits, block=projection_block)
         return ProjectionStep(
             signal, result, baseline_loss,
-            baseline_loss - signal.predicted_gain)
+            baseline_loss - float(signal.observed_loss_gain))
 
     def step_candidate_(self, model: nn.Module, candidate,
-                        batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
+                        batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
                         block: str | None = None,
                         scale: float = 1.0) -> ProjectionStep:
         step = self.discover_candidate(
@@ -113,4 +117,3 @@ class EProjection:
         step = self.discover(model, batch, block=block, rank=rank)
         step.projection.apply_(model, scale)
         return replace(step, projected_loss=_eval_loss(model, batch))
-

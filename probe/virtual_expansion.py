@@ -26,6 +26,8 @@ class ProbeSignal:
     singular_values: Tensor | None
     source: str = "unknown"
     is_structural_expansion: bool = False
+    probe_gate: float | None = None
+    observed_loss_gain: float | None = None
 
     @property
     def rank(self) -> int:
