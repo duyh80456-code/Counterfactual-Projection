@@ -11,6 +11,8 @@ def _copy_module(target: nn.Module, source: nn.Module) -> None:
 
 
 def _first(module: nn.Module, kind):
+    if isinstance(module, kind):
+        return module
     return next(child for child in module.modules()
                 if child is not module and isinstance(child, kind))
 
