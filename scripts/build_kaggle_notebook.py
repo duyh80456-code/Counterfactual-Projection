@@ -224,13 +224,21 @@ for name in ("ours_e_driven_o", "repan", "expandnets", "repoptimizer"):
     result = json.loads((OUTPUT / name / "result.json").read_text())
     missing = sorted(required - result.keys())
     if missing: raise RuntimeError(f"{name} missing result fields: {missing}")
-    if result["epoch"] != TOTAL_EPOCHS: raise RuntimeError(f"{name} stopped at total epoch {result['epoch']}")
+    expected_epoch = OURS_EPOCHS if name == "ours_e_driven_o" else TOTAL_EPOCHS
+    if result["epoch"] != expected_epoch:
+        raise RuntimeError(
+            f"{name} stopped at method epoch {result['epoch']}; expected {expected_epoch}")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
+    result["method_epochs"] = result["epoch"]
+    result["total_training_epochs"] = (
+        result["epoch"] + WARMUP_EPOCHS
+        if name == "ours_e_driven_o" else result["epoch"])
     results.append(result)
 summary = {"total_epochs": TOTAL_EPOCHS, "ours_warmup_epochs": WARMUP_EPOCHS,
     "ours_post_warmup_epochs": OURS_EPOCHS, "seed": SEED, "official_test_used": False,
-    "results": [{key: row.get(key) for key in sorted(required)} for row in results],
+    "results": [{key: row.get(key) for key in sorted(
+        required | {"method_epochs", "total_training_epochs"})} for row in results],
     "continuation": "increase TOTAL_EPOCHS and rerun; completed epochs are skipped"}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))

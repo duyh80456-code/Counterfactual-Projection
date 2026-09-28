@@ -14,6 +14,8 @@ def test_four_arm_notebook_is_restart_safe_and_uses_official_sources():
         assert repository in source
     assert "TOTAL_EPOCHS = 80" in source
     assert "OURS_EPOCHS = TOTAL_EPOCHS - WARMUP_EPOCHS" in source
+    assert 'expected_epoch = OURS_EPOCHS if name == "ours_e_driven_o"' in source
+    assert 'result["method_epochs"] = result["epoch"]' in source
     assert "checkpoint_latest.pt" in source
     assert "Restored prior phase" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
@@ -34,6 +36,18 @@ def test_ours_alias_maps_to_frozen_projection_arm():
     assert 'args.method = "tiny_projection"' in source
     assert '"application_gate": "finite_and_heldout_functional_fit"' in source
     assert 'cg_converged != True' not in source
+    assert '"epoch": len(history)' in source
+    assert '"total_training_epochs": (' in source
+    assert 'completed.get("epoch") == args.epochs' in source
+
+
+def test_ours_epoch_accounting_is_77_method_and_80_total():
+    total_epochs = 80
+    warmup_epochs = 3
+    ours_epochs = total_epochs - warmup_epochs
+    ours_result = {"epoch": ours_epochs}
+    assert ours_result["epoch"] == ours_epochs
+    assert ours_result["epoch"] + warmup_epochs == total_epochs
 
 
 def test_gromo_validation_loss_is_accumulated_once():

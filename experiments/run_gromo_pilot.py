@@ -487,6 +487,7 @@ def main():
             completed = json.loads(completion_file.read_text())
             completion_is_valid = (
                 len(completed.get("history", [])) >= args.epochs and
+                completed.get("epoch") == args.epochs and
                 (output / "checkpoint_latest.pt").is_file())
     if completion_is_valid:
         print(f"completed {completion_file.name} exists; skipping", flush=True)
@@ -1110,10 +1111,12 @@ def main():
         source_commit = "unknown"
     result = {
         "method": requested_method, "seed": args.seed,
-        "epoch": (args.warmup_epochs + len(history)
-                  if requested_method == "ours_e_driven_o"
-                  else len(history)),
+        "epoch": len(history),
         "post_warmup_epochs": len(history),
+        "warmup_epochs": args.warmup_epochs,
+        "total_training_epochs": (
+            args.warmup_epochs + len(history)
+            if requested_method == "ours_e_driven_o" else len(history)),
         "train_accuracy": history[-1]["train_accuracy"],
         "pretrained_model_sha256": pretrained_sha256,
         "initial_model_sha256": warmup_sha256,

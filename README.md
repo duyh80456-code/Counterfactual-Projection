@@ -165,6 +165,10 @@ epochs. This is enough to screen for a performance signal, but it does not
 support final superiority claims; those require a frozen full-CIFAR-100,
 multi-seed run.
 
+Result accounting keeps `epoch`/`method_epochs` as the epochs executed by the
+method runner. Therefore Ours reports 77 there and
+`total_training_epochs=80`; the three external arms report 80 for both fields.
+
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it
 cannot silently skip that test. Candidate FLOPs are recomputed from runtime
