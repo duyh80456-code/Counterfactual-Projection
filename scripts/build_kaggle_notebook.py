@@ -32,7 +32,7 @@ Bypass treats opt2 epoch 10 as a soft cap: it never force-projects a nonzero D,
 continues opt2 within the remaining budget, and is rejected by aggregation if
 the contraction criterion is still unmet at epoch 200.
 """),
-    code("""import json, os, shutil, subprocess, sys
+    code("""import json, os, shutil, subprocess, sys, threading
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
 
@@ -168,6 +168,14 @@ print("theta_150 SHA-256:", SHARED_HASH)
 """),
     code("""def run_wave(assignments):
     running = []
+
+    def stream_output(name, process, log):
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+            print(f"[{name}] {line}", end="", flush=True)
+        process.stdout.close()
+
     for gpu, name, command in assignments:
         arm_dir = OUTPUT / name
         arm_dir.mkdir(parents=True, exist_ok=True)
@@ -175,13 +183,20 @@ print("theta_150 SHA-256:", SHARED_HASH)
         process_env = os.environ.copy()
         process_env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
                            OMP_NUM_THREADS="2", PYTHONPATH=RUNTIME_PYTHONPATH)
-        process = subprocess.Popen(command, cwd=REPO, env=process_env,
-                                   stdout=log, stderr=subprocess.STDOUT)
-        running.append((name, process, log))
+        process = subprocess.Popen(
+            command, cwd=REPO, env=process_env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+            errors="replace", bufsize=1)
+        reader = threading.Thread(
+            target=stream_output, args=(name, process, log), daemon=True)
+        reader.start()
+        running.append((name, process, reader, log))
         print(f"GPU{gpu}: started {name}, pid={process.pid}")
     failures = []
-    for name, process, log in running:
-        return_code = process.wait(); log.close()
+    for name, process, reader, log in running:
+        return_code = process.wait()
+        reader.join()
+        log.close()
         print(f"{name}: exit={return_code}")
         if return_code: failures.append((name, return_code))
     if failures:

@@ -19,6 +19,8 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert "Restored prior run" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
     assert '(0, "ours_e_driven_o", ours), (1, "bypass", bypass)' in source
+    assert "stdout=subprocess.PIPE" in source
+    assert 'print(f"[{name}] {line}"' in source
     assert 'result.get("contraction_criterion_met") is not True' in source
     assert 'result.get("bypass_completed") is not True' in source
     assert "official_test_used" in source
