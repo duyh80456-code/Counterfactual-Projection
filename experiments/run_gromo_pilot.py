@@ -754,7 +754,7 @@ def main():
                     "correction_applied": correction_applied,
                     "correction_was_attempted": True,
                     "application_gate": "finite_and_heldout_functional_fit",
-                    "application_ignored_cg_converged_flag": True,
+                    "application_gate_uses_functional_fit": True,
                     "solution_is_finite": application["solution_is_finite"],
                     "functional_fit_accepted":
                         application["functional_fit_accepted"],
@@ -816,7 +816,13 @@ def main():
                     projector, model, tuning_batch, tuning_signal.delta_logits,
                     random_parameter_delta, device)
                 tuning_loss_before = batch_loss(model, tuning_batch)
-                correction_applied = projection_result.cg.converged
+                application = projection_application_gate(
+                    random_parameter_delta, heldout,
+                    max_relative_residual=
+                        args.application_max_heldout_residual,
+                    min_cosine_alignment=
+                        args.application_min_heldout_cosine)
+                correction_applied = application["apply"]
                 tuning_logits_before = eval_logits(model, tuning_batch[0])
                 actual_metrics = {}
                 if correction_applied:
@@ -864,7 +870,13 @@ def main():
                 control_scale = (1.0 if args.projection_scale == 0
                                  else args.projection_scale)
                 tuning_loss_before = batch_loss(model, tuning_batch)
-                correction_applied = projection_result.cg.converged
+                application = projection_application_gate(
+                    projection_result.parameter_delta, heldout,
+                    max_relative_residual=
+                        args.application_max_heldout_residual,
+                    min_cosine_alignment=
+                        args.application_min_heldout_cosine)
+                correction_applied = application["apply"]
                 tuning_logits_before = eval_logits(model, tuning_batch[0])
                 actual_metrics = {}
                 if correction_applied:
@@ -918,10 +930,16 @@ def main():
                 heldout, heldout_evaluation_seconds = evaluate_heldout_direction(
                     projector, model, tuning_batch, tuning_signal.delta_logits,
                     projection_result.parameter_delta, device)
+                application = projection_application_gate(
+                    projection_result.parameter_delta, heldout,
+                    max_relative_residual=
+                        args.application_max_heldout_residual,
+                    min_cosine_alignment=
+                        args.application_min_heldout_cosine)
                 local_projected_gain = (
                     preview_projected_gain(
                         model, projection_result, projection_scale, tuning_batch)
-                    if projection_result.cg.converged else None)
+                    if application["apply"] else None)
                 commit_started = time.perf_counter()
                 commit = RealEGrowth.commit_(model, candidate)
                 committed_second = commit.committed_module.second_layer
