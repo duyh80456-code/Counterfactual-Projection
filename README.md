@@ -50,7 +50,7 @@ needed by that optimizer.
 python3 -m pytest
 ```
 
-## Kaggle T4 x2 pilot
+## Kaggle T4 x2 four-arm run
 
 Use
 [`notebooks/kaggle_counterfactual_projection_t4x2.ipynb`](notebooks/kaggle_counterfactual_projection_t4x2.ipynb).
@@ -63,28 +63,28 @@ Before running it:
 The notebook never embeds the token in the clone URL or prints it. It creates a
 short-lived `GIT_ASKPASS` helper and deletes it immediately after cloning.
 
-The current notebook is intentionally narrow: it schedules only
-`tiny_projection` at `stages.2.blocks.0`, rank 4, epsilon 0.05 and residual-path
-scope for the two existing seeds. TINY statistics, functional projection, and
-held-out checks use distinct batches, with fresh statistics/projection batches
-at each intervention. The seed-specific warm-up checkpoints include both model
-and SGD state, and the two GPUs run one seed each. No baseline or official-test
-arm is launched in this mechanism check.
-Outputs are
-restart-safe at the completed-arm level and are aggregated into `summary.json`
-plus a downloadable `.tar.gz` archive.
-The focused E-driven O revision keeps the existing `fair_v15` output root:
-shared warm-up model/optimizer checkpoints are reused, while prior
-`tiny_projection` results are archived as `result.pre_e_driven_o.json`. Only
-the two fixed epsilon-0.05 tiny-projection seed arms run for three post-warm-up
-epochs; baselines and official-test arms are not launched. An existing full
-`summary.json`, when present, is preserved as `summary.pre_e_driven_o.json`
-before the focused validation summary is written.
-The notebook pins the main checkout, `gromo/src`, and the One-Shot-TAS checkout
-in both the live kernel's `sys.path` and every child process's `PYTHONPATH`.
-It asserts the resolved source path of `probe`, `gromo`, and `dual_growth`
-before constructing a model; editable installs performed after kernel startup
-are otherwise visible only to newly launched Python processes.
+The notebook fixes seed 1 and runs 80 target epochs in two waves:
+`ours_e_driven_o`/RepAn, then ExpandNets/RepOptimizer. Comparison repositories
+are cloned at pinned commits and their URL, revision, and license status are
+saved in `source_manifest.json`. Their operators are called from official
+source; local wrappers only provide the common data split, budget, metrics,
+and checkpoint format.
+
+Every arm atomically writes `checkpoint_latest.pt` after every epoch with its
+model, optimizer, scheduler, history, protocol, and RNG state. Re-running
+resumes unfinished arms. For a later Kaggle session, attach the previous
+archive as an input Dataset, increase `TARGET_EPOCHS`, and rerun; the notebook
+restores all four arms. The warm-up checkpoint is included in the archive. The
+official CIFAR-100 test set is never constructed.
+
+RepAn uses official RepVGG-A1 reparameterization/inversion operators and
+30-epoch annealing-cycle boundaries. ExpandNets uses official ExpandNet-CL and
+its contraction routine. Its CIFAR SmallNet hard-codes a 32x32 feature shape,
+so the wrapper downsamples the shared augmented 128px tensor immediately before
+the model and records this deviation. RepOptimizer uses official
+RepOpt-VGG-B1, its released B1 scale file, and `RepOptimizerSGD`; it is an
+adjacent-architecture comparator rather than a matched ResNet-18 comparison.
+RepAn's pinned revision contains no license file, which is reported explicitly.
 
 The input pipeline uses ImageNet normalization and resized CIFAR-100 images so
 the pretrained backbone sees its expected input distribution. The deploy model
@@ -155,11 +155,10 @@ the explicitly defined gate-1 trained-expansion control.
 Each run reports `corrections_applied / correction_attempts` and its application
 rate; the Kaggle gate rejects any projection arm below 100%.
 
-The committed notebook is an intentionally small mechanism pilot (12k training
-examples and 3 warm-up + 3 intervention epochs). It can establish whether the
-projection behaves coherently, but must not support performance-superiority
-claims. Such claims require a separately frozen full-CIFAR-100, long-schedule
-experiment after this gate passes.
+The committed notebook remains a subset pilot (12k training examples): Ours
+loads the fixed 3-epoch warm-up and all arms target 80 training epochs. This is
+enough to screen for a performance signal, but it does not support final
+superiority claims; those require a frozen full-CIFAR-100, multi-seed run.
 
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it

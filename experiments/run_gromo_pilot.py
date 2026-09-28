@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -33,7 +34,7 @@ METHODS = (
     "vanilla_momentum_reset", "random_projection", "tiny_projection",
     "sign_randomized_projection",
     "tiny_projection_conv_only", "tiny_projection_whole_block",
-    "expand_train_project", "real_e_growth")
+    "expand_train_project", "real_e_growth", "ours_e_driven_o")
 FULL_WIDTHS = [64, 64, 128, 128, 256, 256, 512, 512]
 SGD_MOMENTUM = 0.9
 SGD_WEIGHT_DECAY = 5e-4
@@ -161,8 +162,7 @@ def make_train_loader(dataset, indices, args):
     return DataLoader(
         Subset(dataset, indices), args.batch_size, shuffle=True,
         generator=torch.Generator().manual_seed(args.seed),
-        num_workers=args.workers, pin_memory=True,
-        persistent_workers=args.workers > 0)
+        num_workers=args.workers, pin_memory=True, persistent_workers=False)
 
 
 def make_eval_loader(dataset, indices, batch_size, args):
@@ -469,14 +469,25 @@ def evaluate_heldout_direction(projector, model, tuning_batch,
 
 def main():
     args = arguments()
+    requested_method = args.method
+    if requested_method == "ours_e_driven_o":
+        # Public four-arm name; implementation remains the frozen main arm.
+        args.method = "tiny_projection"
     validate_arguments(args)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     completion_file = output / ("warmup.json" if args.prepare_warmup else "result.json")
     warmup_target = Path(args.warmup_checkpoint) if args.warmup_checkpoint else None
-    completion_is_valid = (completion_file.is_file() and
-                           (not args.prepare_warmup or
-                            (warmup_target is not None and warmup_target.is_file())))
+    completion_is_valid = False
+    if completion_file.is_file():
+        if args.prepare_warmup:
+            completion_is_valid = (
+                warmup_target is not None and warmup_target.is_file())
+        else:
+            completed = json.loads(completion_file.read_text())
+            completion_is_valid = (
+                len(completed.get("history", [])) >= args.epochs and
+                (output / "checkpoint_latest.pt").is_file())
     if completion_is_valid:
         print(f"completed {completion_file.name} exists; skipping", flush=True)
         return
@@ -589,6 +600,33 @@ def main():
         preconditioner_probes=args.cg_preconditioner_probes)
     e_projection = EProjection(projector=projector)
     history = []
+    prior_elapsed_seconds = 0.0
+    start_epoch = 0
+    resume_path = output / "checkpoint_latest.pt"
+    run_protocol = {
+        **protocol, "method": requested_method, "site": args.site,
+        "rank": args.rank, "probe_epsilon": args.probe_epsilon,
+        "projection_scope": "residual_path",
+        "solver_revision": args.solver_revision,
+    }
+    if resume_path.is_file():
+        resume = torch.load(resume_path, map_location=device)
+        if resume["protocol"] != run_protocol:
+            raise RuntimeError("post-warm-up resume checkpoint protocol mismatch")
+        model.load_state_dict(resume["model"], strict=True)
+        optimizer.load_state_dict(resume["optimizer"])
+        history = resume["history"]
+        start_epoch = int(resume["epoch"])
+        prior_elapsed_seconds = float(resume.get("elapsed_seconds", 0.0))
+        random.setstate(resume["python_rng_state"])
+        torch.set_rng_state(resume["torch_rng_state"].cpu())
+        torch.cuda.set_rng_state_all(resume["cuda_rng_states"])
+        if "train_loader_generator_state" in resume:
+            train_loader.generator.set_state(
+                resume["train_loader_generator_state"].cpu())
+        if start_epoch > args.epochs:
+            raise RuntimeError(
+                f"checkpoint epoch {start_epoch} exceeds target {args.epochs}")
     start = time.perf_counter()
     projection_scale = (args.probe_epsilon if args.projection_scale == 0
                         else args.projection_scale)
@@ -619,7 +657,7 @@ def main():
         }
         return selected, selection
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         diagnostics = None
         if args.method == "vanilla_momentum_reset":
             if args.site == "auto":
@@ -1018,6 +1056,27 @@ def main():
             diagnostics["validation_accuracy"] = validation_accuracy
         history.append(row)
         print(json.dumps(row, sort_keys=True), flush=True)
+        elapsed = prior_elapsed_seconds + time.perf_counter() - start
+        temporary = resume_path.with_suffix(".pt.tmp")
+        torch.save({
+            "format_version": 1, "epoch": epoch + 1,
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "history": history, "protocol": run_protocol,
+            "elapsed_seconds": elapsed,
+            "python_rng_state": random.getstate(),
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_states": torch.cuda.get_rng_state_all(),
+            "train_loader_generator_state": train_loader.generator.get_state(),
+        }, temporary)
+        temporary.replace(resume_path)
+        progress = output / "progress.json"
+        progress_tmp = output / "progress.json.tmp"
+        progress_tmp.write_text(json.dumps({
+            "method": requested_method, "target_epochs": args.epochs,
+            "completed_epochs": epoch + 1, "latest": row,
+            "checkpoint": str(resume_path),
+        }, indent=2, sort_keys=True))
+        progress_tmp.replace(progress)
 
     # Hyperparameter-sweep arms do not construct or iterate the official test
     # set. The selected configuration is rerun with this explicit flag.
@@ -1035,12 +1094,29 @@ def main():
              row["diagnostics"].get("correction_was_attempted") and
              row["diagnostics"].get("correction_applied"))
         for row in history)
+    applied_diagnostics = [
+        row["diagnostics"] for row in history
+        if row["diagnostics"] and row["diagnostics"].get("correction_applied")]
+    latest_applied = applied_diagnostics[-1] if applied_diagnostics else {}
+    run_peak_gpu_memory = max([
+        int(row["diagnostics"].get("gpu_peak_allocated_bytes", 0))
+        for row in history if row["diagnostics"]
+    ] + [int(torch.cuda.max_memory_allocated(device))])
+    try:
+        source_commit = subprocess.check_output(
+            ["git", "-C", str(Path(__file__).resolve().parents[1]),
+             "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.SubprocessError):
+        source_commit = "unknown"
     result = {
-        "method": args.method, "seed": args.seed,
+        "method": requested_method, "seed": args.seed,
+        "epoch": len(history),
+        "train_accuracy": history[-1]["train_accuracy"],
         "pretrained_model_sha256": pretrained_sha256,
         "initial_model_sha256": warmup_sha256,
         "warmup_history": warmup_history,
         "validation_accuracy": history[-1]["validation_accuracy"],
+        "validation_loss": history[-1]["validation_loss"],
         "best_validation_accuracy": max(x["validation_accuracy"] for x in history),
         "official_test_loss": test_loss,
         "official_test_accuracy": test_accuracy,
@@ -1052,6 +1128,10 @@ def main():
         "correction_application_rate": (
             corrections_applied / correction_attempts
             if correction_attempts else None),
+        "actual_cosine_alignment": latest_applied.get(
+            "actual_cosine_alignment"),
+        "actual_relative_residual": latest_applied.get(
+            "actual_relative_residual"),
         "architecture": model.architecture_id,
         "pretrained_backbone": True,
         "initial_hidden_widths": hidden_widths,
@@ -1063,7 +1143,14 @@ def main():
             "official_test_evaluated_once_after_training":
                 args.evaluate_official_test,
         },
-        "elapsed_seconds": time.perf_counter() - start,
+        "training_seconds": prior_elapsed_seconds + time.perf_counter() - start,
+        "elapsed_seconds": prior_elapsed_seconds + time.perf_counter() - start,
+        "peak_train_params": initial_parameters,
+        "deploy_params": final_parameters,
+        "peak_gpu_memory": run_peak_gpu_memory,
+        "source_repo": "https://github.com/duyh80456-code/Counterfactual-Projection.git",
+        "source_commit": source_commit,
+        "checkpoint": str(resume_path),
         "history": history, "config": vars(args),
     }
     (output / "result.json").write_text(
