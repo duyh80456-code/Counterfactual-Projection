@@ -128,3 +128,8 @@ def test_bypass_projects_contracted_extension_and_enters_train3():
     optimizer_ids = {id(parameter) for group in optimizer.param_groups
                      for parameter in group["params"]}
     assert all(id(parameter) not in optimizer_ids for parameter in extensions)
+
+
+def test_bypass_result_uses_explicit_completed_field():
+    source = Path("baselines/run_bypass.py").read_text()
+    assert '"bypass_completed": phase == "train3"' in source

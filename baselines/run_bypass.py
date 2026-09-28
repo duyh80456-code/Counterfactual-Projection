@@ -282,7 +282,7 @@ def main():
         "contraction_criterion_met": bool(
             contraction_at_projection is not None and
             contraction_at_projection < args.contraction_epsilon),
-        "bypass_complete": phase == "train3",
+        "bypass_completed": phase == "train3",
         "projection_performed": contraction_at_projection is not None,
         "opt2_soft_cap_exceeded": opt2_soft_cap_exceeded,
         "projection_loss_jump": projection_loss_jump,

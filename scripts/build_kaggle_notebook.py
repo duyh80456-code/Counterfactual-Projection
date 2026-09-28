@@ -203,10 +203,12 @@ for name in ("ours_e_driven_o", "bypass", "vanilla_continue"):
         raise RuntimeError(f"{name} did not fork from theta_20")
     if result["fork_epoch"] != FORK_EPOCH or result["post_fork_epochs"] != POST_FORK_EPOCHS:
         raise RuntimeError(f"{name} did not complete the 20+60 protocol")
-    if name == "bypass" and result.get("contraction_criterion_met") is not True:
+    if name == "bypass" and (
+            result.get("contraction_criterion_met") is not True or
+            result.get("bypass_completed") is not True):
         raise RuntimeError(
-            "Bypass exhausted the common budget without reaching contraction "
-            "epsilon; result.json is preserved but is not a valid comparator")
+            "Bypass did not both reach contraction epsilon and return to "
+            "train3; result.json is preserved but is not a valid comparator")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
     results.append(result)
@@ -219,7 +221,7 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "correction_application_rate", "actual_cosine_alignment",
         "actual_relative_residual", "opt1_epochs", "opt2_epochs",
         "train3_epochs", "contraction_norm", "projection_loss_jump",
-        "contraction_criterion_met", "bypass_complete",
+        "contraction_criterion_met", "bypass_completed",
         "opt2_soft_cap_exceeded"})}
         for row in results]}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
