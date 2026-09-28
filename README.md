@@ -99,7 +99,10 @@ Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
 counts, CG convergence and residual norms (including iterations 12/25/50),
 peak allocated GPU memory, and any SGD momentum states reset after a direct
 projected parameter jump. CG runs for at most 50 iterations and an unconverged
-correction is never applied. The real-E growth control intervenes at
+correction is never applied. If the requested damping does not converge, the
+solver retries transparently at `10x`, `100x`, and `1000x` damping; every
+attempt, residual, and effective damping is logged, and only a converged final
+attempt may be applied. The real-E growth control intervenes at
 the same epoch frequency as the main method and logs structural and projected
 local gains before every irreversible commit. Real-E growth commits synchronize the
 new current width back to the target width before the next intervention.

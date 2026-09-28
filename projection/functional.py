@@ -23,6 +23,14 @@ class FunctionalEvaluation:
 
 
 @dataclass(frozen=True)
+class CGAttempt:
+    damping: float
+    iterations: int
+    residual_norm: float
+    converged: bool
+
+
+@dataclass(frozen=True)
 class ProjectionResult:
     block: str
     parameter_delta: dict[str, Tensor]
@@ -34,6 +42,9 @@ class ProjectionResult:
     cg: CGResult
     jvp_calls: int
     vjp_calls: int
+    damping_requested: float
+    damping_used: float
+    cg_attempts: tuple[CGAttempt, ...]
 
     @property
     def projection_ratio(self) -> float:
@@ -51,12 +62,15 @@ class ProjectionResult:
 
 class FunctionalProjector:
     def __init__(self, damping: float = 1e-3, max_iter: int = 50,
-                 tolerance: float = 1e-6):
-        if damping < 0:
-            raise ValueError("damping must be non-negative")
+                 tolerance: float = 1e-6, max_damping_retries: int = 3,
+                 damping_multiplier: float = 10.0):
+        if damping < 0 or max_damping_retries < 0 or damping_multiplier <= 1:
+            raise ValueError("invalid damping/retry configuration")
         self.damping = float(damping)
         self.max_iter = int(max_iter)
         self.tolerance = float(tolerance)
+        self.max_damping_retries = int(max_damping_retries)
+        self.damping_multiplier = float(damping_multiplier)
 
     def project(self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
                 *, block: str,
@@ -115,12 +129,35 @@ class FunctionalProjector:
 
         rhs = transpose_jacobian(target).detach()
 
-        def normal_matrix(vector: Tensor) -> Tensor:
-            return (transpose_jacobian(jacobian_vector(vector)) +
-                    self.damping * vector.detach()).detach()
+        cg_attempts = []
+        cg = None
+        first_cg = None
+        damping_used = self.damping
+        for attempt in range(self.max_damping_retries + 1):
+            damping_used = (self.damping * self.damping_multiplier ** attempt
+                            if self.damping > 0 else 0.0)
 
-        cg = conjugate_gradient(normal_matrix, rhs, max_iter=self.max_iter,
-                                tolerance=self.tolerance)
+            def normal_matrix(vector: Tensor) -> Tensor:
+                return (transpose_jacobian(jacobian_vector(vector)) +
+                        damping_used * vector.detach()).detach()
+
+            cg = conjugate_gradient(
+                normal_matrix, rhs, max_iter=self.max_iter,
+                tolerance=self.tolerance)
+            cg_attempts.append(CGAttempt(
+                damping=damping_used, iterations=cg.iterations,
+                residual_norm=cg.residual_norm, converged=cg.converged))
+            if first_cg is None:
+                first_cg = cg
+            if cg.converged or self.damping == 0:
+                break
+        assert cg is not None
+        if not cg.converged and first_cg is not None:
+            # Retries are allowed to change the accepted regularized problem
+            # only when they actually converge. Otherwise retain the requested
+            # damping's diagnostic solution; callers will refuse to apply it.
+            cg = first_cg
+            damping_used = self.damping
         fitted = jacobian_vector(cg.solution).reshape_as(target_delta).detach()
         return ProjectionResult(
             block=block,
@@ -130,7 +167,9 @@ class FunctionalProjector:
             fitted_norm_ratio=fitted_norm_ratio(fitted, target_delta),
             relative_residual=relative_residual(fitted, target_delta),
             cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg,
-            jvp_calls=jvp_calls, vjp_calls=vjp_calls)
+            jvp_calls=jvp_calls, vjp_calls=vjp_calls,
+            damping_requested=self.damping, damping_used=damping_used,
+            cg_attempts=tuple(cg_attempts))
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,

@@ -3,6 +3,7 @@ from torch import nn
 from torch.func import functional_call, jvp
 
 from projection import FunctionalProjector
+from projection.cg import CGResult
 from experiments.run_gromo_pilot import (
     actual_update_metrics, eval_logits, reset_projected_momentum,
     reset_residual_path_momentum,
@@ -119,3 +120,28 @@ def test_actual_update_metrics_measure_realized_function_change():
     metrics = actual_update_metrics(model, inputs, baseline, target, scale)
     assert metrics["actual_heldout_relative_residual"] < 1e-4
     assert metrics["actual_heldout_cosine_alignment"] > 0.999
+
+
+def test_projector_retries_with_stronger_damping(monkeypatch):
+    import projection.functional as functional_module
+
+    calls = []
+
+    def fake_cg(matvec, rhs, **_kwargs):
+        calls.append(matvec)
+        converged = len(calls) == 2
+        return CGResult(
+            solution=torch.zeros_like(rhs), iterations=1,
+            residual_norm=0.0 if converged else 1.0,
+            converged=converged, residual_history=(1.0,))
+
+    monkeypatch.setattr(functional_module, "conjugate_gradient", fake_cg)
+    model = nn.Linear(2, 2, bias=False)
+    inputs = torch.randn(2, 2)
+    result = FunctionalProjector(
+        damping=1e-3, max_iter=1, max_damping_retries=2).project(
+            model, inputs, torch.randn(2, 2), block="")
+    assert result.cg.converged
+    assert result.damping_requested == 1e-3
+    assert result.damping_used == 1e-2
+    assert [attempt.damping for attempt in result.cg_attempts] == [1e-3, 1e-2]

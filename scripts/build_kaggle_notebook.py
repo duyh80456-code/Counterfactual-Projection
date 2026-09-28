@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v8")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v9")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -551,6 +551,12 @@ for method, epsilon in groups:
                              if cg_rows else None),
         "mean_cg_final_residual_norm": (statistics.mean(
             row["cg_residual_norm"] for row in cg_rows) if cg_rows else None),
+        "mean_cg_damping_used": (statistics.mean(
+            row["cg_damping_used"] for row in cg_rows) if cg_rows else None),
+        "max_cg_damping_used": (max(
+            row["cg_damping_used"] for row in cg_rows) if cg_rows else None),
+        "mean_cg_attempt_count": (statistics.mean(
+            row["cg_attempt_count"] for row in cg_rows) if cg_rows else None),
         "mean_cg_residual_norm_at_12": (statistics.mean(
             row["cg_residual_norm_at_12"] for row in cg_rows
             if row["cg_residual_norm_at_12"] is not None)

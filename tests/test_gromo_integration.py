@@ -66,6 +66,9 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert step.projection.vjp_calls >= 2
     assert step.projection.cg.converged
     assert step.projection.cg.iterations <= 50
+    assert step.projection.cg_attempts[-1].converged
+    assert step.projection.damping_used >= step.projection.damping_requested
+    assert len(step.projection.cg_attempts) <= 4
     assert all("downsample" not in name
                for name in step.projection.parameter_delta)
     assert any("post_layer_function" in name
