@@ -30,11 +30,12 @@ def candidate_projection_block(model: nn.Module, candidate) -> str:
 
 
 def candidate_projection_parameter_names(
-        model: nn.Module, candidate, scope: str = "conv_path") -> tuple[str, ...] | None:
-    """Select only the two residual-path convolutions unless ablating scope."""
+        model: nn.Module, candidate,
+        scope: str = "residual_path") -> tuple[str, ...] | None:
+    """Select residual-path trainable coordinates while excluding shortcuts."""
     if scope == "whole_block":
         return None
-    if scope != "conv_path":
+    if scope not in {"residual_path", "conv_only"}:
         raise ValueError(f"unknown projection scope {scope!r}")
     block_path = candidate_projection_block(model, candidate)
     block = dict(model.named_modules())[block_path]
@@ -45,13 +46,29 @@ def candidate_projection_parameter_names(
         convolution_modules = (block.conv1, block.conv2)
     else:
         raise TypeError("candidate block does not expose its two-convolution path")
+    modules = list(convolution_modules)
+    if scope == "residual_path":
+        if hasattr(block, "first_layer") and hasattr(block, "second_layer"):
+            post_functions = (block.first_layer.post_layer_function,
+                              block.second_layer.post_layer_function)
+            modules.extend(
+                child for post in post_functions for child in post.modules()
+                if isinstance(child, nn.modules.batchnorm._BatchNorm))
+        else:
+            modules.extend(
+                module for name in ("bn1", "bn2")
+                if isinstance(
+                    (module := getattr(block, name, None)),
+                    nn.modules.batchnorm._BatchNorm))
     parameter_ids = {
         id(parameter) for module in convolution_modules
+        for parameter in module.parameters(recurse=False)} | {
+        id(parameter) for module in modules
         for parameter in module.parameters(recurse=False)}
     names = tuple(name for name, parameter in model.named_parameters()
                   if id(parameter) in parameter_ids)
     if not names:
-        raise RuntimeError("conv-path projection selected no parameters")
+        raise RuntimeError("residual-path projection selected no parameters")
     return names
 
 
@@ -103,7 +120,7 @@ class EProjection:
     def discover_candidate(self, model: nn.Module, candidate,
                            batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
                            block: str | None = None,
-                           projection_scope: str = "conv_path") -> ProjectionStep:
+                           projection_scope: str = "residual_path") -> ProjectionStep:
         baseline_loss = _eval_loss(model, batch)
         signal = self.structural_probe(
             model, candidate=candidate, batch=batch, gate=gate)
@@ -122,7 +139,7 @@ class EProjection:
     def step_candidate_(self, model: nn.Module, candidate,
                         batch: tuple[Tensor, Tensor], *, gate: float = 0.05,
                         block: str | None = None,
-                        projection_scope: str = "conv_path",
+                        projection_scope: str = "residual_path",
                         scale: float = 1.0) -> ProjectionStep:
         step = self.discover_candidate(
             model, candidate, batch, gate=gate, block=block,

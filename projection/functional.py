@@ -104,19 +104,20 @@ class FunctionalProjector:
         def jacobian_vector(vector: Tensor) -> Tensor:
             nonlocal jvp_calls
             jvp_calls += 1
-            return jvp(function, (base,), (vector,))[1]
+            return jvp(function, (base,), (vector.detach(),))[1].detach()
 
         _, pullback = vjp(function, base)
 
         def transpose_jacobian(vector: Tensor) -> Tensor:
             nonlocal vjp_calls
             vjp_calls += 1
-            return pullback(vector)[0]
+            return pullback(vector.detach())[0].detach()
 
-        rhs = transpose_jacobian(target)
+        rhs = transpose_jacobian(target).detach()
 
         def normal_matrix(vector: Tensor) -> Tensor:
-            return transpose_jacobian(jacobian_vector(vector)) + self.damping * vector
+            return (transpose_jacobian(jacobian_vector(vector)) +
+                    self.damping * vector.detach()).detach()
 
         cg = conjugate_gradient(normal_matrix, rhs, max_iter=self.max_iter,
                                 tolerance=self.tolerance)

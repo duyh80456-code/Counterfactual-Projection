@@ -52,6 +52,8 @@ class ExpandedTrainProjectResult:
     signal: ProbeSignal
     projection: ProjectionResult
     expansion_train_losses: tuple[float, ...]
+    heldout_delta_logits: Tensor | None = None
+    heldout_loss_gain: float | None = None
 
 
 class ExpandedTrainProject:
@@ -68,7 +70,9 @@ class ExpandedTrainProject:
     def discover(self, model: nn.Module, candidate,
                  batch: tuple[Tensor, Tensor], *, gate: float = 1.0,
                  block: str | None = None,
-                 projection_scope: str = "conv_path") -> ExpandedTrainProjectResult:
+                 projection_scope: str = "residual_path",
+                 heldout_batch: tuple[Tensor, Tensor] | None = None,
+                 ) -> ExpandedTrainProjectResult:
         inputs, targets = batch
         modes = {module: module.training for module in model.modules()}
         base_parameters = tuple(model.parameters())
@@ -82,6 +86,12 @@ class ExpandedTrainProject:
             with torch.no_grad():
                 baseline = model(inputs)
                 baseline_loss = F.cross_entropy(baseline.float(), targets)
+                if heldout_batch is None:
+                    heldout_baseline = heldout_baseline_loss = None
+                else:
+                    heldout_baseline = model(heldout_batch[0])
+                    heldout_baseline_loss = F.cross_entropy(
+                        heldout_baseline.float(), heldout_batch[1])
             with candidate.virtual_direction(gate):
                 extension_parameters = [parameter for parameter in model.parameters()
                                         if id(parameter) not in base_ids]
@@ -102,6 +112,12 @@ class ExpandedTrainProject:
                 with torch.no_grad():
                     expanded = model(inputs)
                     expanded_loss = F.cross_entropy(expanded.float(), targets)
+                    if heldout_batch is None:
+                        heldout_expanded = heldout_expanded_loss = None
+                    else:
+                        heldout_expanded = model(heldout_batch[0])
+                        heldout_expanded_loss = F.cross_entropy(
+                            heldout_expanded.float(), heldout_batch[1])
             delta = (expanded - baseline).detach()
             signal = ProbeSignal(
                 block=str(candidate.module_name), A_E=None, B_E=None,
@@ -115,7 +131,12 @@ class ExpandedTrainProject:
             projection = self.projector.project(
                 model, inputs, delta, block=projection_block,
                 parameter_names=parameter_names)
-            return ExpandedTrainProjectResult(signal, projection, tuple(losses))
+            heldout_delta = (None if heldout_batch is None else
+                             (heldout_expanded - heldout_baseline).detach())
+            heldout_gain = (None if heldout_batch is None else float(
+                (heldout_baseline_loss - heldout_expanded_loss).item()))
+            return ExpandedTrainProjectResult(
+                signal, projection, tuple(losses), heldout_delta, heldout_gain)
         finally:
             for parameter, requires_grad in old_requires_grad.items():
                 parameter.requires_grad_(requires_grad)

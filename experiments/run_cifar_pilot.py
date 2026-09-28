@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--projection-interval", type=int, default=1)
     parser.add_argument("--projection-scale", type=float, default=1.0)
     parser.add_argument("--damping", type=float, default=1e-3)
-    parser.add_argument("--cg-iterations", type=int, default=12)
+    parser.add_argument("--cg-iterations", type=int, default=50)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--train-samples", type=int, default=0,
@@ -165,7 +165,8 @@ def main():
                     target = random_target(signal, random_generator)
                 projection = projector.project(model, probe_batch[0], target,
                                                block=args.block)
-                projection.apply_(model, args.projection_scale)
+                if projection.cg.converged:
+                    projection.apply_(model, args.projection_scale)
                 projection_metrics = {
                     "predicted_gain": signal.predicted_gain,
                     "fitted_norm_ratio": projection.fitted_norm_ratio,
@@ -173,6 +174,8 @@ def main():
                     "relative_residual": projection.relative_residual,
                     "cg_iterations": projection.cg.iterations,
                     "cg_converged": projection.cg.converged,
+                    "cg_residual_norm": projection.cg.residual_norm,
+                    "correction_applied": projection.cg.converged,
                 }
 
         model.train()

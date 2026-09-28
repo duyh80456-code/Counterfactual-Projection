@@ -66,7 +66,7 @@ The structural gate schedules `vanilla`, `vanilla_matched_compute` (runs and
 discards the exact TINY + projection computation), `vanilla_extra_sgd` (uses
 the same extra labeled samples for ordinary SGD), `vanilla_momentum_reset`,
 parameter-norm-matched `random_projection`, `tiny_projection`,
-`tiny_projection_whole_block` (ablation only),
+`tiny_projection_conv_only` and `tiny_projection_whole_block` (ablations),
 `expand_train_project` (explicitly a RepAn/Bypass-like control, not a
 reproduction), and `real_e_growth` for two seeds. The main arm sweeps epsilon
 over `0.01`, `0.05`, and `0.1`. TINY statistics, functional
@@ -94,18 +94,29 @@ arm constructs the official CIFAR-100 test set. After every choice is frozen,
 all selected method configurations are rerun and evaluated on test once.
 
 Each intervention logs TINY statistics/solve time, projection time, JVP/VJP
-counts, CG iterations, peak allocated GPU memory, and any SGD momentum states
-reset after a direct projected parameter jump. The real-E growth control intervenes at
+counts, CG convergence and residual norms (including iterations 12/25/50),
+peak allocated GPU memory, and any SGD momentum states reset after a direct
+projected parameter jump. CG runs for at most 50 iterations and an unconverged
+correction is never applied. The real-E growth control intervenes at
 the same epoch frequency as the main method and logs structural and projected
 local gains before every irreversible commit. Real-E growth commits synchronize the
 new current width back to the target width before the next intervention.
 
-The primary projection scope contains only the two residual-path convolution
-layers that surround E. BatchNorm and shortcut/downsample parameters are
-excluded. Whole-block projection is reported separately as an ablation. The
+The primary projection scope contains the two residual-path convolutions and
+their BatchNorm affine parameters. Shortcut/downsample parameters are excluded.
+Conv-only and whole-block projection are reported separately as ablations. The
 main fit metric is evaluated by applying the fitted parameter tangent on the
 unseen tuning batch and comparing it with that batch's independently measured
 structural delta; fit-batch residuals are secondary diagnostics.
+The momentum-reset control targets that same residual conv+BN parameter set.
+`expand_train_project` measures its held-out target from the trained temporary
+expansion itself, before the expansion transaction is removed. All controls
+whose behavior depends on the finite-difference E gate use the epsilon selected
+for the main arm in the final frozen comparison; `expand_train_project` remains
+the explicitly defined gate-1 trained-expansion control.
+
+Each run reports `corrections_applied / correction_attempts` and its application
+rate; the Kaggle gate rejects any projection arm below 100%.
 
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it
@@ -113,9 +124,11 @@ cannot silently skip that test. Candidate FLOPs are recomputed from runtime
 feature-map sizes and convolution kernels rather than using TINY's legacy
 32x32 CIFAR estimate.
 
-The current experiment deliberately fixes `stages.2.blocks.0`. This is a
-single-site pilot, not yet a general layer-selection algorithm; a positive
-result must be followed by multi-site probing or an explicit argmax rule.
+The current pilot deliberately fixes the predeclared `stages.2.blocks.0` site.
+For the subsequent generalized experiment, `--site auto` probes either every
+growing block or the comma-separated `--candidate-sites` list on the training
+statistics batch and selects `argmax_l proposal_score(l)` without consulting
+tuning, validation, or official-test data.
 
 ## Reference implementation
 

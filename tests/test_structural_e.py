@@ -17,14 +17,16 @@ class ExpandableBlock(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 2, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(2)
         self.conv2 = nn.Conv2d(2, 3, 1)
+        self.bn2 = nn.BatchNorm2d(3)
         self.downsample = nn.Conv2d(1, 3, 1)
         self.extension_in = None
         self.extension_out = None
         self.extension_gate = None
 
     def forward(self, inputs):
-        output = (self.conv2(torch.relu(self.conv1(inputs))) +
+        output = (self.bn2(self.conv2(torch.relu(self.bn1(self.conv1(inputs))))) +
                   self.downsample(inputs))
         if self.extension_in is not None:
             output = output + self.extension_gate * self.extension_out(
@@ -225,7 +227,12 @@ def test_structural_projection_and_auxiliary_transfer_are_concrete():
     assert all("downsample" not in name
                for name in step.projection.parameter_delta)
     assert {name.rsplit(".", 1)[0] for name in step.projection.parameter_delta} == {
-        "block.conv1", "block.conv2"}
+        "block.conv1", "block.bn1", "block.conv2", "block.bn2"}
+    conv_only = EProjection(projector=projector).discover_candidate(
+        model, candidate, batch, gate=0.1, projection_scope="conv_only")
+    assert {name.rsplit(".", 1)[0]
+            for name in conv_only.projection.parameter_delta} == {
+                "block.conv1", "block.conv2"}
     whole_block = EProjection(projector=projector).discover_candidate(
         model, candidate, batch, gate=0.1, projection_scope="whole_block")
     assert any("downsample" in name
@@ -247,12 +254,20 @@ def test_structural_controls_train_temporarily_or_commit_real_e():
     model = ExpandableModel().eval()
     candidate = StructuralCandidate(model)
     before = {name: value.clone() for name, value in model.state_dict().items()}
+    heldout_batch = (torch.randn(4, 1, 6, 6), torch.tensor([2, 1, 0, 2]))
+    untrained_heldout = CandidateExpansionProbe()(
+        model, candidate=candidate, batch=heldout_batch, gate=1.0)
     control = ExpandedTrainProject(
         steps=2, learning_rate=0.05,
         projector=FunctionalProjector(damping=1e-3, max_iter=10))
-    result = control.discover(model, candidate, batch)
+    result = control.discover(
+        model, candidate, batch, heldout_batch=heldout_batch)
     assert result.signal.source == "expanded_train_then_contract"
     assert len(result.expansion_train_losses) == 2
+    assert result.heldout_delta_logits is not None
+    assert result.heldout_loss_gain is not None
+    assert not torch.allclose(
+        result.heldout_delta_logits, untrained_heldout.delta_logits)
     assert all(torch.equal(value, before[name])
                for name, value in model.state_dict().items())
 

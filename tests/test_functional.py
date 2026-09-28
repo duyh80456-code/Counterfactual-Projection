@@ -3,7 +3,8 @@ from torch import nn
 from torch.func import functional_call, jvp
 
 from projection import FunctionalProjector
-from experiments.run_gromo_pilot import reset_projected_momentum
+from experiments.run_gromo_pilot import (
+    reset_projected_momentum, reset_residual_path_momentum)
 
 
 def test_functional_projection_recovers_tangent_direction():
@@ -24,6 +25,9 @@ def test_functional_projection_recovers_tangent_direction():
     assert abs(result.fitted_norm_ratio - 1.0) < 1e-4
     assert result.jvp_calls >= 2
     assert result.vjp_calls >= 2
+    assert not result.cg.solution.requires_grad
+    assert not result.fitted_delta.requires_grad
+    assert len(result.cg.residual_history) == result.cg.iterations + 1
     heldout_inputs = torch.randn(5, 3)
 
     def heldout_function(weight):
@@ -53,3 +57,34 @@ def test_direct_projection_clears_only_touched_momentum():
     assert reset == 2
     assert all(parameter not in optimizer.state for parameter in model[0].parameters())
     assert all(parameter in optimizer.state for parameter in model[1].parameters())
+
+
+def test_momentum_reset_control_matches_residual_path_projection_scope():
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Linear(3, 3)
+            self.conv2 = nn.Linear(3, 3)
+            self.bn1 = nn.BatchNorm1d(3)
+            self.bn2 = nn.BatchNorm1d(3)
+            self.downsample = nn.Linear(3, 3)
+
+        def forward(self, inputs):
+            return self.bn2(self.conv2(torch.relu(self.bn1(self.conv1(inputs))))) + \
+                self.downsample(inputs)
+
+    block = Block().train()
+    optimizer = torch.optim.SGD(block.parameters(), lr=0.1, momentum=0.9)
+    block(torch.randn(5, 3)).sum().backward()
+    optimizer.step()
+    assert all(parameter in optimizer.state for parameter in block.parameters())
+    model = nn.Module()
+    model.block = block
+    reset = reset_residual_path_momentum(optimizer, model, "block")
+    assert reset == sum(1 for module in (
+        block.conv1, block.bn1, block.conv2, block.bn2)
+                        for _ in module.parameters())
+    assert all(parameter not in optimizer.state
+               for module in (block.conv1, block.bn1, block.conv2, block.bn2)
+               for parameter in module.parameters())
+    assert all(parameter in optimizer.state for parameter in block.downsample.parameters())

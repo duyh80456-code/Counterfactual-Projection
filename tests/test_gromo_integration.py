@@ -57,14 +57,18 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert candidate.payload["actual_extension_flops"] > 0
 
     step = EProjection(projector=FunctionalProjector(
-        damping=1e-3, max_iter=1, tolerance=1e-4)).discover_candidate(
+        damping=1e-3, max_iter=50, tolerance=1e-5)).discover_candidate(
             model, candidate, (inputs, targets), gate=0.05)
     assert step.signal.is_structural_expansion
     assert step.signal.delta_logits.norm() > 0
     assert torch.isfinite(step.projection.fitted_delta).all()
     assert step.projection.jvp_calls >= 2
     assert step.projection.vjp_calls >= 2
+    assert step.projection.cg.converged
+    assert step.projection.cg.iterations <= 50
     assert all("downsample" not in name
+               for name in step.projection.parameter_delta)
+    assert any("post_layer_function" in name
                for name in step.projection.parameter_delta)
     heldout_inputs = torch.randn(2, 3, 64, 64, device=device)
     heldout_targets = torch.tensor([11, 29], device=device)
@@ -76,6 +80,12 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
         step.projection.parameter_delta)
     assert torch.isfinite(torch.tensor(heldout.relative_residual))
     assert torch.isfinite(torch.tensor(heldout.cosine_alignment))
+    with torch.no_grad():
+        before_correction = model(heldout_inputs).clone()
+    step.projection.apply_(model, scale=0.05)
+    with torch.no_grad():
+        after_correction = model(heldout_inputs)
+    assert not torch.equal(before_correction, after_correction)
     assert int(block.second_layer.in_neurons) == 256
     assert int(block.second_layer.target_in_neurons) == 256
     committed = RealEGrowth.commit_(model, candidate).committed_module
