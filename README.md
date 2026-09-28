@@ -113,7 +113,11 @@ leaves the ridge solution unchanged while preventing nearly
 function-preserving E signals from falling below float32 numerical scale. The
 network JVP/VJP remains in the model's native dtype, while the small dual CG
 vectors, dot products, and recurrence use float64 to prevent loss of Krylov
-conjugacy on the real ResNet operator. The real-E growth control intervenes at
+conjugacy on the real ResNet operator. Gromo's optional forward caches are
+disabled transactionally during JVP/VJP and restored afterward. Registered
+parameters and buffers are likewise restored by object identity, preventing
+functorch tensor wrappers from leaking into a later real-growth commit. The
+real-E growth control intervenes at
 the same epoch frequency as the main method and logs structural and projected
 local gains before every irreversible commit. Real-E growth commits synchronize the
 new current width back to the target width before the next intervention.

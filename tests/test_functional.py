@@ -1,3 +1,5 @@
+import copy
+
 import torch
 from torch import nn
 from torch.func import functional_call, jvp
@@ -73,6 +75,42 @@ def test_dual_projection_matches_explicit_ridge_solution():
     actual = result.parameter_delta["weight"].reshape(-1)
     assert result.cg.converged
     assert torch.allclose(actual, expected, atol=1e-8, rtol=1e-7)
+
+
+def test_projection_restores_growth_forward_caches():
+    class CachingLayer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer = nn.Linear(3, 2, bias=False)
+            self.store_input = 2
+            self.store_activity = 3
+            self.input = torch.tensor([11.0])
+            self.activity = torch.tensor([13.0])
+
+        def forward(self, inputs):
+            if self.store_input:
+                self.input = inputs
+            output = self.layer(inputs)
+            if self.store_activity:
+                self.activity = output
+            return output
+
+    model = CachingLayer().eval()
+    original_input = model.input
+    original_activity = model.activity
+    original_weight = model.layer.weight
+    inputs = torch.randn(4, 3)
+    target = torch.randn(4, 2) * 0.01
+    result = FunctionalProjector(max_iter=20).project(
+        model, inputs, target, block="layer")
+    FunctionalProjector().evaluate_direction(
+        model, inputs, target, result.parameter_delta)
+    assert model.input is original_input
+    assert model.activity is original_activity
+    assert model.store_input == 2
+    assert model.store_activity == 3
+    assert model.layer.weight is original_weight
+    copy.deepcopy(model)
 
 
 def test_direct_projection_clears_only_touched_momentum():

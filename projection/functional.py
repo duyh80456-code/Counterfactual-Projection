@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -10,6 +11,48 @@ from torch.func import functional_call, jvp, vjp
 
 from .cg import CGResult, conjugate_gradient
 from .metrics import cosine_alignment, fitted_norm_ratio, relative_residual
+
+
+@contextmanager
+def _preserve_functional_state(model: nn.Module):
+    """Prevent torch.func wrappers from leaking into a stateful model.
+
+    Gromo growing modules optionally retain ``input`` and ``activity`` as
+    ordinary Python attributes. A forward executed inside JVP/VJP can otherwise
+    leave a GradTrackingTensor there, which is not deepcopy-able and later
+    breaks a real growth commit. Some custom module arrangements can also retain
+    a tensor swapped temporarily by ``functional_call`` in a parameter/buffer
+    slot. Restore both categories by object identity. Projection never consumes
+    Gromo's cached statistics, so disabling their collection is safe and cheaper.
+    """
+    cache_names = ("input", "activity")
+    control_names = ("store_input", "store_activity")
+    caches = []
+    controls = []
+    registered = []
+    for module in model.modules():
+        registered.extend(
+            (module, "_parameters", name, value)
+            for name, value in module._parameters.items())
+        registered.extend(
+            (module, "_buffers", name, value)
+            for name, value in module._buffers.items())
+        for name in cache_names:
+            if name in module.__dict__:
+                caches.append((module, name, module.__dict__[name]))
+        for name in control_names:
+            if name in module.__dict__:
+                controls.append((module, name, module.__dict__[name]))
+                setattr(module, name, 0)
+    try:
+        yield
+    finally:
+        for module, collection, name, value in registered:
+            getattr(module, collection)[name] = value
+        for module, name, value in caches:
+            setattr(module, name, value)
+        for module, name, value in controls:
+            setattr(module, name, value)
 
 
 @dataclass(frozen=True)
@@ -82,9 +125,10 @@ class FunctionalProjector:
         modes = {module: module.training for module in model.modules()}
         model.eval()
         try:
-            return self._project_eval(
-                model, inputs, target_delta, block=block,
-                parameter_names=parameter_names)
+            with _preserve_functional_state(model):
+                return self._project_eval(
+                    model, inputs, target_delta, block=block,
+                    parameter_names=parameter_names)
         finally:
             for module, training in modes.items():
                 module.training = training
@@ -221,16 +265,17 @@ class FunctionalProjector:
         modes = {module: module.training for module in model.modules()}
         try:
             model.eval()
-            primals = tuple(parameters[name].detach() for name in names)
-            tangents = tuple(parameter_delta[name].to(parameters[name])
-                             for name in names)
+            with _preserve_functional_state(model):
+                primals = tuple(parameters[name].detach() for name in names)
+                tangents = tuple(parameter_delta[name].to(parameters[name])
+                                 for name in names)
 
-            def function(*values):
-                replacements = dict(zip(names, values))
-                return functional_call(
-                    model, replacements, (inputs,), strict=False)
+                def function(*values):
+                    replacements = dict(zip(names, values))
+                    return functional_call(
+                        model, replacements, (inputs,), strict=False)
 
-            fitted = jvp(function, primals, tangents)[1].detach()
+                fitted = jvp(function, primals, tangents)[1].detach()
         finally:
             for module, training in modes.items():
                 module.training = training

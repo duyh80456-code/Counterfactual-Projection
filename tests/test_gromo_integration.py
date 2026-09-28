@@ -1,5 +1,6 @@
 """Real Gromo/TINY integration; required by the Kaggle notebook gate."""
 
+import copy
 import os
 
 import pytest
@@ -72,6 +73,9 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert step.projection.cg_attempts[-1].converged
     assert step.projection.damping_used >= step.projection.damping_requested
     assert len(step.projection.cg_attempts) <= 5
+    # torch.func must not leave GradTrackingTensor wrappers in Gromo's cached
+    # attributes or registered BN parameters; real growth deep-copies the block.
+    copy.deepcopy(model.block(site))
     assert all("downsample" not in name
                for name in step.projection.parameter_delta)
     assert any("post_layer_function" in name
