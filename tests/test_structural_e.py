@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from methods import EProjection
@@ -252,25 +253,51 @@ def test_structural_controls_train_temporarily_or_commit_real_e():
     torch.manual_seed(14)
     batch = (torch.randn(3, 1, 6, 6), torch.tensor([0, 1, 2]))
     model = ExpandableModel().eval()
+    base_optimizer = torch.optim.SGD(
+        model.parameters(), lr=0.05, momentum=0.9, weight_decay=5e-4)
+    model.train()
+    base_optimizer.zero_grad(set_to_none=True)
+    F.cross_entropy(model(batch[0]), batch[1]).backward()
+    base_optimizer.step()
+    model.eval()
+    optimizer_state_before = {
+        parameter: {key: (value.clone() if torch.is_tensor(value) else value)
+                    for key, value in state.items()}
+        for parameter, state in base_optimizer.state.items()}
     candidate = StructuralCandidate(model)
     before = {name: value.clone() for name, value in model.state_dict().items()}
     heldout_batch = (torch.randn(4, 1, 6, 6), torch.tensor([2, 1, 0, 2]))
     untrained_heldout = CandidateExpansionProbe()(
         model, candidate=candidate, batch=heldout_batch, gate=1.0)
     control = ExpandedTrainProject(
-        steps=2, learning_rate=0.05,
+        steps=2, learning_rate=0.05, momentum=0.9, weight_decay=5e-4,
         projector=FunctionalProjector(damping=1e-3, max_iter=10))
+    train_mode_observations = []
+    hook = model.block.bn1.register_forward_hook(
+        lambda module, _inputs, _output: train_mode_observations.append(
+            (module.training, torch.is_grad_enabled())))
     result = control.discover(
-        model, candidate, batch, heldout_batch=heldout_batch)
+        model, candidate, batch, heldout_batch=heldout_batch,
+        base_optimizer=base_optimizer)
+    hook.remove()
     assert result.signal.source == "expanded_model_train_then_contract"
     assert len(result.expansion_train_losses) == 2
     assert result.heldout_delta_logits is not None
     assert result.heldout_loss_gain is not None
     assert result.temporary_base_parameter_update_norm > 0
+    assert result.inherited_optimizer_states == len(base_optimizer.state)
+    assert any(training and gradients
+               for training, gradients in train_mode_observations)
     assert not torch.allclose(
         result.heldout_delta_logits, untrained_heldout.delta_logits)
     assert all(torch.equal(value, before[name])
                for name, value in model.state_dict().items())
+    assert all(
+        torch.equal(value, base_optimizer.state[parameter][key])
+        if torch.is_tensor(value)
+        else value == base_optimizer.state[parameter][key]
+        for parameter, state in optimizer_state_before.items()
+        for key, value in state.items())
 
     oracle_model = ExpandableModel()
     oracle = RealEOracle.commit_(

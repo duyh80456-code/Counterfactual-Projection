@@ -4,7 +4,8 @@ from torch.func import functional_call, jvp
 
 from projection import FunctionalProjector
 from experiments.run_gromo_pilot import (
-    reset_projected_momentum, reset_residual_path_momentum,
+    actual_update_metrics, eval_logits, reset_projected_momentum,
+    reset_residual_path_momentum,
     sign_randomized_parameter_delta)
 
 
@@ -104,3 +105,17 @@ def test_sign_randomized_control_preserves_each_tensor_norm():
                for name, value in delta.items())
     assert any(not torch.equal(randomized[name], value)
                for name, value in delta.items())
+
+
+def test_actual_update_metrics_measure_realized_function_change():
+    model = nn.Linear(3, 2, bias=False).eval()
+    inputs = torch.randn(5, 3)
+    update = torch.randn_like(model.weight) * 0.01
+    scale = 0.05
+    baseline = eval_logits(model, inputs)
+    target = inputs @ update.t()
+    with torch.no_grad():
+        model.weight.add_(update, alpha=scale)
+    metrics = actual_update_metrics(model, inputs, baseline, target, scale)
+    assert metrics["actual_heldout_relative_residual"] < 1e-4
+    assert metrics["actual_heldout_cosine_alignment"] > 0.999

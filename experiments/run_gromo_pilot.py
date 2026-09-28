@@ -22,7 +22,9 @@ from methods.e_projection import candidate_projection_parameter_names
 from probe import (
     CandidateExpansionProbe, CounterfactualTinyProbe,
     build_pretrained_gromo_resnet18)
-from projection import FunctionalProjector, ProjectionResult
+from projection import (
+    FunctionalProjector, ProjectionResult, cosine_alignment,
+    fitted_norm_ratio, relative_residual)
 
 
 METHODS = (
@@ -32,6 +34,8 @@ METHODS = (
     "tiny_projection_conv_only", "tiny_projection_whole_block",
     "expand_train_project", "real_e_growth")
 FULL_WIDTHS = [64, 64, 128, 128, 256, 256, 512, 512]
+SGD_MOMENTUM = 0.9
+SGD_WEIGHT_DECAY = 5e-4
 
 
 def state_sha256(model: nn.Module) -> str:
@@ -209,7 +213,8 @@ def train_epoch(model, loader, optimizer, device):
 
 def make_optimizer(model, args):
     return torch.optim.SGD(
-        model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+        model.parameters(), lr=args.lr, momentum=SGD_MOMENTUM,
+        weight_decay=SGD_WEIGHT_DECAY)
 
 
 def reset_projected_momentum(optimizer, model, projection: ProjectionResult) -> int:
@@ -344,6 +349,31 @@ def heldout_metrics(evaluation) -> dict[str, float]:
         "heldout_fitted_norm_ratio": evaluation.fitted_norm_ratio,
         "heldout_relative_residual": evaluation.relative_residual,
         "heldout_cosine_alignment": evaluation.cosine_alignment,
+    }
+
+
+@torch.no_grad()
+def eval_logits(model, inputs):
+    modes = {module: module.training for module in model.modules()}
+    try:
+        model.eval()
+        return model(inputs).detach()
+    finally:
+        for module, training in modes.items():
+            module.training = training
+
+
+def actual_update_metrics(model, inputs, baseline_logits, target_delta,
+                          applied_scale: float) -> dict[str, float]:
+    """Compare the realized finite parameter jump with the held-out E target."""
+    if applied_scale == 0:
+        raise ValueError("actual-update metrics require non-zero applied scale")
+    realized = (eval_logits(model, inputs) - baseline_logits) / applied_scale
+    target = target_delta.detach()
+    return {
+        "actual_heldout_fitted_norm_ratio": fitted_norm_ratio(realized, target),
+        "actual_heldout_relative_residual": relative_residual(realized, target),
+        "actual_heldout_cosine_alignment": cosine_alignment(realized, target),
     }
 
 
@@ -610,10 +640,15 @@ def main():
                     projector, model, tuning_batch, tuning_signal.delta_logits,
                     projection_result.parameter_delta, device)
                 correction_applied = projection_result.cg.converged
+                tuning_logits_before = eval_logits(model, tuning_batch[0])
+                actual_metrics = {}
                 if correction_applied:
                     projection_result.apply_(model, projection_scale)
                     momentum_resets = reset_projected_momentum(
                         optimizer, model, projection_result)
+                    actual_metrics = actual_update_metrics(
+                        model, tuning_batch[0], tuning_logits_before,
+                        tuning_signal.delta_logits, projection_scale)
                 tuning_projected_gain = (
                     tuning_loss_before - batch_loss(model, tuning_batch))
                 diagnostics = {
@@ -634,6 +669,7 @@ def main():
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
                     **heldout_metrics(heldout),
+                    **actual_metrics,
                 }
             elif args.method in {"random_projection",
                                  "sign_randomized_projection"}:
@@ -673,10 +709,15 @@ def main():
                     random_parameter_delta, device)
                 tuning_loss_before = batch_loss(model, tuning_batch)
                 correction_applied = projection_result.cg.converged
+                tuning_logits_before = eval_logits(model, tuning_batch[0])
+                actual_metrics = {}
                 if correction_applied:
                     projection_result.apply_(model, projection_scale)
                     momentum_resets = reset_projected_momentum(
                         optimizer, model, projection_result)
+                    actual_metrics = actual_update_metrics(
+                        model, tuning_batch[0], tuning_logits_before,
+                        tuning_signal.delta_logits, projection_scale)
                 diagnostics = {
                     "source": source,
                     "probe_gate": args.probe_epsilon,
@@ -691,15 +732,18 @@ def main():
                     "max_per_tensor_relative_norm_error":
                         per_tensor_relative_norm_error,
                     **heldout_metrics(heldout),
+                    **actual_metrics,
                 }
             elif args.method == "expand_train_project":
                 control = ExpandedTrainProject(
-                    args.expanded_train_steps, args.lr, projector)
+                    steps=args.expanded_train_steps,
+                    learning_rate=args.lr, momentum=SGD_MOMENTUM,
+                    weight_decay=SGD_WEIGHT_DECAY, projector=projector)
                 started = time.perf_counter()
                 control_result = control.discover(
                     model, candidate, projection_batch,
                     gate=1.0, projection_scope=projection_scope,
-                    heldout_batch=tuning_batch)
+                    heldout_batch=tuning_batch, base_optimizer=optimizer)
                 synchronize(device)
                 projection_seconds = time.perf_counter() - started
                 projection_result = control_result.projection
@@ -713,10 +757,15 @@ def main():
                                  else args.projection_scale)
                 tuning_loss_before = batch_loss(model, tuning_batch)
                 correction_applied = projection_result.cg.converged
+                tuning_logits_before = eval_logits(model, tuning_batch[0])
+                actual_metrics = {}
                 if correction_applied:
                     projection_result.apply_(model, control_scale)
                     momentum_resets = reset_projected_momentum(
                         optimizer, model, projection_result)
+                    actual_metrics = actual_update_metrics(
+                        model, tuning_batch[0], tuning_logits_before,
+                        control_result.heldout_delta_logits, control_scale)
                 diagnostics = {
                     "source": "repan_bypass_like_control",
                     "signal_source": control_result.signal.source,
@@ -725,6 +774,17 @@ def main():
                     "correction_applied": correction_applied,
                     "correction_was_attempted": True,
                     "expanded_train_losses": control_result.expansion_train_losses,
+                    "expanded_train_steps": args.expanded_train_steps,
+                    "expanded_train_samples_per_step":
+                        int(projection_batch[1].numel()),
+                    "expanded_train_mode": True,
+                    "expanded_train_optimizer": {
+                        "name": "SGD", "learning_rate": args.lr,
+                        "momentum": SGD_MOMENTUM,
+                        "weight_decay": SGD_WEIGHT_DECAY,
+                        "inherited_optimizer_states":
+                            control_result.inherited_optimizer_states,
+                    },
                     "temporary_base_parameter_update_norm":
                         control_result.temporary_base_parameter_update_norm,
                     "tuning_expanded_trained_loss_gain":
@@ -736,6 +796,7 @@ def main():
                     "relative_residual": projection_result.relative_residual,
                     "cosine_alignment": projection_result.cosine_alignment,
                     **heldout_metrics(heldout),
+                    **actual_metrics,
                 }
             elif args.method == "real_e_growth":
                 started = time.perf_counter()

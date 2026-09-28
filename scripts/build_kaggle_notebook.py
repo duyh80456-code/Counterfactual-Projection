@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v7")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v8")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -461,6 +461,16 @@ for method, epsilon in groups:
                        for row in metric_rows for epoch in row["history"]
                        if epoch["diagnostics"] and
                           "heldout_cosine_alignment" in epoch["diagnostics"]]
+    actual_heldout_residuals = [
+        epoch["diagnostics"]["actual_heldout_relative_residual"]
+        for row in metric_rows for epoch in row["history"]
+        if epoch["diagnostics"] and
+           "actual_heldout_relative_residual" in epoch["diagnostics"]]
+    actual_heldout_cosines = [
+        epoch["diagnostics"]["actual_heldout_cosine_alignment"]
+        for row in metric_rows for epoch in row["history"]
+        if epoch["diagnostics"] and
+           "actual_heldout_cosine_alignment" in epoch["diagnostics"]]
     structural_gains = [epoch["diagnostics"].get(
                             "structural_loss_gain",
                             epoch["diagnostics"].get("local_structural_loss_gain"))
@@ -523,6 +533,8 @@ for method, epsilon in groups:
             statistics.mean(official_values) if official_values else None),
         "mean_heldout_projection_residual": statistics.mean(heldout_residuals) if heldout_residuals else None,
         "mean_heldout_cosine_alignment": statistics.mean(heldout_cosines) if heldout_cosines else None,
+        "mean_actual_heldout_relative_residual": statistics.mean(actual_heldout_residuals) if actual_heldout_residuals else None,
+        "mean_actual_heldout_cosine_alignment": statistics.mean(actual_heldout_cosines) if actual_heldout_cosines else None,
         "mean_fit_projection_residual": statistics.mean(fit_residuals) if fit_residuals else None,
         "mean_fit_cosine_alignment": statistics.mean(fit_cosines) if fit_cosines else None,
         "mean_projection_structural_loss_gain": statistics.mean(structural_gains) if structural_gains else None,

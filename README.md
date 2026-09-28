@@ -110,11 +110,17 @@ Conv-only and whole-block projection are reported separately as ablations. The
 main fit metric is evaluated by applying the fitted parameter tangent on the
 unseen tuning batch and comparing it with that batch's independently measured
 structural delta; fit-batch residuals are secondary diagnostics.
+After the parameter jump, the runner also measures the realized nonlinear
+direction `(f(theta + scale * delta_theta) - f(theta)) / scale` on that held-out
+batch and reports its residual and cosine against the same structural target.
 The momentum-reset control targets that same residual conv+BN parameter set.
 `expand_train_project` measures its held-out target from the trained temporary
 expansion itself, before the expansion transaction is removed. It rolls the
 temporary base-parameter update back before projecting that functional delta
-at the original fixed-size state. All controls
+at the original fixed-size state. Its temporary optimization runs in train mode
+and uses SGD with the main run's learning rate, momentum 0.9, weight decay
+`5e-4`, and copied base-parameter momentum state. Its two-step/32-sample budget
+is logged and remains a diagnostic control, not an official reproduction. All controls
 whose behavior depends on the finite-difference E gate use the epsilon selected
 for the main arm in the final frozen comparison; `expand_train_project` remains
 the explicitly defined gate-1 trained-expansion control.

@@ -55,17 +55,22 @@ class ExpandedTrainProjectResult:
     heldout_delta_logits: Tensor | None = None
     heldout_loss_gain: float | None = None
     temporary_base_parameter_update_norm: float = 0.0
+    inherited_optimizer_states: int = 0
 
 
 class ExpandedTrainProject:
     """Train theta + E temporarily, roll back theta, then contract via Pi_E."""
 
     def __init__(self, steps: int = 1, learning_rate: float = 1e-2,
+                 momentum: float = 0.9, weight_decay: float = 5e-4,
                  projector: FunctionalProjector | None = None):
-        if steps < 1 or learning_rate <= 0:
+        if (steps < 1 or learning_rate <= 0 or momentum < 0 or
+                weight_decay < 0):
             raise ValueError("invalid expanded training configuration")
         self.steps = int(steps)
         self.learning_rate = float(learning_rate)
+        self.momentum = float(momentum)
+        self.weight_decay = float(weight_decay)
         self.projector = projector or FunctionalProjector()
 
     def discover(self, model: nn.Module, candidate,
@@ -73,6 +78,7 @@ class ExpandedTrainProject:
                  block: str | None = None,
                  projection_scope: str = "residual_path",
                  heldout_batch: tuple[Tensor, Tensor] | None = None,
+                 base_optimizer: torch.optim.Optimizer | None = None,
                  ) -> ExpandedTrainProjectResult:
         inputs, targets = batch
         modes = {module: module.training for module in model.modules()}
@@ -102,6 +108,7 @@ class ExpandedTrainProject:
                     heldout_baseline_loss = F.cross_entropy(
                         heldout_baseline.float(), heldout_batch[1])
             with candidate.virtual_direction(gate):
+                model.train()
                 extension_parameters = [parameter for parameter in model.parameters()
                                         if id(parameter) not in base_ids]
                 if not extension_parameters:
@@ -111,7 +118,19 @@ class ExpandedTrainProject:
                     parameter for parameter in model.parameters()
                     if parameter.requires_grad]
                 optimizer = torch.optim.SGD(
-                    trainable_parameters, lr=self.learning_rate)
+                    trainable_parameters, lr=self.learning_rate,
+                    momentum=self.momentum, weight_decay=self.weight_decay)
+                inherited_states = 0
+                if base_optimizer is not None:
+                    for parameter in base_parameters:
+                        if parameter not in base_optimizer.state:
+                            continue
+                        optimizer.state[parameter] = {
+                            key: (value.detach().clone()
+                                  if torch.is_tensor(value) else value)
+                            for key, value in
+                            base_optimizer.state[parameter].items()}
+                        inherited_states += 1
                 losses = []
                 for _ in range(self.steps):
                     optimizer.zero_grad(set_to_none=True)
@@ -119,6 +138,7 @@ class ExpandedTrainProject:
                     loss.backward()
                     optimizer.step()
                     losses.append(float(loss.detach()))
+                model.eval()
                 with torch.no_grad():
                     expanded = model(inputs)
                     expanded_loss = F.cross_entropy(expanded.float(), targets)
@@ -159,7 +179,8 @@ class ExpandedTrainProject:
                 expansion_train_losses=tuple(losses),
                 heldout_delta_logits=heldout_delta,
                 heldout_loss_gain=heldout_gain,
-                temporary_base_parameter_update_norm=base_update_norm)
+                temporary_base_parameter_update_norm=base_update_norm,
+                inherited_optimizer_states=inherited_states)
         finally:
             model.load_state_dict(base_state, strict=True)
             for parameter, requires_grad in old_requires_grad.items():
