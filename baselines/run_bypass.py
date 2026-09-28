@@ -12,9 +12,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from baselines.bypass import (
-    activations, add_extension_parameters_, contraction_norm,
+    add_extension_parameters_, contraction_norm,
     embed_relaxed_bypass, extension_parameters, project_ready_activations,
-    project_relaxed_bypass_, remove_extension_parameters_)
+    transition_from_opt2_)
 from experiments.shared_protocol import (
     FORK_EPOCH, POST_FORK_EPOCHS, atomic_json_save, atomic_torch_save,
     build_cifar_gromo_resnet18, build_optimizer_scheduler,
@@ -45,10 +45,10 @@ def arguments():
 
 
 @torch.no_grad()
-def logits_and_loss(model, batch):
+def evaluation_loss(model, batch):
     model.eval()
     logits = model(batch[0]).detach()
-    return logits, float(F.cross_entropy(logits.float(), batch[1]))
+    return float(F.cross_entropy(logits.float(), batch[1]))
 
 
 def save_checkpoint(path, *, model, optimizer, scheduler, history,
@@ -191,24 +191,19 @@ def main():
                 post_step=lambda: project_ready_activations(
                     model, args.contraction_epsilon))
             opt2_done += 1
-            current_norm = float(contraction_norm(model).detach())
-            criterion_met = current_norm < args.contraction_epsilon
-            reached_cap = opt2_done >= args.max_opt2_epochs
-            if criterion_met:
-                contraction_at_projection = current_norm
-                before_logits, before_loss = logits_and_loss(
-                    model, projection_batch)
-                ext_parameters = extension_parameters(model)
-                for module in activations(model):
-                    module.project_()
-                remove_extension_parameters_(optimizer, ext_parameters)
-                projected_count = project_relaxed_bypass_(model)
-                after_logits, after_loss = logits_and_loss(model, projection_batch)
+            before_loss = evaluation_loss(model, projection_batch)
+            transition = transition_from_opt2_(
+                model, optimizer, epsilon=args.contraction_epsilon,
+                opt2_done=opt2_done, soft_cap=args.max_opt2_epochs)
+            criterion_met = transition.criterion_met
+            if transition.phase == "train3":
+                contraction_at_projection = transition.contraction_norm
+                after_loss = evaluation_loss(model, projection_batch)
                 projection_loss_jump = after_loss - before_loss
-                phase = "train3"
-                if projected_count != len(extension_paths):
-                    raise RuntimeError("Bypass projection did not remove every D")
-            elif reached_cap:
+                phase = transition.phase
+                if transition.projected_count != len(extension_paths):
+                    raise RuntimeError("Bypass extension bookkeeping mismatch")
+            elif transition.soft_cap_exceeded:
                 # The nominal 10-epoch pilot split is only a warning boundary.
                 # Dropping a non-contracted D would violate relaxed Bypass, so
                 # opt2 consumes the remaining common budget until it succeeds.

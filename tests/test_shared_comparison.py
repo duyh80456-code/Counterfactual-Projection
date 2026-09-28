@@ -7,7 +7,7 @@ from torch import nn
 from baselines.bypass import (
     activations, add_extension_parameters_, contraction_norm,
     embed_relaxed_bypass, extension_parameters, project_relaxed_bypass_,
-    remove_extension_parameters_)
+    remove_extension_parameters_, transition_from_opt2_)
 from experiments.shared_protocol import (
     FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS, load_shared_checkpoint,
     save_shared_checkpoint)
@@ -85,9 +85,46 @@ def test_shared_checkpoint_contains_exact_fork_state_and_hash(tmp_path):
         assert torch.equal(value, restored_model.state_dict()[name])
 
 
-def test_bypass_never_force_projects_at_the_soft_opt2_cap():
-    source = Path("baselines/run_bypass.py").read_text()
-    assert "if criterion_met:" in source
-    assert "if criterion_met or reached_cap:" not in source
-    assert "elif reached_cap:" in source
-    assert "opt2_soft_cap_exceeded = True" in source
+def bypass_toy_with_optimizer():
+    model = ToyResidualModel()
+    embed_relaxed_bypass(model)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    return model, optimizer
+
+
+def test_bypass_soft_cap_does_not_project_uncontracted_extension():
+    model, optimizer = bypass_toy_with_optimizer()
+    extensions = extension_parameters(model)
+    for module in activations(model):
+        module.d.data.fill_(0.1)
+
+    transition = transition_from_opt2_(
+        model, optimizer, epsilon=0.002, opt2_done=10, soft_cap=10)
+
+    assert transition.phase == "opt2"
+    assert not transition.criterion_met
+    assert transition.soft_cap_exceeded
+    assert transition.projected_count == 0
+    assert len(activations(model)) == 2
+    optimizer_ids = {id(parameter) for group in optimizer.param_groups
+                     for parameter in group["params"]}
+    assert all(id(parameter) in optimizer_ids for parameter in extensions)
+
+
+def test_bypass_projects_contracted_extension_and_enters_train3():
+    model, optimizer = bypass_toy_with_optimizer()
+    extensions = extension_parameters(model)
+    for module in activations(model):
+        module.d.data.fill_(1e-5)
+
+    transition = transition_from_opt2_(
+        model, optimizer, epsilon=0.002, opt2_done=3, soft_cap=10)
+
+    assert transition.phase == "train3"
+    assert transition.criterion_met
+    assert not transition.soft_cap_exceeded
+    assert transition.projected_count == 2
+    assert activations(model) == []
+    optimizer_ids = {id(parameter) for group in optimizer.param_groups
+                     for parameter in group["params"]}
+    assert all(id(parameter) not in optimizer_ids for parameter in extensions)
