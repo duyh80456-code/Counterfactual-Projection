@@ -34,6 +34,7 @@ def main():
         "operator": "_reparam(first=True) -> inverse_turn_all(1.0)",
         "official_warmup_epochs": 5,
         "annealing_cycle_epochs": 30,
+        "training_schedule": "official per-cycle cosine annealing",
         "criterion": "cross_entropy (official teacher checkpoint unavailable)",
     })
     model = RepVGG_A1(num_classes=100).to(device)
@@ -56,11 +57,19 @@ def main():
 
     expanded_params = parameter_count(model)
     # Match the official cycle script's two parameter groups.
-    optimizer = torch.optim.SGD([
-        {"params": model.weights(rep=False), "weight_decay": args.weight_decay},
-        {"params": model.weights(rep=True), "weight_decay": 0.0},
-    ], lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    def fresh_optimizer_and_scheduler():
+        # Recreate both objects exactly as the official cycle entry point does.
+        # This also guarantees parameter groups refer to the current model.
+        fresh_optimizer = torch.optim.SGD([
+            {"params": model.weights(rep=False),
+             "weight_decay": args.weight_decay},
+            {"params": model.weights(rep=True), "weight_decay": 0.0},
+        ], lr=args.lr)
+        fresh_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            fresh_optimizer, T_max=30)
+        return fresh_optimizer, fresh_scheduler
+
+    optimizer, scheduler = fresh_optimizer_and_scheduler()
 
     def pre_epoch(epoch):
         # Match cycle_repvgg_cifar.py's branch-attachment schedule.
@@ -68,9 +77,10 @@ def main():
         if epoch and cycle_epoch == 0:
             model._reparam(first=True)
             model.inverse_turn_all(1.0)
-            optimizer.state.clear()  # official script creates a fresh SGD per cycle
+            return fresh_optimizer_and_scheduler()
         if cycle_epoch > 0:
             model.set_attach_rate(min((cycle_epoch + 1.0) / 5.0, 1.0))
+        return None
 
     def post_backward(epoch):
         if epoch % 30 < 5:

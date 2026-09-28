@@ -1110,7 +1110,10 @@ def main():
         source_commit = "unknown"
     result = {
         "method": requested_method, "seed": args.seed,
-        "epoch": len(history),
+        "epoch": (args.warmup_epochs + len(history)
+                  if requested_method == "ours_e_driven_o"
+                  else len(history)),
+        "post_warmup_epochs": len(history),
         "train_accuracy": history[-1]["train_accuracy"],
         "pretrained_model_sha256": pretrained_sha256,
         "initial_model_sha256": warmup_sha256,

@@ -73,7 +73,7 @@ and checkpoint format.
 Every arm atomically writes `checkpoint_latest.pt` after every epoch with its
 model, optimizer, scheduler, history, protocol, and RNG state. Re-running
 resumes unfinished arms. For a later Kaggle session, attach the previous
-archive as an input Dataset, increase `TARGET_EPOCHS`, and rerun; the notebook
+archive as an input Dataset, increase `TOTAL_EPOCHS`, and rerun; the notebook
 restores all four arms. The warm-up checkpoint is included in the archive. The
 official CIFAR-100 test set is never constructed.
 
@@ -85,6 +85,9 @@ the model and records this deviation. RepOptimizer uses official
 RepOpt-VGG-B1, its released B1 scale file, and `RepOptimizerSGD`; it is an
 adjacent-architecture comparator rather than a matched ResNet-18 comparison.
 RepAn's pinned revision contains no license file, which is reported explicitly.
+Because the four methods retain their official model families and input
+constraints, this is a screening comparison, not a final apples-to-apples
+architecture or training-recipe comparison.
 
 The input pipeline uses ImageNet normalization and resized CIFAR-100 images so
 the pretrained backbone sees its expected input distribution. The deploy model
@@ -156,9 +159,11 @@ Each run reports `corrections_applied / correction_attempts` and its application
 rate; the Kaggle gate rejects any projection arm below 100%.
 
 The committed notebook remains a subset pilot (12k training examples): Ours
-loads the fixed 3-epoch warm-up and all arms target 80 training epochs. This is
-enough to screen for a performance signal, but it does not support final
-superiority claims; those require a frozen full-CIFAR-100, multi-seed run.
+loads the fixed 3-epoch warm-up and runs 77 E-driven epochs, while each other
+arm trains for 80 epochs from initialization. Thus every arm has 80 total
+epochs. This is enough to screen for a performance signal, but it does not
+support final superiority claims; those require a frozen full-CIFAR-100,
+multi-seed run.
 
 The Kaggle test gate includes a real CUDA integration test of the complete
 full-ResNet → TINY over-expansion → delta-f_E → functional-projection path; it

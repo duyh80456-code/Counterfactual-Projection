@@ -12,7 +12,8 @@ def test_four_arm_notebook_is_restart_safe_and_uses_official_sources():
     for repository in ("xfey/RepAn", "GUOShuxuan/expandnets",
                        "DingXiaoH/RepOptimizers"):
         assert repository in source
-    assert "TARGET_EPOCHS = 80" in source
+    assert "TOTAL_EPOCHS = 80" in source
+    assert "OURS_EPOCHS = TOTAL_EPOCHS - WARMUP_EPOCHS" in source
     assert "checkpoint_latest.pt" in source
     assert "Restored prior phase" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
@@ -33,3 +34,17 @@ def test_ours_alias_maps_to_frozen_projection_arm():
     assert 'args.method = "tiny_projection"' in source
     assert '"application_gate": "finite_and_heldout_functional_fit"' in source
     assert 'cg_converged != True' not in source
+
+
+def test_gromo_validation_loss_is_accumulated_once():
+    source = Path("experiments/run_gromo_pilot.py").read_text()
+    evaluate_body = source.split("def evaluate(model, loader, device):", 1)[1]
+    evaluate_body = evaluate_body.split("\ndef train_epoch", 1)[0]
+    assert evaluate_body.count("loss_sum +=") == 1
+
+
+def test_repan_rebuilds_optimizer_and_scheduler_per_cycle():
+    source = Path("baselines/run_repan.py").read_text()
+    assert "fresh_optimizer_and_scheduler" in source
+    assert "return fresh_optimizer_and_scheduler()" in source
+    assert "optimizer.state.clear()" not in source

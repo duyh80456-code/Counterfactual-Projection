@@ -23,7 +23,7 @@ This notebook runs one fixed seed in two waves on two T4 GPUs:
 - wave 2: official ExpandNets and official RepOptimizer.
 
 Every arm checkpoints after every epoch. Re-running resumes from
-`checkpoint_latest.pt`; increasing `TARGET_EPOCHS` continues the same phase.
+`checkpoint_latest.pt`; increasing `TOTAL_EPOCHS` continues the same phase.
 No arm reads the official CIFAR-100 test set. ExpandNets' official CIFAR model
 is intrinsically 32x32, so its thin input adapter downsamples the common 128px
 batch and records that protocol deviation.
@@ -122,8 +122,9 @@ DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
     code("""SEED = 1
-TARGET_EPOCHS = 80  # increase later; checkpoints resume instead of restarting
+TOTAL_EPOCHS = 80  # increase later; checkpoints resume instead of restarting
 WARMUP_EPOCHS = 3
+OURS_EPOCHS = TOTAL_EPOCHS - WARMUP_EPOCHS
 BATCH_SIZE = 64
 TRAIN_SAMPLES = 12000
 VALIDATION_SAMPLES = 5000
@@ -169,14 +170,14 @@ print("Ours warm-up:", WARMUP_CHECKPOINT)
     code("""def common_official_args(name):
     source = OFFICIAL[name]
     return ["--official-root", str(source["path"]), "--data-root", str(DATA_ROOT),
-        "--output", str(OUTPUT / name), "--seed", str(SEED), "--epochs", str(TARGET_EPOCHS),
+        "--output", str(OUTPUT / name), "--seed", str(SEED), "--epochs", str(TOTAL_EPOCHS),
         "--batch-size", str(BATCH_SIZE), "--train-samples", str(TRAIN_SAMPLES),
         "--validation-samples", str(VALIDATION_SAMPLES), "--tuning-samples", str(TUNING_SAMPLES),
         "--image-size", str(IMAGE_SIZE), "--lr", str(LR), "--source-url", source["url"],
         "--source-commit", source["commit"], "--license", source["license"]]
 
 ours = [sys.executable, "-m", "experiments.run_gromo_pilot", "--method", "ours_e_driven_o",
-    "--seed", str(SEED), "--epochs", str(TARGET_EPOCHS), "--warmup-epochs", str(WARMUP_EPOCHS),
+    "--seed", str(SEED), "--epochs", str(OURS_EPOCHS), "--warmup-epochs", str(WARMUP_EPOCHS),
     "--warmup-checkpoint", str(WARMUP_CHECKPOINT), "--batch-size", str(BATCH_SIZE),
     "--reference-root", str(REFERENCE), "--train-samples", str(TRAIN_SAMPLES),
     "--validation-samples", str(VALIDATION_SAMPLES), "--tuning-samples", str(TUNING_SAMPLES),
@@ -223,13 +224,14 @@ for name in ("ours_e_driven_o", "repan", "expandnets", "repoptimizer"):
     result = json.loads((OUTPUT / name / "result.json").read_text())
     missing = sorted(required - result.keys())
     if missing: raise RuntimeError(f"{name} missing result fields: {missing}")
-    if result["epoch"] != TARGET_EPOCHS: raise RuntimeError(f"{name} stopped at epoch {result['epoch']}")
+    if result["epoch"] != TOTAL_EPOCHS: raise RuntimeError(f"{name} stopped at total epoch {result['epoch']}")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
     results.append(result)
-summary = {"target_epochs": TARGET_EPOCHS, "seed": SEED, "official_test_used": False,
+summary = {"total_epochs": TOTAL_EPOCHS, "ours_warmup_epochs": WARMUP_EPOCHS,
+    "ours_post_warmup_epochs": OURS_EPOCHS, "seed": SEED, "official_test_used": False,
     "results": [{key: row.get(key) for key in sorted(required)} for row in results],
-    "continuation": "increase TARGET_EPOCHS and rerun; completed epochs are skipped"}
+    "continuation": "increase TOTAL_EPOCHS and rerun; completed epochs are skipped"}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)

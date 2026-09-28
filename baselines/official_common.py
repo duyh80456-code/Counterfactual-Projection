@@ -225,7 +225,9 @@ def run_epochs(*, args, method: str, model, optimizer, scheduler,
     started = time.perf_counter()
     for epoch in range(initial_epoch, args.epochs):
         if pre_epoch is not None:
-            pre_epoch(epoch)
+            replacement = pre_epoch(epoch)
+            if replacement is not None:
+                optimizer, scheduler = replacement
         train_loss, train_accuracy = train_epoch(
             model, train_loader, optimizer, device, input_adapter,
             None if post_backward is None else lambda: post_backward(epoch))
