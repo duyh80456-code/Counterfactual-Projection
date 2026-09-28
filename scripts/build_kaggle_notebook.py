@@ -1,4 +1,4 @@
-"""Build the restart-safe four-arm Kaggle T4x2 experiment notebook."""
+"""Build the restart-safe shared-theta20 Kaggle T4x2 notebook."""
 
 import json
 from pathlib import Path
@@ -15,18 +15,17 @@ def code(source):
 
 
 cells = [
-    markdown("""# Counterfactual Projection — four-arm CIFAR-100, 80 epochs
+    markdown("""# Shared-checkpoint CIFAR-100 comparison
 
-This notebook runs one fixed seed in two waves on two T4 GPUs:
+One CIFAR-ResNet18 is trained from scratch for 20 vanilla epochs. The exact
+model, optimizer, scheduler, data split, loader generator, and RNG state at
+`theta_20` are hashed and forked into three 60-epoch arms:
 
-- wave 1: `ours_e_driven_o` and official RepAn;
-- wave 2: official ExpandNets and official RepOptimizer.
+- `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1), concurrently;
+- `vanilla_continue` (GPU 0) in wave 2.
 
-Every arm checkpoints after every epoch. Re-running resumes from
-`checkpoint_latest.pt`; increasing `TOTAL_EPOCHS` continues the same phase.
-No arm reads the official CIFAR-100 test set. ExpandNets' official CIFAR model
-is intrinsically 32x32, so its thin input adapter downsamples the common 128px
-batch and records that protocol deviation.
+The total budget is 80 epochs for every arm. The official CIFAR-100 test set is
+never constructed. Every process saves a resumable checkpoint each epoch.
 """),
     code("""import json, os, shutil, subprocess, sys
 from pathlib import Path
@@ -39,165 +38,123 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-THIRD_PARTY = Path("/kaggle/working/third_party")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_4arm_80ep_v1")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta20_80ep_v1")
 
-OFFICIAL = {
-    "repan": {"url": "https://github.com/xfey/RepAn.git",
-        "commit": "7cb05e93cdcd8cd83f18da1b5514bad75bc68e16",
-        "path": THIRD_PARTY / "RepAn",
-        "license": "NOT SPECIFIED (no license file at pinned commit)"},
-    "expandnets": {"url": "https://github.com/GUOShuxuan/expandnets.git",
-        "commit": "065d4d3aebfeb442c02227d1d5c16ee11a518945",
-        "path": THIRD_PARTY / "ExpandNets",
-        "license": "BSD-3-Clause terms (LICENSE heading says MIT License)"},
-    "repoptimizer": {"url": "https://github.com/DingXiaoH/RepOptimizers.git",
-        "commit": "2e45ff5388e9d7aabf112d7e2973df8183e6c6d9",
-        "path": THIRD_PARTY / "RepOptimizers", "license": "MIT"},
-}
-
-def pinned_clone(url, destination, commit, env=None):
-    if destination.exists(): shutil.rmtree(destination)
-    subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",
-                    url, str(destination)], env=env, check=True)
-    subprocess.run(["git", "-C", str(destination), "fetch", "--depth", "1",
-                    "origin", commit], env=env, check=True)
-    subprocess.run(["git", "-C", str(destination), "checkout", "--detach", commit],
-                   env=env, check=True)
-    actual = subprocess.check_output(
-        ["git", "-C", str(destination), "rev-parse", "HEAD"], text=True).strip()
-    if actual != commit:
-        raise RuntimeError(f"revision mismatch for {destination}: {actual}")
+def private_clone(url, destination, branch):
+    token = UserSecretsClient().get_secret("github_token").strip()
+    if not token: raise RuntimeError("Kaggle Secret github_token is unavailable")
+    askpass = Path("/kaggle/working/.counterfactual_git_askpass.py")
+    askpass.write_text("#!/usr/bin/env python3\\nimport os,sys\\np=sys.argv[1] if len(sys.argv)>1 else ''\\nprint('x-access-token' if 'Username' in p else os.environ['GITHUB_TOKEN_RUNTIME'])\\n")
+    askpass.chmod(0o700)
+    env = os.environ.copy()
+    env.update(GITHUB_TOKEN_RUNTIME=token, GIT_ASKPASS=str(askpass),
+               GIT_TERMINAL_PROMPT="0")
+    try:
+        subprocess.run(["git", "clone", "--branch", branch, "--single-branch",
+                        url, str(destination)], env=env, check=True)
+    finally:
+        askpass.unlink(missing_ok=True)
+        env.pop("GITHUB_TOKEN_RUNTIME", None)
+        token = None
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
-THIRD_PARTY.mkdir(parents=True, exist_ok=True)
-OUTPUT.mkdir(parents=True, exist_ok=True)  # deliberately never deleted
-
-token = UserSecretsClient().get_secret("github_token").strip()
-if not token: raise RuntimeError("Kaggle Secret github_token is unavailable")
-askpass = Path("/kaggle/working/.counterfactual_git_askpass.py")
-askpass.write_text("#!/usr/bin/env python3\\nimport os,sys\\np=sys.argv[1] if len(sys.argv)>1 else ''\\nprint('x-access-token' if 'Username' in p else os.environ['GITHUB_TOKEN_RUNTIME'])\\n")
-askpass.chmod(0o700)
-private_env = os.environ.copy()
-private_env.update(GITHUB_TOKEN_RUNTIME=token, GIT_ASKPASS=str(askpass),
-                   GIT_TERMINAL_PROMPT="0")
-try:
-    subprocess.run(["git", "clone", "--branch", "main", "--single-branch",
-                    MAIN_URL, str(REPO)], env=private_env, check=True)
-    subprocess.run(["git", "clone", "--branch", "ccil-residual-capacity",
-                    "--single-branch", REFERENCE_URL, str(REFERENCE)],
-                   env=private_env, check=True)
-finally:
-    askpass.unlink(missing_ok=True)
-    private_env.pop("GITHUB_TOKEN_RUNTIME", None)
-    token = None
-
-pinned_clone(GROMO_URL, GROMO, GROMO_COMMIT)
-for metadata in OFFICIAL.values():
-    pinned_clone(metadata["url"], metadata["path"], metadata["commit"])
-manifest = {name: {"method": name, "repo_url": item["url"],
-    "git_commit_head": item["commit"], "license": item["license"]}
-    for name, item in OFFICIAL.items()}
-(OUTPUT / "source_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
-print(json.dumps(manifest, indent=2, sort_keys=True))
+OUTPUT.mkdir(parents=True, exist_ok=True)
+private_clone(MAIN_URL, REPO, "main")
+private_clone(REFERENCE_URL, REFERENCE, "ccil-residual-capacity")
+subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",
+                GROMO_URL, str(GROMO)], check=True)
+subprocess.run(["git", "-C", str(GROMO), "fetch", "--depth", "1",
+                "origin", GROMO_COMMIT], check=True)
+subprocess.run(["git", "-C", str(GROMO), "checkout", "--detach",
+                GROMO_COMMIT], check=True)
+if subprocess.check_output(["git", "-C", str(GROMO), "rev-parse", "HEAD"],
+                           text=True).strip() != GROMO_COMMIT:
+    raise RuntimeError("Gromo revision mismatch")
+print("main:", subprocess.check_output(
+    ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip())
+print("reference:", subprocess.check_output(
+    ["git", "-C", str(REFERENCE), "rev-parse", "HEAD"], text=True).strip())
+print("gromo:", GROMO_COMMIT)
 """),
     code("""subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO)], check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)], check=True)
 GROMO_SRC = GROMO / "src"
-RUNTIME_PYTHONPATH = os.pathsep.join(filter(None, (str(REPO), str(GROMO_SRC), str(REFERENCE), os.environ.get("PYTHONPATH", ""))))
+RUNTIME_PYTHONPATH = os.pathsep.join(filter(None, (
+    str(REPO), str(GROMO_SRC), str(REFERENCE), os.environ.get("PYTHONPATH", ""))))
 test_env = os.environ.copy()
 test_env.update(PYTHONPATH=RUNTIME_PYTHONPATH, REQUIRE_GROMO_INTEGRATION="1")
-subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO, env=test_env, check=True)
+subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO,
+               env=test_env, check=True)
 
 import torch
 if torch.cuda.device_count() != 2:
     raise RuntimeError(f"Select Kaggle T4 x2; found {torch.cuda.device_count()} GPU(s)")
-print(subprocess.check_output(["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader"], text=True))
-input_root = Path("/kaggle/input")
-cifar_dirs = sorted({p.parent.resolve() for p in input_root.rglob("cifar-100-python")})
+print(subprocess.check_output(
+    ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader"],
+    text=True))
+cifar_dirs = sorted({p.parent.resolve()
+                     for p in Path("/kaggle/input").rglob("cifar-100-python")})
 if not cifar_dirs:
-    raise FileNotFoundError("Attach a Kaggle CIFAR-100 dataset containing cifar-100-python")
+    raise FileNotFoundError(
+        "Attach a Kaggle CIFAR-100 dataset containing cifar-100-python")
 DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
     code("""SEED = 1
-TOTAL_EPOCHS = 80  # increase later; checkpoints resume instead of restarting
-WARMUP_EPOCHS = 3
-OURS_EPOCHS = TOTAL_EPOCHS - WARMUP_EPOCHS
+FORK_EPOCH = 20
+TOTAL_EPOCHS = 80
+POST_FORK_EPOCHS = 60
 BATCH_SIZE = 64
-TRAIN_SAMPLES = 12000
 VALIDATION_SAMPLES = 5000
 TUNING_SAMPLES = 128
-IMAGE_SIZE = 128
-LR = 0.01
+LR = 0.1
+WEIGHT_DECAY = 5e-4
+SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch20.pt"
 
-# To continue in a fresh Kaggle session, attach the previous output archive as
-# a Dataset. The notebook auto-detects and restores its four arm directories.
-for summary_path in Path("/kaggle/input").rglob("summary.json"):
-    prior_root = summary_path.parent
-    if all((prior_root / name / "checkpoint_latest.pt").is_file()
-           for name in ("ours_e_driven_o", "repan", "expandnets", "repoptimizer")):
+# Restore a previous Kaggle output archive/dataset before deciding what to run.
+for prior_manifest in Path("/kaggle/input").rglob("shared_seed1_epoch20.json"):
+    prior_root = prior_manifest.parent.parent
+    if (prior_root / "warmup" / "shared_seed1_epoch20.pt").is_file():
         for child in prior_root.iterdir():
             destination = OUTPUT / child.name
-            if destination.exists():
-                continue
+            if destination.exists(): continue
             if child.is_dir(): shutil.copytree(child, destination)
             else: shutil.copy2(child, destination)
-        print("Restored prior phase from", prior_root)
+        print("Restored prior run from", prior_root)
         break
 
-legacy_warmup = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v15/warmup/seed1.pt")
-WARMUP_CHECKPOINT = OUTPUT / "warmup" / "seed1.pt"
-if not WARMUP_CHECKPOINT.is_file() and legacy_warmup.is_file():
-    WARMUP_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(legacy_warmup, WARMUP_CHECKPOINT)
-if not WARMUP_CHECKPOINT.is_file():
-    warmup_output = OUTPUT / "warmup" / "seed1_manifest"
-    warmup_output.mkdir(parents=True, exist_ok=True)
-    command = [sys.executable, "-m", "experiments.run_gromo_pilot",
-        "--method", "vanilla", "--seed", str(SEED), "--prepare-warmup",
-        "--warmup-epochs", str(WARMUP_EPOCHS), "--warmup-checkpoint", str(WARMUP_CHECKPOINT),
-        "--batch-size", str(BATCH_SIZE), "--reference-root", str(REFERENCE),
-        "--train-samples", str(TRAIN_SAMPLES), "--validation-samples", str(VALIDATION_SAMPLES),
-        "--tuning-samples", str(TUNING_SAMPLES), "--image-size", str(IMAGE_SIZE),
-        "--data-root", str(DATA_ROOT), "--output", str(warmup_output)]
-    env = os.environ.copy()
-    env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1", PYTHONPATH=RUNTIME_PYTHONPATH)
-    subprocess.run(command, cwd=REPO, env=env, check=True)
-print("Ours warm-up:", WARMUP_CHECKPOINT)
+def base_args(output):
+    return ["--reference-root", str(REFERENCE), "--data-root", str(DATA_ROOT),
+        "--output", str(output), "--shared-checkpoint", str(SHARED_CHECKPOINT),
+        "--seed", str(SEED), "--batch-size", str(BATCH_SIZE),
+        "--validation-samples", str(VALIDATION_SAMPLES),
+        "--tuning-samples", str(TUNING_SAMPLES), "--lr", str(LR),
+        "--weight-decay", str(WEIGHT_DECAY)]
+
+env = os.environ.copy()
+env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
+           PYTHONPATH=RUNTIME_PYTHONPATH)
+prepare = [sys.executable, "-m", "experiments.run_shared_comparison",
+           "--method", "prepare_shared"] + base_args(OUTPUT / "warmup")
+subprocess.run(prepare, cwd=REPO, env=env, check=True)
+manifest = json.loads(SHARED_CHECKPOINT.with_suffix(".json").read_text())
+SHARED_HASH = manifest["sha256"]
+if manifest["epoch"] != FORK_EPOCH:
+    raise RuntimeError(f"shared checkpoint is at epoch {manifest['epoch']}")
+print("theta_20 SHA-256:", SHARED_HASH)
 """),
-    code("""def common_official_args(name):
-    source = OFFICIAL[name]
-    return ["--official-root", str(source["path"]), "--data-root", str(DATA_ROOT),
-        "--output", str(OUTPUT / name), "--seed", str(SEED), "--epochs", str(TOTAL_EPOCHS),
-        "--batch-size", str(BATCH_SIZE), "--train-samples", str(TRAIN_SAMPLES),
-        "--validation-samples", str(VALIDATION_SAMPLES), "--tuning-samples", str(TUNING_SAMPLES),
-        "--image-size", str(IMAGE_SIZE), "--lr", str(LR), "--source-url", source["url"],
-        "--source-commit", source["commit"], "--license", source["license"]]
-
-ours = [sys.executable, "-m", "experiments.run_gromo_pilot", "--method", "ours_e_driven_o",
-    "--seed", str(SEED), "--epochs", str(OURS_EPOCHS), "--warmup-epochs", str(WARMUP_EPOCHS),
-    "--warmup-checkpoint", str(WARMUP_CHECKPOINT), "--batch-size", str(BATCH_SIZE),
-    "--reference-root", str(REFERENCE), "--train-samples", str(TRAIN_SAMPLES),
-    "--validation-samples", str(VALIDATION_SAMPLES), "--tuning-samples", str(TUNING_SAMPLES),
-    "--image-size", str(IMAGE_SIZE), "--data-root", str(DATA_ROOT),
-    "--output", str(OUTPUT / "ours_e_driven_o"), "--site", "stages.2.blocks.0",
-    "--rank", "4", "--probe-epsilon", "0.05", "--cg-iterations", "200",
-    "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
-repan = [sys.executable, "-m", "baselines.run_repan"] + common_official_args("repan")
-expandnets = [sys.executable, "-m", "baselines.run_expandnets"] + common_official_args("expandnets")
-repoptimizer = [sys.executable, "-m", "baselines.run_repoptimizer"] + common_official_args("repoptimizer")
-
-def run_wave(assignments):
+    code("""def run_wave(assignments):
     running = []
     for gpu, name, command in assignments:
         arm_dir = OUTPUT / name
         arm_dir.mkdir(parents=True, exist_ok=True)
         log = (arm_dir / "run.log").open("a")
-        env = os.environ.copy()
-        env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1", OMP_NUM_THREADS="2", PYTHONPATH=RUNTIME_PYTHONPATH)
-        process = subprocess.Popen(command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
+        process_env = os.environ.copy()
+        process_env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
+                           OMP_NUM_THREADS="2", PYTHONPATH=RUNTIME_PYTHONPATH)
+        process = subprocess.Popen(command, cwd=REPO, env=process_env,
+                                   stdout=log, stderr=subprocess.STDOUT)
         running.append((name, process, log))
         print(f"GPU{gpu}: started {name}, pid={process.pid}")
     failures = []
@@ -206,40 +163,56 @@ def run_wave(assignments):
         print(f"{name}: exit={return_code}")
         if return_code: failures.append((name, return_code))
     if failures:
-        tails = {name: (OUTPUT / name / "run.log").read_text(errors="replace").splitlines()[-80:]
-                 for name, _ in failures}
-        raise RuntimeError(json.dumps({"failures": failures, "log_tails": tails}, indent=2))
+        tails = {name: (OUTPUT / name / "run.log").read_text(
+            errors="replace").splitlines()[-100:] for name, _ in failures}
+        raise RuntimeError(json.dumps(
+            {"failures": failures, "log_tails": tails}, indent=2))
 
-print("Wave 1/2")
-run_wave([(0, "ours_e_driven_o", ours), (1, "repan", repan)])
+ours = [sys.executable, "-m", "experiments.run_shared_comparison",
+    "--method", "ours_e_driven_o"] + base_args(OUTPUT / "ours_e_driven_o") + [
+    "--shared-checkpoint-hash", SHARED_HASH, "--site", "stages.2.blocks.0",
+    "--rank", "4", "--probe-epsilon", "0.05", "--cg-iterations", "200",
+    "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
+bypass = [sys.executable, "-m", "baselines.run_bypass"] + base_args(
+    OUTPUT / "bypass") + ["--shared-checkpoint-hash", SHARED_HASH,
+    "--opt1-epochs", "20", "--max-opt2-epochs", "10",
+    "--contraction-epsilon", "0.002", "--gamma-slope", "3e-6"]
+
+print("Wave 1/2: Ours + Bypass")
+run_wave([(0, "ours_e_driven_o", ours), (1, "bypass", bypass)])
 """),
-    code("""print("Wave 2/2")
-run_wave([(0, "expandnets", expandnets), (1, "repoptimizer", repoptimizer)])
+    code("""vanilla = [sys.executable, "-m", "experiments.run_shared_comparison",
+    "--method", "vanilla_continue"] + base_args(OUTPUT / "vanilla_continue") + [
+    "--shared-checkpoint-hash", SHARED_HASH]
+print("Wave 2/2: Vanilla continuation")
+run_wave([(0, "vanilla_continue", vanilla)])
 """),
-    code("""required = {"method", "seed", "epoch", "train_accuracy", "validation_accuracy",
-    "validation_loss", "peak_train_params", "deploy_params", "training_seconds",
-    "peak_gpu_memory", "source_repo", "source_commit"}
+    code("""required = {"method", "shared_checkpoint_hash", "fork_epoch",
+    "post_fork_epochs", "final_validation_accuracy", "best_validation_accuracy",
+    "final_validation_loss", "training_seconds", "peak_gpu_memory", "deploy_params"}
 results = []
-for name in ("ours_e_driven_o", "repan", "expandnets", "repoptimizer"):
-    result = json.loads((OUTPUT / name / "result.json").read_text())
+for name in ("ours_e_driven_o", "bypass", "vanilla_continue"):
+    path = OUTPUT / name / "result.json"
+    result = json.loads(path.read_text())
     missing = sorted(required - result.keys())
     if missing: raise RuntimeError(f"{name} missing result fields: {missing}")
-    expected_epoch = OURS_EPOCHS if name == "ours_e_driven_o" else TOTAL_EPOCHS
-    if result["epoch"] != expected_epoch:
-        raise RuntimeError(
-            f"{name} stopped at method epoch {result['epoch']}; expected {expected_epoch}")
+    if result["shared_checkpoint_hash"] != SHARED_HASH:
+        raise RuntimeError(f"{name} did not fork from theta_20")
+    if result["fork_epoch"] != FORK_EPOCH or result["post_fork_epochs"] != POST_FORK_EPOCHS:
+        raise RuntimeError(f"{name} did not complete the 20+60 protocol")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
-    result["method_epochs"] = result["epoch"]
-    result["total_training_epochs"] = (
-        result["epoch"] + WARMUP_EPOCHS
-        if name == "ours_e_driven_o" else result["epoch"])
     results.append(result)
-summary = {"total_epochs": TOTAL_EPOCHS, "ours_warmup_epochs": WARMUP_EPOCHS,
-    "ours_post_warmup_epochs": OURS_EPOCHS, "seed": SEED, "official_test_used": False,
-    "results": [{key: row.get(key) for key in sorted(
-        required | {"method_epochs", "total_training_epochs"})} for row in results],
-    "continuation": "increase TOTAL_EPOCHS and rerun; completed epochs are skipped"}
+
+summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
+    "input_size": 32, "seed": SEED, "fork_epoch": FORK_EPOCH,
+    "post_fork_epochs": POST_FORK_EPOCHS, "total_epochs": TOTAL_EPOCHS,
+    "shared_checkpoint_hash": SHARED_HASH, "official_test_used": False,
+    "results": [{key: row.get(key) for key in sorted(required | {
+        "correction_application_rate", "actual_cosine_alignment",
+        "actual_relative_residual", "opt1_epochs", "opt2_epochs",
+        "train3_epochs", "contraction_norm", "projection_loss_jump"})}
+        for row in results]}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)
@@ -248,7 +221,8 @@ print("Archive:", archive)
 ]
 
 notebook = {"cells": cells, "metadata": {
-    "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+    "kernelspec": {"display_name": "Python 3", "language": "python",
+                   "name": "python3"},
     "language_info": {"name": "python", "version": "3"},
     "kaggle": {"accelerator": "gpu", "dataSources": []}},
     "nbformat": 4, "nbformat_minor": 5}

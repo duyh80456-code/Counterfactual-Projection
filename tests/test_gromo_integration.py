@@ -100,3 +100,27 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     committed = RealEGrowth.commit_(model, candidate).committed_module
     assert int(committed.second_layer.in_neurons) == 257
     assert int(committed.second_layer.target_in_neurons) == 257
+
+
+@pytest.mark.gromo_integration
+def test_full_cifar_resnet_relaxed_bypass_embed_and_contract():
+    _optional_imports()
+    from baselines.bypass import (
+        activations, embed_relaxed_bypass, project_relaxed_bypass_)
+    from experiments.shared_protocol import build_cifar_gromo_resnet18
+
+    device = torch.device("cuda:0")
+    model = build_cifar_gromo_resnet18(device).eval()
+    inputs = torch.randn(2, 3, 32, 32, device=device)
+    with torch.no_grad():
+        expected = model(inputs).clone()
+    paths = embed_relaxed_bypass(model)
+    modules = activations(model)
+    assert paths and len(paths) == len(modules)
+    assert all(module.d.is_cuda and module.d.numel() in {64, 128, 256, 512}
+               for module in modules)
+    with torch.no_grad():
+        assert torch.equal(model(inputs), expected)
+    assert project_relaxed_bypass_(model) == len(paths)
+    with torch.no_grad():
+        assert torch.equal(model(inputs), expected)

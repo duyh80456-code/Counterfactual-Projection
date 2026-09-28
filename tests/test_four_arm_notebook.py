@@ -2,23 +2,22 @@ import json
 from pathlib import Path
 
 
-def test_four_arm_notebook_is_restart_safe_and_uses_official_sources():
+def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     notebook = json.loads(Path(
         "notebooks/kaggle_counterfactual_projection_t4x2.ipynb").read_text())
     source = "\n".join("".join(cell.get("source", []))
                        for cell in notebook["cells"])
-    for method in ("ours_e_driven_o", "repan", "expandnets", "repoptimizer"):
+    for method in ("ours_e_driven_o", "bypass", "vanilla_continue"):
         assert method in source
-    for repository in ("xfey/RepAn", "GUOShuxuan/expandnets",
-                       "DingXiaoH/RepOptimizers"):
-        assert repository in source
     assert "TOTAL_EPOCHS = 80" in source
-    assert "OURS_EPOCHS = TOTAL_EPOCHS - WARMUP_EPOCHS" in source
-    assert 'expected_epoch = OURS_EPOCHS if name == "ours_e_driven_o"' in source
-    assert 'result["method_epochs"] = result["epoch"]' in source
+    assert "FORK_EPOCH = 20" in source
+    assert "POST_FORK_EPOCHS = 60" in source
+    assert "shared_seed1_epoch20.pt" in source
+    assert "SHARED_HASH" in source
     assert "checkpoint_latest.pt" in source
-    assert "Restored prior phase" in source
+    assert "Restored prior run" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
+    assert '(0, "ours_e_driven_o", ours), (1, "bypass", bypass)' in source
     assert "official_test_used" in source
 
 
@@ -41,13 +40,10 @@ def test_ours_alias_maps_to_frozen_projection_arm():
     assert 'completed.get("epoch") == args.epochs' in source
 
 
-def test_ours_epoch_accounting_is_77_method_and_80_total():
-    total_epochs = 80
-    warmup_epochs = 3
-    ours_epochs = total_epochs - warmup_epochs
-    ours_result = {"epoch": ours_epochs}
-    assert ours_result["epoch"] == ours_epochs
-    assert ours_result["epoch"] + warmup_epochs == total_epochs
+def test_shared_epoch_accounting_is_20_plus_60():
+    fork_epoch = 20
+    post_fork_epochs = 60
+    assert fork_epoch + post_fork_epochs == 80
 
 
 def test_gromo_validation_loss_is_accumulated_once():
