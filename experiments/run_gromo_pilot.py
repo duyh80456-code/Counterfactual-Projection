@@ -82,7 +82,7 @@ def arguments():
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--damping", type=float, default=1e-3)
-    parser.add_argument("--cg-iterations", type=int, default=50)
+    parser.add_argument("--cg-iterations", type=int, default=200)
     parser.add_argument("--projection-scale", type=float, default=0.0,
                         help="0 applies the fitted direction at probe epsilon")
     parser.add_argument("--expanded-train-steps", type=int, default=2)
@@ -312,9 +312,12 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
             "cg_residual_norm_at_12": None,
             "cg_residual_norm_at_25": None,
             "cg_residual_norm_at_50": None,
+            "cg_residual_norm_at_100": None,
+            "cg_residual_norm_at_200": None,
             "cg_damping_requested": None, "cg_damping_used": None,
             "cg_attempt_count": 0, "cg_attempts": [],
             "cg_target_scale": None,
+            "cg_solver_space": None, "cg_system_dimension": None,
         }
     history = projection.cg.residual_history
 
@@ -327,10 +330,14 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
         "cg_residual_norm_at_12": at(12),
         "cg_residual_norm_at_25": at(25),
         "cg_residual_norm_at_50": at(50),
+        "cg_residual_norm_at_100": at(100),
+        "cg_residual_norm_at_200": at(200),
         "cg_damping_requested": projection.damping_requested,
         "cg_damping_used": projection.damping_used,
         "cg_attempt_count": len(projection.cg_attempts),
         "cg_target_scale": projection.target_scale,
+        "cg_solver_space": projection.solver_space,
+        "cg_system_dimension": projection.linear_system_dimension,
         "cg_attempts": [
             {"damping": attempt.damping,
              "iterations": attempt.iterations,

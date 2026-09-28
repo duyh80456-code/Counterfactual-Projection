@@ -57,7 +57,7 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert candidate.payload["actual_extension_flops"] > 0
 
     step = EProjection(projector=FunctionalProjector(
-        damping=1e-3, max_iter=50, tolerance=1e-5)).discover_candidate(
+        damping=1e-3, max_iter=200, tolerance=1e-5)).discover_candidate(
             model, candidate, (inputs, targets), gate=0.05)
     assert step.signal.is_structural_expansion
     assert step.signal.delta_logits.norm() > 0
@@ -65,7 +65,9 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert step.projection.jvp_calls >= 2
     assert step.projection.vjp_calls >= 2
     assert step.projection.cg.converged
-    assert step.projection.cg.iterations <= 50
+    assert step.projection.cg.iterations <= 200
+    assert step.projection.solver_space == "dual_output"
+    assert step.projection.linear_system_dimension == inputs.shape[0] * 100
     assert step.projection.cg_attempts[-1].converged
     assert step.projection.damping_used >= step.projection.damping_requested
     assert len(step.projection.cg_attempts) <= 4

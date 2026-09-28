@@ -46,6 +46,8 @@ class ProjectionResult:
     damping_used: float
     cg_attempts: tuple[CGAttempt, ...]
     target_scale: float
+    solver_space: str
+    linear_system_dimension: int
 
     @property
     def projection_ratio(self) -> float:
@@ -62,7 +64,7 @@ class ProjectionResult:
 
 
 class FunctionalProjector:
-    def __init__(self, damping: float = 1e-3, max_iter: int = 50,
+    def __init__(self, damping: float = 1e-3, max_iter: int = 200,
                  tolerance: float = 1e-6, max_damping_retries: int = 3,
                  damping_multiplier: float = 10.0):
         if damping < 0 or max_damping_retries < 0 or damping_multiplier <= 1:
@@ -130,12 +132,6 @@ class FunctionalProjector:
             vjp_calls += 1
             return pullback(vector.detach())[0].detach()
 
-        # CG is scale invariant in exact arithmetic, but an almost
-        # function-preserving structural E can make J^T target so small that
-        # float32 dot products stagnate. Solve the identical unit-scale system
-        # and restore the physical scale on the solution/residual diagnostics.
-        rhs = transpose_jacobian(normalized_target).detach()
-
         cg_attempts = []
         cg = None
         first_cg = None
@@ -144,21 +140,32 @@ class FunctionalProjector:
             damping_used = (self.damping * self.damping_multiplier ** attempt
                             if self.damping > 0 else 0.0)
 
-            def normal_matrix(vector: Tensor) -> Tensor:
-                return (transpose_jacobian(jacobian_vector(vector)) +
+            # Solve the equivalent output-space ridge system
+            #
+            #   (J J^T + mu I) u = target,  delta = J^T u.
+            #
+            # This has exactly the same parameter solution as the primal
+            # normal equation for mu > 0, while avoiding a poorly scaled
+            # J^T target RHS and a CG system with millions of coordinates.
+            # The implementation remains matrix-free: every matvec is one
+            # VJP followed by one JVP.
+            def dual_matrix(vector: Tensor) -> Tensor:
+                return (jacobian_vector(transpose_jacobian(vector)) +
                         damping_used * vector.detach()).detach()
 
-            normalized_cg = conjugate_gradient(
-                normal_matrix, rhs, max_iter=self.max_iter,
+            dual_cg = conjugate_gradient(
+                dual_matrix, normalized_target, max_iter=self.max_iter,
                 tolerance=self.tolerance)
+            normalized_parameter_solution = transpose_jacobian(
+                dual_cg.solution).detach()
             cg = CGResult(
-                solution=normalized_cg.solution * target_scale,
-                iterations=normalized_cg.iterations,
-                residual_norm=normalized_cg.residual_norm * target_scale,
-                converged=normalized_cg.converged,
+                solution=normalized_parameter_solution * target_scale,
+                iterations=dual_cg.iterations,
+                residual_norm=dual_cg.residual_norm * target_scale,
+                converged=dual_cg.converged,
                 residual_history=tuple(
                     value * target_scale
-                    for value in normalized_cg.residual_history))
+                    for value in dual_cg.residual_history))
             cg_attempts.append(CGAttempt(
                 damping=damping_used, iterations=cg.iterations,
                 residual_norm=cg.residual_norm, converged=cg.converged))
@@ -184,7 +191,9 @@ class FunctionalProjector:
             cosine_alignment=cosine_alignment(fitted, target_delta), cg=cg,
             jvp_calls=jvp_calls, vjp_calls=vjp_calls,
             damping_requested=self.damping, damping_used=damping_used,
-            cg_attempts=tuple(cg_attempts), target_scale=target_scale)
+            cg_attempts=tuple(cg_attempts), target_scale=target_scale,
+            solver_space="dual_output",
+            linear_system_dimension=normalized_target.numel())
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,

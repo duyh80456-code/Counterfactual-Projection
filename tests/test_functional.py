@@ -28,6 +28,8 @@ def test_functional_projection_recovers_tangent_direction():
     assert abs(result.fitted_norm_ratio - 1.0) < 1e-4
     assert result.jvp_calls >= 2
     assert result.vjp_calls >= 2
+    assert result.solver_space == "dual_output"
+    assert result.linear_system_dimension == target.numel()
     assert not result.cg.solution.requires_grad
     assert not result.fitted_delta.requires_grad
     assert len(result.cg.residual_history) == result.cg.iterations + 1
@@ -42,6 +44,34 @@ def test_functional_projection_recovers_tangent_direction():
         model, heldout_inputs, heldout_target, result.parameter_delta)
     assert heldout.relative_residual < 1e-4
     assert heldout.cosine_alignment > 0.999
+
+
+def test_dual_projection_matches_explicit_ridge_solution():
+    torch.manual_seed(51)
+    model = nn.Linear(2, 2, bias=False).double().eval()
+    inputs = torch.randn(3, 2, dtype=torch.double)
+    target = torch.randn(3, 2, dtype=torch.double)
+    damping = 0.2
+    result = FunctionalProjector(
+        damping=damping, max_iter=100, tolerance=1e-10,
+        max_damping_retries=0).project(
+            model, inputs, target, block="")
+
+    # For a linear layer, vec(dY) = (I_out kron X) vec(dW), with the
+    # row-major parameter ordering used by the projector.
+    basis = torch.eye(model.weight.numel(), dtype=torch.double)
+    columns = []
+    for direction in basis:
+        delta_weight = direction.reshape_as(model.weight)
+        columns.append((inputs @ delta_weight.t()).reshape(-1))
+    jacobian = torch.stack(columns, dim=1)
+    expected = torch.linalg.solve(
+        jacobian.t() @ jacobian + damping * torch.eye(
+            jacobian.shape[1], dtype=torch.double),
+        jacobian.t() @ target.reshape(-1))
+    actual = result.parameter_delta["weight"].reshape(-1)
+    assert result.cg.converged
+    assert torch.allclose(actual, expected, atol=1e-8, rtol=1e-7)
 
 
 def test_direct_projection_clears_only_touched_momentum():

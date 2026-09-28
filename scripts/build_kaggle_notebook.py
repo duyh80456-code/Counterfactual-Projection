@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v10")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v11")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -153,7 +153,7 @@ VALIDATION_SAMPLES = 5000
 SITE = "stages.2.blocks.0"
 CANDIDATE_SITES = ""  # Used only when SITE="auto"; empty means all blocks.
 RANK = 4
-CG_ITERATIONS = 50
+CG_ITERATIONS = 200
 IMAGE_SIZE = 128
 STATISTICS_SAMPLES = 256
 PROJECTION_SAMPLES = 32
@@ -574,6 +574,22 @@ for method, epsilon in groups:
             if row["cg_residual_norm_at_50"] is not None)
             if any(row["cg_residual_norm_at_50"] is not None
                    for row in cg_rows) else None),
+        "mean_cg_residual_norm_at_100": (statistics.mean(
+            row["cg_residual_norm_at_100"] for row in cg_rows
+            if row["cg_residual_norm_at_100"] is not None)
+            if any(row["cg_residual_norm_at_100"] is not None
+                   for row in cg_rows) else None),
+        "mean_cg_residual_norm_at_200": (statistics.mean(
+            row["cg_residual_norm_at_200"] for row in cg_rows
+            if row["cg_residual_norm_at_200"] is not None)
+            if any(row["cg_residual_norm_at_200"] is not None
+                   for row in cg_rows) else None),
+        "cg_solver_spaces": sorted({
+            row["cg_solver_space"] for row in cg_rows
+            if row["cg_solver_space"] is not None}),
+        "mean_cg_system_dimension": (statistics.mean(
+            row["cg_system_dimension"] for row in cg_rows)
+            if cg_rows else None),
         "mean_correction_application_rate": (statistics.mean(
             row["correction_application_rate"] for row in metric_rows
             if row["correction_application_rate"] is not None)
