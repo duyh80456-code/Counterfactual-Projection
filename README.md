@@ -102,8 +102,8 @@ counts, CG convergence and residual norms (including iterations
 peak allocated GPU memory, and any SGD momentum states reset after a direct
 projected parameter jump. CG runs for at most 200 iterations and an unconverged
 correction is never applied. If the requested damping does not converge, the
-solver retries transparently at `10x`, `100x`, and `1000x` damping; every
-attempt, residual, and effective damping is logged, and only a converged final
+solver retries transparently through at most `10000x` damping; every attempt,
+residual, and effective damping is logged, and only a converged final
 attempt may be applied. The dual output-space system is algebraically
 equivalent to the parameter-space normal equation for positive damping, but
 avoids the poorly scaled `J^T delta_logits` right-hand side and a CG vector with
@@ -111,7 +111,9 @@ millions of block parameters. Before CG, the structural target is normalized
 to unit norm and the solved parameter direction is scaled back afterward. This
 leaves the ridge solution unchanged while preventing nearly
 function-preserving E signals from falling below float32 numerical scale. The
-real-E growth control intervenes at
+network JVP/VJP remains in the model's native dtype, while the small dual CG
+vectors, dot products, and recurrence use float64 to prevent loss of Krylov
+conjugacy on the real ResNet operator. The real-E growth control intervenes at
 the same epoch frequency as the main method and logs structural and projected
 local gains before every irreversible commit. Real-E growth commits synchronize the
 new current width back to the target width before the next intervention.

@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v11")
+OUTPUT = Path("/kaggle/working/counterfactual_projection_t4x2_fair_v12")
 
 for checkout in (REPO, REFERENCE, GROMO):
     if checkout.exists(): shutil.rmtree(checkout)
@@ -587,6 +587,9 @@ for method, epsilon in groups:
         "cg_solver_spaces": sorted({
             row["cg_solver_space"] for row in cg_rows
             if row["cg_solver_space"] is not None}),
+        "cg_solver_dtypes": sorted({
+            row["cg_solver_dtype"] for row in cg_rows
+            if row["cg_solver_dtype"] is not None}),
         "mean_cg_system_dimension": (statistics.mean(
             row["cg_system_dimension"] for row in cg_rows)
             if cg_rows else None),

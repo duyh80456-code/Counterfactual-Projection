@@ -48,6 +48,7 @@ class ProjectionResult:
     target_scale: float
     solver_space: str
     linear_system_dimension: int
+    solver_dtype: str
 
     @property
     def projection_ratio(self) -> float:
@@ -65,7 +66,7 @@ class ProjectionResult:
 
 class FunctionalProjector:
     def __init__(self, damping: float = 1e-3, max_iter: int = 200,
-                 tolerance: float = 1e-6, max_damping_retries: int = 3,
+                 tolerance: float = 1e-6, max_damping_retries: int = 4,
                  damping_multiplier: float = 10.0):
         if damping < 0 or max_damping_retries < 0 or damping_multiplier <= 1:
             raise ValueError("invalid damping/retry configuration")
@@ -109,6 +110,14 @@ class FunctionalProjector:
         target = target_delta.detach().reshape(-1).to(base)
         target_scale = float(torch.linalg.vector_norm(target).clamp_min(1e-12))
         normalized_target = target / target_scale
+        # Keep the expensive network derivatives in the model dtype, but use
+        # float64 for the small output-space Krylov vectors. CG recurrence and
+        # dot products are otherwise prone to losing conjugacy in float32 on
+        # the ill-conditioned real ResNet/Gromo operator.
+        solver_dtype = (torch.float64 if normalized_target.dtype in {
+            torch.float16, torch.bfloat16, torch.float32
+        } else normalized_target.dtype)
+        solver_rhs = normalized_target.to(dtype=solver_dtype)
         jvp_calls = 0
         vjp_calls = 0
 
@@ -150,14 +159,16 @@ class FunctionalProjector:
             # The implementation remains matrix-free: every matvec is one
             # VJP followed by one JVP.
             def dual_matrix(vector: Tensor) -> Tensor:
-                return (jacobian_vector(transpose_jacobian(vector)) +
-                        damping_used * vector.detach()).detach()
+                operator_vector = vector.detach().to(normalized_target)
+                image = jacobian_vector(
+                    transpose_jacobian(operator_vector)).to(vector)
+                return (image + damping_used * vector.detach()).detach()
 
             dual_cg = conjugate_gradient(
-                dual_matrix, normalized_target, max_iter=self.max_iter,
+                dual_matrix, solver_rhs, max_iter=self.max_iter,
                 tolerance=self.tolerance)
             normalized_parameter_solution = transpose_jacobian(
-                dual_cg.solution).detach()
+                dual_cg.solution.to(normalized_target)).detach()
             cg = CGResult(
                 solution=normalized_parameter_solution * target_scale,
                 iterations=dual_cg.iterations,
@@ -193,7 +204,8 @@ class FunctionalProjector:
             damping_requested=self.damping, damping_used=damping_used,
             cg_attempts=tuple(cg_attempts), target_scale=target_scale,
             solver_space="dual_output",
-            linear_system_dimension=normalized_target.numel())
+            linear_system_dimension=normalized_target.numel(),
+            solver_dtype=str(solver_dtype).removeprefix("torch."))
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,

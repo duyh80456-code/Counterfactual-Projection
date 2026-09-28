@@ -318,6 +318,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
             "cg_attempt_count": 0, "cg_attempts": [],
             "cg_target_scale": None,
             "cg_solver_space": None, "cg_system_dimension": None,
+            "cg_solver_dtype": None,
         }
     history = projection.cg.residual_history
 
@@ -338,6 +339,7 @@ def cg_diagnostics(projection: ProjectionResult | None) -> dict:
         "cg_target_scale": projection.target_scale,
         "cg_solver_space": projection.solver_space,
         "cg_system_dimension": projection.linear_system_dimension,
+        "cg_solver_dtype": projection.solver_dtype,
         "cg_attempts": [
             {"damping": attempt.damping,
              "iterations": attempt.iterations,

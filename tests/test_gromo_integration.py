@@ -68,9 +68,10 @@ def test_full_model_tiny_overexpansion_to_functional_projection():
     assert step.projection.cg.iterations <= 200
     assert step.projection.solver_space == "dual_output"
     assert step.projection.linear_system_dimension == inputs.shape[0] * 100
+    assert step.projection.solver_dtype == "float64"
     assert step.projection.cg_attempts[-1].converged
     assert step.projection.damping_used >= step.projection.damping_requested
-    assert len(step.projection.cg_attempts) <= 4
+    assert len(step.projection.cg_attempts) <= 5
     assert all("downsample" not in name
                for name in step.projection.parameter_delta)
     assert any("post_layer_function" in name
