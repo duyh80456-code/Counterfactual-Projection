@@ -107,16 +107,33 @@ if not cifar_dirs:
         "Attach a Kaggle CIFAR-100 dataset containing cifar-100-python")
 DATA_ROOT = cifar_dirs[0]
 
+manifest_paths = list(
+    Path("/kaggle/input").rglob("shared_seed1_epoch300.json"))
+checkpoint_paths = list(
+    Path("/kaggle/input").rglob("shared_seed1_epoch300.pt"))
+
+# Kaggle may mount separately uploaded files at different nesting levels. Pair
+# the manifest and checkpoint by content hash instead of requiring siblings.
+checkpoint_hashes = {}
+for checkpoint_path in checkpoint_paths:
+    digest = hashlib.sha256()
+    with checkpoint_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    checkpoint_hashes[checkpoint_path] = digest.hexdigest()
+
 warmups = []
-for manifest_path in Path("/kaggle/input").rglob("shared_seed1_epoch300.json"):
-    checkpoint_path = manifest_path.with_suffix(".pt")
-    if not checkpoint_path.is_file(): continue
+for manifest_path in manifest_paths:
     manifest = json.loads(manifest_path.read_text())
     if int(manifest.get("epoch", -1)) != 300: continue
-    warmups.append((manifest_path, checkpoint_path, manifest))
+    expected_hash = manifest.get("sha256")
+    for checkpoint_path, checkpoint_hash in checkpoint_hashes.items():
+        if checkpoint_hash == expected_hash:
+            warmups.append((manifest_path, checkpoint_path, manifest))
 if not warmups:
     raise FileNotFoundError(
-        "Attach shared_seed1_epoch300.pt and shared_seed1_epoch300.json")
+        "Attach matching shared_seed1_epoch300.pt and "
+        "shared_seed1_epoch300.json files; their SHA-256 must match")
 hashes = {item[2]["sha256"] for item in warmups}
 if len(hashes) != 1:
     raise RuntimeError("Multiple different theta_300 checkpoints are attached")

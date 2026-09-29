@@ -117,17 +117,34 @@ SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch300.pt"
 
 # A completed theta_300 checkpoint is mandatory. Never silently fall back to
 # theta_150 and spend the run rebuilding the shared state.
+manifest_paths = list(
+    Path("/kaggle/input").rglob("shared_seed1_epoch300.json"))
+checkpoint_paths = list(
+    Path("/kaggle/input").rglob("shared_seed1_epoch300.pt"))
+
+# Kaggle may mount separately uploaded files at different nesting levels. Pair
+# the manifest and checkpoint by content hash instead of requiring siblings.
+checkpoint_hashes = {}
+for checkpoint_path in checkpoint_paths:
+    digest = hashlib.sha256()
+    with checkpoint_path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    checkpoint_hashes[checkpoint_path] = digest.hexdigest()
+
 warmups = []
-for manifest_path in Path("/kaggle/input").rglob("shared_seed1_epoch300.json"):
-    checkpoint_path = manifest_path.with_suffix(".pt")
-    if not checkpoint_path.is_file(): continue
+for manifest_path in manifest_paths:
     manifest = json.loads(manifest_path.read_text())
     if int(manifest.get("epoch", -1)) != FORK_EPOCH: continue
-    warmups.append((manifest_path, checkpoint_path, manifest))
+    expected_hash = manifest.get("sha256")
+    for checkpoint_path, checkpoint_hash in checkpoint_hashes.items():
+        if checkpoint_hash == expected_hash:
+            warmups.append((manifest_path, checkpoint_path, manifest))
 if not warmups:
     raise FileNotFoundError(
-        "Missing theta_300. Attach an output containing "
-        "warmup/shared_seed1_epoch300.pt and .json; theta_150 is not accepted.")
+        "Missing a matching theta_300 pair. Attach shared_seed1_epoch300.pt "
+        "and shared_seed1_epoch300.json; they may be in different input "
+        "directories but their SHA-256 must match. theta_150 is not accepted.")
 hashes = {item[2]["sha256"] for item in warmups}
 if len(hashes) != 1:
     raise RuntimeError("Multiple different theta_300 checkpoints are attached")
