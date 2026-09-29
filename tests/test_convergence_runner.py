@@ -10,9 +10,12 @@ def test_convergence_search_preserves_training_pool_and_saves_full_plateau():
     assert "BestCheckpointStallDetector" in source
     assert '"--no-new-best-patience"' in source
     assert 'default=100' in source
+    assert '"--best-min-gain"' in source
+    assert 'default=0.0' in source
     assert '"--significant-min-gain"' in source
     assert 'default=1e-3' in source
-    assert '"exact_best_min_gain": 0.0' in source
+    assert 'args.best_min_gain != 0.0' in source
+    assert '"exact_best_min_gain": args.best_min_gain' in source
     assert '"significant_min_gain": args.significant_min_gain' in source
     assert 'best["kind"] = "plateau_fork_checkpoint"' in source
     assert '"kind": "vanilla_best_checkpoint"' in source

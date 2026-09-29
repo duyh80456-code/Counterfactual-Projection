@@ -36,6 +36,7 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--no-new-best-patience", type=int, default=100)
+    parser.add_argument("--best-min-gain", type=float, default=0.0)
     parser.add_argument("--significant-min-gain", type=float, default=1e-3)
     return parser.parse_args()
 
@@ -107,6 +108,11 @@ def main():
         raise RuntimeError("one visible CUDA GPU is required")
     if args.max_epoch <= START_EPOCH:
         raise ValueError("max_epoch must exceed 300")
+    if args.best_min_gain != 0.0:
+        raise ValueError(
+            "best_min_gain must be 0 so every exact trigger best is saved")
+    if args.significant_min_gain <= 0.0:
+        raise ValueError("significant_min_gain must be positive")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -169,7 +175,7 @@ def main():
         "selection_metric": "trigger accuracy (2,000 held-out samples)",
         "evaluation_role": "report-only (3,000 held-out samples)",
         "no_new_best_patience": args.no_new_best_patience,
-        "exact_best_min_gain": 0.0,
+        "exact_best_min_gain": args.best_min_gain,
         "significant_min_gain": args.significant_min_gain,
         "training_indices_unchanged": True,
         "trigger_samples": len(trigger_indices),

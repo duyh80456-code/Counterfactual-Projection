@@ -21,6 +21,7 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
     assert '"--significant-improvement", "0.001"' in source
     assert '"--gamma-increase-opt2-epoch", "15"' in source
     assert '"--gamma-post-increase-multiplier", "10.0"' in source
+    assert '"--gamma-post-increase-multiplier", "2.0"' not in source
     assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
     assert 'Path(result["best_checkpoint"]).is_file()' in source
     assert "best_acc" in source
