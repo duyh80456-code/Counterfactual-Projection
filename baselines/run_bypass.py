@@ -106,7 +106,9 @@ def main():
                 "contraction succeeds"),
             "contraction_epsilon": args.contraction_epsilon,
             "gamma_t": f"{args.gamma_slope} * opt2_step",
-            "schedule_status": "pilot scaling, not paper hyperparameters",
+            "schedule_status": (
+                "matched-budget relaxed Bypass control; not the full paper "
+                "ResNet reproduction"),
         }}
     model = build_cifar_gromo_resnet18(device)
     optimizer, scheduler = build_optimizer_scheduler(
@@ -266,10 +268,10 @@ def main():
         "source_paper": (
             "https://www.donghunlee.com/papers/"
             "Jung_Lee_Bypass__IEEE_TNNLS.pdf"),
-        "implementation": "relaxed Bypass for ResNet, Algorithm 1",
+        "implementation": "matched-budget relaxed Bypass control",
         "schedule_status": (
             "20 opt1 + 10-epoch opt2 soft cap; opt2 continues within budget "
-            "until contraction, using shared SGD"),
+            "until contraction, using shared SGD; not full reproduction"),
         "fork_epoch": FORK_EPOCH, "post_fork_epochs": len(history),
         "final_validation_accuracy": last["validation_accuracy"],
         "best_validation_accuracy": max(

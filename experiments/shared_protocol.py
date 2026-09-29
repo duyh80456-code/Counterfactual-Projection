@@ -165,6 +165,9 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "scheduler": (
             "resume theta150 LR; CosineAnnealingLR(T_max=200) from "
             "epoch150 through epoch350"),
+        "lr_schedule_status": (
+            "two-stage rebased schedule; not equivalent to a fresh "
+            "CosineAnnealingLR(T_max=350) run"),
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),

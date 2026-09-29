@@ -263,7 +263,8 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "actual_relative_residual", "opt1_epochs", "opt2_epochs",
         "train3_epochs", "contraction_norm", "projection_loss_jump",
         "contraction_criterion_met", "bypass_completed",
-        "opt2_soft_cap_exceeded"})}
+        "opt2_soft_cap_exceeded", "method_label", "control_type",
+        "functional_target", "uses_structural_E"})}
         for row in results]}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))

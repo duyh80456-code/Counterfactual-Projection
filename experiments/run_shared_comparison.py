@@ -428,6 +428,15 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         "initial_deploy_params": initial_params, "history": history,
         "checkpoint": str(arm_checkpoint), "protocol": arm_protocol,
     }
+    if args.method == "o_projection_only":
+        result.update({
+            "method_label": "projection_only_supervised_control",
+            "control_type": "supervised_functional_projection_control",
+            "functional_target": (
+                "negative summed-CE logit gradient: "
+                "one_hot(y) - softmax(f_theta(x))"),
+            "uses_structural_E": False,
+        })
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
         result.update({
             "correction_application_rate": len(applied) / len(history),
