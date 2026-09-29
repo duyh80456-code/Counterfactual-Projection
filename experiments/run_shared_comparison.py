@@ -703,6 +703,16 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         "fork_validation_loss": fork_validation["loss"],
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_validation["accuracy"]),
+        "validation_loss_delta": (
+            fork_validation["loss"] - last["validation_loss"]),
+        "best_validation_accuracy_delta": (
+            max(row["validation_accuracy"] for row in history) -
+            fork_validation["accuracy"]),
+        "best_validation_loss_delta": (
+            fork_validation["loss"] -
+            min(row["validation_loss"] for row in history)),
+        "accuracy_comparison_eligible": True,
+        "comparison_status": "completed",
         "training_seconds": elapsed,
         "peak_gpu_memory": max(
             prior_peak_gpu_memory,

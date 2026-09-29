@@ -257,7 +257,10 @@ run_wave([(0, "vanilla_continue", vanilla),
     code("""required = {"method", "shared_checkpoint_hash", "fork_epoch",
     "post_fork_epochs", "final_validation_accuracy", "best_validation_accuracy",
     "final_validation_loss", "best_validation_loss", "fork_validation_accuracy",
-    "fork_validation_loss", "validation_accuracy_delta", "training_seconds",
+    "fork_validation_loss", "validation_accuracy_delta",
+    "validation_loss_delta", "best_validation_accuracy_delta",
+    "best_validation_loss_delta", "accuracy_comparison_eligible",
+    "comparison_status", "training_seconds",
     "peak_gpu_memory", "deploy_params", "projection_overhead_seconds",
     "final_learning_rates"}
 results = []
@@ -274,8 +277,9 @@ for name in ("ours_e_driven_o", "bypass", "vanilla_continue",
     if any(abs(float(lr)) > 1e-12 for lr in result["final_learning_rates"]):
         raise RuntimeError(f"{name} scheduler did not reach zero at epoch 360")
     if name == "bypass" and result.get("bypass_completed") is not True:
-        print("WARNING: Bypass exhausted its 40+20 budget before contraction; "
-              "metrics are retained with bypass_completed=false")
+        print("WARNING: Bypass exhausted the matched 60-epoch budget before "
+              "contraction. Accuracy is retained diagnostically but is not "
+              "a completed Bypass comparator.")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
     results.append(result)
@@ -284,11 +288,20 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
     "input_size": 32, "seed": SEED, "fork_epoch": FORK_EPOCH,
     "post_fork_epochs": POST_FORK_EPOCHS, "total_epochs": TOTAL_EPOCHS,
     "shared_checkpoint_hash": SHARED_HASH, "official_test_used": False,
+    "completed_accuracy_comparators": [
+        row["method"] for row in results
+        if row["accuracy_comparison_eligible"]],
+    "incomplete_comparators": [
+        {"method": row["method"], "status": row["comparison_status"]}
+        for row in results if not row["accuracy_comparison_eligible"]],
     "results": [{key: row.get(key) for key in sorted(required | {
         "correction_application_rate", "actual_cosine_alignment",
         "actual_relative_residual", "opt1_epochs", "opt2_epochs",
         "best_validation_loss", "fork_validation_accuracy",
         "fork_validation_loss", "validation_accuracy_delta",
+        "validation_loss_delta", "best_validation_accuracy_delta",
+        "best_validation_loss_delta", "accuracy_comparison_eligible",
+        "comparison_status",
         "projection_overhead_seconds", "final_learning_rates",
         "train3_epochs", "contraction_norm", "projection_loss_jump",
         "contraction_criterion_met", "bypass_completed",

@@ -124,9 +124,18 @@ ResNet reproduction from the paper. It uses 40 opt1 epochs and at most 20 opt2
 epochs. If contraction succeeds early, projection occurs and train3 consumes
 the remainder. If contraction has not succeeded at epoch 360, the expanded
 checkpoint is preserved with `bypass_completed=false`; it is never forcibly
-projected. The shared
+projected. Such a run is marked `accuracy_comparison_eligible=false` and is
+reported as budget-exhausted diagnostic output, not as a completed Bypass
+accuracy comparator. The shared
 SGD/cosine optimizer is pilot scaling, not the paper's original long-run Adam
 hyperparameter schedule.
+
+The comparison reports both final and best validation accuracy. Primary deltas
+are anchored to the validation metrics measured directly at the shared fork:
+`validation_accuracy_delta = final_accuracy - accuracy(theta_300)` and
+`validation_loss_delta = loss(theta_300) - final_loss`. Best-accuracy and
+best-loss deltas are reported separately so transient improvements are not
+hidden by the final epoch.
 
 ## Reference implementation
 

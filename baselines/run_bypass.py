@@ -284,6 +284,14 @@ def main():
         "fork_validation_loss": fork_validation["loss"],
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_validation["accuracy"]),
+        "validation_loss_delta": (
+            fork_validation["loss"] - last["validation_loss"]),
+        "best_validation_accuracy_delta": (
+            max(row["validation_accuracy"] for row in history) -
+            fork_validation["accuracy"]),
+        "best_validation_loss_delta": (
+            fork_validation["loss"] -
+            min(row["validation_loss"] for row in history)),
         "training_seconds": elapsed,
         "peak_gpu_memory": max(
             prior_peak_gpu_memory,
@@ -299,6 +307,10 @@ def main():
             contraction_at_projection is not None and
             contraction_at_projection < args.contraction_epsilon),
         "bypass_completed": phase == "train3",
+        "accuracy_comparison_eligible": phase == "train3",
+        "comparison_status": (
+            "completed" if phase == "train3" else
+            "budget_exhausted_before_contraction"),
         "projection_performed": contraction_at_projection is not None,
         "opt2_soft_cap_exceeded": opt2_soft_cap_exceeded,
         "projection_loss_jump": projection_loss_jump,

@@ -32,6 +32,12 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert 'result.get("bypass_completed") is not True' in source
     assert '"--opt1-epochs", "40"' in source
     assert '"--max-opt2-epochs", "20"' in source
+    assert "completed_accuracy_comparators" in source
+    assert "incomplete_comparators" in source
+    assert "Accuracy is retained diagnostically" in source
+    assert "a completed Bypass comparator" in source
+    assert "best_validation_accuracy_delta" in source
+    assert "validation_loss_delta" in source
     assert "official_test_used" in source
 
 

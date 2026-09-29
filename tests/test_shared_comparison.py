@@ -337,6 +337,8 @@ def test_bypass_projects_contracted_extension_and_enters_train3():
 def test_bypass_result_uses_explicit_completed_field():
     source = Path("baselines/run_bypass.py").read_text()
     assert '"bypass_completed": phase == "train3"' in source
+    assert '"accuracy_comparison_eligible": phase == "train3"' in source
+    assert '"budget_exhausted_before_contraction"' in source
 
 
 def test_adaptive_result_preserves_per_epoch_site_selection_history():
@@ -346,6 +348,8 @@ def test_adaptive_result_preserves_per_epoch_site_selection_history():
             "selected_site", "selected_site_score", "site_scores",
             "site_selection_seconds"):
         assert f'"{field}"' in source
+    assert '"best_validation_accuracy_delta"' in source
+    assert '"validation_loss_delta"' in source
 
 
 def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):

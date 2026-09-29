@@ -212,6 +212,10 @@ summary = {
     "fork_validation_accuracy": result["fork_validation_accuracy"],
     "fork_validation_loss": result["fork_validation_loss"],
     "validation_accuracy_delta": result["validation_accuracy_delta"],
+    "validation_loss_delta": result["validation_loss_delta"],
+    "best_validation_accuracy_delta":
+        result["best_validation_accuracy_delta"],
+    "best_validation_loss_delta": result["best_validation_loss_delta"],
     "correction_application_rate": result["correction_application_rate"],
     "when_gate_pass_rate": result["when_gate_pass_rate"],
     "full_projection_attempt_rate": result["full_projection_attempt_rate"],
