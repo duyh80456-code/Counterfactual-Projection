@@ -43,7 +43,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_adaptive_v4")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_when_where_how_v5")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -118,8 +118,8 @@ LR = 0.1
 WEIGHT_DECAY = 5e-4
 SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch300.pt"
 
-# Restore complete progress only from the adaptive protocol. A fixed-site arm
-# checkpoint has a different protocol and must never be resumed as adaptive.
+# Restore complete progress only from the WHEN-WHERE-HOW protocol. Fixed-site
+# and raw-TINY checkpoints must never be resumed as the new main algorithm.
 prior_roots = [manifest.parent.parent for manifest in
                Path("/kaggle/input").rglob("shared_seed1_epoch300.json")]
 restored_adaptive = False
@@ -128,13 +128,16 @@ for prior_root in prior_roots:
     if not arm_checkpoint.is_file(): continue
     saved_arm = torch.load(arm_checkpoint, map_location="cpu")
     functional = saved_arm.get("protocol", {}).get("functional_projection", {})
-    if functional.get("site") != "auto": continue
+    if (functional.get("site") != "auto" or
+            functional.get("site_selection_mode") !=
+            "tiny_topk_projectability_utility"):
+        continue
     for child in prior_root.iterdir():
         destination = OUTPUT / child.name
         if destination.exists(): continue
         if child.is_dir(): shutil.copytree(child, destination)
         else: shutil.copy2(child, destination)
-    print("Restored prior adaptive-site run from", prior_root)
+    print("Restored prior WHEN-WHERE-HOW run from", prior_root)
     restored_adaptive = True
     break
 if not restored_adaptive:
@@ -226,6 +229,10 @@ ours = [sys.executable, "-m", "experiments.run_shared_comparison",
     "--method", "ours_e_driven_o"] + base_args(OUTPUT / "ours_e_driven_o") + [
     "--shared-checkpoint-hash", SHARED_HASH, "--site", "auto",
     "--candidate-sites", "",
+    "--site-selection-mode", "projectability_utility",
+    "--selection-top-k", "3", "--selection-samples", "16",
+    "--selection-cg-iterations", "25",
+    "--selection-min-projectability", "0.05",
     "--rank", "4", "--probe-epsilon", "0.05", "--cg-iterations", "200",
     "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
 bypass = [sys.executable, "-m", "baselines.run_bypass"] + base_args(
@@ -283,7 +290,8 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "contraction_criterion_met", "bypass_completed",
         "opt2_soft_cap_exceeded", "method_label", "control_type",
         "functional_target", "uses_structural_E", "site_selection_mode",
-        "site_selection_history"})}
+        "site_selection_history", "when_gate_pass_rate",
+        "full_projection_attempt_rate"})}
         for row in results]}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))

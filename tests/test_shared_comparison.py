@@ -15,6 +15,7 @@ from experiments.shared_protocol import (
     load_shared_checkpoint, rebase_scheduler_from_theta150, restore_rng,
     save_shared_checkpoint)
 from experiments.run_shared_comparison import (
+    functional_loss_utility, select_projectability_aware_candidate,
     select_structural_candidate, structural_candidate_sites,
     supervised_functional_descent_direction)
 
@@ -89,6 +90,89 @@ def test_structural_selector_reuses_statistics_and_selects_max_score(
     assert diagnostics["site_scores"] == scores
     assert diagnostics["selected_site_score"] == scores["site.b"]
     assert diagnostics["site_selection_seconds"] >= 0
+
+
+def test_projectability_selector_uses_top_k_projected_utility_and_when_gate(
+        monkeypatch):
+    candidates = [SimpleNamespace(module_name=name, proposal_score=score)
+                  for name, score in (
+                      ("site.a", 0.9), ("site.b", 0.8),
+                      ("site.c", 0.7), ("site.d", 0.1))]
+    monkeypatch.setattr(
+        "experiments.run_shared_comparison.propose_structural_candidates",
+        lambda *_args, **_kwargs: candidates)
+    monkeypatch.setattr(
+        "experiments.run_shared_comparison.candidate_projection_block",
+        lambda _model, candidate: candidate.module_name)
+    monkeypatch.setattr(
+        "experiments.run_shared_comparison.candidate_projection_parameter_names",
+        lambda *_args, **_kwargs: ("weight",))
+
+    class ZeroLogits(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(()))
+
+        def forward(self, inputs):
+            return torch.zeros(inputs.shape[0], 2) * self.weight
+
+    model = ZeroLogits()
+    selection_batch = (torch.randn(2, 3), torch.tensor([0, 1]))
+    descent = supervised_functional_descent_direction(model, selection_batch)
+    expansion_directions = {
+        "site.a": 2.0 * descent,
+        "site.b": 1.0 * descent,
+        "site.c": -1.0 * descent,
+    }
+    fitted_directions = {
+        "site.a": 0.2 * descent,
+        "site.b": 0.8 * descent,
+        "site.c": -0.5 * descent,
+    }
+
+    class FakeExpansionProbe:
+        def __call__(self, _model, *, candidate, batch, gate):
+            assert batch is selection_batch and gate == 0.05
+            return SimpleNamespace(
+                delta_logits=expansion_directions[candidate.module_name])
+
+    class FakeCheapProjector:
+        def project(self, _model, _inputs, target, *, block,
+                    parameter_names):
+            assert parameter_names == ("weight",)
+            fitted = fitted_directions[block]
+            rho = float(fitted.norm() / target.norm())
+            return SimpleNamespace(
+                fitted_delta=fitted, fitted_norm_ratio=rho,
+                relative_residual=0.1, cosine_alignment=1.0,
+                cg=SimpleNamespace(iterations=25, converged=False))
+
+    monkeypatch.setattr(
+        "experiments.run_shared_comparison.CandidateExpansionProbe",
+        FakeExpansionProbe)
+    selected, diagnostics = select_projectability_aware_candidate(
+        model, [(torch.randn(1, 3), torch.tensor([0]))], selection_batch,
+        rank=4, site="auto", candidate_sites="", device=torch.device("cpu"),
+        gate=0.05, top_k=3, cheap_projector=FakeCheapProjector(),
+        min_utility=0.0, min_projectability=0.5)
+
+    assert selected.module_name == "site.b"
+    assert diagnostics["prescreen_top_k_sites"] == [
+        "site.a", "site.b", "site.c"]
+    assert "site.d" not in diagnostics["site_functional_evaluations"]
+    assert diagnostics["selected_projected_utility"] == \
+        functional_loss_utility(descent, fitted_directions["site.b"])
+    assert diagnostics["selected_projectability_rho"] >= 0.5
+    assert diagnostics["when_gate_passed"] is True
+    assert diagnostics["when_gate_reason"] == "usable_candidate_found"
+
+    _selected, rejected = select_projectability_aware_candidate(
+        model, [(torch.randn(1, 3), torch.tensor([0]))], selection_batch,
+        rank=4, site="auto", candidate_sites="", device=torch.device("cpu"),
+        gate=0.05, top_k=3, cheap_projector=FakeCheapProjector(),
+        min_utility=0.0, min_projectability=0.9)
+    assert rejected["when_gate_passed"] is False
+    assert rejected["when_gate_reason"] == "projectability_below_threshold"
 
 
 def test_projection_only_target_is_negative_summed_ce_logit_gradient():

@@ -16,6 +16,10 @@ def test_adaptive_notebook_only_runs_main_arm_from_theta300():
     assert '"--method", "ours_e_driven_o"' in source
     assert '"--site", "auto"' in source
     assert '"--candidate-sites", ""' in source
+    assert '"--site-selection-mode", "projectability_utility"' in source
+    assert '"--selection-top-k", "3"' in source
+    assert '"--selection-cg-iterations", "25"' in source
+    assert '"--selection-min-projectability", "0.05"' in source
     assert '"--rank", "4"' in source
     assert "shared_seed1_epoch300.json" in source
     assert "shared_seed1_epoch300.pt" in source
@@ -32,6 +36,7 @@ def test_adaptive_notebook_preserves_resume_and_selection_outputs():
     assert "site_selection_history" in source
     assert "site_counts" in source
     assert "dominant_site_fraction" in source
+    assert "when_gate_pass_rate" in source
     assert "run.log" in source
     assert "stdout=subprocess.PIPE" in source
 

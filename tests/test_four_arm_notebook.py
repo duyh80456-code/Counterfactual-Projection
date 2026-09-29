@@ -16,15 +16,16 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert "POST_FORK_EPOCHS = 50" in source
     assert "shared_seed1_epoch300.pt" in source
     assert "--bootstrap-checkpoint" in source
-    assert "counterfactual_shared_theta300_350ep_adaptive_v4" in source
+    assert "counterfactual_shared_theta300_350ep_when_where_how_v5" in source
     assert "SHARED_HASH" in source
     assert "checkpoint_latest.pt" in source
-    assert "Restored prior adaptive-site run" in source
+    assert "Restored prior WHEN-WHERE-HOW run" in source
     assert "Restored theta_300 only" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
     assert '(0, "ours_e_driven_o", ours), (1, "bypass", bypass)' in source
     assert '"--site", "auto"' in source
     assert '"--candidate-sites", ""' in source
+    assert '"--site-selection-mode", "projectability_utility"' in source
     assert '(1, "o_projection_only", projection_only)' in source
     assert "stdout=subprocess.PIPE" in source
     assert 'print(f"[{name}] {line}"' in source

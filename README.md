@@ -77,7 +77,7 @@ All four trajectories therefore have the same 350-epoch budget:
 ```text
 theta_300
   +-- vanilla_continue: 50 epochs
-  +-- ours_e_driven_o: 50 epochs (adaptive TINY-score site selection)
+  +-- ours_e_driven_o: 50 epochs (WHEN-WHERE-HOW adaptive selection)
   +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
   +-- o_projection_only: 50 epochs (projection-only supervised control)
 ```
@@ -97,16 +97,19 @@ attaching the previous output as an input dataset. The official CIFAR-100 test
 set is never constructed.
 
 At each Ours intervention, `--site auto` evaluates rank-4 TINY proposals at all
-eight growing residual blocks using exactly the same statistics batches. The
-largest raw `proposal_score` selects where temporary expansion is instantiated;
-functional projection runs only for that selected site with epsilon 0.05 and
-residual-path scope. Per-epoch diagnostics record the full site-score map,
-selected site and score, and selection time. A concrete `--site`, such as
-`stages.2.blocks.0`, remains available for the fixed-site ablation but is not
-used in the main four-arm run. Ours logs both tangent fit and the realized
-nonlinear functional change after applying each accepted correction. CG
-convergence is diagnostic; a finite best-damping solution is applied according
-to held-out functional residual and cosine.
+eight growing residual blocks using exactly the same statistics batches. Raw
+`proposal_score` only pre-screens the top three. On a separate 16-sample
+selection batch, each top candidate produces a structural functional direction
+and a cheap 25-CG residual-path projection. The main selector maximizes the
+projected loss utility `mean((one_hot(y) - p) * J delta_theta)` rather than the
+raw TINY score. Full projection runs only when the winner has positive utility
+and fitted-norm projectability at least 0.05; otherwise that epoch performs
+normal SGD only. Per-epoch diagnostics preserve all raw scores, top-k expansion
+utilities, projectabilities, projected utilities, the WHEN decision, and the
+selected site. `--site-selection-mode tiny_score_argmax` retains the old TINY
+argmax ablation, while a concrete `--site stages.2.blocks.0` retains fixed-site
+E-to-O. Full O uses epsilon 0.05, residual-path scope, 200 CG iterations, and
+the existing held-out application gate.
 
 Bypass follows the relaxed residual-network form of Algorithm 1: every ReLU in
 the residual stages is embedded as `ReLU(x) + D x` with `D=0`; opt1 trains task

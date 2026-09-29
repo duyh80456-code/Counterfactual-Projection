@@ -74,6 +74,21 @@ def arguments():
     parser.add_argument(
         "--candidate-sites", default="",
         help="comma-separated TINY sites for --site=auto; empty scans all blocks")
+    parser.add_argument(
+        "--site-selection-mode",
+        choices=("projectability_utility", "tiny_score_argmax"),
+        default="projectability_utility")
+    parser.add_argument("--selection-top-k", type=int, default=3)
+    parser.add_argument("--selection-samples", type=int, default=16)
+    parser.add_argument("--selection-cg-iterations", type=int, default=25)
+    parser.add_argument("--selection-cg-relative-tolerance", type=float,
+                        default=5e-2)
+    parser.add_argument("--selection-preconditioner-probes", type=int,
+                        default=2)
+    parser.add_argument("--selection-damping", type=float, default=1e-3)
+    parser.add_argument("--selection-min-utility", type=float, default=0.0)
+    parser.add_argument("--selection-min-projectability", type=float,
+                        default=0.05)
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--statistics-samples", type=int, default=256)
@@ -93,19 +108,27 @@ def intervention_batches(eval_set, train_indices, args, epoch, device):
     generator = torch.Generator().manual_seed(
         81_337 + args.seed * 10_000 + epoch)
     order = torch.randperm(len(train_indices), generator=generator).tolist()
-    count = args.statistics_samples + args.projection_samples
+    count = (args.statistics_samples + args.selection_samples +
+             args.projection_samples)
     selected = [train_indices[index] for index in order[:count]]
     statistics_indices = selected[:args.statistics_samples]
-    projection_indices = selected[args.statistics_samples:]
+    selection_end = args.statistics_samples + args.selection_samples
+    selection_indices = selected[args.statistics_samples:selection_end]
+    projection_indices = selected[selection_end:]
     statistics_loader = DataLoader(
         Subset(eval_set, statistics_indices), args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
     projection_loader = DataLoader(
         Subset(eval_set, projection_indices), args.projection_samples,
         shuffle=False, num_workers=args.workers, pin_memory=True)
+    selection_loader = DataLoader(
+        Subset(eval_set, selection_indices), args.selection_samples,
+        shuffle=False, num_workers=args.workers, pin_memory=True)
+    selection_batch = tuple(value.to(device, non_blocking=True)
+                            for value in next(iter(selection_loader)))
     projection_batch = tuple(value.to(device, non_blocking=True)
                              for value in next(iter(projection_loader)))
-    return list(statistics_loader), projection_batch
+    return list(statistics_loader), selection_batch, projection_batch
 
 
 def structural_candidate_sites(model, site, candidate_sites=""):
@@ -117,8 +140,8 @@ def structural_candidate_sites(model, site, candidate_sites=""):
     return requested or [ref.name for ref in model.growing_blocks()]
 
 
-def select_structural_candidate(model, statistics, *, rank, site,
-                                candidate_sites, device):
+def propose_structural_candidates(model, statistics, *, rank, site,
+                                  candidate_sites):
     """Run TINY at every requested site on one shared statistics batch set."""
     from dual_growth.adapters import TinyAdapter
     from dual_growth.controller import GrowthBudget
@@ -126,8 +149,6 @@ def select_structural_candidate(model, statistics, *, rank, site,
     sites = structural_candidate_sites(model, site, candidate_sites)
     if not sites:
         raise RuntimeError("structural-E candidate site set is empty")
-    synchronize(device)
-    started = time.perf_counter()
     candidates = []
     for candidate_site in sites:
         adapter = TinyAdapter(
@@ -137,6 +158,17 @@ def select_structural_candidate(model, statistics, *, rank, site,
             adapter, model, statistics, GrowthBudget(10**9),
             sample_inputs=statistics[0][0])
         candidates.append(candidate)
+    return candidates
+
+
+def select_structural_candidate(model, statistics, *, rank, site,
+                                candidate_sites, device):
+    """Raw-TINY selector retained for fixed-site and argmax ablations."""
+    synchronize(device)
+    started = time.perf_counter()
+    candidates = propose_structural_candidates(
+        model, statistics, rank=rank, site=site,
+        candidate_sites=candidate_sites)
     selected = max(
         candidates, key=lambda candidate: float(candidate.proposal_score))
     synchronize(device)
@@ -149,6 +181,124 @@ def select_structural_candidate(model, statistics, *, rank, site,
             for candidate in candidates
         },
         "selected_site_score": float(selected.proposal_score),
+        "site_selection_seconds": time.perf_counter() - started,
+        "when_gate_passed": True,
+        "when_gate_reason": "not_used_by_raw_tiny_ablation",
+    }
+    return selected, selection
+
+
+@torch.no_grad()
+def functional_loss_utility(descent_direction, functional_direction):
+    """Mean negative-CE directional derivative in logit space."""
+    if descent_direction.shape != functional_direction.shape:
+        raise ValueError("utility directions must have the same shape")
+    per_sample = (descent_direction.detach() *
+                  functional_direction.detach()).flatten(1).sum(1)
+    return float(per_sample.mean())
+
+
+def select_projectability_aware_candidate(
+        model, statistics, selection_batch, *, rank, site, candidate_sites,
+        device, gate, top_k, cheap_projector, min_utility,
+        min_projectability):
+    """TINY top-k -> cheap O -> loss utility, with an explicit WHEN gate."""
+    synchronize(device)
+    started = time.perf_counter()
+    candidates = propose_structural_candidates(
+        model, statistics, rank=rank, site=site,
+        candidate_sites=candidate_sites)
+    ranked = sorted(
+        candidates, key=lambda candidate: float(candidate.proposal_score),
+        reverse=True)
+    prescreened = ranked[:min(top_k, len(ranked))]
+    if not prescreened:
+        raise RuntimeError("TINY pre-screen produced no candidate")
+    descent = supervised_functional_descent_direction(model, selection_batch)
+    evaluations = {}
+    viable = []
+    for candidate in prescreened:
+        site_name = str(candidate.module_name)
+        signal = CandidateExpansionProbe()(
+            model, candidate=candidate, batch=selection_batch, gate=gate)
+        expansion_utility = functional_loss_utility(
+            descent, signal.delta_logits)
+        block = candidate_projection_block(model, candidate)
+        parameter_names = candidate_projection_parameter_names(
+            model, candidate, "residual_path")
+        try:
+            cheap = cheap_projector.project(
+                model, selection_batch[0], signal.delta_logits, block=block,
+                parameter_names=parameter_names)
+            projected_utility = functional_loss_utility(
+                descent, cheap.fitted_delta)
+            projectability = float(cheap.fitted_norm_ratio)
+            finite = bool(
+                math.isfinite(projected_utility) and
+                math.isfinite(projectability))
+            evaluation = {
+                "tiny_score": float(candidate.proposal_score),
+                "expansion_utility": expansion_utility,
+                "projectability_rho": projectability,
+                "projected_utility": projected_utility,
+                "cheap_relative_residual": float(cheap.relative_residual),
+                "cheap_cosine_alignment": float(cheap.cosine_alignment),
+                "cheap_cg_iterations": int(cheap.cg.iterations),
+                "cheap_cg_converged": bool(cheap.cg.converged),
+                "cheap_projection_finite": finite,
+            }
+            if finite:
+                viable.append((projected_utility, candidate, evaluation))
+        except RuntimeError as error:
+            evaluation = {
+                "tiny_score": float(candidate.proposal_score),
+                "expansion_utility": expansion_utility,
+                "projectability_rho": 0.0,
+                "projected_utility": None,
+                "cheap_projection_finite": False,
+                "cheap_projection_error": str(error),
+            }
+        evaluations[site_name] = evaluation
+    if viable:
+        projected_utility, selected, selected_evaluation = max(
+            viable, key=lambda item: item[0])
+        projectability = selected_evaluation["projectability_rho"]
+        utility_passed = projected_utility > min_utility
+        projectability_passed = projectability >= min_projectability
+        when_passed = utility_passed and projectability_passed
+        if not utility_passed:
+            reason = "projected_utility_not_above_threshold"
+        elif not projectability_passed:
+            reason = "projectability_below_threshold"
+        else:
+            reason = "usable_candidate_found"
+    else:
+        selected = prescreened[0]
+        selected_evaluation = evaluations[str(selected.module_name)]
+        projected_utility = None
+        projectability = 0.0
+        when_passed = False
+        reason = "no_finite_cheap_projection"
+    synchronize(device)
+    selection = {
+        "site_selection_mode": "tiny_topk_projectability_utility",
+        "selected_site": str(selected.module_name),
+        "site_scores": {
+            str(candidate.module_name): float(candidate.proposal_score)
+            for candidate in candidates
+        },
+        "selected_site_score": float(selected.proposal_score),
+        "prescreen_top_k_sites": [
+            str(candidate.module_name) for candidate in prescreened],
+        "site_functional_evaluations": evaluations,
+        "selected_expansion_utility":
+            selected_evaluation["expansion_utility"],
+        "selected_projectability_rho": projectability,
+        "selected_projected_utility": projected_utility,
+        "when_min_utility": float(min_utility),
+        "when_min_projectability": float(min_projectability),
+        "when_gate_passed": when_passed,
+        "when_gate_reason": reason,
         "site_selection_seconds": time.perf_counter() - started,
     }
     return selected, selection
@@ -273,11 +423,26 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         raise RuntimeError("shared checkpoint protocol differs from arm protocol")
     arm_protocol = {**run_protocol, "method": args.method}
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
+        selection_mode = (
+            "fixed_site" if args.site != "auto" else
+            ("tiny_topk_projectability_utility"
+             if args.site_selection_mode == "projectability_utility"
+             else "tiny_score_argmax"))
         arm_protocol["functional_projection"] = {
             "site": args.site, "rank": args.rank,
             "candidate_sites": args.candidate_sites,
-            "site_selection_mode": (
-                "tiny_score_argmax" if args.site == "auto" else "fixed_site"),
+            "site_selection_mode": selection_mode,
+            "selection_top_k": args.selection_top_k,
+            "selection_samples": args.selection_samples,
+            "selection_cg_iterations": args.selection_cg_iterations,
+            "selection_cg_relative_tolerance":
+                args.selection_cg_relative_tolerance,
+            "selection_preconditioner_probes":
+                args.selection_preconditioner_probes,
+            "selection_damping": args.selection_damping,
+            "selection_min_utility": args.selection_min_utility,
+            "selection_min_projectability":
+                args.selection_min_projectability,
             "probe_epsilon": args.probe_epsilon,
             "projection_scope": "residual_path",
             "statistics_samples": args.statistics_samples,
@@ -328,6 +493,11 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         args.damping, args.cg_iterations,
         tolerance=args.cg_relative_tolerance,
         preconditioner_probes=args.cg_preconditioner_probes)
+    cheap_projector = FunctionalProjector(
+        args.selection_damping, args.selection_cg_iterations,
+        tolerance=args.selection_cg_relative_tolerance,
+        max_damping_retries=0,
+        preconditioner_probes=args.selection_preconditioner_probes)
     e_projection = EProjection(projector=projector)
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
@@ -335,55 +505,84 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         diagnostics = None
         global_epoch = FORK_EPOCH + post_epoch
         if args.method == "ours_e_driven_o":
-            statistics, projection_batch = intervention_batches(
+            statistics, selection_batch, projection_batch = intervention_batches(
                 eval_set, train_indices, args, global_epoch, device)
-            candidate, site_selection = select_structural_candidate(
-                model, statistics, rank=args.rank, site=args.site,
-                candidate_sites=args.candidate_sites, device=device)
-            tuning_signal = CandidateExpansionProbe()(
-                model, candidate=candidate, batch=tuning_batch,
-                gate=args.probe_epsilon)
-            loss_before = batch_loss(model, tuning_batch)
-            synchronize(device)
-            projection_started = time.perf_counter()
-            step = e_projection.discover_candidate(
-                model, candidate, projection_batch, gate=args.probe_epsilon,
-                projection_scope="residual_path")
-            heldout, heldout_seconds = evaluate_heldout_direction(
-                projector, model, tuning_batch, tuning_signal.delta_logits,
-                step.projection.parameter_delta, device)
-            application = projection_application_gate(
-                step.projection.parameter_delta, heldout,
-                max_relative_residual=args.application_max_heldout_residual,
-                min_cosine_alignment=args.application_min_heldout_cosine)
-            baseline_logits = eval_logits(model, tuning_batch[0])
-            actual = {}
-            momentum_resets = 0
-            if application["apply"]:
-                step.projection.apply_(model, args.probe_epsilon)
-                momentum_resets = reset_projected_momentum(
-                    optimizer, model, step.projection)
-                actual = actual_update_metrics(
-                    model, tuning_batch[0], baseline_logits,
-                    tuning_signal.delta_logits, args.probe_epsilon)
-            loss_after = batch_loss(model, tuning_batch)
-            diagnostics = {
-                "source": "structural_TINY_E",
-                "correction_applied": application["apply"],
-                "parameter_delta_norm": application["parameter_delta_norm"],
-                "actual_cosine_alignment": actual.get(
-                    "actual_cosine_alignment"),
-                "actual_relative_residual": actual.get(
-                    "actual_relative_residual"),
-                "loss_before": loss_before, "loss_after": loss_after,
-                "momentum_states_reset": momentum_resets,
-                "projection_seconds": time.perf_counter() - projection_started,
-                "heldout_evaluation_seconds": heldout_seconds,
-                **site_selection,
-                **heldout_metrics(heldout), **cg_diagnostics(step.projection),
-            }
+            if (args.site == "auto" and
+                    args.site_selection_mode == "projectability_utility"):
+                candidate, site_selection = select_projectability_aware_candidate(
+                    model, statistics, selection_batch, rank=args.rank,
+                    site=args.site, candidate_sites=args.candidate_sites,
+                    device=device, gate=args.probe_epsilon,
+                    top_k=args.selection_top_k,
+                    cheap_projector=cheap_projector,
+                    min_utility=args.selection_min_utility,
+                    min_projectability=args.selection_min_projectability)
+            else:
+                candidate, site_selection = select_structural_candidate(
+                    model, statistics, rank=args.rank, site=args.site,
+                    candidate_sites=args.candidate_sites, device=device)
+            if not site_selection["when_gate_passed"]:
+                loss = batch_loss(model, tuning_batch)
+                diagnostics = {
+                    "source": "structural_TINY_E_when_gate_skipped",
+                    "correction_applied": False,
+                    "parameter_delta_norm": 0.0,
+                    "actual_cosine_alignment": None,
+                    "actual_relative_residual": None,
+                    "loss_before": loss,
+                    "loss_after": loss,
+                    "momentum_states_reset": 0,
+                    "projection_seconds": 0.0,
+                    "heldout_evaluation_seconds": 0.0,
+                    **site_selection,
+                }
+            else:
+                tuning_signal = CandidateExpansionProbe()(
+                    model, candidate=candidate, batch=tuning_batch,
+                    gate=args.probe_epsilon)
+                loss_before = batch_loss(model, tuning_batch)
+                synchronize(device)
+                projection_started = time.perf_counter()
+                step = e_projection.discover_candidate(
+                    model, candidate, projection_batch, gate=args.probe_epsilon,
+                    projection_scope="residual_path")
+                heldout, heldout_seconds = evaluate_heldout_direction(
+                    projector, model, tuning_batch, tuning_signal.delta_logits,
+                    step.projection.parameter_delta, device)
+                application = projection_application_gate(
+                    step.projection.parameter_delta, heldout,
+                    max_relative_residual=args.application_max_heldout_residual,
+                    min_cosine_alignment=args.application_min_heldout_cosine)
+                baseline_logits = eval_logits(model, tuning_batch[0])
+                actual = {}
+                momentum_resets = 0
+                if application["apply"]:
+                    step.projection.apply_(model, args.probe_epsilon)
+                    momentum_resets = reset_projected_momentum(
+                        optimizer, model, step.projection)
+                    actual = actual_update_metrics(
+                        model, tuning_batch[0], baseline_logits,
+                        tuning_signal.delta_logits, args.probe_epsilon)
+                loss_after = batch_loss(model, tuning_batch)
+                diagnostics = {
+                    "source": "structural_TINY_E",
+                    "correction_applied": application["apply"],
+                    "parameter_delta_norm": application["parameter_delta_norm"],
+                    "actual_cosine_alignment": actual.get(
+                        "actual_cosine_alignment"),
+                    "actual_relative_residual": actual.get(
+                        "actual_relative_residual"),
+                    "loss_before": loss_before, "loss_after": loss_after,
+                    "momentum_states_reset": momentum_resets,
+                    "projection_seconds":
+                        time.perf_counter() - projection_started,
+                    "heldout_evaluation_seconds": heldout_seconds,
+                    **site_selection,
+                    **heldout_metrics(heldout),
+                    **cg_diagnostics(step.projection),
+                }
         elif args.method == "o_projection_only":
-            _, projection_batch = intervention_batches(
+            _, _, projection_batch = intervention_batches(
                 eval_set, train_indices, args, global_epoch, device)
             marker = SimpleNamespace(module_name=args.site)
             block = candidate_projection_block(model, marker)
@@ -489,9 +688,20 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
             "uses_structural_E": False,
         })
     if args.method == "ours_e_driven_o":
+        result_selection_mode = (
+            "fixed_site" if args.site != "auto" else
+            ("tiny_topk_projectability_utility"
+             if args.site_selection_mode == "projectability_utility"
+             else "tiny_score_argmax"))
         result.update({
-            "site_selection_mode": (
-                "tiny_score_argmax" if args.site == "auto" else "fixed_site"),
+            "method_label": "e_driven_o_when_where_how",
+            "site_selection_mode": result_selection_mode,
+            "when_gate_pass_rate": sum(
+                bool(row["diagnostics"].get("when_gate_passed"))
+                for row in history) / len(history),
+            "full_projection_attempt_rate": sum(
+                bool(row["diagnostics"].get("when_gate_passed"))
+                for row in history) / len(history),
             "site_selection_history": [
                 {
                     "epoch": row["epoch"],
@@ -501,6 +711,20 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                     "site_scores": row["diagnostics"]["site_scores"],
                     "site_selection_seconds":
                         row["diagnostics"]["site_selection_seconds"],
+                    "prescreen_top_k_sites":
+                        row["diagnostics"].get("prescreen_top_k_sites"),
+                    "site_functional_evaluations": row["diagnostics"].get(
+                        "site_functional_evaluations"),
+                    "selected_expansion_utility": row["diagnostics"].get(
+                        "selected_expansion_utility"),
+                    "selected_projectability_rho": row["diagnostics"].get(
+                        "selected_projectability_rho"),
+                    "selected_projected_utility": row["diagnostics"].get(
+                        "selected_projected_utility"),
+                    "when_gate_passed":
+                        row["diagnostics"].get("when_gate_passed"),
+                    "when_gate_reason":
+                        row["diagnostics"].get("when_gate_reason"),
                 }
                 for row in history
             ],
@@ -518,6 +742,13 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
 
 def main():
     args = arguments()
+    if (args.selection_top_k < 1 or args.selection_samples < 1 or
+            args.selection_cg_iterations < 1 or
+            args.selection_preconditioner_probes < 0 or
+            args.selection_damping < 0 or
+            not 0 < args.selection_cg_relative_tolerance < 1 or
+            args.selection_min_projectability < 0):
+        raise ValueError("invalid projectability-aware selection configuration")
     if not torch.cuda.is_available():
         raise RuntimeError("one visible CUDA GPU is required")
     reference_root = Path(args.reference_root).resolve()
