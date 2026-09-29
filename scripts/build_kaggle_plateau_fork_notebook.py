@@ -92,39 +92,27 @@ cifar_dirs = sorted({path.parent.resolve()
 if not cifar_dirs: raise FileNotFoundError("Attach CIFAR-100")
 DATA_ROOT = cifar_dirs[0]
 """),
-    code("""def materialize(path, index):
-    if path.is_file(): return path
-    pickles = list(path.rglob("data.pkl"))
-    if len(pickles) != 1: return None
-    root = pickles[0].parent
-    target = OUTPUT / "repacked_input" / f"plateau_checkpoint_{index}.pt"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
-        for record in sorted(root.rglob("*")):
-            if record.is_file():
-                relative = record.relative_to(root).as_posix()
-                archive.writestr(f"plateau_checkpoint/{relative}", record.read_bytes())
-    return target
+    code("""from experiments.kaggle_checkpoint_discovery import discover_checkpoints
 
-forks = []
-for index, raw in enumerate(Path("/kaggle/input").rglob("plateau_checkpoint.pt")):
-    path = materialize(raw, index)
-    if path is None: continue
-    try: payload = torch.load(path, map_location="cpu", weights_only=False)
-    except Exception: continue
-    if payload.get("kind") == "plateau_fork_checkpoint":
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        forks.append((path, digest, int(payload["epoch"])))
-if not forks: raise FileNotFoundError("Attach Phase-1 plateau_checkpoint.pt")
-if len({digest for _, digest, _ in forks}) != 1:
+forks, rejected = discover_checkpoints(
+    "/kaggle/input", OUTPUT, kind="plateau_fork_checkpoint")
+print("Checkpoint candidates rejected:", rejected)
+if not forks:
+    raise FileNotFoundError(
+        "No payload with kind=plateau_fork_checkpoint was found anywhere "
+        "under /kaggle/input")
+if len({item["sha256"] for item in forks}) != 1:
     raise RuntimeError("Multiple different plateau checkpoints attached")
-PLATEAU_CHECKPOINT, PLATEAU_HASH, PLATEAU_EPOCH = forks[0]
-PLATEAU_PAYLOAD = torch.load(
-    PLATEAU_CHECKPOINT, map_location="cpu", weights_only=False)
+selected = forks[0]
+PLATEAU_CHECKPOINT = selected["path"]
+PLATEAU_HASH = selected["sha256"]
+PLATEAU_PAYLOAD = selected["payload"]
+PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
 VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
 if VANILLA_CONTROL["post_fork_epochs"] != 100:
     raise RuntimeError("Phase 1 must contain exactly 100 Vanilla control epochs")
 print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
+print("theta_P source:", selected["source"])
 """),
     code("""def base_args(output):
     return [

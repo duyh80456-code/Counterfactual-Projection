@@ -1,0 +1,34 @@
+import zipfile
+
+import torch
+
+from experiments.kaggle_checkpoint_discovery import discover_checkpoints
+
+
+def payload():
+    return {"kind": "plateau_fork_checkpoint", "epoch": 328,
+            "model": {"weight": torch.tensor([1.0])}}
+
+
+def test_discovers_checkpoint_by_payload_kind_not_filename(tmp_path):
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    torch.save(payload(), input_root / "some-renamed-upload.pt")
+    matches, _ = discover_checkpoints(
+        input_root, tmp_path / "output", kind="plateau_fork_checkpoint")
+    assert len(matches) == 1
+    assert matches[0]["payload"]["epoch"] == 328
+
+
+def test_rebuilds_kaggle_expanded_torch_archive(tmp_path):
+    source = tmp_path / "source.pt"
+    torch.save(payload(), source)
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    with zipfile.ZipFile(source) as archive:
+        archive.extractall(input_root / "mounted-checkpoint-without-pt-name")
+
+    matches, _ = discover_checkpoints(
+        input_root, tmp_path / "output", kind="plateau_fork_checkpoint")
+    assert len(matches) == 1
+    assert matches[0]["payload"]["kind"] == "plateau_fork_checkpoint"

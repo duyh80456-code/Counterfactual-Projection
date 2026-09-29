@@ -1,0 +1,71 @@
+"""Discover ordinary or Kaggle-expanded PyTorch checkpoints."""
+
+from __future__ import annotations
+
+import hashlib
+import zipfile
+from pathlib import Path
+
+import torch
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _repack_archive(root: Path, target: Path) -> Path:
+    """Rebuild a torch-save zip whose internal files Kaggle exposed."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
+        for record in sorted(root.rglob("*")):
+            if record.is_file():
+                relative = record.relative_to(root).as_posix()
+                archive.writestr(f"checkpoint/{relative}", record.read_bytes())
+    return target
+
+
+def discover_checkpoints(input_root: str | Path, output: str | Path,
+                         *, kind: str) -> tuple[list[dict], list[dict]]:
+    """Load every plausible checkpoint and retain payloads of ``kind``.
+
+    Kaggle may expose a torch-save zip as a directory tree. Therefore discovery
+    searches by payload type, not filename: ordinary ``*.pt`` files are tried
+    directly and every directory containing ``data.pkl`` is repacked first.
+    """
+    input_root = Path(input_root)
+    output = Path(output)
+    candidates: list[tuple[Path, str]] = [
+        (path, "file") for path in sorted(input_root.rglob("*.pt"))
+        if path.is_file()
+    ]
+    archive_roots = sorted({path.parent.resolve()
+                            for path in input_root.rglob("data.pkl")})
+    for index, root in enumerate(archive_roots):
+        target = output / "repacked_input" / f"torch_archive_{index}.pt"
+        candidates.append((_repack_archive(root, target), str(root)))
+
+    matches, rejected = [], []
+    seen_paths = set()
+    for path, source in candidates:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        try:
+            payload = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception as error:
+            rejected.append({"path": str(path), "reason": type(error).__name__})
+            continue
+        found_kind = payload.get("kind") if isinstance(payload, dict) else None
+        if found_kind != kind:
+            rejected.append({"path": str(path), "kind": found_kind})
+            continue
+        matches.append({
+            "path": path, "payload": payload, "sha256": _sha256(path),
+            "source": source,
+        })
+    return matches, rejected

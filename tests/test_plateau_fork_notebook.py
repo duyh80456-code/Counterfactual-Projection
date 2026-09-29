@@ -7,7 +7,9 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
         "notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
     source = "\n".join("".join(cell.get("source", []))
                        for cell in notebook["cells"])
-    assert 'payload.get("kind") == "plateau_fork_checkpoint"' in source
+    assert "discover_checkpoints(" in source
+    assert '"/kaggle/input", OUTPUT, kind="plateau_fork_checkpoint"' in source
+    assert 'rglob("plateau_checkpoint.pt")' not in source
     assert 'results["vanilla"] = VANILLA_CONTROL' in source
     assert 'ours_job = launch(0, "ours_e_driven_o")' in source
     assert 'bypass_job = launch(1, "bypass")' in source
