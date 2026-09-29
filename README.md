@@ -51,6 +51,15 @@ python3 -m pytest
 
 The current main experiment is split into two notebooks:
 
+For the simplest Kaggle workflow, use the single-file
+[`notebooks/kaggle_plateau_end_to_end_t4x2.ipynb`](notebooks/kaggle_plateau_end_to_end_t4x2.ipynb).
+It accepts theta300 plus CIFAR-100, searches for the Vanilla plateau, and then
+immediately launches the four-arm fork on the two T4 GPUs. If the epoch-500
+review boundary is reached without a plateau, attach its output and rerun the
+same notebook with a larger `MAX_EPOCH`; the complete Phase-1 state resumes.
+
+The same workflow is also available as two explicit notebooks:
+
 1. [`notebooks/kaggle_vanilla_to_plateau.ipynb`](notebooks/kaggle_vanilla_to_plateau.ipynb)
    trains only Vanilla from shared theta300. It keeps the original training
    indices and holds the theta300 LR constant under an explicitly labelled

@@ -1,0 +1,32 @@
+import json
+from pathlib import Path
+
+
+def test_one_file_notebook_connects_plateau_search_to_four_arm_queue():
+    notebook = json.loads(Path(
+        "notebooks/kaggle_plateau_end_to_end_t4x2.ipynb").read_text())
+    source = "\n".join("".join(cell.get("source", []))
+                       for cell in notebook["cells"])
+
+    assert "experiments.run_vanilla_to_plateau" in source
+    assert "phase1_result[\"plateau_found\"]" in source
+    assert "Phase 2 was intentionally skipped" in source
+    assert "plateau_fork_checkpoint" in source
+    assert "hashlib.sha256(PLATEAU_CHECKPOINT.read_bytes())" in source
+    assert "experiments.run_plateau_fork" in source
+    assert '"ours_e_driven_o"' in source
+    assert '"o_projection_only"' in source
+    assert '"bypass"' in source
+    assert '"vanilla"' in source
+    assert "pending.pop(0)" in source
+    assert "torch.cuda.device_count() != 2" in source
+
+
+def test_one_file_notebook_does_not_scan_input_for_plateau_checkpoint():
+    notebook = json.loads(Path(
+        "notebooks/kaggle_plateau_end_to_end_t4x2.ipynb").read_text())
+    source = "\n".join("".join(cell.get("source", []))
+                       for cell in notebook["cells"])
+
+    assert 'rglob("plateau_checkpoint.pt")' not in source
+    assert 'rglob("shared_seed1_epoch300.pt")' in source
