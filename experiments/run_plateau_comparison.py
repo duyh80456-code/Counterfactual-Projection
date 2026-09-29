@@ -1,4 +1,4 @@
-"""Continue vanilla theta360 or intervene only at detected plateaus."""
+"""Fair theta300-to-500 Vanilla versus plateau-triggered E-to-O."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from experiments.plateau_protocol import PlateauDetector
+from experiments.plateau_protocol import (
+    PlateauDetector, single_fork_cosine_scheduler)
 from experiments.run_gromo_pilot import (
     actual_update_metrics, batch_loss, cg_diagnostics, eval_logits,
     evaluate_heldout_direction, heldout_metrics, parameter_delta_norm,
@@ -29,7 +30,7 @@ from projection import FunctionalProjector
 
 
 METHODS = ("vanilla_continue", "plateau_e_driven_o")
-START_EPOCH = 360
+START_EPOCH = 300
 TOTAL_EPOCHS = 500
 CONTINUATION_EPOCHS = TOTAL_EPOCHS - START_EPOCH
 
@@ -39,21 +40,20 @@ def arguments():
     parser.add_argument("--method", choices=METHODS, required=True)
     parser.add_argument("--reference-root", required=True)
     parser.add_argument("--data-root", required=True)
-    parser.add_argument("--resume-checkpoint", required=True)
-    parser.add_argument("--resume-checkpoint-hash", required=True)
+    parser.add_argument("--fork-checkpoint", required=True)
+    parser.add_argument("--fork-checkpoint-hash", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--validation-samples", type=int, default=5000)
-    parser.add_argument("--tuning-samples", type=int, default=128)
-    parser.add_argument("--continuation-lr", type=float, default=0.01)
+    parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--plateau-window", type=int, default=15)
     parser.add_argument("--plateau-accuracy-min-gain", type=float, default=5e-4)
     parser.add_argument("--plateau-loss-ema-min-drop", type=float, default=1e-3)
     parser.add_argument("--plateau-ema-alpha", type=float, default=0.3)
-    parser.add_argument("--minimum-sgd-epochs", type=int, default=10)
+    parser.add_argument("--minimum-sgd-epochs", type=int, default=15)
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--statistics-samples", type=int, default=256)
@@ -232,44 +232,60 @@ def main():
     sys.path.insert(0, str(reference_root))
     seed_everything(args.seed)
     device = torch.device("cuda:0")
-    resume_path = Path(args.resume_checkpoint)
-    actual_hash = sha256_file(resume_path)
-    if actual_hash != args.resume_checkpoint_hash:
-        raise RuntimeError("theta360 checkpoint hash mismatch")
-    source = torch.load(resume_path, map_location=device, weights_only=False)
+    fork_path = Path(args.fork_checkpoint)
+    actual_hash = sha256_file(fork_path)
+    if actual_hash != args.fork_checkpoint_hash:
+        raise RuntimeError("theta300 checkpoint hash mismatch")
+    source = torch.load(fork_path, map_location=device, weights_only=False)
     source_protocol = source.get("protocol", {})
-    if (source_protocol.get("method") != "vanilla_continue" or
-            int(source.get("post_epoch", -1)) != 60 or
+    if (source.get("kind") != "shared_fork_checkpoint" or
+            int(source.get("epoch", -1)) != START_EPOCH or
             not source.get("history") or
             int(source["history"][-1].get("epoch", -1)) != START_EPOCH):
-        raise RuntimeError(
-            "resume checkpoint must be completed vanilla theta360")
+        raise RuntimeError("fork checkpoint must be shared theta300")
     if not source.get("optimizer", {}).get("state"):
-        raise RuntimeError("theta360 checkpoint has no SGD optimizer state")
+        raise RuntimeError("theta300 checkpoint has no SGD optimizer state")
 
+    source_tuning = list(source["tuning_indices"])
     (train_set, eval_set, generated_train, generated_validation,
      generated_tuning) = datasets_and_indices(
-        args.data_root, args.validation_samples, args.tuning_samples)
-    train_indices = source["train_indices"]
+        args.data_root, args.validation_samples, len(source_tuning))
+    source_train = list(source["train_indices"])
     validation_indices = source["validation_indices"]
-    tuning_indices = source["tuning_indices"]
-    if (train_indices != generated_train or
+    if (source_train != generated_train or
             validation_indices != generated_validation or
-            tuning_indices != generated_tuning):
-        raise RuntimeError("theta360 data split differs from requested protocol")
+            source_tuning != generated_tuning):
+        raise RuntimeError("theta300 data split differs from requested protocol")
+    extra_trigger = args.trigger_samples - len(source_tuning)
+    if extra_trigger < 0 or extra_trigger >= len(source_train):
+        raise ValueError("trigger_samples is incompatible with theta300 split")
+    # The original held-out tuning set remains held out. Additional trigger
+    # examples are deterministically removed from the old training pool; all
+    # WHERE/projection/gate batches come only from the remaining train indices.
+    trigger_indices = source_tuning + source_train[:extra_trigger]
+    train_indices = source_train[extra_trigger:]
+    if set(trigger_indices) & set(train_indices):
+        raise RuntimeError("trigger and training pools overlap")
 
     model = build_cifar_gromo_resnet18(device)
     optimizer, old_scheduler = build_optimizer_scheduler(
-        model, args.continuation_lr, args.weight_decay)
+        model, float(source_protocol.get("learning_rate", 0.1)),
+        args.weight_decay)
     model.load_state_dict(source["model"], strict=True)
     optimizer.load_state_dict(source["optimizer"])
     old_scheduler.load_state_dict(source["scheduler"])
-    source_final_lrs = [float(group["lr"]) for group in optimizer.param_groups]
-    for group in optimizer.param_groups:
-        group["lr"] = args.continuation_lr
-        group["initial_lr"] = args.continuation_lr
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=CONTINUATION_EPOCHS)
+    fork_learning_rates = [float(group["lr"])
+                           for group in optimizer.param_groups]
+    if not all(rate > 0 for rate in fork_learning_rates):
+        raise RuntimeError("theta300 LR must be positive for the 300-to-500 schedule")
+    if not all(math.isclose(float(group["weight_decay"]), args.weight_decay)
+               for group in optimizer.param_groups):
+        raise RuntimeError("theta300 weight decay differs from requested protocol")
+    # Define the one and only post-fork schedule. The current theta300 LR is
+    # preserved verbatim; only stale initial_lr metadata from the old scheduler
+    # is removed so this 200-epoch cosine uses the fork LR as its base.
+    scheduler = single_fork_cosine_scheduler(
+        optimizer, CONTINUATION_EPOCHS)
     restore_rng(source["rng"])
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
@@ -277,7 +293,7 @@ def main():
     validation_loader = make_eval_loader(
         eval_set, validation_indices, args.batch_size * 2, args.workers)
     trigger_loader = make_eval_loader(
-        eval_set, tuning_indices, len(tuning_indices), args.workers)
+        eval_set, trigger_indices, args.batch_size * 2, args.workers)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -289,8 +305,12 @@ def main():
         "continuation_epochs": CONTINUATION_EPOCHS,
         "source_checkpoint_hash": actual_hash,
         "optimizer_state_preserved": True,
+        "trigger_samples": len(trigger_indices),
+        "trigger_disjoint_from_training": True,
         "lr_schedule": (
-            f"cosine restart at {args.continuation_lr} from epoch360, T_max=140"),
+            "single CosineAnnealingLR initialized once at theta300 from the "
+            "checkpoint LR, T_max=200, no intervention-time restart"),
+        "scheduler_restarted": False,
         "official_test_used": False,
     }
     detector = PlateauDetector(
@@ -376,7 +396,7 @@ def main():
             protocol=protocol, training_seconds=elapsed,
             peak_gpu_memory=peak, train_indices=train_indices,
             validation_indices=validation_indices,
-            tuning_indices=tuning_indices)
+            trigger_indices=trigger_indices)
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
 
@@ -393,10 +413,10 @@ def main():
         "final_epoch": TOTAL_EPOCHS,
         "continuation_epochs": len(history),
         "source_checkpoint_hash": actual_hash,
-        "source_final_learning_rates": source_final_lrs,
+        "fork_learning_rates": fork_learning_rates,
         "source_optimizer_state_entries": len(source["optimizer"]["state"]),
         "optimizer_state_preserved": True,
-        "scheduler_restarted": True,
+        "scheduler_restarted": False,
         "fork_validation_accuracy": baseline_validation["accuracy"],
         "fork_validation_loss": baseline_validation["loss"],
         "final_validation_accuracy": final["validation_accuracy"],

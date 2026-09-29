@@ -49,16 +49,17 @@ python3 -m pytest
 
 ## Kaggle T4 x2 shared-checkpoint run
 
-For the plateau-triggered experiment from the completed Vanilla theta-360,
+For the fair plateau-triggered experiment from the shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).
-It forks the same full Vanilla checkpoint into a 140-epoch Vanilla continuation
-and a 140-epoch plateau-triggered E→O continuation, ending at epoch 500. Model,
-SGD momentum, RNG, data indices, and loader state are preserved. Since the
-theta-300→360 cosine segment has already reached zero LR, both arms use the
-same explicitly logged cosine restart at LR 0.01. E selects WHERE from observed
-structural expansion loss gain across all eight blocks; projection is run only
-for that winner and is applied only when a separate gate batch accepts a
-line-search scale. The official test set is not used.
+It forks the same full checkpoint into a 200-epoch Vanilla trajectory and a
+200-epoch plateau-triggered E→O trajectory, both ending at epoch 500. Model,
+SGD momentum, RNG, data indices, loader state, and the positive checkpoint LR
+are preserved. Both arms receive one common cosine schedule defined at theta300;
+there is no LR/scheduler restart at a plateau or intervention. A disjoint
+2,000-example trigger set drives the plateau detector. E selects WHERE from
+observed structural expansion loss gain across all eight blocks; projection is
+run only for that winner and is applied only when a separate gate batch accepts
+a line-search scale. The official test set is not used.
 
 To run only the current main algorithm from an existing theta-300 warm-up,
 use [`notebooks/kaggle_adaptive_e_driven_o.ipynb`](notebooks/kaggle_adaptive_e_driven_o.ipynb).

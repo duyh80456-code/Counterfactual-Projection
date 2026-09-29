@@ -4,6 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import torch
+
+
+def single_fork_cosine_scheduler(optimizer, epochs: int):
+    """Create the sole post-fork schedule without changing fork LR/state."""
+    if epochs < 1:
+        raise ValueError("schedule length must be positive")
+    learning_rates = [float(group["lr"]) for group in optimizer.param_groups]
+    for group in optimizer.param_groups:
+        group.pop("initial_lr", None)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs)
+    if [float(group["lr"]) for group in optimizer.param_groups] != learning_rates:
+        raise RuntimeError("fork scheduler changed the checkpoint LR")
+    return scheduler
+
 
 @dataclass
 class PlateauDetector:
@@ -57,4 +73,3 @@ class PlateauDetector:
 
     def load_state_dict(self, state: dict) -> None:
         self.records = [dict(row) for row in state.get("records", [])]
-

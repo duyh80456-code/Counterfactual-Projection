@@ -9,16 +9,18 @@ def source():
                       for cell in notebook["cells"])
 
 
-def test_plateau_notebook_forks_two_arms_from_vanilla_theta360():
+def test_plateau_notebook_forks_two_arms_from_shared_theta300():
     text = source()
-    assert 'protocol.get("method") == "vanilla_continue"' in text
-    assert 'int(payload.get("post_epoch", -1)) == 60' in text
-    assert 'int(history[-1].get("epoch", -1)) == 360' in text
+    assert 'payload.get("kind") == "shared_fork_checkpoint"' in text
+    assert 'int(payload.get("epoch", -1)) == 300' in text
+    assert 'int(history[-1].get("epoch", -1)) == 300' in text
     assert '(0, "vanilla_continue", vanilla)' in text
     assert '(1, "plateau_e_driven_o", plateau)' in text
     assert '"final_epoch"] != 500' in text
-    assert '"continuation_epochs"] != 140' in text
-    assert '"--continuation-lr", "0.01"' in text
+    assert '"continuation_epochs"] != 200' in text
+    assert '"--trigger-samples", "2000"' in text
+    assert '"--minimum-sgd-epochs", "15"' in text
+    assert "--continuation-lr" not in text
     assert '"--line-search-scales", "0.0125,0.025,0.05"' in text
 
 
@@ -28,4 +30,3 @@ def test_plateau_notebook_cells_parse():
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), f"plateau-cell-{index}", "exec")
-

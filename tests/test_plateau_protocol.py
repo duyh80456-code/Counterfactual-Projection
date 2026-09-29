@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import torch
 
 from experiments import run_plateau_comparison as runner
-from experiments.plateau_protocol import PlateauDetector
+from experiments.plateau_protocol import (
+    PlateauDetector, single_fork_cosine_scheduler)
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -33,6 +34,18 @@ def test_plateau_state_round_trip():
     restored = PlateauDetector(window=3, minimum_epochs=2)
     restored.load_state_dict(detector.state_dict())
     assert restored.records == detector.records
+
+
+def test_single_fork_schedule_preserves_lr_and_momentum():
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.SGD([parameter], lr=0.037, momentum=0.9)
+    optimizer.state[parameter]["momentum_buffer"] = torch.tensor([2.0])
+    optimizer.param_groups[0]["initial_lr"] = 0.1
+    scheduler = single_fork_cosine_scheduler(optimizer, 200)
+    assert optimizer.param_groups[0]["lr"] == 0.037
+    assert scheduler.base_lrs == [0.037]
+    assert torch.equal(
+        optimizer.state[parameter]["momentum_buffer"], torch.tensor([2.0]))
 
 
 def test_where_uses_mean_e_gain_not_tiny_score(monkeypatch):
@@ -66,12 +79,17 @@ def test_where_uses_mean_e_gain_not_tiny_score(monkeypatch):
     assert diagnostics["where_stability"] == 1.0
 
 
-def test_plateau_runner_uses_vanilla_theta360_and_e_only_selects_where():
+def test_plateau_runner_uses_shared_theta300_and_e_only_selects_where():
     source = open("experiments/run_plateau_comparison.py").read()
-    assert 'source_protocol.get("method") != "vanilla_continue"' in source
-    assert 'int(source["history"][-1].get("epoch", -1)) != START_EPOCH' in source
+    assert 'source.get("kind") != "shared_fork_checkpoint"' in source
+    assert 'int(source.get("epoch", -1)) != START_EPOCH' in source
     assert "optimizer.load_state_dict(source[\"optimizer\"])" in source
-    assert "theta360 checkpoint has no SGD optimizer state" in source
+    assert "theta300 checkpoint has no SGD optimizer state" in source
+    assert 'group["lr"] =' not in source
+    assert "single_fork_cosine_scheduler" in source
+    assert '"scheduler_restarted": False' in source
+    assert 'default=2000' in source
+    assert 'default=15' in source
     assert "checkpoint_pre_intervention_epoch" in source
     assert 'snapshot_kind="pre_intervention_plateau"' in source
     assert "mean_observed_structural_E_gain" in source

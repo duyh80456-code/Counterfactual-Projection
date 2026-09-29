@@ -1,4 +1,4 @@
-"""Build the theta360-to-500 plateau-triggered comparison notebook."""
+"""Build the fair theta300-to-500 plateau-triggered comparison notebook."""
 
 import json
 from pathlib import Path
@@ -15,20 +15,20 @@ def code(source):
 
 
 cells = [
-    markdown("""# Plateau-triggered E→O from vanilla theta360
+    markdown("""# Fair plateau-triggered E→O comparison from theta300
 
-This T4x2 run forks the exact completed `vanilla_continue` checkpoint at epoch
-360 into two equal 140-epoch continuations ending at epoch 500:
+This T4x2 run forks the exact shared checkpoint at epoch 300 into two equal
+200-epoch trajectories ending at epoch 500:
 
 - GPU 0: Vanilla continuation;
 - GPU 1: plateau-triggered structural E→O.
 
-Both arms preserve model weights, SGD momentum, RNG, split, and loader state.
-Because the previous cosine segment ended at zero LR, both arms use the same
-explicit cosine restart at LR 0.01 for 140 epochs. The official test set is
-never constructed.
+Both arms preserve model weights, SGD momentum, RNG, split, loader state, and
+the positive LR stored at theta300. One common 200-epoch cosine schedule is
+initialized at the fork and is never reset at a plateau or intervention. The
+official test set is never constructed.
 
-E→O is not run every epoch. A separate 128-example trigger set declares a
+E→O is not run every epoch. A separate 2,000-example trigger set declares a
 plateau after 15 observations with <0.05 percentage-point accuracy gain and
 negligible loss-EMA decrease. At a plateau, TINY proposes all eight blocks;
 WHERE is selected only by mean observed structural E loss gain over three
@@ -46,7 +46,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/plateau_eo_theta360_500_v1")
+OUTPUT = Path("/kaggle/working/fair_plateau_eo_theta300_500_v2")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -105,17 +105,17 @@ DATA_ROOT = cifar_dirs[0]
     pickles = list(path.rglob("data.pkl"))
     if len(pickles) != 1: return None
     root = pickles[0].parent
-    target = OUTPUT / "repacked_input" / f"theta360_{index}.pt"
+    target = OUTPUT / "repacked_input" / f"theta300_{index}.pt"
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
         for record in sorted(root.rglob("*")):
             if record.is_file():
                 relative = record.relative_to(root).as_posix()
-                archive.writestr(f"checkpoint_latest/{relative}", record.read_bytes())
+                archive.writestr(f"shared_seed1_epoch300/{relative}", record.read_bytes())
     return target
 
 candidates = []
-for index, raw in enumerate(Path("/kaggle/input").rglob("checkpoint_latest.pt")):
+for index, raw in enumerate(Path("/kaggle/input").rglob("shared_seed1_epoch300.pt")):
     path = materialize(raw, index)
     if path is None: continue
     try:
@@ -123,11 +123,10 @@ for index, raw in enumerate(Path("/kaggle/input").rglob("checkpoint_latest.pt"))
     except Exception as error:
         print("Ignoring unreadable checkpoint", raw, repr(error))
         continue
-    protocol = payload.get("protocol", {})
     history = payload.get("history", [])
-    if (protocol.get("method") == "vanilla_continue" and
-            int(payload.get("post_epoch", -1)) == 60 and history and
-            int(history[-1].get("epoch", -1)) == 360):
+    if (payload.get("kind") == "shared_fork_checkpoint" and
+            int(payload.get("epoch", -1)) == 300 and history and
+            int(history[-1].get("epoch", -1)) == 300):
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -135,24 +134,24 @@ for index, raw in enumerate(Path("/kaggle/input").rglob("checkpoint_latest.pt"))
         candidates.append((path, digest.hexdigest(), raw))
 if not candidates:
     raise FileNotFoundError(
-        "Attach vanilla_continue/checkpoint_latest.pt completed at epoch360")
+        "Attach the complete shared_seed1_epoch300.pt fork checkpoint")
 hashes = {item[1] for item in candidates}
 if len(hashes) != 1:
-    raise RuntimeError("Multiple different valid vanilla theta360 checkpoints attached")
-THETA360, THETA360_HASH, RAW_THETA360 = candidates[0]
-print("vanilla theta360 input:", RAW_THETA360)
-print("materialized checkpoint:", THETA360)
-print("theta360 SHA-256:", THETA360_HASH)
+    raise RuntimeError("Multiple different valid theta300 checkpoints attached")
+THETA300, THETA300_HASH, RAW_THETA300 = candidates[0]
+print("shared theta300 input:", RAW_THETA300)
+print("materialized checkpoint:", THETA300)
+print("theta300 SHA-256:", THETA300_HASH)
 """),
     code("""SEED = 1
 def base_args(output):
     return [
         "--reference-root", str(REFERENCE), "--data-root", str(DATA_ROOT),
-        "--resume-checkpoint", str(THETA360),
-        "--resume-checkpoint-hash", THETA360_HASH,
+        "--fork-checkpoint", str(THETA300),
+        "--fork-checkpoint-hash", THETA300_HASH,
         "--output", str(output), "--seed", str(SEED),
         "--batch-size", "64", "--validation-samples", "5000",
-        "--tuning-samples", "128", "--continuation-lr", "0.01",
+        "--trigger-samples", "2000",
         "--weight-decay", "0.0005"]
 
 vanilla = [sys.executable, "-m", "experiments.run_plateau_comparison",
@@ -160,7 +159,7 @@ vanilla = [sys.executable, "-m", "experiments.run_plateau_comparison",
 plateau = [sys.executable, "-m", "experiments.run_plateau_comparison",
            "--method", "plateau_e_driven_o"] + base_args(OUTPUT / "plateau_e_driven_o") + [
     "--plateau-window", "15", "--plateau-accuracy-min-gain", "0.0005",
-    "--plateau-loss-ema-min-drop", "0.001", "--minimum-sgd-epochs", "10",
+    "--plateau-loss-ema-min-drop", "0.001", "--minimum-sgd-epochs", "15",
     "--rank", "4", "--probe-epsilon", "0.05", "--where-batches", "3",
     "--line-search-scales", "0.0125,0.025,0.05"]
 
@@ -202,16 +201,16 @@ run_wave([(0, "vanilla_continue", vanilla),
 for name in ("vanilla_continue", "plateau_e_driven_o"):
     path = OUTPUT / name / "result.json"
     result = json.loads(path.read_text())
-    if result["source_checkpoint_hash"] != THETA360_HASH:
-        raise RuntimeError(f"{name} used a different theta360")
-    if result["final_epoch"] != 500 or result["continuation_epochs"] != 140:
+    if result["source_checkpoint_hash"] != THETA300_HASH:
+        raise RuntimeError(f"{name} used a different theta300")
+    if result["final_epoch"] != 500 or result["continuation_epochs"] != 200:
         raise RuntimeError(f"{name} did not finish epoch500")
     results[name] = result
 
 summary = {
-    "source_epoch": 360, "final_epoch": 500,
-    "continuation_epochs": 140,
-    "source_checkpoint_hash": THETA360_HASH,
+    "source_epoch": 300, "final_epoch": 500,
+    "continuation_epochs": 200,
+    "source_checkpoint_hash": THETA300_HASH,
     "official_test_used": False,
     "results": {
         name: {key: value for key, value in result.items() if key in {
@@ -249,4 +248,3 @@ destination = Path("notebooks/kaggle_plateau_eo_t4x2.ipynb")
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
 print(destination)
-
