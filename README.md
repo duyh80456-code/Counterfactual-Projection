@@ -49,6 +49,25 @@ python3 -m pytest
 
 ## Kaggle T4 x2 shared-checkpoint run
 
+The current main experiment is split into two notebooks:
+
+1. [`notebooks/kaggle_vanilla_to_plateau.ipynb`](notebooks/kaggle_vanilla_to_plateau.ipynb)
+   trains only Vanilla from shared theta300. It keeps the original training
+   indices and holds the theta300 LR constant under an explicitly labelled
+   matched extended-convergence protocol. The 5k held-out pool is split into
+   2k trigger and 3k evaluation samples. Plateau requires two complete,
+   non-overlapping 20-epoch windows. Epoch 500 is a review point, not an
+   automatic convergence claim; attach the prior output and raise `MAX_EPOCH`
+   to resume if no plateau was found. A detected plateau writes a complete
+   `plateau_checkpoint.pt` (theta_P).
+2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
+   forks exactly theta_P into Vanilla, relaxed matched-budget Bypass, and one
+   immediate E→O intervention followed by SGD, each for 60 epochs. All arms
+   inherit the same model, optimizer, scheduler, momentum, RNG, training order,
+   and held-out split. It reports final/best gain, epochs to best, wall time,
+   peak memory/parameters, and time spent expanded. An uncontracted Bypass run
+   is retained diagnostically but not presented as a completed comparator.
+
 For the exact-original-schedule plateau experiment from shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).
 It restores the exact model, optimizer, scheduler, SGD momentum, RNG, data

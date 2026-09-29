@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import torch
 
 from experiments import run_plateau_comparison as runner
-from experiments.plateau_protocol import PlateauDetector
+from experiments.plateau_protocol import (
+    ConsecutiveWindowPlateauDetector, ConstantCheckpointScheduler,
+    PlateauDetector)
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -33,6 +35,30 @@ def test_plateau_state_round_trip():
     restored = PlateauDetector(window=3, minimum_epochs=2)
     restored.load_state_dict(detector.state_dict())
     assert restored.records == detector.records
+
+
+def test_convergence_detector_requires_two_complete_windows():
+    detector = ConsecutiveWindowPlateauDetector(
+        window=3, required_windows=2, accuracy_min_gain=0.01,
+        loss_ema_min_drop=0.01, ema_alpha=1.0)
+    outputs = []
+    for epoch in range(1, 7):
+        outputs.append(detector.update(epoch, 0.70, 1.0))
+    assert outputs[2]["plateau"] is False
+    assert outputs[2]["completed_window"]["qualifies"] is True
+    assert outputs[5]["plateau"] is True
+    assert outputs[5]["consecutive_plateau_windows"] == 2
+
+
+def test_constant_checkpoint_scheduler_preserves_lr_and_state():
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.SGD([parameter], lr=0.037, momentum=0.9)
+    scheduler = ConstantCheckpointScheduler(optimizer)
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.037
+    restored = ConstantCheckpointScheduler(optimizer)
+    restored.load_state_dict(scheduler.state_dict())
+    assert restored.steps == 1
 
 
 def test_loading_original_scheduler_preserves_horizon_lr_and_momentum():
