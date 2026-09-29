@@ -32,3 +32,18 @@ def test_rebuilds_kaggle_expanded_torch_archive(tmp_path):
         input_root, tmp_path / "output", kind="plateau_fork_checkpoint")
     assert len(matches) == 1
     assert matches[0]["payload"]["kind"] == "plateau_fork_checkpoint"
+
+
+def test_follows_kaggle_notebook_output_directory_symlink(tmp_path):
+    actual_output = tmp_path / "saved-notebook-output"
+    actual_output.mkdir()
+    torch.save(payload(), actual_output / "plateau_checkpoint.pt")
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    (input_root / "attached-notebook").symlink_to(
+        actual_output, target_is_directory=True)
+
+    matches, _ = discover_checkpoints(
+        input_root, tmp_path / "repacked", kind="plateau_fork_checkpoint")
+    assert len(matches) == 1
+    assert matches[0]["payload"]["epoch"] == 328

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import zipfile
 from pathlib import Path
 
@@ -38,12 +39,22 @@ def discover_checkpoints(input_root: str | Path, output: str | Path,
     """
     input_root = Path(input_root)
     output = Path(output)
+    # Notebook outputs can be mounted below /kaggle/input through directory
+    # symlinks. pathlib.rglob does not descend into those links, whereas
+    # os.walk(..., followlinks=True) does.
+    pt_files, data_pickles = [], []
+    for directory, _, filenames in os.walk(input_root, followlinks=True):
+        root = Path(directory)
+        for filename in filenames:
+            path = root / filename
+            if filename.endswith(".pt"):
+                pt_files.append(path)
+            if filename == "data.pkl":
+                data_pickles.append(path)
     candidates: list[tuple[Path, str]] = [
-        (path, "file") for path in sorted(input_root.rglob("*.pt"))
-        if path.is_file()
+        (path, "file") for path in sorted(set(pt_files)) if path.is_file()
     ]
-    archive_roots = sorted({path.parent.resolve()
-                            for path in input_root.rglob("data.pkl")})
+    archive_roots = sorted({path.parent.resolve() for path in data_pickles})
     for index, root in enumerate(archive_roots):
         target = output / "repacked_input" / f"torch_archive_{index}.pt"
         candidates.append((_repack_archive(root, target), str(root)))

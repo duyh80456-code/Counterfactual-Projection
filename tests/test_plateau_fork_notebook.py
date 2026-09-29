@@ -13,6 +13,8 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
             source.index("from experiments.kaggle_checkpoint_discovery"))
     assert '"/kaggle/input", OUTPUT, kind="plateau_fork_checkpoint"' in source
     assert 'rglob("plateau_checkpoint.pt")' not in source
+    assert "followlinks=True" in Path(
+        "experiments/kaggle_checkpoint_discovery.py").read_text()
     assert 'results["vanilla"] = VANILLA_CONTROL' in source
     assert 'ours_job = launch(0, "ours_e_driven_o")' in source
     assert 'bypass_job = launch(1, "bypass")' in source
