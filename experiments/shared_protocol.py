@@ -15,8 +15,9 @@ from torch.utils.data import DataLoader, Subset
 
 
 SPLIT_SEED = 20260928
-FORK_EPOCH = 150
-TOTAL_EPOCHS = 200
+BOOTSTRAP_EPOCH = 150
+FORK_EPOCH = 300
+TOTAL_EPOCHS = 350
 POST_FORK_EPOCHS = TOTAL_EPOCHS - FORK_EPOCH
 
 
@@ -145,6 +146,14 @@ def build_optimizer_scheduler(model, lr: float = 0.1,
     return optimizer, scheduler
 
 
+def rebase_scheduler_from_theta150(optimizer):
+    """Keep theta_150's LR continuous and anneal it to zero at epoch 350."""
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=TOTAL_EPOCHS - BOOTSTRAP_EPOCH)
+
+
 def protocol(seed, train_indices, validation_indices, tuning_indices,
              batch_size, lr, weight_decay):
     return {
@@ -153,7 +162,9 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "fork_epoch": FORK_EPOCH, "total_epochs": TOTAL_EPOCHS,
         "post_fork_epochs": POST_FORK_EPOCHS, "batch_size": batch_size,
         "learning_rate": lr, "weight_decay": weight_decay,
-        "scheduler": "CosineAnnealingLR(T_max=200), uninterrupted",
+        "scheduler": (
+            "resume theta150 LR; CosineAnnealingLR(T_max=200) from "
+            "epoch150 through epoch350"),
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),

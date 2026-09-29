@@ -18,11 +18,13 @@ from experiments.run_gromo_pilot import (
     evaluate_heldout_direction, eval_logits, heldout_metrics,
     projection_application_gate, reset_projected_momentum, synchronize)
 from experiments.shared_protocol import (
-    FORK_EPOCH, POST_FORK_EPOCHS, atomic_json_save, atomic_torch_save,
+    BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS,
+    atomic_json_save, atomic_torch_save,
     build_cifar_gromo_resnet18, build_optimizer_scheduler,
     datasets_and_indices, evaluate, load_shared_checkpoint, make_eval_loader,
     make_train_loader, protocol, restore_rng, rng_state,
-    save_shared_checkpoint, seed_everything, sha256_file, train_epoch)
+    rebase_scheduler_from_theta150, save_shared_checkpoint, seed_everything,
+    sha256_file, train_epoch)
 from methods import EProjection
 from probe import CandidateExpansionProbe, CounterfactualTinyProbe
 from projection import FunctionalProjector
@@ -39,6 +41,8 @@ def arguments():
     parser.add_argument("--output", required=True)
     parser.add_argument("--shared-checkpoint", required=True)
     parser.add_argument("--shared-checkpoint-hash", default="")
+    parser.add_argument("--bootstrap-checkpoint", default="")
+    parser.add_argument("--bootstrap-checkpoint-hash", default="")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
@@ -111,6 +115,28 @@ def prepare_shared(args, device, model, optimizer, scheduler, train_set,
         history = saved["history"]
         start_epoch = int(saved["epoch"])
         generator_state = saved["train_loader_generator_state"]
+    else:
+        if not args.bootstrap_checkpoint or not args.bootstrap_checkpoint_hash:
+            raise RuntimeError("theta_150 bootstrap checkpoint is required")
+        bootstrap_path = Path(args.bootstrap_checkpoint)
+        actual_hash = sha256_file(bootstrap_path)
+        if actual_hash != args.bootstrap_checkpoint_hash:
+            raise RuntimeError("theta_150 bootstrap checkpoint hash mismatch")
+        saved = torch.load(bootstrap_path, map_location=device)
+        if (saved.get("kind") != "shared_fork_checkpoint" or
+                int(saved.get("epoch", -1)) != BOOTSTRAP_EPOCH):
+            raise RuntimeError("bootstrap checkpoint is not shared theta_150")
+        if (saved["train_indices"] != train_indices or
+                saved["validation_indices"] != validation_indices or
+                saved["tuning_indices"] != tuning_indices):
+            raise RuntimeError("theta_150 bootstrap data split mismatch")
+        model.load_state_dict(saved["model"], strict=True)
+        optimizer.load_state_dict(saved["optimizer"])
+        restore_rng(saved["rng"])
+        history = saved["history"]
+        start_epoch = BOOTSTRAP_EPOCH
+        generator_state = saved["train_loader_generator_state"]
+        scheduler = rebase_scheduler_from_theta150(optimizer)
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         generator_state, args.seed)

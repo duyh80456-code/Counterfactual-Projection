@@ -9,8 +9,9 @@ from baselines.bypass import (
     embed_relaxed_bypass, extension_parameters, project_relaxed_bypass_,
     remove_extension_parameters_, transition_from_opt2_)
 from experiments.shared_protocol import (
-    FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS, load_shared_checkpoint,
-    restore_rng, save_shared_checkpoint)
+    BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS,
+    load_shared_checkpoint, rebase_scheduler_from_theta150, restore_rng,
+    save_shared_checkpoint)
 
 
 class ToyResidualModel(nn.Module):
@@ -60,7 +61,7 @@ def test_shared_checkpoint_contains_exact_fork_state_and_hash(tmp_path):
         optimizer, T_max=TOTAL_EPOCHS)
     loader = SimpleNamespace(generator=torch.Generator().manual_seed(17))
     protocol = {"fork_epoch": FORK_EPOCH, "post_fork_epochs": POST_FORK_EPOCHS}
-    path = tmp_path / "shared_seed1_epoch150.pt"
+    path = tmp_path / "shared_seed1_epoch300.pt"
     digest = save_shared_checkpoint(
         path, model=model, optimizer=optimizer, scheduler=scheduler,
         epoch=FORK_EPOCH, train_indices=[3, 5], validation_indices=[7],
@@ -160,3 +161,11 @@ def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):
     assert len(restored) == 1
     assert restored[0].device.type == "cpu"
     assert restored[0].dtype == torch.uint8
+
+
+def test_theta150_scheduler_continuation_preserves_lr_to_epoch350():
+    model = nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0146)
+    scheduler = rebase_scheduler_from_theta150(optimizer)
+    assert scheduler.get_last_lr() == [0.0146]
+    assert scheduler.T_max == TOTAL_EPOCHS - BOOTSTRAP_EPOCH
