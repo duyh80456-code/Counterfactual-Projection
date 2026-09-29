@@ -24,10 +24,10 @@ into three newly trained 100-epoch arms. The observed 100-epoch Vanilla stall
 trajectory from Phase 1 is reused directly as the control:
 
 - relaxed matched-budget Bypass (40 opt1 + up to 60 opt2; never force-project);
-- Ours: one immediate all-eight-site structural E scan, E-gain WHERE selection,
-  winner-only O projection, independent gate line search, then ordinary SGD.
-- O-only: one supervised functional projection at the fixed residual-path site,
-  the same independent gate/line search, then ordinary SGD.
+- Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
+  winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
+- O-only: supervised functional projection at the fixed residual-path site,
+  with the same recurrent rollback/retrigger schedule for a fair ablation.
 
 The two T4 GPUs consume a dynamic job queue. Ours and Bypass start first; as soon
 as either GPU becomes free it immediately receives O-only. The
@@ -135,6 +135,7 @@ print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
         "--seed", "1", "--batch-size", "64", "--rank", "4",
         "--opt1-epochs", "40", "--max-opt2-epochs", "60",
         "--probe-epsilon", "0.05", "--where-batches", "3",
+        "--retrigger-patience", "10",
         "--line-search-scales", "0.0125,0.025,0.05"]
 
 commands = {
@@ -202,7 +203,10 @@ summary = {
         "epochs_to_best", "training_seconds", "peak_gpu_memory",
         "peak_train_params", "deploy_params", "time_spent_expanded_seconds",
         "bypass_completed", "contraction_at_projection",
-        "projection_loss_jump", "best_checkpoint", "intervention")}
+        "projection_loss_jump", "best_checkpoint", "intervention_count",
+        "correction_application_count", "correction_application_rate",
+        "intervention_seconds", "rollback_count", "retrigger_patience",
+        "interventions")}
         for name, result in results.items()},
     "bypass_comparison_status": (
         "completed" if results["bypass"]["bypass_completed"] else

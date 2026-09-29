@@ -70,8 +70,11 @@ The same workflow is also available as two explicit notebooks:
    from the later potentially degraded model. Epoch 500 remains a review point;
    both latest progress and the best checkpoint are required when resuming.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
-   launches supervised O-only, relaxed matched-budget Bypass, and one immediate
-   E→O intervention followed by SGD, each for 100 epochs. Vanilla is reused from
+   launches supervised O-only, relaxed matched-budget Bypass, and E→O, each for
+   a 100-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
+   new best appears, trainable state rolls back to the arm's best checkpoint,
+   the stochastic stream remains advanced, and a fresh intervention starts.
+   Vanilla is reused from
    Phase 1. All methods inherit the same model, optimizer, scheduler, momentum,
    RNG, training order, and held-out split. Every trained method saves latest
    and best checkpoints and reports fork/best/final accuracy, loss, deltas,

@@ -15,6 +15,7 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
     assert "running[gpu] = launch(gpu, pending.pop(0))" in source
     assert '"--post-fork-epochs", "100"' in source
     assert '"--max-opt2-epochs", "60"' in source
+    assert '"--retrigger-patience", "10"' in source
     assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
     assert 'Path(result["best_checkpoint"]).is_file()' in source
     assert "best_acc" in source

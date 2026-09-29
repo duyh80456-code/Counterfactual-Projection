@@ -1,4 +1,4 @@
-"""Fork one converged theta_P into Vanilla, Bypass, and one-shot E-to-O."""
+"""Run recurrent projected methods or Bypass from a stalled Vanilla best."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ def arguments():
     parser.add_argument("--cg-preconditioner-probes", type=int, default=8)
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
+    parser.add_argument("--retrigger-patience", type=int, default=10)
     parser.add_argument("--opt1-epochs", type=int, default=40)
     parser.add_argument("--max-opt2-epochs", type=int, default=60)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
@@ -73,9 +74,10 @@ def save_checkpoint(path, payload):
 
 
 def run_o_only_intervention(model, optimizer, eval_set, train_indices,
-                            args, device):
+                            args, device, probe_index=0):
     """One supervised projection-only control at theta_P."""
-    generator = torch.Generator().manual_seed(911_731 + args.seed * 10_000)
+    generator = torch.Generator().manual_seed(
+        911_731 + args.seed * 10_000 + int(probe_index) * 1_009)
     order = torch.randperm(len(train_indices), generator=generator).tolist()
     count = args.projection_samples + args.gate_samples
     selected = [train_indices[index] for index in order[:count]]
@@ -148,6 +150,8 @@ def main():
         raise RuntimeError("one visible CUDA GPU is required")
     if args.post_fork_epochs < 1:
         raise ValueError("post_fork_epochs must be positive")
+    if args.retrigger_patience < 1:
+        raise ValueError("retrigger_patience must be positive")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -200,10 +204,14 @@ def main():
         "scheduler_state_preserved": True,
         "training_indices_unchanged": True,
         "official_test_used": False,
-        "structural_E_interventions": (
-            1 if args.method == "ours_e_driven_o" else 0),
-        "supervised_O_interventions": (
-            1 if args.method == "o_projection_only" else 0),
+        "intervention_schedule": (
+            {"mode": "recurrent_best_rollback",
+             "patience": args.retrigger_patience,
+             "sgd_epoch_budget": args.post_fork_epochs,
+             "rollback_rng": False,
+             "rollback_loader_stream": False}
+            if args.method in {"ours_e_driven_o", "o_projection_only"}
+            else None),
         "o_projection_site": (
             args.site if args.method == "o_projection_only" else None),
         "bypass_schedule": ({
@@ -246,6 +254,9 @@ def main():
 
     history = []
     intervention = None
+    interventions = []
+    rollback_count = 0
+    epochs_since_best = 0
     start_offset = 0
     elapsed_before = 0.0
     peak_before = 0
@@ -261,6 +272,10 @@ def main():
             saved["train_loader_generator_state"].cpu())
         history = saved["history"]
         intervention = saved.get("intervention")
+        interventions = list(saved.get(
+            "interventions", [intervention] if intervention else []))
+        rollback_count = int(saved.get("rollback_count", 0))
+        epochs_since_best = int(saved.get("epochs_since_best", 0))
         start_offset = int(saved["post_fork_epoch"])
         phase = saved["phase"]
         opt1_done = int(saved.get("opt1_epochs", 0))
@@ -278,44 +293,9 @@ def main():
         best_loss = float(saved["best_validation_loss"])
         best_offset = int(saved["best_post_fork_epoch"])
 
-    if args.method in {"ours_e_driven_o", "o_projection_only"} and intervention is None:
-        pre_probe_rng = rng_state()
-        intervention_started = time.perf_counter()
-        try:
-            if args.method == "ours_e_driven_o":
-                intervention = run_intervention(
-                    model, optimizer, eval_set, train_indices, args, device, 0)
-            else:
-                intervention = run_o_only_intervention(
-                    model, optimizer, eval_set, train_indices, args, device)
-        finally:
-            restore_rng(pre_probe_rng)
-        intervention["epoch"] = fork_epoch
-        intervention["intervention_seconds"] = (
-            time.perf_counter() - intervention_started)
-        post_path = output / "checkpoint_post_intervention.pt"
-        save_checkpoint(post_path, {
-            "kind": "plateau_post_intervention", "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
-            "rng": rng_state(), "train_loader_generator_state":
-                train_loader.generator.get_state(),
-            "epoch": fork_epoch, "train_indices": train_indices,
-            "trigger_indices": trigger_indices,
-            "evaluation_indices": evaluation_indices,
-            "source_tuning_indices": source_tuning,
-            "intervention": intervention, "protocol": protocol,
-        })
-
-    # Include the immediate post-intervention state (or the function-preserving
-    # Bypass embedding) in best-checkpoint selection. Offset zero is a valid
-    # best if subsequent SGD never improves on theta_P.
-    if saved is None:
-        initial_validation = evaluate(model, evaluation_loader, device)
-        best_accuracy = float(initial_validation["accuracy"])
-        best_loss = float(initial_validation["loss"])
-        best_offset = 0
-        save_checkpoint(best_checkpoint, {
-            "kind": "plateau_fork_arm_best", "model": model.state_dict(),
+    def state_payload(kind, post_offset, training_seconds, peak_memory):
+        return {
+            "kind": kind, "model": model.state_dict(),
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
             "rng": rng_state(), "train_loader_generator_state":
                 train_loader.generator.get_state(),
@@ -324,8 +304,11 @@ def main():
             "trigger_indices": trigger_indices,
             "evaluation_indices": evaluation_indices,
             "source_tuning_indices": source_tuning,
-            "history": [], "intervention": intervention,
-            "post_fork_epoch": 0, "phase": phase,
+            "history": history, "intervention": intervention,
+            "interventions": interventions,
+            "rollback_count": rollback_count,
+            "epochs_since_best": epochs_since_best,
+            "post_fork_epoch": post_offset, "phase": phase,
             "opt1_epochs": opt1_done, "opt2_epochs": opt2_done,
             "train3_epochs": train3_done, "opt2_steps": opt2_steps,
             "contraction_at_projection": contraction_at_projection,
@@ -333,12 +316,58 @@ def main():
             "extension_paths": extension_paths,
             "time_spent_expanded_seconds": expanded_seconds,
             "peak_train_params": peak_train_params,
-            "training_seconds": 0.0, "peak_gpu_memory": 0,
+            "training_seconds": training_seconds,
+            "peak_gpu_memory": peak_memory,
             "best_validation_accuracy": best_accuracy,
             "best_validation_loss": best_loss,
             "best_post_fork_epoch": best_offset,
             "protocol": protocol,
-        })
+        }
+
+    def perform_intervention(probe_index, post_offset, reason):
+        nonlocal intervention
+        pre_probe_rng = rng_state()
+        intervention_started = time.perf_counter()
+        try:
+            if args.method == "ours_e_driven_o":
+                intervention = run_intervention(
+                    model, optimizer, eval_set, train_indices, args, device,
+                    probe_index)
+            else:
+                intervention = run_o_only_intervention(
+                    model, optimizer, eval_set, train_indices, args, device,
+                    probe_index)
+        finally:
+            restore_rng(pre_probe_rng)
+        intervention["epoch"] = fork_epoch + post_offset
+        intervention["post_fork_epoch"] = post_offset
+        intervention["probe_index"] = probe_index
+        intervention["trigger_reason"] = reason
+        intervention["intervention_seconds"] = (
+            time.perf_counter() - intervention_started)
+        interventions.append(dict(intervention))
+        post_path = output / f"checkpoint_post_intervention_{probe_index:03d}.pt"
+        save_checkpoint(post_path, state_payload(
+            "plateau_post_intervention", post_offset,
+            elapsed_before, peak_before))
+
+    # The pre-intervention theta_P is a valid global best. Save it first so a
+    # harmful intervention can roll back to the actual fork rather than to its
+    # perturbed state.
+    if saved is None:
+        best_accuracy = float(fork_evaluation["accuracy"])
+        best_loss = float(fork_evaluation["loss"])
+        best_offset = 0
+        save_checkpoint(best_checkpoint, state_payload(
+            "plateau_fork_arm_best", 0, 0.0, 0))
+        if args.method in {"ours_e_driven_o", "o_projection_only"}:
+            perform_intervention(0, 0, "initial_theta_P")
+            immediate = evaluate(model, evaluation_loader, device)
+            if immediate["accuracy"] > best_accuracy:
+                best_accuracy = float(immediate["accuracy"])
+                best_loss = min(best_loss, float(immediate["loss"]))
+                save_checkpoint(best_checkpoint, state_payload(
+                    "plateau_fork_arm_best", 0, 0.0, 0))
 
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
@@ -400,39 +429,52 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
+        improved = validation["accuracy"] > best_accuracy
         if validation["accuracy"] > best_accuracy:
             best_accuracy = float(validation["accuracy"])
             best_offset = offset + 1
+            epochs_since_best = 0
+        else:
+            epochs_since_best += 1
         best_loss = min(best_loss, float(validation["loss"]))
-        checkpoint_payload = {
-            "kind": "plateau_fork_arm_progress", "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
-            "rng": rng_state(), "train_loader_generator_state":
-                train_loader.generator.get_state(),
-            "plateau_checkpoint_hash": fork_hash,
-            "train_indices": train_indices,
-            "trigger_indices": trigger_indices,
-            "evaluation_indices": evaluation_indices,
-            "source_tuning_indices": source_tuning,
-            "history": history, "intervention": intervention,
-            "post_fork_epoch": offset + 1, "phase": phase,
-            "opt1_epochs": opt1_done, "opt2_epochs": opt2_done,
-            "train3_epochs": train3_done, "opt2_steps": opt2_steps,
-            "contraction_at_projection": contraction_at_projection,
-            "projection_loss_jump": projection_loss_jump,
-            "extension_paths": extension_paths,
-            "time_spent_expanded_seconds": expanded_seconds,
-            "peak_train_params": peak_train_params,
-            "training_seconds": elapsed, "peak_gpu_memory": peak,
-            "best_validation_accuracy": best_accuracy,
-            "best_validation_loss": best_loss,
-            "best_post_fork_epoch": best_offset,
-            "protocol": protocol,
-        }
-        save_checkpoint(latest, checkpoint_payload)
-        if best_offset == offset + 1:
-            save_checkpoint(best_checkpoint, {
-                **checkpoint_payload, "kind": "plateau_fork_arm_best"})
+        if improved:
+            save_checkpoint(best_checkpoint, state_payload(
+                "plateau_fork_arm_best", offset + 1, elapsed, peak))
+
+        retriggered = False
+        if (args.method in {"ours_e_driven_o", "o_projection_only"} and
+                epochs_since_best >= args.retrigger_patience and
+                offset + 1 < args.post_fork_epochs):
+            # Roll back trainable state but deliberately keep the consumed RNG
+            # and loader streams. Restoring them would replay the same E probe
+            # and the same ten SGD epochs forever.
+            live_rng = rng_state()
+            live_loader_state = train_loader.generator.get_state().clone()
+            best_state = torch.load(
+                best_checkpoint, map_location=device, weights_only=False)
+            model.load_state_dict(best_state["model"], strict=True)
+            optimizer.load_state_dict(best_state["optimizer"])
+            scheduler.load_state_dict(best_state["scheduler"])
+            restore_rng(live_rng)
+            train_loader.generator.set_state(live_loader_state.cpu())
+            rollback_count += 1
+            epochs_since_best = 0
+            perform_intervention(
+                len(interventions), offset + 1,
+                "ten_sgd_epochs_without_new_best")
+            immediate = evaluate(model, evaluation_loader, device)
+            if immediate["accuracy"] > best_accuracy:
+                best_accuracy = float(immediate["accuracy"])
+                best_loss = min(best_loss, float(immediate["loss"]))
+                best_offset = offset + 1
+                save_checkpoint(best_checkpoint, state_payload(
+                    "plateau_fork_arm_best", offset + 1, elapsed, peak))
+            retriggered = True
+        row["epochs_since_best"] = epochs_since_best
+        row["rollback_triggered"] = retriggered
+        row["intervention_count"] = len(interventions)
+        save_checkpoint(latest, state_payload(
+            "plateau_fork_arm_progress", offset + 1, elapsed, peak))
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
 
     last = history[-1]
@@ -458,7 +500,18 @@ def main():
         "peak_train_params": peak_train_params,
         "deploy_params": sum(parameter.numel() for parameter in model.parameters()),
         "time_spent_expanded_seconds": expanded_seconds,
-        "intervention": intervention,
+        "intervention": intervention, "interventions": interventions,
+        "intervention_count": len(interventions),
+        "correction_application_count": sum(
+            bool(item.get("correction_applied")) for item in interventions),
+        "correction_application_rate": (
+            sum(bool(item.get("correction_applied")) for item in interventions) /
+            len(interventions) if interventions else None),
+        "intervention_seconds": sum(
+            float(item.get("intervention_seconds", 0.0))
+            for item in interventions),
+        "rollback_count": rollback_count,
+        "retrigger_patience": args.retrigger_patience,
         "bypass_completed": (phase == "train3" if args.method == "bypass" else None),
         "contraction_at_projection": contraction_at_projection,
         "projection_loss_jump": projection_loss_jump,
