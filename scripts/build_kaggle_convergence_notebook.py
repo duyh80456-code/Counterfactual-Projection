@@ -15,7 +15,7 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 1 — Vanilla theta300 until robust plateau
+    markdown("""# Phase 1 — Vanilla theta300 until best-checkpoint stall
 
 This notebook trains only Vanilla from the shared theta300 checkpoint. It keeps
 the original training indices, optimizer momentum, RNG, and loader state. The
@@ -24,11 +24,12 @@ extended-convergence protocol, preventing a zero-LR scheduler horizon from
 creating a false plateau.
 
 The original held-out 5,000 examples are split into 2,000 trigger and 3,000
-evaluation examples. Plateau requires two consecutive, non-overlapping
-20-epoch windows with accuracy gain below 0.1 percentage point and negligible
-loss-EMA decrease. Epoch 500 is only a review horizon. If no plateau is found,
-attach this notebook's output, increase `MAX_EPOCH`, and rerun; full state is
-resumed from `checkpoint_latest.pt`.
+validation examples. Every validation improvement is saved immediately as
+`checkpoint_best.pt`. After 100 epochs without a new best of at least 0.1
+percentage point, the run forks from that saved best state—not from the later,
+possibly degraded state. Epoch 500 is only a review horizon. If no stall is
+found, attach this notebook's output, increase `MAX_EPOCH`, and rerun; both
+latest progress and the exact best state are restored.
 """),
     code("""import hashlib, json, os, shutil, subprocess, sys, zipfile
 from pathlib import Path
@@ -41,7 +42,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/vanilla_convergence_theta300_v1")
+OUTPUT = Path("/kaggle/working/vanilla_best_stall_theta300_v2")
 MAX_EPOCH = 500  # raise this on a resumed run if plateau_found is false
 
 def private_clone(url, destination, branch):
@@ -116,17 +117,37 @@ if len({digest for _, digest in forks}) != 1:
     raise RuntimeError("Multiple different theta300 checkpoints attached")
 THETA300, THETA300_HASH = forks[0]
 
-# Optional continuation from an earlier Phase-1 output.
+# Optional continuation from an earlier compatible Phase-1 output.
+resume_payload = None
 for index, raw in enumerate(Path("/kaggle/input").rglob("checkpoint_latest.pt")):
     path = materialize(raw, index, "checkpoint_latest")
     if path is None: continue
     try: payload = torch.load(path, map_location="cpu", weights_only=False)
     except Exception: continue
     if (payload.get("kind") == "vanilla_convergence_progress" and
-            payload.get("protocol", {}).get("source_checkpoint_hash") == THETA300_HASH):
+            payload.get("protocol", {}).get("source_checkpoint_hash") == THETA300_HASH and
+            payload.get("protocol", {}).get("schedule_id") == "constant-theta300-lr-best-stall-v1"):
         shutil.copy2(path, OUTPUT / "checkpoint_latest.pt")
+        resume_payload = payload
         print("Restored Phase-1 progress at epoch", payload["epoch"])
         break
+if resume_payload is not None:
+    matching_best = []
+    for index, raw in enumerate(Path("/kaggle/input").rglob("checkpoint_best.pt")):
+        path = materialize(raw, index, "checkpoint_best")
+        if path is None: continue
+        try: payload = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception: continue
+        if (payload.get("kind") == "vanilla_best_checkpoint" and
+                payload.get("protocol") == resume_payload.get("protocol") and
+                int(payload.get("epoch", -1)) ==
+                int(resume_payload["best_stall_detector"]["best_epoch"])):
+            matching_best.append(path)
+    if len(matching_best) != 1:
+        raise RuntimeError("Resume requires exactly one matching checkpoint_best.pt")
+    shutil.copy2(matching_best[0], OUTPUT / "checkpoint_best.pt")
+    print("Restored best checkpoint at epoch",
+          resume_payload["best_stall_detector"]["best_epoch"])
 print("theta300:", THETA300, THETA300_HASH)
 """),
     code("""command = [
@@ -136,10 +157,9 @@ print("theta300:", THETA300, THETA300_HASH)
     "--fork-checkpoint-hash", THETA300_HASH,
     "--output", str(OUTPUT), "--max-epoch", str(MAX_EPOCH),
     "--seed", "1", "--batch-size", "64", "--validation-samples", "5000",
-    "--trigger-samples", "2000", "--plateau-window", "20",
-    "--required-plateau-windows", "2",
-    "--plateau-accuracy-min-gain", "0.001",
-    "--plateau-loss-ema-min-drop", "0.001"]
+    "--trigger-samples", "2000",
+    "--no-new-best-patience", "100",
+    "--best-min-gain", "0.001"]
 env = os.environ.copy()
 env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
            PYTHONPATH=RUNTIME_PYTHONPATH)
@@ -152,7 +172,8 @@ if process.wait(): raise RuntimeError("Vanilla convergence search failed")
 """),
     code("""result = json.loads((OUTPUT / "result.json").read_text())
 print(json.dumps({key: result[key] for key in (
-    "status", "plateau_found", "plateau_epoch", "review_epoch_reached",
+    "status", "plateau_found", "plateau_epoch", "best_epoch",
+    "stall_detected_epoch", "epochs_without_improvement", "review_epoch_reached",
     "final_validation_accuracy", "best_validation_accuracy",
     "final_validation_loss", "plateau_checkpoint")}, indent=2))
 if not result["plateau_found"]:
@@ -174,4 +195,3 @@ destination = Path("notebooks/kaggle_vanilla_to_plateau.ipynb")
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
 print(destination)
-

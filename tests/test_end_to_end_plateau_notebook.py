@@ -10,6 +10,8 @@ def test_one_file_notebook_connects_plateau_search_to_four_arm_queue():
 
     assert "experiments.run_vanilla_to_plateau" in source
     assert "phase1_result[\"plateau_found\"]" in source
+    assert "checkpoint_best.pt" in source
+    assert "no-new-best stall" in source
     assert "Phase 2 was intentionally skipped" in source
     assert "plateau_fork_checkpoint" in source
     assert "hashlib.sha256(PLATEAU_CHECKPOINT.read_bytes())" in source

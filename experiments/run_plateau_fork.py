@@ -194,6 +194,7 @@ def main():
     protocol = {
         "phase": "plateau_fork_comparison", "method": args.method,
         "fork_epoch": fork_epoch, "post_fork_epochs": args.post_fork_epochs,
+        "stall_detected_epoch": source.get("stall_detected_epoch"),
         "plateau_checkpoint_hash": fork_hash,
         "optimizer_state_preserved": True,
         "scheduler_state_preserved": True,
@@ -383,6 +384,7 @@ def main():
     best_accuracy = max(row["validation_accuracy"] for row in history)
     result = {
         "method": args.method, "fork_epoch": fork_epoch,
+        "stall_detected_epoch": source.get("stall_detected_epoch"),
         "post_fork_epochs": len(history),
         "plateau_checkpoint_hash": fork_hash,
         "fork_validation_accuracy": fork_evaluation["accuracy"],

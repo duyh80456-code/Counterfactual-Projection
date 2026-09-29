@@ -4,7 +4,8 @@ import torch
 
 from experiments import run_plateau_comparison as runner
 from experiments.plateau_protocol import (
-    ConsecutiveWindowPlateauDetector, ConstantCheckpointScheduler,
+    BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
+    ConstantCheckpointScheduler,
     PlateauDetector)
 
 
@@ -48,6 +49,22 @@ def test_convergence_detector_requires_two_complete_windows():
     assert outputs[2]["completed_window"]["qualifies"] is True
     assert outputs[5]["plateau"] is True
     assert outputs[5]["consecutive_plateau_windows"] == 2
+
+
+def test_best_checkpoint_stall_tracks_best_and_waits_for_patience():
+    detector = BestCheckpointStallDetector(patience=3, min_gain=0.01)
+    assert detector.update(300, 0.70)["improved"] is True
+    small = detector.update(301, 0.705)
+    assert small["improved"] is True
+    assert small["meaningful_improvement"] is False
+    assert detector.update(302, 0.72)["meaningful_improvement"] is True
+    assert detector.update(304, 0.719)["stalled"] is False
+    result = detector.update(305, 0.71)
+    assert result["stalled"] is True
+    assert result["best_epoch"] == 302
+    restored = BestCheckpointStallDetector(patience=3, min_gain=0.01)
+    restored.load_state_dict(detector.state_dict())
+    assert restored.state_dict() == detector.state_dict()
 
 
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():

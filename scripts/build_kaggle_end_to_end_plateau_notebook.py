@@ -1,4 +1,4 @@
-"""Build the one-file theta300 -> plateau -> four-arm Kaggle notebook."""
+"""Build the one-file theta300 -> best-stall -> four-arm Kaggle notebook."""
 
 import json
 from pathlib import Path
@@ -22,20 +22,21 @@ phase1 = json.loads(Path("notebooks/kaggle_vanilla_to_plateau.ipynb").read_text(
 phase2 = json.loads(Path("notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
 
 cells = [
-    markdown("""# End-to-end plateau experiment — theta300 to four-arm fork
+    markdown("""# End-to-end best-stall experiment — theta300 to four-arm fork
 
 This is the single-file runner. Attach only CIFAR-100 and the dataset containing
 `shared_seed1_epoch300.pt`, select **T4 x2**, and provide the Kaggle Secret
 `github_token`.
 
-The notebook first continues Vanilla from theta300 until the robust plateau
-criterion is met. It then immediately forks the resulting `plateau_checkpoint.pt`
+The notebook keeps the theta300 LR unchanged, saves every meaningful validation
+best, and waits for 100 epochs without another best. It then forks the saved
+best state as `plateau_checkpoint.pt`, never the later degraded state,
 into Vanilla, E-driven O, O-only, and matched-horizon Bypass. There is no need to
 save and reattach a Phase-1 dataset between the two stages.
 
-Epoch 500 remains a review boundary. If no plateau is found, Phase 2 is not run;
-the complete `checkpoint_latest.pt` is retained. Attach that notebook output,
-increase `MAX_EPOCH`, and rerun this same notebook to resume Phase 1.
+Epoch 500 remains a review boundary. If no stall is found, Phase 2 is not run;
+both `checkpoint_latest.pt` and `checkpoint_best.pt` are retained. Attach that
+notebook output, increase `MAX_EPOCH`, and rerun to resume Phase 1 exactly.
 """),
     # Clone/install/check GPUs and discover CIFAR exactly as in Phase 1.
     phase1["cells"][1],
@@ -46,7 +47,7 @@ increase `MAX_EPOCH`, and rerun this same notebook to resume Phase 1.
 """),
     # Find theta300 and optionally resume Phase-1 progress.
     phase1["cells"][3],
-    markdown("""## Phase 1 — Vanilla until robust plateau
+    markdown("""## Phase 1 — Vanilla until no-new-best stall
 
 Only GPU0 is needed during convergence search. The second T4 becomes active as
 soon as Phase 2 starts.
@@ -54,7 +55,8 @@ soon as Phase 2 starts.
     phase1["cells"][4],
     code("""phase1_result = json.loads((OUTPUT / "result.json").read_text())
 print(json.dumps({key: phase1_result[key] for key in (
-    "status", "plateau_found", "plateau_epoch", "review_epoch_reached",
+    "status", "plateau_found", "plateau_epoch", "best_epoch",
+    "stall_detected_epoch", "epochs_without_improvement", "review_epoch_reached",
     "final_validation_accuracy", "best_validation_accuracy",
     "final_validation_loss", "plateau_checkpoint")}, indent=2))
 
@@ -64,7 +66,7 @@ if not phase1_result["plateau_found"]:
     print("NO CONVERGENCE CLAIM. Resume this notebook with the current output.")
     print("Phase-1 archive:", archive)
     raise RuntimeError(
-        "Review horizon reached without robust plateau; Phase 2 was intentionally skipped")
+        "Review horizon reached without a no-new-best stall; Phase 2 was intentionally skipped")
 
 PLATEAU_CHECKPOINT = Path(phase1_result["plateau_checkpoint"])
 if not PLATEAU_CHECKPOINT.is_file():

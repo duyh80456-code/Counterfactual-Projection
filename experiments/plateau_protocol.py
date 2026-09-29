@@ -5,6 +5,72 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+@dataclass
+class BestCheckpointStallDetector:
+    """Declare a stall only after validation fails to set a new best."""
+
+    patience: int = 100
+    min_gain: float = 1e-3
+    best_metric: float = float("-inf")
+    best_epoch: int | None = None
+    patience_reference_metric: float = float("-inf")
+    last_meaningful_improvement_epoch: int | None = None
+    observations: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.patience < 1 or self.min_gain < 0:
+            raise ValueError("invalid best-checkpoint stall configuration")
+
+    def update(self, epoch: int, metric: float) -> dict:
+        metric = float(metric)
+        improved = self.best_epoch is None or metric > self.best_metric
+        if improved:
+            self.best_metric = metric
+            self.best_epoch = int(epoch)
+        meaningful = (
+            self.last_meaningful_improvement_epoch is None or
+            metric > self.patience_reference_metric + self.min_gain)
+        if meaningful:
+            self.patience_reference_metric = metric
+            self.last_meaningful_improvement_epoch = int(epoch)
+        without_improvement = (
+            int(epoch) - int(self.last_meaningful_improvement_epoch))
+        row = {
+            "epoch": int(epoch), "metric": metric, "improved": improved,
+            "meaningful_improvement": meaningful,
+            "best_metric": self.best_metric, "best_epoch": self.best_epoch,
+            "patience_reference_metric": self.patience_reference_metric,
+            "last_meaningful_improvement_epoch":
+                self.last_meaningful_improvement_epoch,
+            "epochs_without_improvement": without_improvement,
+            "stalled": without_improvement >= self.patience,
+        }
+        self.observations.append(row)
+        return row
+
+    def state_dict(self) -> dict:
+        return {
+            "patience": self.patience, "min_gain": self.min_gain,
+            "best_metric": self.best_metric, "best_epoch": self.best_epoch,
+            "patience_reference_metric": self.patience_reference_metric,
+            "last_meaningful_improvement_epoch":
+                self.last_meaningful_improvement_epoch,
+            "observations": list(self.observations),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if (int(state["patience"]) != self.patience or
+                float(state["min_gain"]) != self.min_gain):
+            raise RuntimeError("best-checkpoint detector configuration mismatch")
+        self.best_metric = float(state["best_metric"])
+        self.best_epoch = int(state["best_epoch"])
+        self.patience_reference_metric = float(
+            state["patience_reference_metric"])
+        self.last_meaningful_improvement_epoch = int(
+            state["last_meaningful_improvement_epoch"])
+        self.observations = [dict(row) for row in state["observations"]]
+
+
 class ConstantCheckpointScheduler:
     """Serializable no-op scheduler that never mutates checkpoint LR."""
 

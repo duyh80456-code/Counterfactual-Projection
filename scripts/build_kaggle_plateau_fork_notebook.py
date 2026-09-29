@@ -15,11 +15,12 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 2 — Four-arm fork from converged theta_P
+    markdown("""# Phase 2 — Four-arm fork from stalled Vanilla's best theta_P
 
-Attach the Phase-1 output containing `plateau_checkpoint.pt`. This notebook
-forks its exact model, optimizer, constant-LR scheduler, RNG, loader state, and
-data split into four 60-epoch arms:
+Attach the Phase-1 output containing `plateau_checkpoint.pt`. It is the exact
+best state saved before the no-new-best patience expired. This notebook forks
+its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
+into four 60-epoch arms:
 
 - Vanilla continuation;
 - relaxed matched-budget Bypass (40 opt1 + up to 20 opt2; never force-project);

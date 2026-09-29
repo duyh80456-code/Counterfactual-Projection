@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from experiments.plateau_protocol import (
-    ConsecutiveWindowPlateauDetector, ConstantCheckpointScheduler)
+    BestCheckpointStallDetector, ConstantCheckpointScheduler)
 from experiments.shared_protocol import (
     atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
     build_optimizer_scheduler, datasets_and_indices, evaluate,
@@ -35,11 +35,8 @@ def arguments():
     parser.add_argument("--validation-samples", type=int, default=5000)
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--plateau-window", type=int, default=20)
-    parser.add_argument("--required-plateau-windows", type=int, default=2)
-    parser.add_argument("--plateau-accuracy-min-gain", type=float, default=1e-3)
-    parser.add_argument("--plateau-loss-ema-min-drop", type=float, default=1e-3)
-    parser.add_argument("--plateau-ema-alpha", type=float, default=0.3)
+    parser.add_argument("--no-new-best-patience", type=int, default=100)
+    parser.add_argument("--best-min-gain", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -104,25 +101,25 @@ def main():
     evaluation_loader = make_eval_loader(
         eval_set, evaluation_indices, args.batch_size * 2, args.workers)
 
-    detector = ConsecutiveWindowPlateauDetector(
-        args.plateau_window, args.required_plateau_windows,
-        args.plateau_accuracy_min_gain, args.plateau_loss_ema_min_drop,
-        args.plateau_ema_alpha)
+    detector = BestCheckpointStallDetector(
+        args.no_new_best_patience, args.best_min_gain)
     protocol = {
-        "phase": "vanilla_convergence_search", "source_epoch": 300,
+        "phase": "vanilla_best_checkpoint_search", "source_epoch": 300,
         "source_checkpoint_hash": fork_hash,
-        "schedule": "constant theta300 LR until robust plateau",
-        "schedule_status": "matched extended-convergence protocol",
+        "schedule": "constant theta300 LR; no LR optimization or restart",
+        "schedule_id": "constant-theta300-lr-best-stall-v1",
+        "selection_metric": "held-out validation accuracy",
+        "no_new_best_patience": args.no_new_best_patience,
+        "best_min_gain": args.best_min_gain,
         "training_indices_unchanged": True,
         "trigger_samples": len(trigger_indices),
         "evaluation_samples": len(evaluation_indices),
-        "plateau_window": args.plateau_window,
-        "required_plateau_windows": args.required_plateau_windows,
         "official_test_used": False,
     }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"
+    best_path = output / "checkpoint_best.pt"
     history = []
     start_epoch = START_EPOCH
     prior_seconds = 0.0
@@ -137,24 +134,68 @@ def main():
         restore_rng(saved["rng"])
         train_loader.generator.set_state(
             saved["train_loader_generator_state"].cpu())
-        detector.load_state_dict(saved["plateau_detector"])
+        detector.load_state_dict(saved["best_stall_detector"])
         history = saved["history"]
         start_epoch = int(saved["epoch"])
         prior_seconds = float(saved.get("training_seconds", 0.0))
         prior_peak = int(saved.get("peak_gpu_memory", 0))
+        if not best_path.is_file():
+            raise RuntimeError(
+                "resume requires checkpoint_best.pt beside checkpoint_latest.pt")
 
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
     plateau_path = output / "plateau_checkpoint.pt"
-    if (detector.consecutive_plateau_windows >= detector.required_windows and
-            not plateau_path.is_file()):
-        recovered = torch.load(latest, map_location="cpu", weights_only=False)
+
+    # Epoch 300 itself is eligible to be the best model. Save it before any
+    # continuation step so a later stall can roll back weights, optimizer,
+    # momentum, scheduler, RNG, and loader order to exactly theta_best.
+    if not history:
+        trigger = evaluate(model, trigger_loader, device)
+        evaluation = evaluate(model, evaluation_loader, device)
+        selection = detector.update(
+            START_EPOCH, evaluation["accuracy"])
+        baseline = {
+            "epoch": START_EPOCH, "train_loss": None,
+            "train_accuracy": None,
+            "trigger_accuracy": trigger["accuracy"],
+            "trigger_loss": trigger["loss"],
+            "validation_accuracy": evaluation["accuracy"],
+            "validation_loss": evaluation["loss"],
+            "learning_rates": fork_lrs,
+            "best_checkpoint_statistics": selection,
+        }
+        history.append(baseline)
+        initial_payload = {
+            "kind": "vanilla_best_checkpoint", "epoch": START_EPOCH,
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(), "rng": rng_state(),
+            "train_loader_generator_state": train_loader.generator.get_state(),
+            "train_indices": train_indices, "trigger_indices": trigger_indices,
+            "evaluation_indices": evaluation_indices,
+            "source_tuning_indices": source_tuning,
+            "history": list(history),
+            "best_stall_detector": detector.state_dict(),
+            "training_seconds": 0.0, "peak_gpu_memory": 0,
+            "protocol": protocol,
+        }
+        save(best_path, initial_payload)
+        save(latest, {**initial_payload, "kind": "vanilla_convergence_progress"})
+
+    if (detector.observations[-1]["stalled"] and not plateau_path.is_file()):
+        if not best_path.is_file():
+            raise RuntimeError("stall detected but checkpoint_best.pt is missing")
+        recovered = torch.load(best_path, map_location="cpu", weights_only=False)
         recovered["kind"] = "plateau_fork_checkpoint"
+        recovered["stall_evidence"] = detector.state_dict()
+        recovered["stall_detected_epoch"] = detector.observations[-1]["epoch"]
         save(plateau_path, recovered)
         digest = sha256_file(plateau_path)
         atomic_json_save({
             "checkpoint": str(plateau_path), "sha256": digest,
-            "epoch": recovered["epoch"], "protocol": protocol,
+            "epoch": recovered["epoch"],
+            "stall_detected_epoch": recovered["stall_detected_epoch"],
+            "protocol": protocol,
         }, plateau_path.with_suffix(".json"))
     for epoch in range(start_epoch + 1, args.max_epoch + 1):
         if plateau_path.is_file():
@@ -162,8 +203,8 @@ def main():
         train = train_epoch(model, train_loader, optimizer, device)
         scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
-        plateau = detector.update(epoch, trigger["accuracy"], trigger["loss"])
         evaluation = evaluate(model, evaluation_loader, device)
+        selection = detector.update(epoch, evaluation["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
@@ -173,7 +214,7 @@ def main():
             "validation_loss": evaluation["loss"],
             "learning_rates": [float(group["lr"])
                                for group in optimizer.param_groups],
-            "plateau_statistics": plateau,
+            "best_checkpoint_statistics": selection,
         }
         history.append(row)
         elapsed = prior_seconds + time.perf_counter() - started
@@ -186,39 +227,51 @@ def main():
             "train_indices": train_indices, "trigger_indices": trigger_indices,
             "evaluation_indices": evaluation_indices,
             "source_tuning_indices": source_tuning,
-            "history": history, "plateau_detector": detector.state_dict(),
+            "history": history,
+            "best_stall_detector": detector.state_dict(),
             "training_seconds": elapsed, "peak_gpu_memory": peak,
             "protocol": protocol,
         }
         save(latest, payload)
+        if selection["improved"]:
+            save(best_path, {**payload, "kind": "vanilla_best_checkpoint"})
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"vanilla_convergence": row}, sort_keys=True), flush=True)
-        if plateau["plateau"]:
-            payload["kind"] = "plateau_fork_checkpoint"
-            save(plateau_path, payload)
+        if selection["stalled"]:
+            best = torch.load(best_path, map_location="cpu", weights_only=False)
+            best["kind"] = "plateau_fork_checkpoint"
+            best["stall_evidence"] = detector.state_dict()
+            best["stall_detected_epoch"] = epoch
+            save(plateau_path, best)
             digest = sha256_file(plateau_path)
             atomic_json_save({
                 "checkpoint": str(plateau_path), "sha256": digest,
-                "epoch": epoch, "protocol": protocol,
+                "epoch": best["epoch"], "stall_detected_epoch": epoch,
+                "protocol": protocol,
             }, plateau_path.with_suffix(".json"))
             break
 
     plateau_found = plateau_path.is_file()
     last = history[-1]
     result = {
-        "phase": "vanilla_convergence_search",
+        "phase": "vanilla_best_checkpoint_search",
         "plateau_found": plateau_found,
-        "plateau_epoch": last["epoch"] if plateau_found else None,
+        "plateau_epoch": detector.best_epoch if plateau_found else None,
+        "best_epoch": detector.best_epoch,
+        "stall_detected_epoch": (
+            detector.observations[-1]["epoch"] if plateau_found else None),
+        "epochs_without_improvement": (
+            detector.observations[-1]["epochs_without_improvement"]),
         "review_epoch_reached": last["epoch"],
-        "status": ("plateau_checkpoint_ready" if plateau_found else
+        "status": ("best_checkpoint_ready_after_stall" if plateau_found else
                    "review_horizon_reached_no_plateau"),
         "final_validation_accuracy": last["validation_accuracy"],
-        "best_validation_accuracy": max(
-            row["validation_accuracy"] for row in history),
+        "best_validation_accuracy": detector.best_metric,
         "final_validation_loss": last["validation_loss"],
         "fork_learning_rates": fork_lrs,
         "training_seconds": prior_seconds + time.perf_counter() - started,
         "checkpoint_latest": str(latest),
+        "checkpoint_best": str(best_path),
         "plateau_checkpoint": str(plateau_path) if plateau_found else None,
         "history": history, "protocol": protocol,
     }

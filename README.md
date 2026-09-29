@@ -53,22 +53,21 @@ The current main experiment is split into two notebooks:
 
 For the simplest Kaggle workflow, use the single-file
 [`notebooks/kaggle_plateau_end_to_end_t4x2.ipynb`](notebooks/kaggle_plateau_end_to_end_t4x2.ipynb).
-It accepts theta300 plus CIFAR-100, searches for the Vanilla plateau, and then
-immediately launches the four-arm fork on the two T4 GPUs. If the epoch-500
-review boundary is reached without a plateau, attach its output and rerun the
-same notebook with a larger `MAX_EPOCH`; the complete Phase-1 state resumes.
+It accepts theta300 plus CIFAR-100, saves every meaningful Vanilla validation
+best, and waits for a 100-epoch no-new-best stall before launching the four-arm
+fork from that exact best checkpoint. If the epoch-500 review boundary is
+reached without a stall, attach its output and rerun with a larger `MAX_EPOCH`;
+both the latest and best Phase-1 states resume.
 
 The same workflow is also available as two explicit notebooks:
 
 1. [`notebooks/kaggle_vanilla_to_plateau.ipynb`](notebooks/kaggle_vanilla_to_plateau.ipynb)
-   trains only Vanilla from shared theta300. It keeps the original training
-   indices and holds the theta300 LR constant under an explicitly labelled
-   matched extended-convergence protocol. The 5k held-out pool is split into
-   2k trigger and 3k evaluation samples. Plateau requires two complete,
-   non-overlapping 20-epoch windows. Epoch 500 is a review point, not an
-   automatic convergence claim; attach the prior output and raise `MAX_EPOCH`
-   to resume if no plateau was found. A detected plateau writes a complete
-   `plateau_checkpoint.pt` (theta_P).
+   trains only Vanilla from shared theta300 while preserving the checkpoint LR.
+   Every validation improvement is saved as a complete `checkpoint_best.pt`.
+   After 100 epochs without a new best of at least 0.1 percentage point, the
+   run creates `plateau_checkpoint.pt` from that exact best state rather than
+   from the later potentially degraded model. Epoch 500 remains a review point;
+   both latest progress and the best checkpoint are required when resuming.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
    forks exactly theta_P into Vanilla, supervised O-only, relaxed matched-budget
    Bypass, and one immediate E→O intervention followed by SGD, each for 60 epochs. All arms
