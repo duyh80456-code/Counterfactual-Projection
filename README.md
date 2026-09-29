@@ -58,7 +58,9 @@ adaptive-arm checkpoint after every epoch.
 Use
 [`notebooks/kaggle_counterfactual_projection_t4x2.ipynb`](notebooks/kaggle_counterfactual_projection_t4x2.ipynb).
 Enable **T4 x2**, attach CIFAR-100 with a `cifar-100-python` directory, and add
-the private-repository token as the Kaggle Secret `github_token`.
+the private-repository token as the Kaggle Secret `github_token`. The notebook
+also requires the completed `shared_seed1_epoch300.pt/json` pair as input; it
+does not accept theta-150 or silently rebuild the warm-up.
 
 The comparison uses one randomly initialized full-width CIFAR-ResNet18 at
 32x32. Vanilla training produces the sole fork checkpoint

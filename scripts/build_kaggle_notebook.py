@@ -30,7 +30,7 @@ never constructed. Every process saves a resumable checkpoint each epoch.
 Bypass spends 40 epochs in opt1 and at most 20 in opt2. It never force-projects
 a nonzero D; an uncontracted run is retained with `bypass_completed=false`.
 """),
-    code("""import json, os, shutil, subprocess, sys, threading
+    code("""import hashlib, json, os, shutil, subprocess, sys, threading
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
 
@@ -41,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_360ep_all8_v7")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_360ep_all8_v8")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -104,8 +104,7 @@ if not cifar_dirs:
 DATA_ROOT = cifar_dirs[0]
 print("CIFAR-100 root:", DATA_ROOT)
 """),
-    code("""SEED = 1
-BOOTSTRAP_EPOCH = 150
+code("""SEED = 1
 FORK_EPOCH = 300
 TOTAL_EPOCHS = 360
 POST_FORK_EPOCHS = 60
@@ -116,10 +115,27 @@ LR = 0.1
 WEIGHT_DECAY = 5e-4
 SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch300.pt"
 
+# A completed theta_300 checkpoint is mandatory. Never silently fall back to
+# theta_150 and spend the run rebuilding the shared state.
+warmups = []
+for manifest_path in Path("/kaggle/input").rglob("shared_seed1_epoch300.json"):
+    checkpoint_path = manifest_path.with_suffix(".pt")
+    if not checkpoint_path.is_file(): continue
+    manifest = json.loads(manifest_path.read_text())
+    if int(manifest.get("epoch", -1)) != FORK_EPOCH: continue
+    warmups.append((manifest_path, checkpoint_path, manifest))
+if not warmups:
+    raise FileNotFoundError(
+        "Missing theta_300. Attach an output containing "
+        "warmup/shared_seed1_epoch300.pt and .json; theta_150 is not accepted.")
+hashes = {item[2]["sha256"] for item in warmups}
+if len(hashes) != 1:
+    raise RuntimeError("Multiple different theta_300 checkpoints are attached")
+source_manifest, source_checkpoint, source_metadata = warmups[0]
+
 # Restore complete progress only from the WHEN-WHERE-HOW protocol. Fixed-site
 # and raw-TINY checkpoints must never be resumed as the new main algorithm.
-prior_roots = [manifest.parent.parent for manifest in
-               Path("/kaggle/input").rglob("shared_seed1_epoch300.json")]
+prior_roots = [manifest.parent.parent for manifest, _, _ in warmups]
 restored_adaptive = False
 for prior_root in prior_roots:
     arm_checkpoint = prior_root / "ours_e_driven_o" / "checkpoint_latest.pt"
@@ -140,14 +156,20 @@ for prior_root in prior_roots:
     print("Restored prior WHEN-WHERE-HOW run from", prior_root)
     restored_adaptive = True
     break
-if not restored_adaptive:
-    for prior_root in prior_roots:
-        prior_warmup = prior_root / "warmup"
-        if not (prior_warmup / "shared_seed1_epoch300.pt").is_file(): continue
-        destination = OUTPUT / "warmup"
-        if not destination.exists(): shutil.copytree(prior_warmup, destination)
-        print("Restored theta_300 only from", prior_root)
-        break
+SHARED_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
+if not SHARED_CHECKPOINT.is_file():
+    shutil.copy2(source_checkpoint, SHARED_CHECKPOINT)
+    shutil.copy2(source_manifest, SHARED_CHECKPOINT.with_suffix(".json"))
+    print("Restored theta_300 only from", source_checkpoint)
+
+manifest = json.loads(SHARED_CHECKPOINT.with_suffix(".json").read_text())
+SHARED_HASH = manifest["sha256"]
+digest = hashlib.sha256()
+with SHARED_CHECKPOINT.open("rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+if digest.hexdigest() != SHARED_HASH:
+    raise RuntimeError("theta_300 checkpoint SHA-256 does not match its manifest")
 
 def base_args(output):
     return ["--reference-root", str(REFERENCE), "--data-root", str(DATA_ROOT),
@@ -157,31 +179,6 @@ def base_args(output):
         "--tuning-samples", str(TUNING_SAMPLES), "--lr", str(LR),
         "--weight-decay", str(WEIGHT_DECAY)]
 
-theta150_manifest = None
-local_theta150 = Path("/kaggle/working/counterfactual_shared_theta150_fresh_200ep_v2/warmup/shared_seed1_epoch150.json")
-if local_theta150.is_file():
-    theta150_manifest = local_theta150
-else:
-    theta150_manifest = next(
-        Path("/kaggle/input").rglob("shared_seed1_epoch150.json"), None)
-if theta150_manifest is None and not SHARED_CHECKPOINT.is_file():
-    raise FileNotFoundError(
-        "Attach the fresh shared_seed1_epoch150.pt/json output before continuing")
-theta150_args = []
-if theta150_manifest is not None and not SHARED_CHECKPOINT.is_file():
-    theta150 = json.loads(theta150_manifest.read_text())
-    theta150_args = ["--bootstrap-checkpoint", str(theta150_manifest.with_suffix(".pt")),
-        "--bootstrap-checkpoint-hash", theta150["sha256"]]
-    print("Continuing from theta_150:", theta150_manifest.with_suffix(".pt"))
-
-env = os.environ.copy()
-env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
-           PYTHONPATH=RUNTIME_PYTHONPATH)
-prepare = [sys.executable, "-m", "experiments.run_shared_comparison",
-           "--method", "prepare_shared"] + base_args(OUTPUT / "warmup") + theta150_args
-subprocess.run(prepare, cwd=REPO, env=env, check=True)
-manifest = json.loads(SHARED_CHECKPOINT.with_suffix(".json").read_text())
-SHARED_HASH = manifest["sha256"]
 if manifest["epoch"] != FORK_EPOCH:
     raise RuntimeError(f"shared checkpoint is at epoch {manifest['epoch']}")
 print("theta_300 SHA-256:", SHARED_HASH)
