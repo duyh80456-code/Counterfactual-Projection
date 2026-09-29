@@ -16,11 +16,12 @@ from baselines.bypass import (
     embed_relaxed_bypass, extension_parameters, project_ready_activations,
     transition_from_opt2_)
 from experiments.shared_protocol import (
-    FORK_EPOCH, POST_FORK_EPOCHS, atomic_json_save, atomic_torch_save,
+    FORK_EPOCH, POST_FORK_EPOCHS, assert_fork_protocol_compatible,
+    atomic_json_save, atomic_torch_save,
     build_cifar_gromo_resnet18, build_optimizer_scheduler,
     datasets_and_indices, evaluate, load_shared_checkpoint, make_eval_loader,
-    make_train_loader, protocol, restore_rng, rng_state, seed_everything,
-    train_epoch)
+    make_train_loader, protocol, rebase_scheduler_from_fork, restore_rng,
+    rng_state, seed_everything, train_epoch)
 
 
 def arguments():
@@ -37,8 +38,8 @@ def arguments():
     parser.add_argument("--tuning-samples", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--opt1-epochs", type=int, default=20)
-    parser.add_argument("--max-opt2-epochs", type=int, default=10)
+    parser.add_argument("--opt1-epochs", type=int, default=40)
+    parser.add_argument("--max-opt2-epochs", type=int, default=20)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
     parser.add_argument("--gamma-slope", type=float, default=3e-6)
     return parser.parse_args()
@@ -102,8 +103,8 @@ def main():
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,
             "max_opt2_epochs_semantics": (
-                "soft cap; continue opt2 within the 50-epoch budget until "
-                "contraction succeeds"),
+                "matched-budget limit; never force-project if contraction "
+                "has not succeeded"),
             "contraction_epsilon": args.contraction_epsilon,
             "gamma_t": f"{args.gamma_slope} * opt2_step",
             "schedule_status": (
@@ -116,8 +117,10 @@ def main():
     shared, shared_hash = load_shared_checkpoint(
         Path(args.shared_checkpoint), args.shared_checkpoint_hash,
         device=device, model=model, optimizer=optimizer, scheduler=scheduler)
-    if shared["protocol"] != common_protocol:
-        raise RuntimeError("shared checkpoint protocol differs from Bypass")
+    assert_fork_protocol_compatible(shared["protocol"], common_protocol)
+    validation_loader = make_eval_loader(
+        eval_set, validation_indices, args.batch_size * 2, args.workers)
+    fork_validation = evaluate(model, validation_loader, device)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output / "checkpoint_latest.pt"
@@ -134,6 +137,7 @@ def main():
     if phase in {"opt1", "opt2"}:
         extension_paths = embed_relaxed_bypass(model)
         add_extension_parameters_(optimizer, extension_parameters(model))
+    scheduler = rebase_scheduler_from_fork(optimizer)
     generator_state = shared["train_loader_generator_state"]
     history = []
     start_epoch = opt1_done = opt2_done = train3_done = opt2_steps = 0
@@ -164,8 +168,6 @@ def main():
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         generator_state, args.seed)
-    validation_loader = make_eval_loader(
-        eval_set, validation_indices, args.batch_size * 2, args.workers)
     projection_loader = make_eval_loader(
         eval_set, tuning_indices, len(tuning_indices), args.workers)
     projection_batch = tuple(value.to(device, non_blocking=True)
@@ -210,9 +212,8 @@ def main():
                 if transition.projected_count != len(extension_paths):
                     raise RuntimeError("Bypass extension bookkeeping mismatch")
             elif transition.soft_cap_exceeded:
-                # The nominal 10-epoch pilot split is only a warning boundary.
-                # Dropping a non-contracted D would violate relaxed Bypass, so
-                # opt2 consumes the remaining common budget until it succeeds.
+                # Never drop a non-contracted D. Under the main 40+20 split,
+                # reaching this boundary also exhausts the common budget.
                 opt2_soft_cap_exceeded = True
         else:
             train = train_epoch(model, train_loader, optimizer, device)
@@ -270,13 +271,19 @@ def main():
             "Jung_Lee_Bypass__IEEE_TNNLS.pdf"),
         "implementation": "matched-budget relaxed Bypass control",
         "schedule_status": (
-            "20 opt1 + 10-epoch opt2 soft cap; opt2 continues within budget "
-            "until contraction, using shared SGD; not full reproduction"),
+            "40 opt1 + at most 20 opt2 epochs; no forced projection; "
+            "matched-budget control, not full reproduction"),
         "fork_epoch": FORK_EPOCH, "post_fork_epochs": len(history),
         "final_validation_accuracy": last["validation_accuracy"],
         "best_validation_accuracy": max(
             row["validation_accuracy"] for row in history),
         "final_validation_loss": last["validation_loss"],
+        "best_validation_loss": min(
+            row["validation_loss"] for row in history),
+        "fork_validation_accuracy": fork_validation["accuracy"],
+        "fork_validation_loss": fork_validation["loss"],
+        "validation_accuracy_delta": (
+            last["validation_accuracy"] - fork_validation["accuracy"]),
         "training_seconds": elapsed,
         "peak_gpu_memory": max(
             prior_peak_gpu_memory,
@@ -299,6 +306,9 @@ def main():
         "shared_extension_paths": extension_paths,
         "checkpoint": str(checkpoint_path), "history": history,
         "protocol": run_protocol,
+        "projection_overhead_seconds": None,
+        "final_learning_rates": [
+            float(group["lr"]) for group in optimizer.param_groups],
     }
     atomic_json_save(result, output / "result.json")
 

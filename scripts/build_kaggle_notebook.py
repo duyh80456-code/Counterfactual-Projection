@@ -17,20 +17,18 @@ def code(source):
 cells = [
     markdown("""# Shared-checkpoint CIFAR-100 comparison
 
-The full theta_150 checkpoint is resumed with its optimizer and RNG state, then
-continued under Vanilla for another 150 epochs. The exact
-model, optimizer, scheduler, data split, loader generator, and RNG state at
-`theta_300` are hashed and forked into four 50-epoch arms:
+The exact model, optimizer, data split, loader generator, and RNG state at
+`theta_300` are hashed and forked into four 60-epoch arms. Every arm rebases
+the LR stored at theta_300 onto the same 60-epoch cosine segment ending at 0:
 
 - adaptive-site `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1),
   concurrently;
 - `vanilla_continue` (GPU 0) and `o_projection_only` (GPU 1) in wave 2.
 
-The total budget is 350 epochs for every arm. The official CIFAR-100 test set is
+The total budget is 360 epochs for every arm. The official CIFAR-100 test set is
 never constructed. Every process saves a resumable checkpoint each epoch.
-Bypass treats opt2 epoch 10 as a soft cap: it never force-projects a nonzero D,
-continues opt2 within the remaining budget, and is rejected by aggregation if
-the contraction criterion is still unmet at epoch 350.
+Bypass spends 40 epochs in opt1 and at most 20 in opt2. It never force-projects
+a nonzero D; an uncontracted run is retained with `bypass_completed=false`.
 """),
     code("""import json, os, shutil, subprocess, sys, threading
 from pathlib import Path
@@ -43,7 +41,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_all8_v6")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_360ep_all8_v7")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -109,8 +107,8 @@ print("CIFAR-100 root:", DATA_ROOT)
     code("""SEED = 1
 BOOTSTRAP_EPOCH = 150
 FORK_EPOCH = 300
-TOTAL_EPOCHS = 350
-POST_FORK_EPOCHS = 50
+TOTAL_EPOCHS = 360
+POST_FORK_EPOCHS = 60
 BATCH_SIZE = 64
 VALIDATION_SAMPLES = 5000
 TUNING_SAMPLES = 128
@@ -130,7 +128,9 @@ for prior_root in prior_roots:
     functional = saved_arm.get("protocol", {}).get("functional_projection", {})
     if (functional.get("site") != "auto" or
             functional.get("site_selection_mode") !=
-            "all_sites_projected_utility"):
+            "all_sites_projected_utility" or
+            saved_arm.get("protocol", {}).get("total_epochs") != 360 or
+            saved_arm.get("protocol", {}).get("post_fork_epochs") != 60):
         continue
     for child in prior_root.iterdir():
         destination = OUTPUT / child.name
@@ -236,7 +236,7 @@ ours = [sys.executable, "-m", "experiments.run_shared_comparison",
     "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
 bypass = [sys.executable, "-m", "baselines.run_bypass"] + base_args(
     OUTPUT / "bypass") + ["--shared-checkpoint-hash", SHARED_HASH,
-    "--opt1-epochs", "20", "--max-opt2-epochs", "10",
+    "--opt1-epochs", "40", "--max-opt2-epochs", "20",
     "--contraction-epsilon", "0.002", "--gamma-slope", "3e-6"]
 
 print("Wave 1/2: Ours + Bypass")
@@ -256,7 +256,10 @@ run_wave([(0, "vanilla_continue", vanilla),
 """),
     code("""required = {"method", "shared_checkpoint_hash", "fork_epoch",
     "post_fork_epochs", "final_validation_accuracy", "best_validation_accuracy",
-    "final_validation_loss", "training_seconds", "peak_gpu_memory", "deploy_params"}
+    "final_validation_loss", "best_validation_loss", "fork_validation_accuracy",
+    "fork_validation_loss", "validation_accuracy_delta", "training_seconds",
+    "peak_gpu_memory", "deploy_params", "projection_overhead_seconds",
+    "final_learning_rates"}
 results = []
 for name in ("ours_e_driven_o", "bypass", "vanilla_continue",
              "o_projection_only"):
@@ -267,13 +270,12 @@ for name in ("ours_e_driven_o", "bypass", "vanilla_continue",
     if result["shared_checkpoint_hash"] != SHARED_HASH:
         raise RuntimeError(f"{name} did not fork from theta_300")
     if result["fork_epoch"] != FORK_EPOCH or result["post_fork_epochs"] != POST_FORK_EPOCHS:
-        raise RuntimeError(f"{name} did not complete the 300+50 protocol")
-    if name == "bypass" and (
-            result.get("contraction_criterion_met") is not True or
-            result.get("bypass_completed") is not True):
-        raise RuntimeError(
-            "Bypass did not both reach contraction epsilon and return to "
-            "train3; result.json is preserved but is not a valid comparator")
+        raise RuntimeError(f"{name} did not complete the 300+60 protocol")
+    if any(abs(float(lr)) > 1e-12 for lr in result["final_learning_rates"]):
+        raise RuntimeError(f"{name} scheduler did not reach zero at epoch 360")
+    if name == "bypass" and result.get("bypass_completed") is not True:
+        print("WARNING: Bypass exhausted its 40+20 budget before contraction; "
+              "metrics are retained with bypass_completed=false")
     if not (OUTPUT / name / "checkpoint_latest.pt").is_file():
         raise RuntimeError(f"{name} has no resumable checkpoint")
     results.append(result)
@@ -285,6 +287,9 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
     "results": [{key: row.get(key) for key in sorted(required | {
         "correction_application_rate", "actual_cosine_alignment",
         "actual_relative_residual", "opt1_epochs", "opt2_epochs",
+        "best_validation_loss", "fork_validation_accuracy",
+        "fork_validation_loss", "validation_accuracy_delta",
+        "projection_overhead_seconds", "final_learning_rates",
         "train3_epochs", "contraction_norm", "projection_loss_jump",
         "contraction_criterion_met", "bypass_completed",
         "opt2_soft_cap_exceeded", "method_label", "control_type",

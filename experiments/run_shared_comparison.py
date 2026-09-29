@@ -20,12 +20,12 @@ from experiments.run_gromo_pilot import (
     projection_application_gate, reset_projected_momentum, synchronize)
 from experiments.shared_protocol import (
     BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS,
-    atomic_json_save, atomic_torch_save,
+    assert_fork_protocol_compatible, atomic_json_save, atomic_torch_save,
     build_cifar_gromo_resnet18, build_optimizer_scheduler,
     datasets_and_indices, evaluate, load_shared_checkpoint, make_eval_loader,
     make_train_loader, protocol, restore_rng, rng_state,
-    rebase_scheduler_from_theta150, save_shared_checkpoint, seed_everything,
-    sha256_file, train_epoch)
+    rebase_scheduler_from_fork, rebase_scheduler_from_theta150,
+    save_shared_checkpoint, seed_everything, sha256_file, train_epoch)
 from methods import EProjection
 from methods.e_projection import (
     candidate_projection_block, candidate_projection_parameter_names)
@@ -435,8 +435,8 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
     checkpoint, shared_hash = load_shared_checkpoint(
         Path(args.shared_checkpoint), args.shared_checkpoint_hash,
         device=device, model=model, optimizer=optimizer, scheduler=scheduler)
-    if checkpoint["protocol"] != run_protocol:
-        raise RuntimeError("shared checkpoint protocol differs from arm protocol")
+    assert_fork_protocol_compatible(checkpoint["protocol"], run_protocol)
+    scheduler = rebase_scheduler_from_fork(optimizer)
     arm_protocol = {**run_protocol, "method": args.method}
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
         selection_mode = (
@@ -490,6 +490,7 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         eval_set, tuning_indices, len(tuning_indices), args.workers)
     tuning_batch = tuple(value.to(device, non_blocking=True)
                          for value in next(iter(tuning_loader)))
+    fork_validation = evaluate(model, validation_loader, device)
     arm_checkpoint = output / "checkpoint_latest.pt"
     history = []
     start_epoch = 0
@@ -696,6 +697,12 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         "best_validation_accuracy": max(
             row["validation_accuracy"] for row in history),
         "final_validation_loss": last["validation_loss"],
+        "best_validation_loss": min(
+            row["validation_loss"] for row in history),
+        "fork_validation_accuracy": fork_validation["accuracy"],
+        "fork_validation_loss": fork_validation["loss"],
+        "validation_accuracy_delta": (
+            last["validation_accuracy"] - fork_validation["accuracy"]),
         "training_seconds": elapsed,
         "peak_gpu_memory": max(
             prior_peak_gpu_memory,
@@ -703,6 +710,8 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         "deploy_params": sum(parameter.numel() for parameter in model.parameters()),
         "initial_deploy_params": initial_params, "history": history,
         "checkpoint": str(arm_checkpoint), "protocol": arm_protocol,
+        "final_learning_rates": [
+            float(group["lr"]) for group in optimizer.param_groups],
     }
     if args.method == "o_projection_only":
         result.update({
@@ -761,13 +770,22 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
             ],
         })
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
+        projection_overhead = sum(
+            float(row["diagnostics"].get("site_selection_seconds", 0.0)) +
+            float(row["diagnostics"].get("projection_seconds", 0.0)) +
+            float(row["diagnostics"].get(
+                "heldout_evaluation_seconds", 0.0))
+            for row in history)
         result.update({
             "correction_application_rate": len(applied) / len(history),
             "actual_cosine_alignment": (applied[-1].get(
                 "actual_cosine_alignment") if applied else None),
             "actual_relative_residual": (applied[-1].get(
                 "actual_relative_residual") if applied else None),
+            "projection_overhead_seconds": projection_overhead,
         })
+    else:
+        result["projection_overhead_seconds"] = 0.0
     atomic_json_save(result, output / "result.json")
 
 

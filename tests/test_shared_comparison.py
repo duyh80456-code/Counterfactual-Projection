@@ -12,8 +12,9 @@ from baselines.bypass import (
     remove_extension_parameters_, transition_from_opt2_)
 from experiments.shared_protocol import (
     BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS,
+    assert_fork_protocol_compatible,
     load_shared_checkpoint, rebase_scheduler_from_theta150, restore_rng,
-    save_shared_checkpoint)
+    rebase_scheduler_from_fork, save_shared_checkpoint)
 from experiments.run_shared_comparison import (
     functional_loss_utility, select_projectability_aware_candidate,
     select_structural_candidate, structural_candidate_sites,
@@ -374,9 +375,42 @@ def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):
     assert restored[0].dtype == torch.uint8
 
 
-def test_theta150_scheduler_continuation_preserves_lr_to_epoch350():
+def test_theta150_scheduler_continuation_preserves_lr_to_configured_end():
     model = nn.Linear(2, 1)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0146)
     scheduler = rebase_scheduler_from_theta150(optimizer)
     assert scheduler.get_last_lr() == [0.0146]
     assert scheduler.T_max == TOTAL_EPOCHS - BOOTSTRAP_EPOCH
+
+
+def test_post_fork_scheduler_preserves_lr_and_ends_at_epoch360():
+    model = nn.Linear(2, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0037)
+    scheduler = rebase_scheduler_from_fork(optimizer)
+    assert scheduler.get_last_lr() == [0.0037]
+    assert scheduler.T_max == POST_FORK_EPOCHS == 60
+    for _ in range(POST_FORK_EPOCHS):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.0
+
+
+def test_theta300_protocol_accepts_new_post_fork_budget_only():
+    old = {
+        "dataset": "CIFAR-100", "fork_epoch": 300,
+        "total_epochs": 350, "post_fork_epochs": 50,
+        "scheduler": "old-to-350", "lr_schedule_status": "old",
+    }
+    new = {
+        "dataset": "CIFAR-100", "fork_epoch": 300,
+        "total_epochs": 360, "post_fork_epochs": 60,
+        "scheduler": "rebased-to-360", "lr_schedule_status": "new",
+    }
+    assert_fork_protocol_compatible(old, new)
+    incompatible = {**old, "dataset": "CIFAR-10"}
+    try:
+        assert_fork_protocol_compatible(incompatible, new)
+    except RuntimeError as error:
+        assert "dataset" in str(error)
+    else:
+        raise AssertionError("base-protocol mismatch was accepted")

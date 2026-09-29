@@ -66,20 +66,20 @@ The comparison uses one randomly initialized full-width CIFAR-ResNet18 at
 epoch, exact train/validation/tuning indices, loader-generator state, and all
 RNG states. Its SHA-256 is checked by every arm.
 
-The fresh epoch-150 checkpoint is resumed with its full optimizer, RNG, split,
-and loader state. Vanilla then continues for another 150 epochs. The LR at
-epoch 150 is preserved and a new cosine segment anneals it to zero at epoch
-350. This is explicitly a two-stage/rebased LR schedule and is not equivalent
-to training from initialization with one `CosineAnnealingLR(T_max=350)`.
+The shared epoch-300 checkpoint retains its full optimizer, RNG, split, and
+loader state. At the fork, every arm preserves the checkpoint LR and starts the
+same 60-epoch cosine segment that reaches zero at epoch 360. This is explicitly
+a post-fork/rebased LR schedule and is not equivalent to training from
+initialization with one `CosineAnnealingLR(T_max=360)`.
 
-All four trajectories therefore have the same 350-epoch budget:
+All four trajectories therefore have the same 360-epoch budget:
 
 ```text
 theta_300
-  +-- vanilla_continue: 50 epochs
-  +-- ours_e_driven_o: 50 epochs (WHEN-WHERE-HOW adaptive selection)
-  +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
-  +-- o_projection_only: 50 epochs (projection-only supervised control)
+  +-- vanilla_continue: 60 epochs
+  +-- ours_e_driven_o: 60 epochs (WHEN-WHERE-HOW adaptive selection)
+  +-- bypass: opt1 40, opt2 <= 20, train3 after early contraction
+  +-- o_projection_only: 60 epochs (projection-only supervised control)
 ```
 
 Wave 1 runs Ours on GPU 0 and Bypass on GPU 1. Wave 2 runs Vanilla on GPU 0 and
@@ -119,12 +119,12 @@ the residual stages is embedded as `ReLU(x) + D x` with `D=0`; opt1 trains task
 loss in the extended space; opt2 adds `gamma(t) * sum(||D||)` and projects
 activations whose contraction norm reaches epsilon; the final projection drops
 the remaining D coordinates and train3 continues in the original ResNet. The
-arm is a matched-50-epoch-budget relaxed Bypass control, not the full long-opt1
-ResNet reproduction from the paper. The
-Epoch 10 of opt2 is a soft warning boundary, never a forced projection. If the
-criterion is still false, opt2 continues within the remaining 50-epoch budget.
-If contraction still has not succeeded at epoch 350, the expanded checkpoint is
-preserved but aggregation rejects Bypass as an invalid comparator. The shared
+arm is a matched-60-epoch-budget relaxed Bypass control, not the full long-opt1
+ResNet reproduction from the paper. It uses 40 opt1 epochs and at most 20 opt2
+epochs. If contraction succeeds early, projection occurs and train3 consumes
+the remainder. If contraction has not succeeded at epoch 360, the expanded
+checkpoint is preserved with `bypass_completed=false`; it is never forcibly
+projected. The shared
 SGD/cosine optimizer is pilot scaling, not the paper's original long-run Adam
 hyperparameter schedule.
 

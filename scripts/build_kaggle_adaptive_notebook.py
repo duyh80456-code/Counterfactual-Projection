@@ -25,7 +25,7 @@ Required Kaggle inputs:
 1. CIFAR-100 containing `cifar-100-python`;
 2. the complete `shared_seed1_epoch300.pt` and matching JSON manifest.
 
-For each of 50 epochs, one shared statistics set is used to scan all eight
+For each of 60 epochs, one shared statistics set is used to scan all eight
 growing blocks with rank-4 TINY. A separate 16-sample selection batch and
 25-CG cheap projection evaluate every block by transferable loss utility. Raw
 `proposal_score`, projectability, residual, and cosine are diagnostics only.
@@ -44,7 +44,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/e_driven_o_when_where_how_all8_theta300_350_v3")
+OUTPUT = Path("/kaggle/working/e_driven_o_when_where_how_all8_theta300_360_v4")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -189,8 +189,10 @@ if not result_path.is_file() or not checkpoint_path.is_file():
 result = json.loads(result_path.read_text())
 if result["shared_checkpoint_hash"] != SHARED_HASH:
     raise RuntimeError("adaptive arm did not fork from the attached theta_300")
-if result["fork_epoch"] != 300 or result["post_fork_epochs"] != 50:
-    raise RuntimeError("adaptive arm did not complete epochs 301-350")
+if result["fork_epoch"] != 300 or result["post_fork_epochs"] != 60:
+    raise RuntimeError("adaptive arm did not complete epochs 301-360")
+if any(abs(float(lr)) > 1e-12 for lr in result["final_learning_rates"]):
+    raise RuntimeError("post-fork cosine scheduler did not reach zero at epoch 360")
 if result.get("site_selection_mode") != "all_sites_projected_utility":
     raise RuntimeError("WHEN-WHERE-HOW selector was not active")
 
@@ -206,9 +208,16 @@ summary = {
     "final_validation_accuracy": result["final_validation_accuracy"],
     "best_validation_accuracy": result["best_validation_accuracy"],
     "final_validation_loss": result["final_validation_loss"],
+    "best_validation_loss": result["best_validation_loss"],
+    "fork_validation_accuracy": result["fork_validation_accuracy"],
+    "fork_validation_loss": result["fork_validation_loss"],
+    "validation_accuracy_delta": result["validation_accuracy_delta"],
     "correction_application_rate": result["correction_application_rate"],
     "when_gate_pass_rate": result["when_gate_pass_rate"],
     "full_projection_attempt_rate": result["full_projection_attempt_rate"],
+    "projection_overhead_seconds": result["projection_overhead_seconds"],
+    "peak_gpu_memory": result["peak_gpu_memory"],
+    "final_learning_rates": result["final_learning_rates"],
     "site_counts": dict(counts),
     "dominant_site": dominant_site,
     "dominant_site_fraction": dominant_count / len(selection),

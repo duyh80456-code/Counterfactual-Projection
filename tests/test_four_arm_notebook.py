@@ -11,12 +11,12 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
             "ours_e_driven_o", "bypass", "vanilla_continue",
             "o_projection_only"):
         assert method in source
-    assert "TOTAL_EPOCHS = 350" in source
+    assert "TOTAL_EPOCHS = 360" in source
     assert "FORK_EPOCH = 300" in source
-    assert "POST_FORK_EPOCHS = 50" in source
+    assert "POST_FORK_EPOCHS = 60" in source
     assert "shared_seed1_epoch300.pt" in source
     assert "--bootstrap-checkpoint" in source
-    assert "counterfactual_shared_theta300_350ep_all8_v6" in source
+    assert "counterfactual_shared_theta300_360ep_all8_v7" in source
     assert "SHARED_HASH" in source
     assert "checkpoint_latest.pt" in source
     assert "Restored prior WHEN-WHERE-HOW run" in source
@@ -29,8 +29,9 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert '(1, "o_projection_only", projection_only)' in source
     assert "stdout=subprocess.PIPE" in source
     assert 'print(f"[{name}] {line}"' in source
-    assert 'result.get("contraction_criterion_met") is not True' in source
     assert 'result.get("bypass_completed") is not True' in source
+    assert '"--opt1-epochs", "40"' in source
+    assert '"--max-opt2-epochs", "20"' in source
     assert "official_test_used" in source
 
 
@@ -53,10 +54,10 @@ def test_ours_alias_maps_to_frozen_projection_arm():
     assert 'completed.get("epoch") == args.epochs' in source
 
 
-def test_shared_epoch_accounting_is_300_plus_50():
+def test_shared_epoch_accounting_is_300_plus_60():
     fork_epoch = 300
-    post_fork_epochs = 50
-    assert fork_epoch + post_fork_epochs == 350
+    post_fork_epochs = 60
+    assert fork_epoch + post_fork_epochs == 360
 
 
 def test_gromo_validation_loss_is_accumulated_once():

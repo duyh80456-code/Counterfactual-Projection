@@ -23,6 +23,8 @@ def test_adaptive_notebook_only_runs_main_arm_from_theta300():
     assert "shared_seed1_epoch300.json" in source
     assert "shared_seed1_epoch300.pt" in source
     assert '"--shared-checkpoint-hash", SHARED_HASH' in source
+    assert 'result["post_fork_epochs"] != 60' in source
+    assert "epochs 301-360" in source
     assert '"--method", "prepare_shared"' not in source
     assert '"--method", "vanilla_continue"' not in source
     assert '"--method", "o_projection_only"' not in source

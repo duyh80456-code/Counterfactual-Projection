@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, Subset
 SPLIT_SEED = 20260928
 BOOTSTRAP_EPOCH = 150
 FORK_EPOCH = 300
-TOTAL_EPOCHS = 350
+TOTAL_EPOCHS = 360
 POST_FORK_EPOCHS = TOTAL_EPOCHS - FORK_EPOCH
 
 
@@ -147,11 +147,19 @@ def build_optimizer_scheduler(model, lr: float = 0.1,
 
 
 def rebase_scheduler_from_theta150(optimizer):
-    """Keep theta_150's LR continuous and anneal it to zero at epoch 350."""
+    """Keep theta_150's LR continuous and anneal it to the configured end."""
     for group in optimizer.param_groups:
         group["initial_lr"] = group["lr"]
     return torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=TOTAL_EPOCHS - BOOTSTRAP_EPOCH)
+
+
+def rebase_scheduler_from_fork(optimizer, post_fork_epochs=POST_FORK_EPOCHS):
+    """Start a common cosine segment from the exact LR stored at the fork."""
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=post_fork_epochs)
 
 
 def protocol(seed, train_indices, validation_indices, tuning_indices,
@@ -163,11 +171,11 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "post_fork_epochs": POST_FORK_EPOCHS, "batch_size": batch_size,
         "learning_rate": lr, "weight_decay": weight_decay,
         "scheduler": (
-            "resume theta150 LR; CosineAnnealingLR(T_max=200) from "
-            "epoch150 through epoch350"),
+            "shared theta300 LR; post-fork CosineAnnealingLR(T_max=60) "
+            "through epoch360"),
         "lr_schedule_status": (
-            "two-stage rebased schedule; not equivalent to a fresh "
-            "CosineAnnealingLR(T_max=350) run"),
+            "post-fork scheduler rebased identically for every arm; not "
+            "equivalent to a fresh CosineAnnealingLR(T_max=360) run"),
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),
@@ -175,6 +183,28 @@ def protocol(seed, train_indices, validation_indices, tuning_indices,
         "validation_samples": len(validation_indices),
         "tuning_samples": len(tuning_indices), "official_test_used": False,
     }
+
+
+def assert_fork_protocol_compatible(checkpoint_protocol, run_protocol):
+    """Validate theta_300 while allowing a newly defined post-fork budget."""
+    post_fork_fields = {
+        "total_epochs", "post_fork_epochs", "scheduler",
+        "lr_schedule_status",
+    }
+    expected = {
+        key: value for key, value in run_protocol.items()
+        if key not in post_fork_fields
+    }
+    actual = {
+        key: value for key, value in checkpoint_protocol.items()
+        if key not in post_fork_fields
+    }
+    if actual != expected:
+        differing = sorted(
+            key for key in set(actual) | set(expected)
+            if actual.get(key) != expected.get(key))
+        raise RuntimeError(
+            f"shared checkpoint base protocol differs at {differing}")
 
 
 def train_epoch(model, loader, optimizer, device, loss_extra=None,
