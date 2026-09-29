@@ -34,6 +34,8 @@ def test_one_file_notebook_connects_best_stall_to_three_job_queue():
     assert '"--gamma-post-increase-multiplier", "10.0"' in source
     assert '"--gamma-post-increase-multiplier", "2.0"' not in source
     assert "torch.cuda.device_count() != 2" in source
+    assert "import threading" in source
+    assert source.index("import threading") < source.index("threading.Thread")
 
 
 def test_one_file_notebook_does_not_scan_input_for_plateau_checkpoint():

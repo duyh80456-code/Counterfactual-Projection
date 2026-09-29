@@ -28,8 +28,9 @@ This is the single-file runner. Attach only CIFAR-100 and the dataset containing
 `shared_seed1_epoch300.pt`, select **T4 x2**, and provide the Kaggle Secret
 `github_token`.
 
-The notebook keeps the theta300 LR unchanged, saves every exact validation best,
-and waits for 100 epochs without another best. It then forks the saved
+The notebook keeps the theta300 LR unchanged, saves every exact trigger best,
+and waits for 100 epochs without a significant +0.1 pp trigger improvement. It
+then forks the saved
 best state as `plateau_checkpoint.pt`, never the later degraded state,
 into E-driven O, O-only, and matched-horizon Bypass. The already-observed
 100-epoch Vanilla stall trajectory is reused as the control rather than trained
@@ -84,12 +85,15 @@ if VANILLA_CONTROL["post_fork_epochs"] != 100:
     raise RuntimeError("Phase 1 must contain exactly 100 Vanilla control epochs")
 print("theta_P ready:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 """),
-    markdown("""## Phase 2 — Dynamic three-job queue on T4 x2
+    markdown("""## Phase 2 — Fixed T4 x2 schedule
 
-Ours and Bypass start first. The first free GPU receives O-only. Every arm is
-required to report the exact hash produced by Phase 1.
+GPU0 runs E-driven O to completion. GPU1 runs Bypass first and then starts a
+fresh O-only process from the same theta_best. Every arm is required to report
+the exact hash produced by Phase 1.
 """),
-    code("""OUTPUT = Path("/kaggle/working/plateau_end_to_end_three_jobs_100ep_v2")
+    code("""import threading
+
+OUTPUT = Path("/kaggle/working/plateau_end_to_end_three_jobs_100ep_v2")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 """),
     # Reuse the already-tested Phase-2 command/queue and aggregation cells.
