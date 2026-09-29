@@ -69,10 +69,12 @@ def test_best_checkpoint_stall_tracks_best_and_waits_for_patience():
 
 
 def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
-    detector = BestCheckpointStallDetector(patience=100, min_gain=0.0)
+    detector = BestCheckpointStallDetector(patience=100, min_gain=0.001)
     history = []
     for epoch in range(300, 401):
-        accuracy = 0.77 if epoch == 300 else 0.76
+        # This exact new best is below +0.1 pp, so it must be checkpointed
+        # without restarting the significant-improvement stall clock.
+        accuracy = 0.7705 if epoch == 350 else (0.77 if epoch == 300 else 0.76)
         detector.update(epoch, accuracy)
         history.append({
             "epoch": epoch, "validation_accuracy": accuracy,
@@ -81,15 +83,26 @@ def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
         })
     best_path = tmp_path / "checkpoint_best.pt"
     plateau_path = tmp_path / "plateau_checkpoint.pt"
-    torch.save({"epoch": 300, "kind": "vanilla_best_checkpoint"}, best_path)
+    torch.save({"epoch": 350, "kind": "vanilla_best_checkpoint"}, best_path)
     payload = finalize_best_stall(
         best_path, plateau_path, detector, history, {}, 42)
     control = payload["vanilla_control"]
     assert control["post_fork_epochs"] == 100
-    assert control["fork_validation_accuracy"] == 0.77
+    assert control["fork_validation_accuracy"] == 0.7705
     assert control["final_validation_accuracy"] == 0.76
-    assert control["epochs_to_best"] == 0
+    assert control["epochs_to_best"] == 50
     assert control["training_seconds"] == 200.0
+
+
+def test_significant_threshold_is_inclusive_but_tiny_best_does_not_reset():
+    detector = BestCheckpointStallDetector(patience=10, min_gain=0.001)
+    detector.update(0, 0.7000)
+    tiny = detector.update(1, 0.7005)
+    assert tiny["improved"] is True
+    assert tiny["meaningful_improvement"] is False
+    threshold = detector.update(2, 0.7010)
+    assert threshold["improved"] is True
+    assert threshold["meaningful_improvement"] is True
 
 
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():

@@ -36,7 +36,7 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--no-new-best-patience", type=int, default=100)
-    parser.add_argument("--best-min-gain", type=float, default=0.0)
+    parser.add_argument("--best-min-gain", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -51,10 +51,13 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
         raise RuntimeError("stall detected but checkpoint_best.pt is missing")
     best = torch.load(best_path, map_location="cpu", weights_only=False)
     best_epoch = int(best["epoch"])
-    control = [dict(row) for row in history if int(row["epoch"]) > best_epoch]
+    stall_start = int(detector.last_meaningful_improvement_epoch) + 1
+    stall_end = int(detector.observations[-1]["epoch"])
+    control = [dict(row) for row in history
+               if stall_start <= int(row["epoch"]) <= stall_end]
     if len(control) != detector.patience:
         raise RuntimeError(
-            "exact-best patience must provide one Vanilla row per control epoch")
+            "significant-best patience must provide 100 Vanilla control epochs")
     fork_row = next(row for row in history if int(row["epoch"]) == best_epoch)
     candidates = [fork_row, *control]
     best_accuracy = max(row["validation_accuracy"] for row in candidates)
@@ -67,6 +70,7 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
     best["vanilla_control"] = {
         "method": "vanilla_reused_from_phase1",
         "fork_epoch": best_epoch,
+        "stall_window_start_epoch": stall_start,
         "stall_detected_epoch": best["stall_detected_epoch"],
         "post_fork_epochs": len(control),
         "fork_validation_accuracy": fork_row["validation_accuracy"],
@@ -81,7 +85,7 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
             fork_row["validation_accuracy"]),
         "best_validation_accuracy_delta": (
             best_accuracy - fork_row["validation_accuracy"]),
-        "epochs_to_best": int(best_row["epoch"]) - best_epoch,
+        "epochs_to_best": int(best_row["epoch"]) - stall_start + 1,
         "training_seconds": sum(
             float(row.get("epoch_seconds", 0.0)) for row in control),
         "peak_gpu_memory": max(
@@ -103,9 +107,6 @@ def main():
         raise RuntimeError("one visible CUDA GPU is required")
     if args.max_epoch <= START_EPOCH:
         raise ValueError("max_epoch must exceed 300")
-    if args.best_min_gain != 0.0:
-        raise ValueError(
-            "exact-best fork requires best_min_gain=0 so patience starts at theta_best")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -165,7 +166,8 @@ def main():
         "source_checkpoint_hash": fork_hash,
         "schedule": "constant theta300 LR; no LR optimization or restart",
         "schedule_id": "constant-theta300-lr-best-stall-v1",
-        "selection_metric": "held-out validation accuracy",
+        "selection_metric": "trigger accuracy (2,000 held-out samples)",
+        "evaluation_role": "report-only (3,000 held-out samples)",
         "no_new_best_patience": args.no_new_best_patience,
         "best_min_gain": args.best_min_gain,
         "training_indices_unchanged": True,
@@ -210,8 +212,7 @@ def main():
     if not history:
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
-        selection = detector.update(
-            START_EPOCH, evaluation["accuracy"])
+        selection = detector.update(START_EPOCH, trigger["accuracy"])
         baseline = {
             "epoch": START_EPOCH, "train_loss": None,
             "train_accuracy": None,
@@ -258,7 +259,7 @@ def main():
         scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
-        selection = detector.update(epoch, evaluation["accuracy"])
+        selection = detector.update(epoch, trigger["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
@@ -320,7 +321,11 @@ def main():
         "status": ("best_checkpoint_ready_after_stall" if plateau_found else
                    "review_horizon_reached_no_plateau"),
         "final_validation_accuracy": last["validation_accuracy"],
-        "best_validation_accuracy": detector.best_metric,
+        "best_validation_accuracy": max(
+            row["validation_accuracy"] for row in history),
+        "exact_best_trigger_accuracy": detector.best_metric,
+        "significant_best_trigger_accuracy":
+            detector.patience_reference_metric,
         "final_validation_loss": last["validation_loss"],
         "fork_learning_rates": fork_lrs,
         "training_seconds": prior_seconds + time.perf_counter() - started,

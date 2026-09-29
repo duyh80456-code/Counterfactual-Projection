@@ -24,7 +24,11 @@ def test_one_file_notebook_connects_best_stall_to_three_job_queue():
     assert 'VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])' in source
     assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
     assert '"--post-fork-epochs", "100"' in source
-    assert "pending.pop(0)" in source
+    assert 'ours_job = launch(0, "ours_e_driven_o")' in source
+    assert 'bypass_job = launch(1, "bypass")' in source
+    assert 'o_only_job = launch(1, "o_projection_only")' in source
+    assert "pending.pop(0)" not in source
+    assert 'result["theta_best_hash"] != PLATEAU_HASH' in source
     assert "torch.cuda.device_count() != 2" in source
 
 

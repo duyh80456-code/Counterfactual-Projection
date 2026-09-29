@@ -29,7 +29,7 @@ class BestCheckpointStallDetector:
             self.best_epoch = int(epoch)
         meaningful = (
             self.last_meaningful_improvement_epoch is None or
-            metric > self.patience_reference_metric + self.min_gain)
+            metric >= self.patience_reference_metric + self.min_gain)
         if meaningful:
             self.patience_reference_metric = metric
             self.last_meaningful_improvement_epoch = int(epoch)

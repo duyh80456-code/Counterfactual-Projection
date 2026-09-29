@@ -53,8 +53,9 @@ The current main experiment is split into two notebooks:
 
 For the simplest Kaggle workflow, use the single-file
 [`notebooks/kaggle_plateau_end_to_end_t4x2.ipynb`](notebooks/kaggle_plateau_end_to_end_t4x2.ipynb).
-It accepts theta300 plus CIFAR-100, saves every exact Vanilla validation best,
-and waits for a 100-epoch no-new-best stall before launching the method jobs
+It accepts theta300 plus CIFAR-100, saves every exact Vanilla trigger-set best,
+and waits for 100 epochs without a significant +0.1 pp trigger improvement
+before launching the method jobs
 from that exact best checkpoint. The already-observed 100-epoch Vanilla stall
 trajectory is reused as the control rather than trained twice. If epoch 500 is
 reached without a stall, attach its output and rerun with a larger `MAX_EPOCH`;
@@ -64,23 +65,26 @@ The same workflow is also available as two explicit notebooks:
 
 1. [`notebooks/kaggle_vanilla_to_plateau.ipynb`](notebooks/kaggle_vanilla_to_plateau.ipynb)
    trains only Vanilla from shared theta300 while preserving the checkpoint LR.
-   Every validation improvement is saved as a complete `checkpoint_best.pt`.
-   After 100 epochs without any new exact best, the
+   The held-out pool is split into 2,000 trigger/selection and 3,000 report-only
+   evaluation samples. Every exact trigger improvement is saved as a complete
+   `checkpoint_best.pt`, while only a +0.1 pp trigger improvement resets the
+   stall clock. After 100 epochs without such a significant improvement, the
    run creates `plateau_checkpoint.pt` from that exact best state rather than
    from the later potentially degraded model. Epoch 500 remains a review point;
    both latest progress and the best checkpoint are required when resuming.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
-   launches supervised O-only, relaxed matched-budget Bypass, and E→O, each for
+   launches supervised O-only, scaled matched-horizon Bypass, and E→O, each for
    a 100-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
    new best appears, trainable state rolls back to the arm's best checkpoint,
    the stochastic stream remains advanced, and a fresh intervention starts.
    Vanilla is reused from
    Phase 1. All methods inherit the same model, optimizer, scheduler, momentum,
    RNG, training order, and held-out split. Every trained method saves latest
-   and best checkpoints and reports fork/best/final accuracy, loss, deltas,
-   epoch to best, wall time, peak memory/parameters, and expanded time. Ours and
-   Bypass start on the two GPUs; whichever finishes first immediately receives
-   O-only.
+   and exact-trigger-best checkpoints and reports fork/best/final evaluation
+   accuracy, loss, deltas, epoch to best, wall time, peak memory/parameters,
+   and expanded time. GPU0 runs E→O to completion. GPU1 runs Bypass with a
+   70-epoch opt1 and at most 30-epoch opt2, then starts O-only as a fresh
+   process from the same hashed theta_best checkpoint.
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 

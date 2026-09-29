@@ -23,9 +23,11 @@ LR stored at theta300 is held constant as an explicitly labelled matched
 extended-convergence protocol, preventing a zero-LR scheduler horizon from
 creating a false plateau.
 
-The original held-out 5,000 examples are split into 2,000 trigger and 3,000
-validation examples. Every validation improvement is saved immediately as
-`checkpoint_best.pt`. After 100 epochs without any new exact best, the run
+The original held-out 5,000 examples are split into 2,000 trigger/selection and
+3,000 report-only evaluation examples. Every exact trigger improvement is saved
+immediately as `checkpoint_best.pt`, even if tiny. The independent stall clock
+resets only after a trigger improvement of at least 0.1 percentage point. After
+100 epochs without such a significant improvement, the run
 forks from that saved best state—not from the later,
 possibly degraded state. Epoch 500 is only a review horizon. If no stall is
 found, attach this notebook's output, increase `MAX_EPOCH`, and rerun; both
@@ -159,7 +161,7 @@ print("theta300:", THETA300, THETA300_HASH)
     "--seed", "1", "--batch-size", "64", "--validation-samples", "5000",
     "--trigger-samples", "2000",
     "--no-new-best-patience", "100",
-    "--best-min-gain", "0.0"]
+    "--best-min-gain", "0.001"]
 env = os.environ.copy()
 env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
            PYTHONPATH=RUNTIME_PYTHONPATH)

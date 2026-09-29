@@ -62,10 +62,13 @@ def arguments():
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
     parser.add_argument("--retrigger-patience", type=int, default=10)
-    parser.add_argument("--opt1-epochs", type=int, default=40)
-    parser.add_argument("--max-opt2-epochs", type=int, default=60)
+    parser.add_argument("--significant-improvement", type=float, default=1e-3)
+    parser.add_argument("--opt1-epochs", type=int, default=70)
+    parser.add_argument("--max-opt2-epochs", type=int, default=30)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
     parser.add_argument("--gamma-slope", type=float, default=3e-6)
+    parser.add_argument("--gamma-increase-opt2-epoch", type=int, default=15)
+    parser.add_argument("--gamma-post-increase-multiplier", type=float, default=2.0)
     return parser.parse_args()
 
 
@@ -152,6 +155,11 @@ def main():
         raise ValueError("post_fork_epochs must be positive")
     if args.retrigger_patience < 1:
         raise ValueError("retrigger_patience must be positive")
+    if args.significant_improvement <= 0:
+        raise ValueError("significant_improvement must be positive")
+    if (args.method == "bypass" and
+            args.opt1_epochs + args.max_opt2_epochs != args.post_fork_epochs):
+        raise ValueError("scaled Bypass must partition the full epoch budget")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -191,8 +199,11 @@ def main():
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         source["train_loader_generator_state"], args.seed)
+    trigger_loader = make_eval_loader(
+        eval_set, trigger_indices, args.batch_size * 2, args.workers)
     evaluation_loader = make_eval_loader(
         eval_set, evaluation_indices, args.batch_size * 2, args.workers)
+    fork_trigger = evaluate(model, trigger_loader, device)
     fork_evaluation = evaluate(model, evaluation_loader, device)
 
     protocol = {
@@ -200,6 +211,9 @@ def main():
         "fork_epoch": fork_epoch, "post_fork_epochs": args.post_fork_epochs,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
         "plateau_checkpoint_hash": fork_hash,
+        "theta_best_hash": fork_hash,
+        "selection_metric": "trigger accuracy (2,000 held-out samples)",
+        "evaluation_role": "report-only (3,000 held-out samples)",
         "optimizer_state_preserved": True,
         "scheduler_state_preserved": True,
         "training_indices_unchanged": True,
@@ -207,6 +221,7 @@ def main():
         "intervention_schedule": (
             {"mode": "recurrent_best_rollback",
              "patience": args.retrigger_patience,
+             "significant_improvement": args.significant_improvement,
              "sgd_epoch_budget": args.post_fork_epochs,
              "rollback_rng": False,
              "rollback_loader_stream": False}
@@ -218,6 +233,10 @@ def main():
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,
             "force_projection": False,
+            "variant": "scaled_matched_horizon_not_exact_reproduction",
+            "gamma_increase_opt2_epoch": args.gamma_increase_opt2_epoch,
+            "gamma_post_increase_multiplier":
+                args.gamma_post_increase_multiplier,
         } if args.method == "bypass" else None),
     }
     output = Path(args.output)
@@ -256,13 +275,15 @@ def main():
     intervention = None
     interventions = []
     rollback_count = 0
-    epochs_since_best = 0
+    stall_counter = 0
     start_offset = 0
     elapsed_before = 0.0
     peak_before = 0
     best_accuracy = None
     best_loss = None
     best_offset = None
+    exact_best_trigger_accuracy = None
+    significant_best_trigger_accuracy = None
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -275,7 +296,7 @@ def main():
         interventions = list(saved.get(
             "interventions", [intervention] if intervention else []))
         rollback_count = int(saved.get("rollback_count", 0))
-        epochs_since_best = int(saved.get("epochs_since_best", 0))
+        stall_counter = int(saved.get("stall_counter", 0))
         start_offset = int(saved["post_fork_epoch"])
         phase = saved["phase"]
         opt1_done = int(saved.get("opt1_epochs", 0))
@@ -292,6 +313,10 @@ def main():
         best_accuracy = float(saved["best_validation_accuracy"])
         best_loss = float(saved["best_validation_loss"])
         best_offset = int(saved["best_post_fork_epoch"])
+        exact_best_trigger_accuracy = float(
+            saved["exact_best_trigger_accuracy"])
+        significant_best_trigger_accuracy = float(
+            saved["significant_best_trigger_accuracy"])
 
     def state_payload(kind, post_offset, training_seconds, peak_memory):
         return {
@@ -300,6 +325,7 @@ def main():
             "rng": rng_state(), "train_loader_generator_state":
                 train_loader.generator.get_state(),
             "plateau_checkpoint_hash": fork_hash,
+            "theta_best_hash": fork_hash,
             "train_indices": train_indices,
             "trigger_indices": trigger_indices,
             "evaluation_indices": evaluation_indices,
@@ -307,7 +333,7 @@ def main():
             "history": history, "intervention": intervention,
             "interventions": interventions,
             "rollback_count": rollback_count,
-            "epochs_since_best": epochs_since_best,
+            "stall_counter": stall_counter,
             "post_fork_epoch": post_offset, "phase": phase,
             "opt1_epochs": opt1_done, "opt2_epochs": opt2_done,
             "train3_epochs": train3_done, "opt2_steps": opt2_steps,
@@ -321,6 +347,9 @@ def main():
             "best_validation_accuracy": best_accuracy,
             "best_validation_loss": best_loss,
             "best_post_fork_epoch": best_offset,
+            "exact_best_trigger_accuracy": exact_best_trigger_accuracy,
+            "significant_best_trigger_accuracy":
+                significant_best_trigger_accuracy,
             "protocol": protocol,
         }
 
@@ -358,14 +387,31 @@ def main():
         best_accuracy = float(fork_evaluation["accuracy"])
         best_loss = float(fork_evaluation["loss"])
         best_offset = 0
+        exact_best_trigger_accuracy = float(fork_trigger["accuracy"])
+        significant_best_trigger_accuracy = float(fork_trigger["accuracy"])
         save_checkpoint(best_checkpoint, state_payload(
             "plateau_fork_arm_best", 0, 0.0, 0))
         if args.method in {"ours_e_driven_o", "o_projection_only"}:
             perform_intervention(0, 0, "initial_theta_P")
+            immediate_trigger = evaluate(model, trigger_loader, device)
             immediate = evaluate(model, evaluation_loader, device)
             if immediate["accuracy"] > best_accuracy:
                 best_accuracy = float(immediate["accuracy"])
-                best_loss = min(best_loss, float(immediate["loss"]))
+                best_offset = 0
+            best_loss = min(best_loss, float(immediate["loss"]))
+            immediate_exact = (
+                immediate_trigger["accuracy"] > exact_best_trigger_accuracy)
+            immediate_significant = (
+                immediate_trigger["accuracy"] >=
+                significant_best_trigger_accuracy +
+                args.significant_improvement)
+            if immediate_exact:
+                exact_best_trigger_accuracy = float(
+                    immediate_trigger["accuracy"])
+            if immediate_significant:
+                significant_best_trigger_accuracy = float(
+                    immediate_trigger["accuracy"])
+            if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", 0, 0.0, 0))
 
@@ -376,6 +422,7 @@ def main():
         epoch_phase = phase
         epoch_started = time.perf_counter()
         gamma = 0.0
+        gamma_multiplier = 1.0
         criterion_met = None
         if args.method != "bypass" or phase == "train3":
             train = train_epoch(model, train_loader, optimizer, device)
@@ -386,9 +433,13 @@ def main():
             if opt1_done >= args.opt1_epochs: phase = "opt2"
         else:
             def penalty():
-                nonlocal opt2_steps, gamma
+                nonlocal opt2_steps, gamma, gamma_multiplier
                 opt2_steps += 1
-                gamma = args.gamma_slope * opt2_steps
+                opt2_epoch = opt2_done + 1
+                gamma_multiplier = (
+                    args.gamma_post_increase_multiplier
+                    if opt2_epoch >= args.gamma_increase_opt2_epoch else 1.0)
+                gamma = args.gamma_slope * opt2_steps * gamma_multiplier
                 return contraction_norm(model) * gamma
 
             train = train_epoch(
@@ -412,16 +463,20 @@ def main():
         peak_train_params = max(
             peak_train_params,
             sum(parameter.numel() for parameter in model.parameters()))
+        trigger = evaluate(model, trigger_loader, device)
         validation = evaluate(model, evaluation_loader, device)
         row = {
             "epoch": epoch, "post_fork_epoch": offset + 1,
             "phase": epoch_phase, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
+            "trigger_loss": trigger["loss"],
+            "trigger_accuracy": trigger["accuracy"],
             "validation_loss": validation["loss"],
             "validation_accuracy": validation["accuracy"],
             "learning_rates": [float(group["lr"])
                                for group in optimizer.param_groups],
             "gamma": gamma, "contraction_criterion_met": criterion_met,
+            "gamma_multiplier": gamma_multiplier,
             "contraction_norm": (float(contraction_norm(model).detach())
                                  if args.method == "bypass" and
                                  phase in {"opt1", "opt2"} else 0.0),
@@ -429,21 +484,29 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
-        improved = validation["accuracy"] > best_accuracy
+        report_improved = validation["accuracy"] > best_accuracy
+        exact_improved = trigger["accuracy"] > exact_best_trigger_accuracy
+        significant_improved = (
+            trigger["accuracy"] >= significant_best_trigger_accuracy +
+            args.significant_improvement)
         if validation["accuracy"] > best_accuracy:
             best_accuracy = float(validation["accuracy"])
             best_offset = offset + 1
-            epochs_since_best = 0
-        else:
-            epochs_since_best += 1
         best_loss = min(best_loss, float(validation["loss"]))
-        if improved:
+        if exact_improved:
+            exact_best_trigger_accuracy = float(trigger["accuracy"])
+        if significant_improved:
+            significant_best_trigger_accuracy = float(trigger["accuracy"])
+            stall_counter = 0
+        else:
+            stall_counter += 1
+        if exact_improved:
             save_checkpoint(best_checkpoint, state_payload(
                 "plateau_fork_arm_best", offset + 1, elapsed, peak))
 
         retriggered = False
         if (args.method in {"ours_e_driven_o", "o_projection_only"} and
-                epochs_since_best >= args.retrigger_patience and
+                stall_counter >= args.retrigger_patience and
                 offset + 1 < args.post_fork_epochs):
             # Roll back trainable state but deliberately keep the consumed RNG
             # and loader streams. Restoring them would replay the same E probe
@@ -458,19 +521,38 @@ def main():
             restore_rng(live_rng)
             train_loader.generator.set_state(live_loader_state.cpu())
             rollback_count += 1
-            epochs_since_best = 0
+            stall_counter = 0
+            significant_best_trigger_accuracy = exact_best_trigger_accuracy
             perform_intervention(
                 len(interventions), offset + 1,
                 "ten_sgd_epochs_without_new_best")
+            immediate_trigger = evaluate(model, trigger_loader, device)
             immediate = evaluate(model, evaluation_loader, device)
             if immediate["accuracy"] > best_accuracy:
                 best_accuracy = float(immediate["accuracy"])
-                best_loss = min(best_loss, float(immediate["loss"]))
                 best_offset = offset + 1
+            best_loss = min(best_loss, float(immediate["loss"]))
+            immediate_exact = (
+                immediate_trigger["accuracy"] > exact_best_trigger_accuracy)
+            immediate_significant = (
+                immediate_trigger["accuracy"] >=
+                significant_best_trigger_accuracy +
+                args.significant_improvement)
+            if immediate_exact:
+                exact_best_trigger_accuracy = float(
+                    immediate_trigger["accuracy"])
+            if immediate_significant:
+                significant_best_trigger_accuracy = float(
+                    immediate_trigger["accuracy"])
+                stall_counter = 0
+            if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", offset + 1, elapsed, peak))
             retriggered = True
-        row["epochs_since_best"] = epochs_since_best
+        row["report_best_improved"] = report_improved
+        row["exact_best_improved"] = exact_improved
+        row["significant_best_improved"] = significant_improved
+        row["stall_counter"] = stall_counter
         row["rollback_triggered"] = retriggered
         row["intervention_count"] = len(interventions)
         save_checkpoint(latest, state_payload(
@@ -483,6 +565,12 @@ def main():
         "stall_detected_epoch": source.get("stall_detected_epoch"),
         "post_fork_epochs": len(history),
         "plateau_checkpoint_hash": fork_hash,
+        "theta_best_hash": fork_hash,
+        "fork_trigger_accuracy": fork_trigger["accuracy"],
+        "fork_trigger_loss": fork_trigger["loss"],
+        "exact_best_trigger_accuracy": exact_best_trigger_accuracy,
+        "significant_best_trigger_accuracy":
+            significant_best_trigger_accuracy,
         "fork_validation_accuracy": fork_evaluation["accuracy"],
         "fork_validation_loss": fork_evaluation["loss"],
         "final_validation_accuracy": last["validation_accuracy"],
@@ -512,7 +600,16 @@ def main():
             for item in interventions),
         "rollback_count": rollback_count,
         "retrigger_patience": args.retrigger_patience,
+        "significant_improvement": args.significant_improvement,
         "bypass_completed": (phase == "train3" if args.method == "bypass" else None),
+        "opt1_epochs": opt1_done if args.method == "bypass" else None,
+        "opt2_epochs": opt2_done if args.method == "bypass" else None,
+        "train3_epochs": train3_done if args.method == "bypass" else None,
+        "gamma_increase_opt2_epoch": (
+            args.gamma_increase_opt2_epoch if args.method == "bypass" else None),
+        "gamma_post_increase_multiplier": (
+            args.gamma_post_increase_multiplier
+            if args.method == "bypass" else None),
         "contraction_at_projection": contraction_at_projection,
         "projection_loss_jump": projection_loss_jump,
         "history": history, "checkpoint": str(latest),

@@ -23,14 +23,14 @@ its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
 into three newly trained 100-epoch arms. The observed 100-epoch Vanilla stall
 trajectory from Phase 1 is reused directly as the control:
 
-- relaxed matched-budget Bypass (40 opt1 + up to 60 opt2; never force-project);
+- scaled matched-horizon Bypass (70 opt1 + up to 30 opt2; never force-project);
 - Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
   winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
 - O-only: supervised functional projection at the fixed residual-path site,
   with the same recurrent rollback/retrigger schedule for a fair ablation.
 
-The two T4 GPUs consume a dynamic job queue. Ours and Bypass start first; as soon
-as either GPU becomes free it immediately receives O-only. The
+GPU0 is reserved for E-driven O. GPU1 runs Bypass and, only after that process
+finishes, starts a new O-only process from the same theta_best checkpoint. The
 official test set is never constructed. Bypass accuracy remains diagnostic if
 contraction does not complete within the matched budget.
 """),
@@ -133,9 +133,12 @@ print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
         "--plateau-checkpoint-hash", PLATEAU_HASH,
         "--output", str(output), "--post-fork-epochs", "100",
         "--seed", "1", "--batch-size", "64", "--rank", "4",
-        "--opt1-epochs", "40", "--max-opt2-epochs", "60",
+        "--opt1-epochs", "70", "--max-opt2-epochs", "30",
         "--probe-epsilon", "0.05", "--where-batches", "3",
         "--retrigger-patience", "10",
+        "--significant-improvement", "0.001",
+        "--gamma-increase-opt2-epoch", "15",
+        "--gamma-post-increase-multiplier", "2.0",
         "--line-search-scales", "0.0125,0.025,0.05"]
 
 commands = {
@@ -162,47 +165,58 @@ def launch(gpu, name):
     print(f"GPU{gpu}: started {name}, pid={process.pid}")
     return name, process, thread, log
 
-pending = ["ours_e_driven_o", "bypass", "o_projection_only"]
-running = {gpu: launch(gpu, pending.pop(0)) for gpu in (0, 1)}
-failures = []
-while running:
-    for gpu, (name, process, thread, log) in list(running.items()):
-        code = process.poll()
-        if code is None: continue
-        thread.join(); log.close(); del running[gpu]
-        print(name, "exit=", code)
-        if code: failures.append((name, code))
-        if pending:
-            running[gpu] = launch(gpu, pending.pop(0))
-    if running:
-        time.sleep(1)
-if failures:
-    raise RuntimeError(f"failed arms: {failures}")
+def finish(job):
+    name, process, thread, log = job
+    code = process.wait()
+    thread.join(); log.close()
+    print(name, "exit=", code)
+    return name, code
+
+print("GPU0: E-driven O; GPU1: Bypass -> fresh O-only")
+ours_job = launch(0, "ours_e_driven_o")
+bypass_job = launch(1, "bypass")
+bypass_status = finish(bypass_job)
+if bypass_status[1]:
+    raise RuntimeError(f"failed arm: {bypass_status}")
+# This is deliberately a new process. It reloads theta_best and cannot inherit
+# model, optimizer, scheduler, RNG, or CUDA state from Bypass.
+o_only_job = launch(1, "o_projection_only")
+statuses = [finish(ours_job), finish(o_only_job)]
+failures = [status for status in statuses if status[1]]
+if failures: raise RuntimeError(f"failed arms: {failures}")
 """),
     code("""results = {name: json.loads((OUTPUT / name / "result.json").read_text())
            for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
 for name, result in results.items():
     if result["plateau_checkpoint_hash"] != PLATEAU_HASH:
         raise RuntimeError(f"{name} used another theta_P")
+    if result["theta_best_hash"] != PLATEAU_HASH:
+        raise RuntimeError(f"{name} used another theta_best")
     if result["post_fork_epochs"] != 100:
         raise RuntimeError(f"{name} did not complete 100 epochs")
     if not Path(result["best_checkpoint"]).is_file():
         raise RuntimeError(f"{name} did not save checkpoint_best.pt")
 VANILLA_CONTROL["plateau_checkpoint_hash"] = PLATEAU_HASH
+VANILLA_CONTROL["theta_best_hash"] = PLATEAU_HASH
 VANILLA_CONTROL["best_checkpoint"] = str(PLATEAU_CHECKPOINT)
 results["vanilla"] = VANILLA_CONTROL
 summary = {
     "plateau_epoch": PLATEAU_EPOCH,
     "plateau_checkpoint_hash": PLATEAU_HASH,
+    "theta_best_hash": PLATEAU_HASH,
     "post_fork_epochs": 100, "official_test_used": False,
     "results": {name: {key: result.get(key) for key in (
         "fork_validation_accuracy", "fork_validation_loss",
+        "fork_trigger_accuracy", "fork_trigger_loss",
+        "exact_best_trigger_accuracy", "significant_best_trigger_accuracy",
         "final_validation_accuracy", "best_validation_accuracy",
         "final_validation_loss", "best_validation_loss",
         "validation_accuracy_delta", "best_validation_accuracy_delta",
         "epochs_to_best", "training_seconds", "peak_gpu_memory",
         "peak_train_params", "deploy_params", "time_spent_expanded_seconds",
         "bypass_completed", "contraction_at_projection",
+        "opt1_epochs", "opt2_epochs", "train3_epochs",
+        "gamma_increase_opt2_epoch", "gamma_post_increase_multiplier",
         "projection_loss_jump", "best_checkpoint", "intervention_count",
         "correction_application_count", "correction_application_rate",
         "intervention_seconds", "rollback_count", "retrigger_patience",
