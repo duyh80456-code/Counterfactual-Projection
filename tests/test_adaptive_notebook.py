@@ -22,8 +22,9 @@ def test_adaptive_notebook_only_runs_main_arm_from_theta300():
     assert '"--rank", "4"' in source
     assert "shared_seed1_epoch300.json" in source
     assert "shared_seed1_epoch300.pt" in source
-    assert "checkpoint_hashes" in source
-    assert "checkpoint_hash == expected_hash" in source
+    assert "materialize_checkpoint" in source
+    assert "repacked_from_kaggle_directory" in source
+    assert "payload.get(\"protocol\") == manifest.get(\"protocol\")" in source
     assert '"--shared-checkpoint-hash", SHARED_HASH' in source
     assert 'result["post_fork_epochs"] != 60' in source
     assert "epochs 301-360" in source

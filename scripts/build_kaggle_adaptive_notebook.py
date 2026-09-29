@@ -32,7 +32,7 @@ growing blocks with rank-4 TINY. A separate 16-sample selection batch and
 Full functional projection runs exactly when the best finite projected utility
 is positive. A full resumable checkpoint is written after every epoch.
 """),
-    code("""import hashlib, json, os, shutil, subprocess, sys
+    code("""import hashlib, json, os, shutil, subprocess, sys, zipfile
 from collections import Counter
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
@@ -112,24 +112,59 @@ manifest_paths = list(
 checkpoint_paths = list(
     Path("/kaggle/input").rglob("shared_seed1_epoch300.pt"))
 
-# Kaggle may mount separately uploaded files at different nesting levels. Pair
-# the manifest and checkpoint by content hash instead of requiring siblings.
-checkpoint_hashes = {}
-for checkpoint_path in checkpoint_paths:
+# Kaggle sometimes auto-extracts a torch.save ZIP into a directory that still
+# ends in .pt. Rebuild a loadable archive without changing its tensor payload.
+def materialize_checkpoint(path, index):
+    if path.is_file():
+        return path, False
+    data_pickles = list(path.rglob("data.pkl"))
+    if len(data_pickles) != 1:
+        return None, False
+    record_root = data_pickles[0].parent
+    rebuilt = OUTPUT / "repacked_input" / f"theta300_{index}.pt"
+    rebuilt.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(rebuilt, "w", compression=zipfile.ZIP_STORED) as archive:
+        for record in sorted(record_root.rglob("*")):
+            if record.is_file():
+                relative = record.relative_to(record_root).as_posix()
+                archive.writestr(f"shared_seed1_epoch300/{relative}",
+                                 record.read_bytes())
+    return rebuilt, True
+
+checkpoint_records = []
+for index, raw_checkpoint in enumerate(checkpoint_paths):
+    checkpoint_path, repacked = materialize_checkpoint(raw_checkpoint, index)
+    if checkpoint_path is None: continue
     digest = hashlib.sha256()
     with checkpoint_path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    checkpoint_hashes[checkpoint_path] = digest.hexdigest()
+    payload = None
+    if repacked:
+        payload = torch.load(checkpoint_path, map_location="cpu",
+                             weights_only=False)
+        if (payload.get("kind") != "shared_fork_checkpoint" or
+                int(payload.get("epoch", -1)) != 300):
+            continue
+    checkpoint_records.append((raw_checkpoint, checkpoint_path,
+                               digest.hexdigest(), payload, repacked))
 
 warmups = []
 for manifest_path in manifest_paths:
     manifest = json.loads(manifest_path.read_text())
     if int(manifest.get("epoch", -1)) != 300: continue
     expected_hash = manifest.get("sha256")
-    for checkpoint_path, checkpoint_hash in checkpoint_hashes.items():
-        if checkpoint_hash == expected_hash:
-            warmups.append((manifest_path, checkpoint_path, manifest))
+    for raw_path, checkpoint_path, checkpoint_hash, payload, repacked in checkpoint_records:
+        matches = checkpoint_hash == expected_hash
+        if repacked:
+            matches = payload.get("protocol") == manifest.get("protocol")
+        if matches:
+            metadata = dict(manifest)
+            metadata.update(checkpoint=str(checkpoint_path),
+                            sha256=checkpoint_hash)
+            if repacked:
+                metadata["repacked_from_kaggle_directory"] = str(raw_path)
+            warmups.append((manifest_path, checkpoint_path, metadata))
 if not warmups:
     raise FileNotFoundError(
         "Attach matching shared_seed1_epoch300.pt and "

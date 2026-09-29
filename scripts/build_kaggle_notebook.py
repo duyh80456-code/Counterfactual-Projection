@@ -30,7 +30,7 @@ never constructed. Every process saves a resumable checkpoint each epoch.
 Bypass spends 40 epochs in opt1 and at most 20 in opt2. It never force-projects
 a nonzero D; an uncontracted run is retained with `bypass_completed=false`.
 """),
-    code("""import hashlib, json, os, shutil, subprocess, sys, threading
+    code("""import hashlib, json, os, shutil, subprocess, sys, threading, zipfile
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
 
@@ -122,24 +122,62 @@ manifest_paths = list(
 checkpoint_paths = list(
     Path("/kaggle/input").rglob("shared_seed1_epoch300.pt"))
 
-# Kaggle may mount separately uploaded files at different nesting levels. Pair
-# the manifest and checkpoint by content hash instead of requiring siblings.
-checkpoint_hashes = {}
-for checkpoint_path in checkpoint_paths:
+# Kaggle sometimes auto-extracts a torch.save ZIP into a directory that still
+# ends in .pt. Rebuild a loadable archive without changing its tensor payload.
+def materialize_checkpoint(path, index):
+    if path.is_file():
+        return path, False
+    data_pickles = list(path.rglob("data.pkl"))
+    if len(data_pickles) != 1:
+        return None, False
+    record_root = data_pickles[0].parent
+    rebuilt = OUTPUT / "repacked_input" / f"theta300_{index}.pt"
+    rebuilt.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(rebuilt, "w", compression=zipfile.ZIP_STORED) as archive:
+        for record in sorted(record_root.rglob("*")):
+            if record.is_file():
+                relative = record.relative_to(record_root).as_posix()
+                archive.writestr(f"shared_seed1_epoch300/{relative}",
+                                 record.read_bytes())
+    return rebuilt, True
+
+# Pair manifests and checkpoints across arbitrary input nesting. Original files
+# match by SHA; repacked directories match by their embedded epoch/protocol and
+# receive a new hash because ZIP container bytes necessarily differ.
+checkpoint_records = []
+for index, raw_checkpoint in enumerate(checkpoint_paths):
+    checkpoint_path, repacked = materialize_checkpoint(raw_checkpoint, index)
+    if checkpoint_path is None: continue
     digest = hashlib.sha256()
     with checkpoint_path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    checkpoint_hashes[checkpoint_path] = digest.hexdigest()
+    payload = None
+    if repacked:
+        payload = torch.load(checkpoint_path, map_location="cpu",
+                             weights_only=False)
+        if (payload.get("kind") != "shared_fork_checkpoint" or
+                int(payload.get("epoch", -1)) != FORK_EPOCH):
+            continue
+    checkpoint_records.append((raw_checkpoint, checkpoint_path,
+                               digest.hexdigest(), payload, repacked))
 
 warmups = []
 for manifest_path in manifest_paths:
     manifest = json.loads(manifest_path.read_text())
     if int(manifest.get("epoch", -1)) != FORK_EPOCH: continue
     expected_hash = manifest.get("sha256")
-    for checkpoint_path, checkpoint_hash in checkpoint_hashes.items():
-        if checkpoint_hash == expected_hash:
-            warmups.append((manifest_path, checkpoint_path, manifest))
+    for raw_path, checkpoint_path, checkpoint_hash, payload, repacked in checkpoint_records:
+        matches = checkpoint_hash == expected_hash
+        if repacked:
+            matches = payload.get("protocol") == manifest.get("protocol")
+        if matches:
+            metadata = dict(manifest)
+            metadata.update(checkpoint=str(checkpoint_path),
+                            sha256=checkpoint_hash)
+            if repacked:
+                metadata["repacked_from_kaggle_directory"] = str(raw_path)
+            warmups.append((manifest_path, checkpoint_path, metadata))
 if not warmups:
     raise FileNotFoundError(
         "Missing a matching theta_300 pair. Attach shared_seed1_epoch300.pt "
@@ -176,7 +214,8 @@ for prior_root in prior_roots:
 SHARED_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
 if not SHARED_CHECKPOINT.is_file():
     shutil.copy2(source_checkpoint, SHARED_CHECKPOINT)
-    shutil.copy2(source_manifest, SHARED_CHECKPOINT.with_suffix(".json"))
+    SHARED_CHECKPOINT.with_suffix(".json").write_text(
+        json.dumps(source_metadata, indent=2, sort_keys=True))
     print("Restored theta_300 only from", source_checkpoint)
 
 manifest = json.loads(SHARED_CHECKPOINT.with_suffix(".json").read_text())

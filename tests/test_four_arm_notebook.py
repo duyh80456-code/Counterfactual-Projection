@@ -15,8 +15,9 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert "FORK_EPOCH = 300" in source
     assert "POST_FORK_EPOCHS = 60" in source
     assert "shared_seed1_epoch300.pt" in source
-    assert "checkpoint_hashes" in source
-    assert "checkpoint_hash == expected_hash" in source
+    assert "materialize_checkpoint" in source
+    assert "repacked_from_kaggle_directory" in source
+    assert "payload.get(\"protocol\") == manifest.get(\"protocol\")" in source
     assert "--bootstrap-checkpoint" not in source
     assert '"--method", "prepare_shared"' not in source
     assert "theta_150 is not accepted" in source
