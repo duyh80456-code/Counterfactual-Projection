@@ -84,7 +84,9 @@ The same workflow is also available as two explicit notebooks:
    accuracy, loss, deltas, epoch to best, wall time, peak memory/parameters,
    and expanded time. GPU0 runs E→O to completion. GPU1 runs Bypass with a
    70-epoch opt1 and at most 30-epoch opt2, then starts O-only as a fresh
-   process from the same hashed theta_best checkpoint.
+   process from the same hashed theta_best checkpoint. The scaled Bypass
+   penalty switches from ×1 to ×10 at opt2 epoch 15; this is explicitly a
+   matched-horizon scaling, not an exact reproduction of the native schedule.
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 

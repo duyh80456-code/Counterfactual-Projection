@@ -36,7 +36,7 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--no-new-best-patience", type=int, default=100)
-    parser.add_argument("--best-min-gain", type=float, default=1e-3)
+    parser.add_argument("--significant-min-gain", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -160,7 +160,7 @@ def main():
         eval_set, evaluation_indices, args.batch_size * 2, args.workers)
 
     detector = BestCheckpointStallDetector(
-        args.no_new_best_patience, args.best_min_gain)
+        args.no_new_best_patience, args.significant_min_gain)
     protocol = {
         "phase": "vanilla_best_checkpoint_search", "source_epoch": 300,
         "source_checkpoint_hash": fork_hash,
@@ -169,7 +169,8 @@ def main():
         "selection_metric": "trigger accuracy (2,000 held-out samples)",
         "evaluation_role": "report-only (3,000 held-out samples)",
         "no_new_best_patience": args.no_new_best_patience,
-        "best_min_gain": args.best_min_gain,
+        "exact_best_min_gain": 0.0,
+        "significant_min_gain": args.significant_min_gain,
         "training_indices_unchanged": True,
         "trigger_samples": len(trigger_indices),
         "evaluation_samples": len(evaluation_indices),

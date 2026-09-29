@@ -161,7 +161,7 @@ print("theta300:", THETA300, THETA300_HASH)
     "--seed", "1", "--batch-size", "64", "--validation-samples", "5000",
     "--trigger-samples", "2000",
     "--no-new-best-patience", "100",
-    "--best-min-gain", "0.001"]
+    "--significant-min-gain", "0.001"]
 env = os.environ.copy()
 env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
            PYTHONPATH=RUNTIME_PYTHONPATH)

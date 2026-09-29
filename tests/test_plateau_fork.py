@@ -33,6 +33,7 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert '"--opt1-epochs", type=int, default=70' in source
     assert '"--max-opt2-epochs", type=int, default=30' in source
     assert '"--gamma-increase-opt2-epoch", type=int, default=15' in source
+    assert '"--gamma-post-increase-multiplier", type=float, default=10.0' in source
     assert '"--significant-improvement", type=float, default=1e-3' in source
     assert '"plateau_checkpoint_hash": fork_hash' in source
     assert '"train_indices": train_indices' in source
@@ -43,3 +44,4 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert 'exact_improved = trigger["accuracy"] > exact_best_trigger_accuracy' in source
     assert 'significant_improved = (' in source
     assert 'validation["accuracy"] > best_accuracy' in source
+    assert "epochs_since_best" not in source

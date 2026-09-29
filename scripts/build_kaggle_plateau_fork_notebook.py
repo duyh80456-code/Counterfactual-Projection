@@ -138,7 +138,7 @@ print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
         "--retrigger-patience", "10",
         "--significant-improvement", "0.001",
         "--gamma-increase-opt2-epoch", "15",
-        "--gamma-post-increase-multiplier", "2.0",
+        "--gamma-post-increase-multiplier", "10.0",
         "--line-search-scales", "0.0125,0.025,0.05"]
 
 commands = {
