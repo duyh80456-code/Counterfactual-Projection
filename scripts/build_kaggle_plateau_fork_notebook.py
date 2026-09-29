@@ -15,22 +15,22 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 2 — Four-arm fork from stalled Vanilla's best theta_P
+    markdown("""# Phase 2 — Three jobs from stalled Vanilla's best theta_P
 
 Attach the Phase-1 output containing `plateau_checkpoint.pt`. It is the exact
 best state saved before the no-new-best patience expired. This notebook forks
 its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
-into four 60-epoch arms:
+into three newly trained 100-epoch arms. The observed 100-epoch Vanilla stall
+trajectory from Phase 1 is reused directly as the control:
 
-- Vanilla continuation;
-- relaxed matched-budget Bypass (40 opt1 + up to 20 opt2; never force-project);
+- relaxed matched-budget Bypass (40 opt1 + up to 60 opt2; never force-project);
 - Ours: one immediate all-eight-site structural E scan, E-gain WHERE selection,
   winner-only O projection, independent gate line search, then ordinary SGD.
 - O-only: one supervised functional projection at the fixed residual-path site,
   the same independent gate/line search, then ordinary SGD.
 
 The two T4 GPUs consume a dynamic job queue. Ours and Bypass start first; as soon
-as either GPU becomes free it immediately receives O-only, then Vanilla. The
+as either GPU becomes free it immediately receives O-only. The
 official test set is never constructed. Bypass accuracy remains diagnostic if
 contraction does not complete within the matched budget.
 """),
@@ -45,7 +45,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/plateau_fork_four_arm_60ep_v2")
+OUTPUT = Path("/kaggle/working/plateau_fork_three_jobs_100ep_v3")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -119,6 +119,11 @@ if not forks: raise FileNotFoundError("Attach Phase-1 plateau_checkpoint.pt")
 if len({digest for _, digest, _ in forks}) != 1:
     raise RuntimeError("Multiple different plateau checkpoints attached")
 PLATEAU_CHECKPOINT, PLATEAU_HASH, PLATEAU_EPOCH = forks[0]
+PLATEAU_PAYLOAD = torch.load(
+    PLATEAU_CHECKPOINT, map_location="cpu", weights_only=False)
+VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
+if VANILLA_CONTROL["post_fork_epochs"] != 100:
+    raise RuntimeError("Phase 1 must contain exactly 100 Vanilla control epochs")
 print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 """),
     code("""def base_args(output):
@@ -126,15 +131,16 @@ print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
         "--reference-root", str(REFERENCE), "--data-root", str(DATA_ROOT),
         "--plateau-checkpoint", str(PLATEAU_CHECKPOINT),
         "--plateau-checkpoint-hash", PLATEAU_HASH,
-        "--output", str(output), "--post-fork-epochs", "60",
+        "--output", str(output), "--post-fork-epochs", "100",
         "--seed", "1", "--batch-size", "64", "--rank", "4",
+        "--opt1-epochs", "40", "--max-opt2-epochs", "60",
         "--probe-epsilon", "0.05", "--where-batches", "3",
         "--line-search-scales", "0.0125,0.025,0.05"]
 
 commands = {
     name: [sys.executable, "-m", "experiments.run_plateau_fork",
            "--method", name] + base_args(OUTPUT / name)
-    for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
+    for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
 
 def stream(name, process, log):
     for line in process.stdout:
@@ -155,7 +161,7 @@ def launch(gpu, name):
     print(f"GPU{gpu}: started {name}, pid={process.pid}")
     return name, process, thread, log
 
-pending = ["ours_e_driven_o", "bypass", "o_projection_only", "vanilla"]
+pending = ["ours_e_driven_o", "bypass", "o_projection_only"]
 running = {gpu: launch(gpu, pending.pop(0)) for gpu in (0, 1)}
 failures = []
 while running:
@@ -173,24 +179,30 @@ if failures:
     raise RuntimeError(f"failed arms: {failures}")
 """),
     code("""results = {name: json.loads((OUTPUT / name / "result.json").read_text())
-           for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
+           for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
 for name, result in results.items():
     if result["plateau_checkpoint_hash"] != PLATEAU_HASH:
         raise RuntimeError(f"{name} used another theta_P")
-    if result["post_fork_epochs"] != 60:
-        raise RuntimeError(f"{name} did not complete 60 epochs")
+    if result["post_fork_epochs"] != 100:
+        raise RuntimeError(f"{name} did not complete 100 epochs")
+    if not Path(result["best_checkpoint"]).is_file():
+        raise RuntimeError(f"{name} did not save checkpoint_best.pt")
+VANILLA_CONTROL["plateau_checkpoint_hash"] = PLATEAU_HASH
+VANILLA_CONTROL["best_checkpoint"] = str(PLATEAU_CHECKPOINT)
+results["vanilla"] = VANILLA_CONTROL
 summary = {
     "plateau_epoch": PLATEAU_EPOCH,
     "plateau_checkpoint_hash": PLATEAU_HASH,
-    "post_fork_epochs": 60, "official_test_used": False,
+    "post_fork_epochs": 100, "official_test_used": False,
     "results": {name: {key: result.get(key) for key in (
+        "fork_validation_accuracy", "fork_validation_loss",
         "final_validation_accuracy", "best_validation_accuracy",
         "final_validation_loss", "best_validation_loss",
         "validation_accuracy_delta", "best_validation_accuracy_delta",
         "epochs_to_best", "training_seconds", "peak_gpu_memory",
         "peak_train_params", "deploy_params", "time_spent_expanded_seconds",
         "bypass_completed", "contraction_at_projection",
-        "projection_loss_jump", "intervention")}
+        "projection_loss_jump", "best_checkpoint", "intervention")}
         for name, result in results.items()},
     "bypass_comparison_status": (
         "completed" if results["bypass"]["bypass_completed"] else
@@ -198,6 +210,13 @@ summary = {
 }
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
+print("\\nmethod                  fork_acc   best_acc  final_acc  epoch_best")
+for name in ("vanilla", "ours_e_driven_o", "bypass", "o_projection_only"):
+    row = results[name]
+    print(f"{name:23s} {row['fork_validation_accuracy']:.4f}     "
+          f"{row['best_validation_accuracy']:.4f}    "
+          f"{row['final_validation_accuracy']:.4f}    "
+          f"{row['epochs_to_best']:>4}")
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)
 print("Archive:", archive)
 """),

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 
-def test_one_file_notebook_connects_plateau_search_to_four_arm_queue():
+def test_one_file_notebook_connects_best_stall_to_three_job_queue():
     notebook = json.loads(Path(
         "notebooks/kaggle_plateau_end_to_end_t4x2.ipynb").read_text())
     source = "\n".join("".join(cell.get("source", []))
@@ -20,6 +20,10 @@ def test_one_file_notebook_connects_plateau_search_to_four_arm_queue():
     assert '"o_projection_only"' in source
     assert '"bypass"' in source
     assert '"vanilla"' in source
+    assert 'results["vanilla"] = VANILLA_CONTROL' in source
+    assert 'VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])' in source
+    assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
+    assert '"--post-fork-epochs", "100"' in source
     assert "pending.pop(0)" in source
     assert "torch.cuda.device_count() != 2" in source
 

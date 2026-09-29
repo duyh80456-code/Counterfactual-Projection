@@ -36,12 +36,65 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--no-new-best-patience", type=int, default=100)
-    parser.add_argument("--best-min-gain", type=float, default=1e-3)
+    parser.add_argument("--best-min-gain", type=float, default=0.0)
     return parser.parse_args()
 
 
 def save(path, payload):
     atomic_torch_save({"format_version": 1, **payload}, path)
+
+
+def finalize_best_stall(best_path, plateau_path, detector, history,
+                        protocol, deploy_params):
+    """Fork exact theta_best and attach its already-observed Vanilla control."""
+    if not best_path.is_file():
+        raise RuntimeError("stall detected but checkpoint_best.pt is missing")
+    best = torch.load(best_path, map_location="cpu", weights_only=False)
+    best_epoch = int(best["epoch"])
+    control = [dict(row) for row in history if int(row["epoch"]) > best_epoch]
+    if len(control) != detector.patience:
+        raise RuntimeError(
+            "exact-best patience must provide one Vanilla row per control epoch")
+    fork_row = next(row for row in history if int(row["epoch"]) == best_epoch)
+    candidates = [fork_row, *control]
+    best_accuracy = max(row["validation_accuracy"] for row in candidates)
+    best_row = next(row for row in candidates
+                    if row["validation_accuracy"] == best_accuracy)
+    best["kind"] = "plateau_fork_checkpoint"
+    best["stall_evidence"] = detector.state_dict()
+    best["stall_detected_epoch"] = detector.observations[-1]["epoch"]
+    best["vanilla_control_history"] = control
+    best["vanilla_control"] = {
+        "method": "vanilla_reused_from_phase1",
+        "fork_epoch": best_epoch,
+        "stall_detected_epoch": best["stall_detected_epoch"],
+        "post_fork_epochs": len(control),
+        "fork_validation_accuracy": fork_row["validation_accuracy"],
+        "fork_validation_loss": fork_row["validation_loss"],
+        "final_validation_accuracy": control[-1]["validation_accuracy"],
+        "best_validation_accuracy": best_accuracy,
+        "final_validation_loss": control[-1]["validation_loss"],
+        "best_validation_loss": min(
+            row["validation_loss"] for row in candidates),
+        "validation_accuracy_delta": (
+            control[-1]["validation_accuracy"] -
+            fork_row["validation_accuracy"]),
+        "best_validation_accuracy_delta": (
+            best_accuracy - fork_row["validation_accuracy"]),
+        "epochs_to_best": int(best_row["epoch"]) - best_epoch,
+        "training_seconds": sum(
+            float(row.get("epoch_seconds", 0.0)) for row in control),
+        "peak_gpu_memory": max(
+            int(row.get("peak_gpu_memory", 0)) for row in control),
+        "peak_train_params": int(deploy_params),
+        "deploy_params": int(deploy_params),
+        "time_spent_expanded_seconds": 0.0,
+        "bypass_completed": None,
+        "intervention": None,
+        "best_checkpoint": str(plateau_path),
+    }
+    save(plateau_path, best)
+    return best
 
 
 def main():
@@ -50,6 +103,9 @@ def main():
         raise RuntimeError("one visible CUDA GPU is required")
     if args.max_epoch <= START_EPOCH:
         raise ValueError("max_epoch must exceed 300")
+    if args.best_min_gain != 0.0:
+        raise ValueError(
+            "exact-best fork requires best_min_gain=0 so patience starts at theta_best")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -80,6 +136,7 @@ def main():
     evaluation_indices = validation_pool[args.trigger_samples:]
 
     model = build_cifar_gromo_resnet18(device)
+    deploy_params = sum(parameter.numel() for parameter in model.parameters())
     optimizer, _ = build_optimizer_scheduler(
         model, float(source["protocol"].get("learning_rate", 0.1)),
         args.weight_decay)
@@ -183,13 +240,9 @@ def main():
         save(latest, {**initial_payload, "kind": "vanilla_convergence_progress"})
 
     if (detector.observations[-1]["stalled"] and not plateau_path.is_file()):
-        if not best_path.is_file():
-            raise RuntimeError("stall detected but checkpoint_best.pt is missing")
-        recovered = torch.load(best_path, map_location="cpu", weights_only=False)
-        recovered["kind"] = "plateau_fork_checkpoint"
-        recovered["stall_evidence"] = detector.state_dict()
-        recovered["stall_detected_epoch"] = detector.observations[-1]["epoch"]
-        save(plateau_path, recovered)
+        recovered = finalize_best_stall(
+            best_path, plateau_path, detector, history, protocol,
+            deploy_params)
         digest = sha256_file(plateau_path)
         atomic_json_save({
             "checkpoint": str(plateau_path), "sha256": digest,
@@ -200,6 +253,7 @@ def main():
     for epoch in range(start_epoch + 1, args.max_epoch + 1):
         if plateau_path.is_file():
             break
+        epoch_started = time.perf_counter()
         train = train_epoch(model, train_loader, optimizer, device)
         scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
@@ -215,6 +269,8 @@ def main():
             "learning_rates": [float(group["lr"])
                                for group in optimizer.param_groups],
             "best_checkpoint_statistics": selection,
+            "epoch_seconds": time.perf_counter() - epoch_started,
+            "peak_gpu_memory": int(torch.cuda.max_memory_allocated(device)),
         }
         history.append(row)
         elapsed = prior_seconds + time.perf_counter() - started
@@ -238,11 +294,9 @@ def main():
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"vanilla_convergence": row}, sort_keys=True), flush=True)
         if selection["stalled"]:
-            best = torch.load(best_path, map_location="cpu", weights_only=False)
-            best["kind"] = "plateau_fork_checkpoint"
-            best["stall_evidence"] = detector.state_dict()
-            best["stall_detected_epoch"] = epoch
-            save(plateau_path, best)
+            best = finalize_best_stall(
+                best_path, plateau_path, detector, history, protocol,
+                deploy_params)
             digest = sha256_file(plateau_path)
             atomic_json_save({
                 "checkpoint": str(plateau_path), "sha256": digest,

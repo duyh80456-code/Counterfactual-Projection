@@ -53,9 +53,10 @@ The current main experiment is split into two notebooks:
 
 For the simplest Kaggle workflow, use the single-file
 [`notebooks/kaggle_plateau_end_to_end_t4x2.ipynb`](notebooks/kaggle_plateau_end_to_end_t4x2.ipynb).
-It accepts theta300 plus CIFAR-100, saves every meaningful Vanilla validation
-best, and waits for a 100-epoch no-new-best stall before launching the four-arm
-fork from that exact best checkpoint. If the epoch-500 review boundary is
+It accepts theta300 plus CIFAR-100, saves every exact Vanilla validation best,
+and waits for a 100-epoch no-new-best stall before launching the method jobs
+from that exact best checkpoint. The already-observed 100-epoch Vanilla stall
+trajectory is reused as the control rather than trained twice. If epoch 500 is
 reached without a stall, attach its output and rerun with a larger `MAX_EPOCH`;
 both the latest and best Phase-1 states resume.
 
@@ -64,17 +65,19 @@ The same workflow is also available as two explicit notebooks:
 1. [`notebooks/kaggle_vanilla_to_plateau.ipynb`](notebooks/kaggle_vanilla_to_plateau.ipynb)
    trains only Vanilla from shared theta300 while preserving the checkpoint LR.
    Every validation improvement is saved as a complete `checkpoint_best.pt`.
-   After 100 epochs without a new best of at least 0.1 percentage point, the
+   After 100 epochs without any new exact best, the
    run creates `plateau_checkpoint.pt` from that exact best state rather than
    from the later potentially degraded model. Epoch 500 remains a review point;
    both latest progress and the best checkpoint are required when resuming.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
-   forks exactly theta_P into Vanilla, supervised O-only, relaxed matched-budget
-   Bypass, and one immediate E→O intervention followed by SGD, each for 60 epochs. All arms
-   inherit the same model, optimizer, scheduler, momentum, RNG, training order,
-   and held-out split. It reports final/best gain, epochs to best, wall time,
-   peak memory/parameters, and time spent expanded. The two GPUs consume a
-   dynamic queue, so the next pending arm starts as soon as either GPU is free.
+   launches supervised O-only, relaxed matched-budget Bypass, and one immediate
+   E→O intervention followed by SGD, each for 100 epochs. Vanilla is reused from
+   Phase 1. All methods inherit the same model, optimizer, scheduler, momentum,
+   RNG, training order, and held-out split. Every trained method saves latest
+   and best checkpoints and reports fork/best/final accuracy, loss, deltas,
+   epoch to best, wall time, peak memory/parameters, and expanded time. Ours and
+   Bypass start on the two GPUs; whichever finishes first immediately receives
+   O-only.
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 

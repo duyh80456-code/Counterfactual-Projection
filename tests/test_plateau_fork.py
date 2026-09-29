@@ -20,6 +20,10 @@ def test_plateau_fork_has_four_arms_and_one_immediate_intervention():
     assert '"time_spent_expanded_seconds"' in source
     assert '"peak_train_params"' in source
     assert '"epochs_to_best"' in source
+    assert 'best_checkpoint = output / "checkpoint_best.pt"' in source
+    assert '"kind": "plateau_fork_arm_best"' in source
+    assert 'default=100' in source
+    assert '"--max-opt2-epochs", type=int, default=60' in source
     assert '"plateau_checkpoint_hash": fork_hash' in source
     assert '"train_indices": train_indices' in source
     assert '"trigger_indices": trigger_indices' in source

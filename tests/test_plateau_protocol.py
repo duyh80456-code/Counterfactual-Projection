@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import torch
 
 from experiments import run_plateau_comparison as runner
+from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.plateau_protocol import (
     BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
     ConstantCheckpointScheduler,
@@ -65,6 +66,30 @@ def test_best_checkpoint_stall_tracks_best_and_waits_for_patience():
     restored = BestCheckpointStallDetector(patience=3, min_gain=0.01)
     restored.load_state_dict(detector.state_dict())
     assert restored.state_dict() == detector.state_dict()
+
+
+def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
+    detector = BestCheckpointStallDetector(patience=100, min_gain=0.0)
+    history = []
+    for epoch in range(300, 401):
+        accuracy = 0.77 if epoch == 300 else 0.76
+        detector.update(epoch, accuracy)
+        history.append({
+            "epoch": epoch, "validation_accuracy": accuracy,
+            "validation_loss": 1.0 + (epoch - 300) * 0.001,
+            "epoch_seconds": 2.0, "peak_gpu_memory": 123,
+        })
+    best_path = tmp_path / "checkpoint_best.pt"
+    plateau_path = tmp_path / "plateau_checkpoint.pt"
+    torch.save({"epoch": 300, "kind": "vanilla_best_checkpoint"}, best_path)
+    payload = finalize_best_stall(
+        best_path, plateau_path, detector, history, {}, 42)
+    control = payload["vanilla_control"]
+    assert control["post_fork_epochs"] == 100
+    assert control["fork_validation_accuracy"] == 0.77
+    assert control["final_validation_accuracy"] == 0.76
+    assert control["epochs_to_best"] == 0
+    assert control["training_seconds"] == 200.0
 
 
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():

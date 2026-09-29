@@ -11,11 +11,15 @@ def test_convergence_search_preserves_training_pool_and_saves_full_plateau():
     assert '"--no-new-best-patience"' in source
     assert 'default=100' in source
     assert '"--best-min-gain"' in source
-    assert 'default=1e-3' in source
+    assert 'default=0.0' in source
     assert 'best["kind"] = "plateau_fork_checkpoint"' in source
     assert '"kind": "vanilla_best_checkpoint"' in source
     assert 'best_path = output / "checkpoint_best.pt"' in source
     assert 'evaluation["accuracy"]' in source
+    assert "finalize_best_stall" in source
+    assert '"vanilla_control_history"' in source
+    assert '"vanilla_control"' in source
+    assert "len(control) != detector.patience" in source
     assert '"optimizer": optimizer.state_dict()' in source
     assert '"scheduler": scheduler.state_dict()' in source
     assert '"rng": rng_state()' in source

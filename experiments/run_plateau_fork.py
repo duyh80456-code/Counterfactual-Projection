@@ -43,7 +43,7 @@ def arguments():
     parser.add_argument("--plateau-checkpoint", required=True)
     parser.add_argument("--plateau-checkpoint-hash", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--post-fork-epochs", type=int, default=60)
+    parser.add_argument("--post-fork-epochs", type=int, default=100)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
@@ -62,7 +62,7 @@ def arguments():
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
     parser.add_argument("--opt1-epochs", type=int, default=40)
-    parser.add_argument("--max-opt2-epochs", type=int, default=20)
+    parser.add_argument("--max-opt2-epochs", type=int, default=60)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
     parser.add_argument("--gamma-slope", type=float, default=3e-6)
     return parser.parse_args()
@@ -215,10 +215,14 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"
+    best_checkpoint = output / "checkpoint_best.pt"
     saved = (torch.load(latest, map_location=device, weights_only=False)
              if latest.is_file() else None)
     if saved is not None and saved["protocol"] != protocol:
         raise RuntimeError("plateau-fork resume protocol mismatch")
+    if saved is not None and not best_checkpoint.is_file():
+        raise RuntimeError(
+            "resume requires checkpoint_best.pt beside checkpoint_latest.pt")
 
     phase = "train"
     extension_paths = []
@@ -245,6 +249,9 @@ def main():
     start_offset = 0
     elapsed_before = 0.0
     peak_before = 0
+    best_accuracy = None
+    best_loss = None
+    best_offset = None
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -267,6 +274,9 @@ def main():
         peak_train_params = int(saved.get("peak_train_params", peak_train_params))
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
+        best_accuracy = float(saved["best_validation_accuracy"])
+        best_loss = float(saved["best_validation_loss"])
+        best_offset = int(saved["best_post_fork_epoch"])
 
     if args.method in {"ours_e_driven_o", "o_projection_only"} and intervention is None:
         pre_probe_rng = rng_state()
@@ -294,6 +304,40 @@ def main():
             "evaluation_indices": evaluation_indices,
             "source_tuning_indices": source_tuning,
             "intervention": intervention, "protocol": protocol,
+        })
+
+    # Include the immediate post-intervention state (or the function-preserving
+    # Bypass embedding) in best-checkpoint selection. Offset zero is a valid
+    # best if subsequent SGD never improves on theta_P.
+    if saved is None:
+        initial_validation = evaluate(model, evaluation_loader, device)
+        best_accuracy = float(initial_validation["accuracy"])
+        best_loss = float(initial_validation["loss"])
+        best_offset = 0
+        save_checkpoint(best_checkpoint, {
+            "kind": "plateau_fork_arm_best", "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
+            "rng": rng_state(), "train_loader_generator_state":
+                train_loader.generator.get_state(),
+            "plateau_checkpoint_hash": fork_hash,
+            "train_indices": train_indices,
+            "trigger_indices": trigger_indices,
+            "evaluation_indices": evaluation_indices,
+            "source_tuning_indices": source_tuning,
+            "history": [], "intervention": intervention,
+            "post_fork_epoch": 0, "phase": phase,
+            "opt1_epochs": opt1_done, "opt2_epochs": opt2_done,
+            "train3_epochs": train3_done, "opt2_steps": opt2_steps,
+            "contraction_at_projection": contraction_at_projection,
+            "projection_loss_jump": projection_loss_jump,
+            "extension_paths": extension_paths,
+            "time_spent_expanded_seconds": expanded_seconds,
+            "peak_train_params": peak_train_params,
+            "training_seconds": 0.0, "peak_gpu_memory": 0,
+            "best_validation_accuracy": best_accuracy,
+            "best_validation_loss": best_loss,
+            "best_post_fork_epoch": best_offset,
+            "protocol": protocol,
         })
 
     started = time.perf_counter()
@@ -356,7 +400,11 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
-        save_checkpoint(latest, {
+        if validation["accuracy"] > best_accuracy:
+            best_accuracy = float(validation["accuracy"])
+            best_offset = offset + 1
+        best_loss = min(best_loss, float(validation["loss"]))
+        checkpoint_payload = {
             "kind": "plateau_fork_arm_progress", "model": model.state_dict(),
             "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
             "rng": rng_state(), "train_loader_generator_state":
@@ -376,12 +424,18 @@ def main():
             "time_spent_expanded_seconds": expanded_seconds,
             "peak_train_params": peak_train_params,
             "training_seconds": elapsed, "peak_gpu_memory": peak,
+            "best_validation_accuracy": best_accuracy,
+            "best_validation_loss": best_loss,
+            "best_post_fork_epoch": best_offset,
             "protocol": protocol,
-        })
+        }
+        save_checkpoint(latest, checkpoint_payload)
+        if best_offset == offset + 1:
+            save_checkpoint(best_checkpoint, {
+                **checkpoint_payload, "kind": "plateau_fork_arm_best"})
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
 
     last = history[-1]
-    best_accuracy = max(row["validation_accuracy"] for row in history)
     result = {
         "method": args.method, "fork_epoch": fork_epoch,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
@@ -392,14 +446,12 @@ def main():
         "final_validation_accuracy": last["validation_accuracy"],
         "best_validation_accuracy": best_accuracy,
         "final_validation_loss": last["validation_loss"],
-        "best_validation_loss": min(row["validation_loss"] for row in history),
+        "best_validation_loss": best_loss,
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_evaluation["accuracy"]),
         "best_validation_accuracy_delta": (
             best_accuracy - fork_evaluation["accuracy"]),
-        "epochs_to_best": next(
-            row["post_fork_epoch"] for row in history
-            if row["validation_accuracy"] == best_accuracy),
+        "epochs_to_best": best_offset,
         "training_seconds": elapsed_before + time.perf_counter() - started,
         "peak_gpu_memory": max(
             peak_before, int(torch.cuda.max_memory_allocated(device))),
@@ -410,7 +462,8 @@ def main():
         "bypass_completed": (phase == "train3" if args.method == "bypass" else None),
         "contraction_at_projection": contraction_at_projection,
         "projection_loss_jump": projection_loss_jump,
-        "history": history, "checkpoint": str(latest), "protocol": protocol,
+        "history": history, "checkpoint": str(latest),
+        "best_checkpoint": str(best_checkpoint), "protocol": protocol,
     }
     atomic_json_save(result, output / "result.json")
 

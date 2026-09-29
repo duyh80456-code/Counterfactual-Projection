@@ -25,8 +25,8 @@ creating a false plateau.
 
 The original held-out 5,000 examples are split into 2,000 trigger and 3,000
 validation examples. Every validation improvement is saved immediately as
-`checkpoint_best.pt`. After 100 epochs without a new best of at least 0.1
-percentage point, the run forks from that saved best state—not from the later,
+`checkpoint_best.pt`. After 100 epochs without any new exact best, the run
+forks from that saved best state—not from the later,
 possibly degraded state. Epoch 500 is only a review horizon. If no stall is
 found, attach this notebook's output, increase `MAX_EPOCH`, and rerun; both
 latest progress and the exact best state are restored.
@@ -159,7 +159,7 @@ print("theta300:", THETA300, THETA300_HASH)
     "--seed", "1", "--batch-size", "64", "--validation-samples", "5000",
     "--trigger-samples", "2000",
     "--no-new-best-patience", "100",
-    "--best-min-gain", "0.001"]
+    "--best-min-gain", "0.0"]
 env = os.environ.copy()
 env.update(CUDA_VISIBLE_DEVICES="0", PYTHONUNBUFFERED="1",
            PYTHONPATH=RUNTIME_PYTHONPATH)
