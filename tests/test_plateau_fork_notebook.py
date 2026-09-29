@@ -8,6 +8,9 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
     source = "\n".join("".join(cell.get("source", []))
                        for cell in notebook["cells"])
     assert "discover_checkpoints(" in source
+    assert "sys.path.insert(0, str(REPO))" in source
+    assert (source.index("sys.path.insert(0, str(REPO))") <
+            source.index("from experiments.kaggle_checkpoint_discovery"))
     assert '"/kaggle/input", OUTPUT, kind="plateau_fork_checkpoint"' in source
     assert 'rglob("plateau_checkpoint.pt")' not in source
     assert 'results["vanilla"] = VANILLA_CONTROL' in source

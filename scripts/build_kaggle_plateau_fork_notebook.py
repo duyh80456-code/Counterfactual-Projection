@@ -92,7 +92,9 @@ cifar_dirs = sorted({path.parent.resolve()
 if not cifar_dirs: raise FileNotFoundError("Attach CIFAR-100")
 DATA_ROOT = cifar_dirs[0]
 """),
-    code("""from experiments.kaggle_checkpoint_discovery import discover_checkpoints
+    code("""if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from experiments.kaggle_checkpoint_discovery import discover_checkpoints
 
 forks, rejected = discover_checkpoints(
     "/kaggle/input", OUTPUT, kind="plateau_fork_checkpoint")
