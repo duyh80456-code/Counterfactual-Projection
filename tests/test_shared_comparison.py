@@ -123,11 +123,13 @@ def test_projectability_selector_uses_top_k_projected_utility_and_when_gate(
         "site.a": 2.0 * descent,
         "site.b": 1.0 * descent,
         "site.c": -1.0 * descent,
+        "site.d": 10.0 * descent,
     }
     fitted_directions = {
         "site.a": 0.2 * descent,
         "site.b": 0.8 * descent,
         "site.c": -0.5 * descent,
+        "site.d": 0.9 * descent,
     }
 
     class FakeExpansionProbe:
@@ -173,6 +175,41 @@ def test_projectability_selector_uses_top_k_projected_utility_and_when_gate(
         min_utility=0.0, min_projectability=0.9)
     assert rejected["when_gate_passed"] is False
     assert rejected["when_gate_reason"] == "projectability_below_threshold"
+
+    selected_all, all_sites = select_projectability_aware_candidate(
+        model, [(torch.randn(1, 3), torch.tensor([0]))], selection_batch,
+        rank=4, site="auto", candidate_sites="", device=torch.device("cpu"),
+        gate=0.05, top_k=None, cheap_projector=FakeCheapProjector(),
+        min_utility=0.0, min_projectability=None)
+    assert selected_all.module_name == "site.d"
+    assert all_sites["site_selection_mode"] == "all_sites_projected_utility"
+    assert all_sites["prescreen_top_k_sites"] is None
+    assert all_sites["cheap_projection_sites"] == [
+        "site.a", "site.b", "site.c", "site.d"]
+    assert set(all_sites["site_functional_evaluations"]) == {
+        "site.a", "site.b", "site.c", "site.d"}
+    assert all_sites["selected_projectability_rho"] < 0.5
+    assert all_sites["when_min_projectability"] is None
+    assert all_sites["when_gate_passed"] is True
+
+    class NegativeUtilityProjector:
+        def project(self, _model, _inputs, target, *, block,
+                    parameter_names):
+            fitted = -descent
+            return SimpleNamespace(
+                fitted_delta=fitted,
+                fitted_norm_ratio=float(fitted.norm() / target.norm()),
+                relative_residual=2.0, cosine_alignment=-1.0,
+                cg=SimpleNamespace(iterations=25, converged=True))
+
+    _selected, no_intervention = select_projectability_aware_candidate(
+        model, [(torch.randn(1, 3), torch.tensor([0]))], selection_batch,
+        rank=4, site="auto", candidate_sites="", device=torch.device("cpu"),
+        gate=0.05, top_k=None, cheap_projector=NegativeUtilityProjector(),
+        min_utility=0.0, min_projectability=None)
+    assert no_intervention["when_gate_passed"] is False
+    assert no_intervention["when_gate_reason"] == \
+        "projected_utility_not_above_threshold"
 
 
 def test_projection_only_target_is_negative_summed_ce_logit_gradient():

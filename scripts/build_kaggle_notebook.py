@@ -43,7 +43,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_when_where_how_v5")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_all8_v6")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -130,7 +130,7 @@ for prior_root in prior_roots:
     functional = saved_arm.get("protocol", {}).get("functional_projection", {})
     if (functional.get("site") != "auto" or
             functional.get("site_selection_mode") !=
-            "tiny_topk_projectability_utility"):
+            "all_sites_projected_utility"):
         continue
     for child in prior_root.iterdir():
         destination = OUTPUT / child.name
@@ -229,10 +229,9 @@ ours = [sys.executable, "-m", "experiments.run_shared_comparison",
     "--method", "ours_e_driven_o"] + base_args(OUTPUT / "ours_e_driven_o") + [
     "--shared-checkpoint-hash", SHARED_HASH, "--site", "auto",
     "--candidate-sites", "",
-    "--site-selection-mode", "projectability_utility",
-    "--selection-top-k", "3", "--selection-samples", "16",
+    "--site-selection-mode", "all_projected_utility",
+    "--selection-samples", "16",
     "--selection-cg-iterations", "25",
-    "--selection-min-projectability", "0.05",
     "--rank", "4", "--probe-epsilon", "0.05", "--cg-iterations", "200",
     "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
 bypass = [sys.executable, "-m", "baselines.run_bypass"] + base_args(

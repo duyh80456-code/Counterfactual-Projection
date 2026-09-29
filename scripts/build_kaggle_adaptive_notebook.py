@@ -26,11 +26,11 @@ Required Kaggle inputs:
 2. the complete `shared_seed1_epoch300.pt` and matching JSON manifest.
 
 For each of 50 epochs, one shared statistics set is used to scan all eight
-growing blocks with rank-4 TINY. Raw `proposal_score` only pre-screens top-3.
-A separate 16-sample selection batch and 25-CG cheap projection rank those
-candidates by transferable loss utility. Full functional projection runs only
-when the winner has positive utility and projectability rho at least 0.05. A
-full resumable checkpoint is written after every epoch.
+growing blocks with rank-4 TINY. A separate 16-sample selection batch and
+25-CG cheap projection evaluate every block by transferable loss utility. Raw
+`proposal_score`, projectability, residual, and cosine are diagnostics only.
+Full functional projection runs exactly when the best finite projected utility
+is positive. A full resumable checkpoint is written after every epoch.
 """),
     code("""import hashlib, json, os, shutil, subprocess, sys
 from collections import Counter
@@ -44,7 +44,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/e_driven_o_when_where_how_theta300_350_v2")
+OUTPUT = Path("/kaggle/working/e_driven_o_when_where_how_all8_theta300_350_v3")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -151,14 +151,12 @@ command = [
     "--weight-decay", "5e-4",
     "--site", "auto",
     "--candidate-sites", "",
-    "--site-selection-mode", "projectability_utility",
-    "--selection-top-k", "3",
+    "--site-selection-mode", "all_projected_utility",
     "--selection-samples", "16",
     "--selection-cg-iterations", "25",
     "--selection-cg-relative-tolerance", "5e-2",
     "--selection-preconditioner-probes", "2",
     "--selection-min-utility", "0.0",
-    "--selection-min-projectability", "0.05",
     "--rank", "4",
     "--probe-epsilon", "0.05",
     "--cg-iterations", "200",
@@ -193,7 +191,7 @@ if result["shared_checkpoint_hash"] != SHARED_HASH:
     raise RuntimeError("adaptive arm did not fork from the attached theta_300")
 if result["fork_epoch"] != 300 or result["post_fork_epochs"] != 50:
     raise RuntimeError("adaptive arm did not complete epochs 301-350")
-if result.get("site_selection_mode") != "tiny_topk_projectability_utility":
+if result.get("site_selection_mode") != "all_sites_projected_utility":
     raise RuntimeError("WHEN-WHERE-HOW selector was not active")
 
 selection = result["site_selection_history"]

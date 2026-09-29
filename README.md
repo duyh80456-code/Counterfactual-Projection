@@ -98,18 +98,21 @@ set is never constructed.
 
 At each Ours intervention, `--site auto` evaluates rank-4 TINY proposals at all
 eight growing residual blocks using exactly the same statistics batches. Raw
-`proposal_score` only pre-screens the top three. On a separate 16-sample
-selection batch, each top candidate produces a structural functional direction
-and a cheap 25-CG residual-path projection. The main selector maximizes the
+`proposal_score` is logged but does not filter the main search. On a separate
+16-sample selection batch, every candidate produces a structural functional
+direction and a cheap 25-CG residual-path projection. The main selector maximizes the
 projected loss utility `mean((one_hot(y) - p) * J delta_theta)` rather than the
-raw TINY score. Full projection runs only when the winner has positive utility
-and fitted-norm projectability at least 0.05; otherwise that epoch performs
-normal SGD only. Per-epoch diagnostics preserve all raw scores, top-k expansion
+raw TINY score. Full projection runs only when the best finite projected
+utility is positive; otherwise that epoch performs normal SGD only.
+Projectability rho, residual, and cosine remain solver diagnostics rather than
+scientific thresholds. Per-epoch diagnostics preserve all raw scores, expansion
 utilities, projectabilities, projected utilities, the WHEN decision, and the
 selected site. `--site-selection-mode tiny_score_argmax` retains the old TINY
-argmax ablation, while a concrete `--site stages.2.blocks.0` retains fixed-site
-E-to-O. Full O uses epsilon 0.05, residual-path scope, 200 CG iterations, and
-the existing held-out application gate.
+argmax ablation; `--site-selection-mode fast_topk_projectability` retains the
+top-k plus rho-threshold runtime approximation; and a concrete
+`--site stages.2.blocks.0` retains fixed-site E-to-O. Full O uses epsilon 0.05,
+residual-path scope, 200 CG iterations, and the existing held-out application
+gate.
 
 Bypass follows the relaxed residual-network form of Algorithm 1: every ReLU in
 the residual stages is embedded as `ReLU(x) + D x` with `D=0`; opt1 trains task

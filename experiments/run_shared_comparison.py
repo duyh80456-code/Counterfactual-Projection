@@ -76,8 +76,9 @@ def arguments():
         help="comma-separated TINY sites for --site=auto; empty scans all blocks")
     parser.add_argument(
         "--site-selection-mode",
-        choices=("projectability_utility", "tiny_score_argmax"),
-        default="projectability_utility")
+        choices=("all_projected_utility", "fast_topk_projectability",
+                 "tiny_score_argmax"),
+        default="all_projected_utility")
     parser.add_argument("--selection-top-k", type=int, default=3)
     parser.add_argument("--selection-samples", type=int, default=16)
     parser.add_argument("--selection-cg-iterations", type=int, default=25)
@@ -202,7 +203,12 @@ def select_projectability_aware_candidate(
         model, statistics, selection_batch, *, rank, site, candidate_sites,
         device, gate, top_k, cheap_projector, min_utility,
         min_projectability):
-    """TINY top-k -> cheap O -> loss utility, with an explicit WHEN gate."""
+    """Rank candidates by projected loss utility, with an explicit WHEN gate.
+
+    ``top_k=None`` evaluates every structural site and makes positive utility
+    the only scientific intervention criterion. A finite ``top_k`` plus a
+    projectability threshold is retained only as the fast approximation.
+    """
     synchronize(device)
     started = time.perf_counter()
     candidates = propose_structural_candidates(
@@ -211,13 +217,14 @@ def select_projectability_aware_candidate(
     ranked = sorted(
         candidates, key=lambda candidate: float(candidate.proposal_score),
         reverse=True)
-    prescreened = ranked[:min(top_k, len(ranked))]
-    if not prescreened:
-        raise RuntimeError("TINY pre-screen produced no candidate")
+    evaluated = (ranked if top_k is None
+                 else ranked[:min(top_k, len(ranked))])
+    if not evaluated:
+        raise RuntimeError("structural selector produced no candidate")
     descent = supervised_functional_descent_direction(model, selection_batch)
     evaluations = {}
     viable = []
-    for candidate in prescreened:
+    for candidate in evaluated:
         site_name = str(candidate.module_name)
         signal = CandidateExpansionProbe()(
             model, candidate=candidate, batch=selection_batch, gate=gate)
@@ -264,7 +271,9 @@ def select_projectability_aware_candidate(
             viable, key=lambda item: item[0])
         projectability = selected_evaluation["projectability_rho"]
         utility_passed = projected_utility > min_utility
-        projectability_passed = projectability >= min_projectability
+        projectability_passed = (
+            True if min_projectability is None
+            else projectability >= min_projectability)
         when_passed = utility_passed and projectability_passed
         if not utility_passed:
             reason = "projected_utility_not_above_threshold"
@@ -273,7 +282,7 @@ def select_projectability_aware_candidate(
         else:
             reason = "usable_candidate_found"
     else:
-        selected = prescreened[0]
+        selected = evaluated[0]
         selected_evaluation = evaluations[str(selected.module_name)]
         projected_utility = None
         projectability = 0.0
@@ -281,22 +290,29 @@ def select_projectability_aware_candidate(
         reason = "no_finite_cheap_projection"
     synchronize(device)
     selection = {
-        "site_selection_mode": "tiny_topk_projectability_utility",
+        "site_selection_mode": (
+            "all_sites_projected_utility" if top_k is None
+            else "tiny_topk_projectability_utility"),
         "selected_site": str(selected.module_name),
         "site_scores": {
             str(candidate.module_name): float(candidate.proposal_score)
             for candidate in candidates
         },
         "selected_site_score": float(selected.proposal_score),
-        "prescreen_top_k_sites": [
-            str(candidate.module_name) for candidate in prescreened],
+        "prescreen_top_k_sites": (
+            None if top_k is None else
+            [str(candidate.module_name) for candidate in evaluated]),
+        "cheap_projection_sites": [
+            str(candidate.module_name) for candidate in evaluated],
         "site_functional_evaluations": evaluations,
         "selected_expansion_utility":
             selected_evaluation["expansion_utility"],
         "selected_projectability_rho": projectability,
         "selected_projected_utility": projected_utility,
         "when_min_utility": float(min_utility),
-        "when_min_projectability": float(min_projectability),
+        "when_min_projectability": (
+            None if min_projectability is None
+            else float(min_projectability)),
         "when_gate_passed": when_passed,
         "when_gate_reason": reason,
         "site_selection_seconds": time.perf_counter() - started,
@@ -425,14 +441,19 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
         selection_mode = (
             "fixed_site" if args.site != "auto" else
-            ("tiny_topk_projectability_utility"
-             if args.site_selection_mode == "projectability_utility"
-             else "tiny_score_argmax"))
+            ({
+                "all_projected_utility": "all_sites_projected_utility",
+                "fast_topk_projectability":
+                    "tiny_topk_projectability_utility",
+                "tiny_score_argmax": "tiny_score_argmax",
+            }[args.site_selection_mode]))
+        all_sites_main = selection_mode == "all_sites_projected_utility"
         arm_protocol["functional_projection"] = {
             "site": args.site, "rank": args.rank,
             "candidate_sites": args.candidate_sites,
             "site_selection_mode": selection_mode,
-            "selection_top_k": args.selection_top_k,
+            "selection_top_k": (
+                None if all_sites_main else args.selection_top_k),
             "selection_samples": args.selection_samples,
             "selection_cg_iterations": args.selection_cg_iterations,
             "selection_cg_relative_tolerance":
@@ -441,8 +462,9 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 args.selection_preconditioner_probes,
             "selection_damping": args.selection_damping,
             "selection_min_utility": args.selection_min_utility,
-            "selection_min_projectability":
-                args.selection_min_projectability,
+            "selection_min_projectability": (
+                None if all_sites_main else
+                args.selection_min_projectability),
             "probe_epsilon": args.probe_epsilon,
             "projection_scope": "residual_path",
             "statistics_samples": args.statistics_samples,
@@ -507,16 +529,20 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         if args.method == "ours_e_driven_o":
             statistics, selection_batch, projection_batch = intervention_batches(
                 eval_set, train_indices, args, global_epoch, device)
-            if (args.site == "auto" and
-                    args.site_selection_mode == "projectability_utility"):
+            if (args.site == "auto" and args.site_selection_mode in {
+                    "all_projected_utility", "fast_topk_projectability"}):
+                main_all_sites = (
+                    args.site_selection_mode == "all_projected_utility")
                 candidate, site_selection = select_projectability_aware_candidate(
                     model, statistics, selection_batch, rank=args.rank,
                     site=args.site, candidate_sites=args.candidate_sites,
                     device=device, gate=args.probe_epsilon,
-                    top_k=args.selection_top_k,
+                    top_k=None if main_all_sites else args.selection_top_k,
                     cheap_projector=cheap_projector,
                     min_utility=args.selection_min_utility,
-                    min_projectability=args.selection_min_projectability)
+                    min_projectability=(
+                        None if main_all_sites else
+                        args.selection_min_projectability))
             else:
                 candidate, site_selection = select_structural_candidate(
                     model, statistics, rank=args.rank, site=args.site,
@@ -690,9 +716,12 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
     if args.method == "ours_e_driven_o":
         result_selection_mode = (
             "fixed_site" if args.site != "auto" else
-            ("tiny_topk_projectability_utility"
-             if args.site_selection_mode == "projectability_utility"
-             else "tiny_score_argmax"))
+            ({
+                "all_projected_utility": "all_sites_projected_utility",
+                "fast_topk_projectability":
+                    "tiny_topk_projectability_utility",
+                "tiny_score_argmax": "tiny_score_argmax",
+            }[args.site_selection_mode]))
         result.update({
             "method_label": "e_driven_o_when_where_how",
             "site_selection_mode": result_selection_mode,
@@ -713,6 +742,8 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                         row["diagnostics"]["site_selection_seconds"],
                     "prescreen_top_k_sites":
                         row["diagnostics"].get("prescreen_top_k_sites"),
+                    "cheap_projection_sites":
+                        row["diagnostics"].get("cheap_projection_sites"),
                     "site_functional_evaluations": row["diagnostics"].get(
                         "site_functional_evaluations"),
                     "selected_expansion_utility": row["diagnostics"].get(
