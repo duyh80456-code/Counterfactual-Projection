@@ -1,4 +1,4 @@
-"""Shared-checkpoint CIFAR-100 comparison: Vanilla continuation and E-driven O."""
+"""Shared-checkpoint CIFAR-100 comparison for Vanilla and projection arms."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import math
 import random
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
@@ -26,11 +27,30 @@ from experiments.shared_protocol import (
     rebase_scheduler_from_theta150, save_shared_checkpoint, seed_everything,
     sha256_file, train_epoch)
 from methods import EProjection
+from methods.e_projection import (
+    candidate_projection_block, candidate_projection_parameter_names)
 from probe import CandidateExpansionProbe, CounterfactualTinyProbe
 from projection import FunctionalProjector
 
 
-METHODS = ("prepare_shared", "vanilla_continue", "ours_e_driven_o")
+METHODS = (
+    "prepare_shared", "vanilla_continue", "ours_e_driven_o",
+    "o_projection_only")
+
+
+@torch.no_grad()
+def supervised_functional_descent_direction(model, batch):
+    """Negative summed-CE logit gradient: one_hot(y) - softmax(f(x))."""
+    modes = {module: module.training for module in model.modules()}
+    model.eval()
+    try:
+        logits = model(batch[0]).detach()
+        target = torch.zeros_like(logits).scatter_(
+            1, batch[1].view(-1, 1), 1.0)
+        return target - logits.softmax(dim=1)
+    finally:
+        for module, training in modes.items():
+            module.training = training
 
 
 def arguments():
@@ -201,8 +221,8 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
     if checkpoint["protocol"] != run_protocol:
         raise RuntimeError("shared checkpoint protocol differs from arm protocol")
     arm_protocol = {**run_protocol, "method": args.method}
-    if args.method == "ours_e_driven_o":
-        arm_protocol["e_projection"] = {
+    if args.method in {"ours_e_driven_o", "o_projection_only"}:
+        arm_protocol["functional_projection"] = {
             "site": args.site, "rank": args.rank,
             "probe_epsilon": args.probe_epsilon,
             "projection_scope": "residual_path",
@@ -216,6 +236,9 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 args.application_max_heldout_residual,
             "application_min_heldout_cosine":
                 args.application_min_heldout_cosine,
+            "functional_target": (
+                "structural_TINY_delta" if args.method == "ours_e_driven_o"
+                else "negative_summed_CE_logit_gradient"),
         }
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
@@ -295,6 +318,7 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                     tuning_signal.delta_logits, args.probe_epsilon)
             loss_after = batch_loss(model, tuning_batch)
             diagnostics = {
+                "source": "structural_TINY_E",
                 "correction_applied": application["apply"],
                 "parameter_delta_norm": application["parameter_delta_norm"],
                 "actual_cosine_alignment": actual.get(
@@ -306,6 +330,55 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 "projection_seconds": time.perf_counter() - projection_started,
                 "heldout_evaluation_seconds": heldout_seconds,
                 **heldout_metrics(heldout), **cg_diagnostics(step.projection),
+            }
+        elif args.method == "o_projection_only":
+            _, projection_batch = intervention_batches(
+                eval_set, train_indices, args, global_epoch, device)
+            marker = SimpleNamespace(module_name=args.site)
+            block = candidate_projection_block(model, marker)
+            parameter_names = candidate_projection_parameter_names(
+                model, marker, "residual_path")
+            fit_target = supervised_functional_descent_direction(
+                model, projection_batch)
+            heldout_target = supervised_functional_descent_direction(
+                model, tuning_batch)
+            loss_before = batch_loss(model, tuning_batch)
+            synchronize(device)
+            projection_started = time.perf_counter()
+            projection = projector.project(
+                model, projection_batch[0], fit_target, block=block,
+                parameter_names=parameter_names)
+            heldout, heldout_seconds = evaluate_heldout_direction(
+                projector, model, tuning_batch, heldout_target,
+                projection.parameter_delta, device)
+            application = projection_application_gate(
+                projection.parameter_delta, heldout,
+                max_relative_residual=args.application_max_heldout_residual,
+                min_cosine_alignment=args.application_min_heldout_cosine)
+            baseline_logits = eval_logits(model, tuning_batch[0])
+            actual = {}
+            momentum_resets = 0
+            if application["apply"]:
+                projection.apply_(model, args.probe_epsilon)
+                momentum_resets = reset_projected_momentum(
+                    optimizer, model, projection)
+                actual = actual_update_metrics(
+                    model, tuning_batch[0], baseline_logits,
+                    heldout_target, args.probe_epsilon)
+            diagnostics = {
+                "source": "original_space_supervised_projection_only",
+                "correction_applied": application["apply"],
+                "parameter_delta_norm": application["parameter_delta_norm"],
+                "actual_cosine_alignment": actual.get(
+                    "actual_cosine_alignment"),
+                "actual_relative_residual": actual.get(
+                    "actual_relative_residual"),
+                "loss_before": loss_before,
+                "loss_after": batch_loss(model, tuning_batch),
+                "momentum_states_reset": momentum_resets,
+                "projection_seconds": time.perf_counter() - projection_started,
+                "heldout_evaluation_seconds": heldout_seconds,
+                **heldout_metrics(heldout), **cg_diagnostics(projection),
             }
         train = train_epoch(model, train_loader, optimizer, device)
         scheduler.step()
@@ -355,7 +428,7 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         "initial_deploy_params": initial_params, "history": history,
         "checkpoint": str(arm_checkpoint), "protocol": arm_protocol,
     }
-    if args.method == "ours_e_driven_o":
+    if args.method in {"ours_e_driven_o", "o_projection_only"}:
         result.update({
             "correction_application_rate": len(applied) / len(history),
             "actual_cosine_alignment": (applied[-1].get(

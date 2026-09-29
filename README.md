@@ -65,17 +65,21 @@ and loader state. Vanilla then continues for another 150 epochs. The LR at
 epoch 150 is preserved and a new cosine segment anneals it to zero at epoch
 350.
 
-All three trajectories therefore have the same 350-epoch budget:
+All four trajectories therefore have the same 350-epoch budget:
 
 ```text
 theta_300
   +-- vanilla_continue: 50 epochs
   +-- ours_e_driven_o: 50 epochs
   +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
+  +-- o_projection_only: 50 epochs
 ```
 
-Wave 1 runs Ours on GPU 0 and Bypass on GPU 1. Wave 2 runs the cheaper vanilla
-continuation on GPU 0. Each arm atomically saves `checkpoint_latest.pt` after
+Wave 1 runs Ours on GPU 0 and Bypass on GPU 1. Wave 2 runs Vanilla on GPU 0 and
+O/projection-only on GPU 1. Projection-only uses no virtual expansion: its
+functional target is the negative summed-cross-entropy logit gradient
+`one_hot(y) - softmax(f(x))`, fitted through the same residual-path projector
+and application gate as Ours. Each arm atomically saves `checkpoint_latest.pt` after
 every epoch, including model, optimizer, scheduler, complete history, exact
 split indices, RNG, phase, and loader-generator state. Burn-in likewise writes
 a full rolling `shared_seed1_progress.pt`; a new Kaggle session can resume by

@@ -1,4 +1,4 @@
-"""Shared CIFAR-100 fork protocol for Vanilla, E-driven O, and Bypass."""
+"""Shared CIFAR-100 fork protocol for Vanilla, projection arms, and Bypass."""
 
 from __future__ import annotations
 

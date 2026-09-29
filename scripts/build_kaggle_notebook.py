@@ -20,10 +20,10 @@ cells = [
 The full theta_150 checkpoint is resumed with its optimizer and RNG state, then
 continued under Vanilla for another 150 epochs. The exact
 model, optimizer, scheduler, data split, loader generator, and RNG state at
-`theta_300` are hashed and forked into three 50-epoch arms:
+`theta_300` are hashed and forked into four 50-epoch arms:
 
 - `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1), concurrently;
-- `vanilla_continue` (GPU 0) in wave 2.
+- `vanilla_continue` (GPU 0) and `o_projection_only` (GPU 1) in wave 2.
 
 The total budget is 350 epochs for every arm. The official CIFAR-100 test set is
 never constructed. Every process saves a resumable checkpoint each epoch.
@@ -221,14 +221,21 @@ run_wave([(0, "ours_e_driven_o", ours), (1, "bypass", bypass)])
     code("""vanilla = [sys.executable, "-m", "experiments.run_shared_comparison",
     "--method", "vanilla_continue"] + base_args(OUTPUT / "vanilla_continue") + [
     "--shared-checkpoint-hash", SHARED_HASH]
-print("Wave 2/2: Vanilla continuation")
-run_wave([(0, "vanilla_continue", vanilla)])
+projection_only = [sys.executable, "-m", "experiments.run_shared_comparison",
+    "--method", "o_projection_only"] + base_args(OUTPUT / "o_projection_only") + [
+    "--shared-checkpoint-hash", SHARED_HASH, "--site", "stages.2.blocks.0",
+    "--probe-epsilon", "0.05", "--cg-iterations", "200",
+    "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
+print("Wave 2/2: Vanilla + O/projection-only")
+run_wave([(0, "vanilla_continue", vanilla),
+          (1, "o_projection_only", projection_only)])
 """),
     code("""required = {"method", "shared_checkpoint_hash", "fork_epoch",
     "post_fork_epochs", "final_validation_accuracy", "best_validation_accuracy",
     "final_validation_loss", "training_seconds", "peak_gpu_memory", "deploy_params"}
 results = []
-for name in ("ours_e_driven_o", "bypass", "vanilla_continue"):
+for name in ("ours_e_driven_o", "bypass", "vanilla_continue",
+             "o_projection_only"):
     path = OUTPUT / name / "result.json"
     result = json.loads(path.read_text())
     missing = sorted(required - result.keys())

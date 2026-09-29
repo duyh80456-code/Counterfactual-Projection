@@ -7,7 +7,9 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
         "notebooks/kaggle_counterfactual_projection_t4x2.ipynb").read_text())
     source = "\n".join("".join(cell.get("source", []))
                        for cell in notebook["cells"])
-    for method in ("ours_e_driven_o", "bypass", "vanilla_continue"):
+    for method in (
+            "ours_e_driven_o", "bypass", "vanilla_continue",
+            "o_projection_only"):
         assert method in source
     assert "TOTAL_EPOCHS = 350" in source
     assert "FORK_EPOCH = 300" in source
@@ -20,6 +22,7 @@ def test_shared_checkpoint_notebook_is_restart_safe_and_uses_two_gpus():
     assert "Restored prior run" in source
     assert "Wave 1/2" in source and "Wave 2/2" in source
     assert '(0, "ours_e_driven_o", ours), (1, "bypass", bypass)' in source
+    assert '(1, "o_projection_only", projection_only)' in source
     assert "stdout=subprocess.PIPE" in source
     assert 'print(f"[{name}] {line}"' in source
     assert 'result.get("contraction_criterion_met") is not True' in source

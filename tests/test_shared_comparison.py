@@ -12,6 +12,8 @@ from experiments.shared_protocol import (
     BOOTSTRAP_EPOCH, FORK_EPOCH, POST_FORK_EPOCHS, TOTAL_EPOCHS,
     load_shared_checkpoint, rebase_scheduler_from_theta150, restore_rng,
     save_shared_checkpoint)
+from experiments.run_shared_comparison import (
+    supervised_functional_descent_direction)
 
 
 class ToyResidualModel(nn.Module):
@@ -24,6 +26,22 @@ class ToyResidualModel(nn.Module):
 
     def forward(self, inputs):
         return self.core.stages(inputs)
+
+
+def test_projection_only_target_is_negative_summed_ce_logit_gradient():
+    model = nn.Linear(3, 2, bias=False)
+    inputs = torch.tensor([[1.0, 0.0, -1.0], [0.0, 2.0, 1.0]])
+    targets = torch.tensor([0, 1])
+    with torch.no_grad():
+        logits = model(inputs)
+        expected = torch.nn.functional.one_hot(
+            targets, num_classes=2).to(logits) - logits.softmax(dim=1)
+
+    direction = supervised_functional_descent_direction(
+        model, (inputs, targets))
+
+    assert torch.allclose(direction, expected)
+    assert torch.allclose(direction.sum(dim=1), torch.zeros(2), atol=1e-7)
 
 
 def test_relaxed_bypass_embed_and_projection_are_function_preserving():
