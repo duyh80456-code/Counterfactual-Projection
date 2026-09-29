@@ -49,6 +49,12 @@ python3 -m pytest
 
 ## Kaggle T4 x2 shared-checkpoint run
 
+To run only the current main algorithm from an existing theta-300 warm-up,
+use [`notebooks/kaggle_adaptive_e_driven_o.ipynb`](notebooks/kaggle_adaptive_e_driven_o.ipynb).
+It requires only CIFAR-100 plus the matching `shared_seed1_epoch300.pt/json`,
+does not run any comparison arm or warm-up, and writes a complete resumable
+adaptive-arm checkpoint after every epoch.
+
 Use
 [`notebooks/kaggle_counterfactual_projection_t4x2.ipynb`](notebooks/kaggle_counterfactual_projection_t4x2.ipynb).
 Enable **T4 x2**, attach CIFAR-100 with a `cifar-100-python` directory, and add
