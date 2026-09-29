@@ -15,22 +15,25 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 2 — Three-arm fork from converged theta_P
+    markdown("""# Phase 2 — Four-arm fork from converged theta_P
 
 Attach the Phase-1 output containing `plateau_checkpoint.pt`. This notebook
 forks its exact model, optimizer, constant-LR scheduler, RNG, loader state, and
-data split into three 60-epoch arms:
+data split into four 60-epoch arms:
 
 - Vanilla continuation;
 - relaxed matched-budget Bypass (40 opt1 + up to 20 opt2; never force-project);
 - Ours: one immediate all-eight-site structural E scan, E-gain WHERE selection,
   winner-only O projection, independent gate line search, then ordinary SGD.
+- O-only: one supervised functional projection at the fixed residual-path site,
+  the same independent gate/line search, then ordinary SGD.
 
-Wave 1 uses both T4 GPUs for Ours and Bypass. Wave 2 runs Vanilla. The official
-test set is never constructed. Bypass accuracy remains diagnostic if contraction
-does not complete within the matched budget.
+The two T4 GPUs consume a dynamic job queue. Ours and Bypass start first; as soon
+as either GPU becomes free it immediately receives O-only, then Vanilla. The
+official test set is never constructed. Bypass accuracy remains diagnostic if
+contraction does not complete within the matched budget.
 """),
-    code("""import hashlib, json, os, shutil, subprocess, sys, threading, zipfile
+    code("""import hashlib, json, os, shutil, subprocess, sys, threading, time, zipfile
 from pathlib import Path
 from kaggle_secrets import UserSecretsClient
 
@@ -41,7 +44,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/plateau_fork_three_arm_60ep_v1")
+OUTPUT = Path("/kaggle/working/plateau_fork_four_arm_60ep_v2")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -130,40 +133,46 @@ print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 commands = {
     name: [sys.executable, "-m", "experiments.run_plateau_fork",
            "--method", name] + base_args(OUTPUT / name)
-    for name in ("vanilla", "bypass", "ours_e_driven_o")}
+    for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
 
-def run_wave(assignments):
-    running = []
-    def stream(name, process, log):
-        for line in process.stdout:
-            log.write(line); log.flush()
-            print(f"[{name}] {line}", end="", flush=True)
-    for gpu, name in assignments:
-        out = OUTPUT / name; out.mkdir(parents=True, exist_ok=True)
-        log = (out / "run.log").open("a", buffering=1)
-        env = os.environ.copy()
-        env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
-                   PYTHONPATH=RUNTIME_PYTHONPATH)
-        process = subprocess.Popen(
-            commands[name], cwd=REPO, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1)
-        thread = threading.Thread(target=stream, args=(name, process, log), daemon=True)
-        thread.start(); running.append((name, process, thread, log))
-        print(f"GPU{gpu}: started {name}, pid={process.pid}")
-    failures = []
-    for name, process, thread, log in running:
-        code = process.wait(); thread.join(); log.close()
+def stream(name, process, log):
+    for line in process.stdout:
+        log.write(line); log.flush()
+        print(f"[{name}] {line}", end="", flush=True)
+
+def launch(gpu, name):
+    out = OUTPUT / name; out.mkdir(parents=True, exist_ok=True)
+    log = (out / "run.log").open("a", buffering=1)
+    env = os.environ.copy()
+    env.update(CUDA_VISIBLE_DEVICES=str(gpu), PYTHONUNBUFFERED="1",
+               PYTHONPATH=RUNTIME_PYTHONPATH)
+    process = subprocess.Popen(
+        commands[name], cwd=REPO, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1)
+    thread = threading.Thread(target=stream, args=(name, process, log), daemon=True)
+    thread.start()
+    print(f"GPU{gpu}: started {name}, pid={process.pid}")
+    return name, process, thread, log
+
+pending = ["ours_e_driven_o", "bypass", "o_projection_only", "vanilla"]
+running = {gpu: launch(gpu, pending.pop(0)) for gpu in (0, 1)}
+failures = []
+while running:
+    for gpu, (name, process, thread, log) in list(running.items()):
+        code = process.poll()
+        if code is None: continue
+        thread.join(); log.close(); del running[gpu]
         print(name, "exit=", code)
         if code: failures.append((name, code))
-    if failures: raise RuntimeError(f"failed arms: {failures}")
-
-print("Wave 1/2: Ours + Bypass")
-run_wave([(0, "ours_e_driven_o"), (1, "bypass")])
-print("Wave 2/2: Vanilla")
-run_wave([(0, "vanilla")])
+        if pending:
+            running[gpu] = launch(gpu, pending.pop(0))
+    if running:
+        time.sleep(1)
+if failures:
+    raise RuntimeError(f"failed arms: {failures}")
 """),
     code("""results = {name: json.loads((OUTPUT / name / "result.json").read_text())
-           for name in ("vanilla", "bypass", "ours_e_driven_o")}
+           for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
 for name, result in results.items():
     if result["plateau_checkpoint_hash"] != PLATEAU_HASH:
         raise RuntimeError(f"{name} used another theta_P")
@@ -203,4 +212,3 @@ destination = Path("notebooks/kaggle_plateau_fork_t4x2.ipynb")
 destination.parent.mkdir(parents=True, exist_ok=True)
 destination.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
 print(destination)
-

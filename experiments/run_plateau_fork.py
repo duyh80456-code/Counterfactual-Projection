@@ -6,22 +6,33 @@ import argparse
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
+from torch.utils.data import DataLoader, Subset
 
 from baselines.bypass import (
     add_extension_parameters_, contraction_norm, embed_relaxed_bypass,
     extension_parameters, project_ready_activations, transition_from_opt2_)
 from experiments.plateau_protocol import ConstantCheckpointScheduler
-from experiments.run_plateau_comparison import run_intervention
+from experiments.run_gromo_pilot import (
+    actual_update_metrics, batch_loss, cg_diagnostics, eval_logits,
+    evaluate_heldout_direction, heldout_metrics, parameter_delta_norm,
+    preview_projected_gain, reset_projected_momentum)
+from experiments.run_plateau_comparison import finite_projection, run_intervention
+from experiments.run_shared_comparison import (
+    supervised_functional_descent_direction)
 from experiments.shared_protocol import (
     atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
     build_optimizer_scheduler, datasets_and_indices, evaluate,
     make_eval_loader, make_train_loader, restore_rng, rng_state,
     seed_everything, sha256_file, train_epoch)
+from methods.e_projection import (
+    candidate_projection_block, candidate_projection_parameter_names)
+from projection import FunctionalProjector
 
 
-METHODS = ("vanilla", "bypass", "ours_e_driven_o")
+METHODS = ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")
 
 
 def arguments():
@@ -37,6 +48,7 @@ def arguments():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
+    parser.add_argument("--site", default="stages.2.blocks.0")
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--statistics-samples", type=int, default=256)
@@ -58,6 +70,76 @@ def arguments():
 
 def save_checkpoint(path, payload):
     atomic_torch_save({"format_version": 1, **payload}, path)
+
+
+def run_o_only_intervention(model, optimizer, eval_set, train_indices,
+                            args, device):
+    """One supervised projection-only control at theta_P."""
+    generator = torch.Generator().manual_seed(911_731 + args.seed * 10_000)
+    order = torch.randperm(len(train_indices), generator=generator).tolist()
+    count = args.projection_samples + args.gate_samples
+    selected = [train_indices[index] for index in order[:count]]
+
+    def one_batch(indices):
+        loader = DataLoader(
+            Subset(eval_set, indices), batch_size=len(indices), shuffle=False,
+            num_workers=args.workers, pin_memory=True)
+        return tuple(value.to(device, non_blocking=True)
+                     for value in next(iter(loader)))
+
+    projection_batch = one_batch(selected[:args.projection_samples])
+    gate_batch = one_batch(selected[args.projection_samples:])
+    marker = SimpleNamespace(module_name=args.site)
+    block = candidate_projection_block(model, marker)
+    parameter_names = candidate_projection_parameter_names(
+        model, marker, "residual_path")
+    projector = FunctionalProjector(
+        args.damping, args.cg_iterations,
+        tolerance=args.cg_relative_tolerance,
+        preconditioner_probes=args.cg_preconditioner_probes)
+    fit_target = supervised_functional_descent_direction(
+        model, projection_batch)
+    projection = projector.project(
+        model, projection_batch[0], fit_target, block=block,
+        parameter_names=parameter_names)
+    gate_target = supervised_functional_descent_direction(model, gate_batch)
+    heldout, heldout_seconds = evaluate_heldout_direction(
+        projector, model, gate_batch, gate_target,
+        projection.parameter_delta, device)
+    scales = [float(value) for value in args.line_search_scales.split(",")]
+    gains = {str(scale): preview_projected_gain(
+        model, projection, scale, gate_batch) for scale in scales}
+    best_scale = max(scales, key=lambda scale: gains[str(scale)])
+    best_gain = gains[str(best_scale)]
+    loss_before = batch_loss(model, gate_batch)
+    baseline_logits = eval_logits(model, gate_batch[0])
+    applied = finite_projection(projection) and best_gain > 0
+    actual = {}
+    momentum_resets = 0
+    if applied:
+        projection.apply_(model, best_scale)
+        momentum_resets = reset_projected_momentum(
+            optimizer, model, projection)
+        actual = actual_update_metrics(
+            model, gate_batch[0], baseline_logits, gate_target, best_scale)
+    loss_after = batch_loss(model, gate_batch)
+    return {
+        "source": "supervised_projection_only_control",
+        "functional_target": "one_hot_minus_softmax",
+        "uses_structural_E": False, "selected_site": args.site,
+        "correction_applied": applied,
+        "selected_scale": best_scale if applied else None,
+        "line_search_gains": gains,
+        "parameter_delta_norm": float(parameter_delta_norm(
+            projection.parameter_delta)),
+        "loss_before": loss_before, "loss_after": loss_after,
+        "actual_loss_improvement": loss_before - loss_after,
+        "actual_cosine_alignment": actual.get("actual_cosine_alignment"),
+        "actual_relative_residual": actual.get("actual_relative_residual"),
+        "momentum_states_reset": momentum_resets,
+        "heldout_evaluation_seconds": heldout_seconds,
+        **heldout_metrics(heldout), **cg_diagnostics(projection),
+    }
 
 
 def main():
@@ -117,7 +199,12 @@ def main():
         "scheduler_state_preserved": True,
         "training_indices_unchanged": True,
         "official_test_used": False,
-        "ours_interventions": (1 if args.method == "ours_e_driven_o" else 0),
+        "structural_E_interventions": (
+            1 if args.method == "ours_e_driven_o" else 0),
+        "supervised_O_interventions": (
+            1 if args.method == "o_projection_only" else 0),
+        "o_projection_site": (
+            args.site if args.method == "o_projection_only" else None),
         "bypass_schedule": ({
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,
@@ -180,12 +267,16 @@ def main():
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
 
-    if args.method == "ours_e_driven_o" and intervention is None:
+    if args.method in {"ours_e_driven_o", "o_projection_only"} and intervention is None:
         pre_probe_rng = rng_state()
         intervention_started = time.perf_counter()
         try:
-            intervention = run_intervention(
-                model, optimizer, eval_set, train_indices, args, device, 0)
+            if args.method == "ours_e_driven_o":
+                intervention = run_intervention(
+                    model, optimizer, eval_set, train_indices, args, device, 0)
+            else:
+                intervention = run_o_only_intervention(
+                    model, optimizer, eval_set, train_indices, args, device)
         finally:
             restore_rng(pre_probe_rng)
         intervention["epoch"] = fork_epoch

@@ -61,11 +61,13 @@ The current main experiment is split into two notebooks:
    to resume if no plateau was found. A detected plateau writes a complete
    `plateau_checkpoint.pt` (theta_P).
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
-   forks exactly theta_P into Vanilla, relaxed matched-budget Bypass, and one
-   immediate E→O intervention followed by SGD, each for 60 epochs. All arms
+   forks exactly theta_P into Vanilla, supervised O-only, relaxed matched-budget
+   Bypass, and one immediate E→O intervention followed by SGD, each for 60 epochs. All arms
    inherit the same model, optimizer, scheduler, momentum, RNG, training order,
    and held-out split. It reports final/best gain, epochs to best, wall time,
-   peak memory/parameters, and time spent expanded. An uncontracted Bypass run
+   peak memory/parameters, and time spent expanded. The two GPUs consume a
+   dynamic queue, so the next pending arm starts as soon as either GPU is free.
+   An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 
 For the exact-original-schedule plateau experiment from shared theta-300,

@@ -1,15 +1,18 @@
 from pathlib import Path
 
 
-def test_plateau_fork_has_three_arms_and_one_immediate_e_intervention():
+def test_plateau_fork_has_four_arms_and_one_immediate_intervention():
     source = Path("experiments/run_plateau_fork.py").read_text()
-    assert 'METHODS = ("vanilla", "bypass", "ours_e_driven_o")' in source
+    assert '"o_projection_only")' in source
     assert 'source.get("kind") != "plateau_fork_checkpoint"' in source
     assert "optimizer.load_state_dict(source[\"optimizer\"])" in source
     assert "scheduler.load_state_dict(source[\"scheduler\"])" in source
     assert "train_indices = list(source[\"train_indices\"])" in source
-    assert '"ours_interventions": (1 if' in source
+    assert '"structural_E_interventions": (' in source
     assert "run_intervention(" in source
+    assert "run_o_only_intervention(" in source
+    assert "supervised_functional_descent_direction" in source
+    assert '"supervised_O_interventions"' in source
     assert "pre_probe_rng = rng_state()" in source
     assert "restore_rng(pre_probe_rng)" in source
     assert "embed_relaxed_bypass" in source
