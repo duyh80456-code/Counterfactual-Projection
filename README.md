@@ -71,7 +71,7 @@ All four trajectories therefore have the same 350-epoch budget:
 ```text
 theta_300
   +-- vanilla_continue: 50 epochs
-  +-- ours_e_driven_o: 50 epochs
+  +-- ours_e_driven_o: 50 epochs (adaptive TINY-score site selection)
   +-- bypass: opt1 20, opt2 until contraction, train3 for the remainder
   +-- o_projection_only: 50 epochs (projection-only supervised control)
 ```
@@ -90,11 +90,17 @@ a full rolling `shared_seed1_progress.pt`; a new Kaggle session can resume by
 attaching the previous output as an input dataset. The official CIFAR-100 test
 set is never constructed.
 
-Ours retains the fixed `stages.2.blocks.0`, rank 4, epsilon 0.05, residual-path
-projection protocol. It logs both tangent fit and the realized nonlinear
-functional change after applying each accepted correction. CG convergence is
-diagnostic; a finite best-damping solution is applied according to held-out
-functional residual and cosine.
+At each Ours intervention, `--site auto` evaluates rank-4 TINY proposals at all
+eight growing residual blocks using exactly the same statistics batches. The
+largest raw `proposal_score` selects where temporary expansion is instantiated;
+functional projection runs only for that selected site with epsilon 0.05 and
+residual-path scope. Per-epoch diagnostics record the full site-score map,
+selected site and score, and selection time. A concrete `--site`, such as
+`stages.2.blocks.0`, remains available for the fixed-site ablation but is not
+used in the main four-arm run. Ours logs both tangent fit and the realized
+nonlinear functional change after applying each accepted correction. CG
+convergence is diagnostic; a finite best-damping solution is applied according
+to held-out functional residual and cosine.
 
 Bypass follows the relaxed residual-network form of Algorithm 1: every ReLU in
 the residual stages is embedded as `ReLU(x) + D x` with `D=0`; opt1 trains task

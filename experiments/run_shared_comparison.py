@@ -70,7 +70,10 @@ def arguments():
     parser.add_argument("--tuning-samples", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
-    parser.add_argument("--site", default="stages.2.blocks.0")
+    parser.add_argument("--site", default="auto")
+    parser.add_argument(
+        "--candidate-sites", default="",
+        help="comma-separated TINY sites for --site=auto; empty scans all blocks")
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--statistics-samples", type=int, default=256)
@@ -103,6 +106,52 @@ def intervention_batches(eval_set, train_indices, args, epoch, device):
     projection_batch = tuple(value.to(device, non_blocking=True)
                              for value in next(iter(projection_loader)))
     return list(statistics_loader), projection_batch
+
+
+def structural_candidate_sites(model, site, candidate_sites=""):
+    """Resolve the structural-E search space without sampling new data."""
+    if site != "auto":
+        return [site]
+    requested = [value.strip() for value in candidate_sites.split(",")
+                 if value.strip()]
+    return requested or [ref.name for ref in model.growing_blocks()]
+
+
+def select_structural_candidate(model, statistics, *, rank, site,
+                                candidate_sites, device):
+    """Run TINY at every requested site on one shared statistics batch set."""
+    from dual_growth.adapters import TinyAdapter
+    from dual_growth.controller import GrowthBudget
+
+    sites = structural_candidate_sites(model, site, candidate_sites)
+    if not sites:
+        raise RuntimeError("structural-E candidate site set is empty")
+    synchronize(device)
+    started = time.perf_counter()
+    candidates = []
+    for candidate_site in sites:
+        adapter = TinyAdapter(
+            quantum_params=10**9,
+            max_statistics_batches=len(statistics))
+        candidate = CounterfactualTinyProbe(rank, candidate_site).propose(
+            adapter, model, statistics, GrowthBudget(10**9),
+            sample_inputs=statistics[0][0])
+        candidates.append(candidate)
+    selected = max(
+        candidates, key=lambda candidate: float(candidate.proposal_score))
+    synchronize(device)
+    selection = {
+        "site_selection_mode": (
+            "tiny_score_argmax" if site == "auto" else "fixed_site"),
+        "selected_site": str(selected.module_name),
+        "site_scores": {
+            str(candidate.module_name): float(candidate.proposal_score)
+            for candidate in candidates
+        },
+        "selected_site_score": float(selected.proposal_score),
+        "site_selection_seconds": time.perf_counter() - started,
+    }
+    return selected, selection
 
 
 def prepare_shared(args, device, model, optimizer, scheduler, train_set,
@@ -213,6 +262,8 @@ def save_arm_checkpoint(path, *, model, optimizer, scheduler, history,
 
 def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
             train_indices, validation_indices, tuning_indices, run_protocol):
+    if args.method == "o_projection_only" and args.site == "auto":
+        raise ValueError("o_projection_only requires one concrete --site")
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     checkpoint, shared_hash = load_shared_checkpoint(
@@ -224,6 +275,9 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
         arm_protocol["functional_projection"] = {
             "site": args.site, "rank": args.rank,
+            "candidate_sites": args.candidate_sites,
+            "site_selection_mode": (
+                "tiny_score_argmax" if args.site == "auto" else "fixed_site"),
             "probe_epsilon": args.probe_epsilon,
             "projection_scope": "residual_path",
             "statistics_samples": args.statistics_samples,
@@ -275,8 +329,6 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         tolerance=args.cg_relative_tolerance,
         preconditioner_probes=args.cg_preconditioner_probes)
     e_projection = EProjection(projector=projector)
-    from dual_growth.adapters import TinyAdapter
-    from dual_growth.controller import GrowthBudget
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
     for post_epoch in range(start_epoch, POST_FORK_EPOCHS):
@@ -285,11 +337,9 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
         if args.method == "ours_e_driven_o":
             statistics, projection_batch = intervention_batches(
                 eval_set, train_indices, args, global_epoch, device)
-            adapter = TinyAdapter(
-                quantum_params=10**9, max_statistics_batches=len(statistics))
-            candidate = CounterfactualTinyProbe(args.rank, args.site).propose(
-                adapter, model, statistics, GrowthBudget(10**9),
-                sample_inputs=statistics[0][0])
+            candidate, site_selection = select_structural_candidate(
+                model, statistics, rank=args.rank, site=args.site,
+                candidate_sites=args.candidate_sites, device=device)
             tuning_signal = CandidateExpansionProbe()(
                 model, candidate=candidate, batch=tuning_batch,
                 gate=args.probe_epsilon)
@@ -329,6 +379,7 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 "momentum_states_reset": momentum_resets,
                 "projection_seconds": time.perf_counter() - projection_started,
                 "heldout_evaluation_seconds": heldout_seconds,
+                **site_selection,
                 **heldout_metrics(heldout), **cg_diagnostics(step.projection),
             }
         elif args.method == "o_projection_only":
@@ -436,6 +487,23 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 "negative summed-CE logit gradient: "
                 "one_hot(y) - softmax(f_theta(x))"),
             "uses_structural_E": False,
+        })
+    if args.method == "ours_e_driven_o":
+        result.update({
+            "site_selection_mode": (
+                "tiny_score_argmax" if args.site == "auto" else "fixed_site"),
+            "site_selection_history": [
+                {
+                    "epoch": row["epoch"],
+                    "selected_site": row["diagnostics"]["selected_site"],
+                    "selected_site_score":
+                        row["diagnostics"]["selected_site_score"],
+                    "site_scores": row["diagnostics"]["site_scores"],
+                    "site_selection_seconds":
+                        row["diagnostics"]["site_selection_seconds"],
+                }
+                for row in history
+            ],
         })
     if args.method in {"ours_e_driven_o", "o_projection_only"}:
         result.update({

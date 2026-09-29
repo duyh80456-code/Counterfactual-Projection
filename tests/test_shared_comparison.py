@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+import sys
+import types
 
 import torch
 from torch import nn
@@ -13,6 +15,7 @@ from experiments.shared_protocol import (
     load_shared_checkpoint, rebase_scheduler_from_theta150, restore_rng,
     save_shared_checkpoint)
 from experiments.run_shared_comparison import (
+    select_structural_candidate, structural_candidate_sites,
     supervised_functional_descent_direction)
 
 
@@ -26,6 +29,66 @@ class ToyResidualModel(nn.Module):
 
     def forward(self, inputs):
         return self.core.stages(inputs)
+
+
+def test_structural_candidate_sites_scan_all_or_preserve_fixed_site():
+    model = SimpleNamespace(growing_blocks=lambda: [
+        SimpleNamespace(name="stages.0.blocks.0"),
+        SimpleNamespace(name="stages.1.blocks.0"),
+    ])
+
+    assert structural_candidate_sites(model, "auto") == [
+        "stages.0.blocks.0", "stages.1.blocks.0"]
+    assert structural_candidate_sites(
+        model, "auto", " stages.1.blocks.0, stages.0.blocks.0 ") == [
+            "stages.1.blocks.0", "stages.0.blocks.0"]
+    assert structural_candidate_sites(
+        model, "stages.2.blocks.0") == ["stages.2.blocks.0"]
+
+
+def test_structural_selector_reuses_statistics_and_selects_max_score(
+        monkeypatch):
+    adapters = types.ModuleType("dual_growth.adapters")
+    controllers = types.ModuleType("dual_growth.controller")
+    adapters.TinyAdapter = lambda **_kwargs: object()
+    controllers.GrowthBudget = lambda _budget: object()
+    monkeypatch.setitem(sys.modules, "dual_growth", types.ModuleType("dual_growth"))
+    monkeypatch.setitem(sys.modules, "dual_growth.adapters", adapters)
+    monkeypatch.setitem(sys.modules, "dual_growth.controller", controllers)
+    seen_statistics = []
+    scores = {"site.a": 0.25, "site.b": 0.75}
+
+    class FakeProbe:
+        def __init__(self, rank, module_name):
+            assert rank == 4
+            self.module_name = module_name
+
+        def propose(self, _adapter, _model, statistics, _budget,
+                    sample_inputs=None):
+            seen_statistics.append(statistics)
+            assert sample_inputs is statistics[0][0]
+            return SimpleNamespace(
+                module_name=self.module_name,
+                proposal_score=scores[self.module_name])
+
+    monkeypatch.setattr(
+        "experiments.run_shared_comparison.CounterfactualTinyProbe", FakeProbe)
+    model = SimpleNamespace(growing_blocks=lambda: [
+        SimpleNamespace(name="site.a"), SimpleNamespace(name="site.b")])
+    statistics = [(torch.randn(2, 3), torch.tensor([0, 1]))]
+
+    selected, diagnostics = select_structural_candidate(
+        model, statistics, rank=4, site="auto", candidate_sites="",
+        device=torch.device("cpu"))
+
+    assert selected.module_name == "site.b"
+    assert [id(value) for value in seen_statistics] == [
+        id(statistics), id(statistics)]
+    assert diagnostics["site_selection_mode"] == "tiny_score_argmax"
+    assert diagnostics["selected_site"] == "site.b"
+    assert diagnostics["site_scores"] == scores
+    assert diagnostics["selected_site_score"] == scores["site.b"]
+    assert diagnostics["site_selection_seconds"] >= 0
 
 
 def test_projection_only_target_is_negative_summed_ce_logit_gradient():
@@ -152,6 +215,15 @@ def test_bypass_projects_contracted_extension_and_enters_train3():
 def test_bypass_result_uses_explicit_completed_field():
     source = Path("baselines/run_bypass.py").read_text()
     assert '"bypass_completed": phase == "train3"' in source
+
+
+def test_adaptive_result_preserves_per_epoch_site_selection_history():
+    source = Path("experiments/run_shared_comparison.py").read_text()
+    assert '"site_selection_history": [' in source
+    for field in (
+            "selected_site", "selected_site_score", "site_scores",
+            "site_selection_seconds"):
+        assert f'"{field}"' in source
 
 
 def test_restore_rng_moves_mapped_cuda_states_back_to_cpu(monkeypatch):

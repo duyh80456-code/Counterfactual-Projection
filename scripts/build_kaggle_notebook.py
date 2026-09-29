@@ -22,7 +22,8 @@ continued under Vanilla for another 150 epochs. The exact
 model, optimizer, scheduler, data split, loader generator, and RNG state at
 `theta_300` are hashed and forked into four 50-epoch arms:
 
-- `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1), concurrently;
+- adaptive-site `ours_e_driven_o` (GPU 0) and relaxed Bypass (GPU 1),
+  concurrently;
 - `vanilla_continue` (GPU 0) and `o_projection_only` (GPU 1) in wave 2.
 
 The total budget is 350 epochs for every arm. The official CIFAR-100 test set is
@@ -42,7 +43,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_v3")
+OUTPUT = Path("/kaggle/working/counterfactual_shared_theta300_350ep_adaptive_v4")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -117,16 +118,32 @@ LR = 0.1
 WEIGHT_DECAY = 5e-4
 SHARED_CHECKPOINT = OUTPUT / "warmup" / "shared_seed1_epoch300.pt"
 
-# Restore a previous Kaggle output archive/dataset before deciding what to run.
-for prior_manifest in Path("/kaggle/input").rglob("shared_seed1_epoch300.json"):
-    prior_root = prior_manifest.parent.parent
-    if (prior_root / "warmup" / "shared_seed1_epoch300.pt").is_file():
-        for child in prior_root.iterdir():
-            destination = OUTPUT / child.name
-            if destination.exists(): continue
-            if child.is_dir(): shutil.copytree(child, destination)
-            else: shutil.copy2(child, destination)
-        print("Restored prior run from", prior_root)
+# Restore complete progress only from the adaptive protocol. A fixed-site arm
+# checkpoint has a different protocol and must never be resumed as adaptive.
+prior_roots = [manifest.parent.parent for manifest in
+               Path("/kaggle/input").rglob("shared_seed1_epoch300.json")]
+restored_adaptive = False
+for prior_root in prior_roots:
+    arm_checkpoint = prior_root / "ours_e_driven_o" / "checkpoint_latest.pt"
+    if not arm_checkpoint.is_file(): continue
+    saved_arm = torch.load(arm_checkpoint, map_location="cpu")
+    functional = saved_arm.get("protocol", {}).get("functional_projection", {})
+    if functional.get("site") != "auto": continue
+    for child in prior_root.iterdir():
+        destination = OUTPUT / child.name
+        if destination.exists(): continue
+        if child.is_dir(): shutil.copytree(child, destination)
+        else: shutil.copy2(child, destination)
+    print("Restored prior adaptive-site run from", prior_root)
+    restored_adaptive = True
+    break
+if not restored_adaptive:
+    for prior_root in prior_roots:
+        prior_warmup = prior_root / "warmup"
+        if not (prior_warmup / "shared_seed1_epoch300.pt").is_file(): continue
+        destination = OUTPUT / "warmup"
+        if not destination.exists(): shutil.copytree(prior_warmup, destination)
+        print("Restored theta_300 only from", prior_root)
         break
 
 def base_args(output):
@@ -207,7 +224,8 @@ print("theta_300 SHA-256:", SHARED_HASH)
 
 ours = [sys.executable, "-m", "experiments.run_shared_comparison",
     "--method", "ours_e_driven_o"] + base_args(OUTPUT / "ours_e_driven_o") + [
-    "--shared-checkpoint-hash", SHARED_HASH, "--site", "stages.2.blocks.0",
+    "--shared-checkpoint-hash", SHARED_HASH, "--site", "auto",
+    "--candidate-sites", "",
     "--rank", "4", "--probe-epsilon", "0.05", "--cg-iterations", "200",
     "--cg-relative-tolerance", "1e-2", "--cg-preconditioner-probes", "8"]
 bypass = [sys.executable, "-m", "baselines.run_bypass"] + base_args(
@@ -264,7 +282,8 @@ summary = {"dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "train3_epochs", "contraction_norm", "projection_loss_jump",
         "contraction_criterion_met", "bypass_completed",
         "opt2_soft_cap_exceeded", "method_label", "control_type",
-        "functional_target", "uses_structural_E"})}
+        "functional_target", "uses_structural_E", "site_selection_mode",
+        "site_selection_history"})}
         for row in results]}
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
