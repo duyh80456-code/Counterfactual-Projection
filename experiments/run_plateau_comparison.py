@@ -1,4 +1,4 @@
-"""Fair theta300-to-500 Vanilla versus plateau-triggered E-to-O."""
+"""Exact-schedule Vanilla versus plateau-triggered E-to-O from theta300."""
 
 from __future__ import annotations
 
@@ -12,8 +12,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from experiments.plateau_protocol import (
-    PlateauDetector, single_fork_cosine_scheduler)
+from experiments.plateau_protocol import PlateauDetector
 from experiments.run_gromo_pilot import (
     actual_update_metrics, batch_loss, cg_diagnostics, eval_logits,
     evaluate_heldout_direction, heldout_metrics, parameter_delta_norm,
@@ -31,8 +30,6 @@ from projection import FunctionalProjector
 
 METHODS = ("vanilla_continue", "plateau_e_driven_o")
 START_EPOCH = 300
-TOTAL_EPOCHS = 500
-CONTINUATION_EPOCHS = TOTAL_EPOCHS - START_EPOCH
 
 
 def arguments():
@@ -250,30 +247,30 @@ def main():
     (train_set, eval_set, generated_train, generated_validation,
      generated_tuning) = datasets_and_indices(
         args.data_root, args.validation_samples, len(source_tuning))
-    source_train = list(source["train_indices"])
+    train_indices = list(source["train_indices"])
     validation_indices = source["validation_indices"]
-    if (source_train != generated_train or
+    if (train_indices != generated_train or
             validation_indices != generated_validation or
             source_tuning != generated_tuning):
         raise RuntimeError("theta300 data split differs from requested protocol")
-    extra_trigger = args.trigger_samples - len(source_tuning)
-    if extra_trigger < 0 or extra_trigger >= len(source_train):
-        raise ValueError("trigger_samples is incompatible with theta300 split")
-    # The original held-out tuning set remains held out. Additional trigger
-    # examples are deterministically removed from the old training pool; all
-    # WHERE/projection/gate batches come only from the remaining train indices.
-    trigger_indices = source_tuning + source_train[:extra_trigger]
-    train_indices = source_train[extra_trigger:]
-    if set(trigger_indices) & set(train_indices):
-        raise RuntimeError("trigger and training pools overlap")
+    if not 0 < args.trigger_samples < len(validation_indices):
+        raise ValueError("trigger_samples must split the held-out validation pool")
+    # Preserve the original training pool exactly. The 5k set that was already
+    # held out before theta300 is split into trigger and evaluation partitions.
+    trigger_indices = list(validation_indices[:args.trigger_samples])
+    evaluation_indices = list(validation_indices[args.trigger_samples:])
+    if (set(trigger_indices) & set(train_indices) or
+            set(evaluation_indices) & set(train_indices) or
+            set(trigger_indices) & set(evaluation_indices)):
+        raise RuntimeError("train/trigger/evaluation pools overlap")
 
     model = build_cifar_gromo_resnet18(device)
-    optimizer, old_scheduler = build_optimizer_scheduler(
+    optimizer, scheduler = build_optimizer_scheduler(
         model, float(source_protocol.get("learning_rate", 0.1)),
         args.weight_decay)
     model.load_state_dict(source["model"], strict=True)
     optimizer.load_state_dict(source["optimizer"])
-    old_scheduler.load_state_dict(source["scheduler"])
+    scheduler.load_state_dict(source["scheduler"])
     fork_learning_rates = [float(group["lr"])
                            for group in optimizer.param_groups]
     if not all(rate > 0 for rate in fork_learning_rates):
@@ -281,17 +278,21 @@ def main():
     if not all(math.isclose(float(group["weight_decay"]), args.weight_decay)
                for group in optimizer.param_groups):
         raise RuntimeError("theta300 weight decay differs from requested protocol")
-    # Define the one and only post-fork schedule. The current theta300 LR is
-    # preserved verbatim; only stale initial_lr metadata from the old scheduler
-    # is removed so this 200-epoch cosine uses the fork LR as its base.
-    scheduler = single_fork_cosine_scheduler(
-        optimizer, CONTINUATION_EPOCHS)
+    # Continue the exact scheduler state stored at theta300. Stepping beyond a
+    # CosineAnnealingLR T_max would start another half-cycle, so exact-original
+    # comparison ends precisely at the stored scheduler horizon.
+    if not hasattr(scheduler, "T_max"):
+        raise RuntimeError("theta300 scheduler has no finite T_max")
+    continuation_epochs = int(scheduler.T_max) - int(scheduler.last_epoch)
+    if continuation_epochs <= 0:
+        raise RuntimeError("theta300 scheduler has already reached its horizon")
+    total_epochs = START_EPOCH + continuation_epochs
     restore_rng(source["rng"])
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         source["train_loader_generator_state"], args.seed)
     validation_loader = make_eval_loader(
-        eval_set, validation_indices, args.batch_size * 2, args.workers)
+        eval_set, evaluation_indices, args.batch_size * 2, args.workers)
     trigger_loader = make_eval_loader(
         eval_set, trigger_indices, args.batch_size * 2, args.workers)
 
@@ -301,15 +302,18 @@ def main():
     protocol = {
         "method": args.method, "dataset": "CIFAR-100",
         "architecture": "CIFAR-ResNet18", "seed": args.seed,
-        "source_epoch": START_EPOCH, "total_epochs": TOTAL_EPOCHS,
-        "continuation_epochs": CONTINUATION_EPOCHS,
+        "source_epoch": START_EPOCH, "total_epochs": total_epochs,
+        "continuation_epochs": continuation_epochs,
         "source_checkpoint_hash": actual_hash,
         "optimizer_state_preserved": True,
         "trigger_samples": len(trigger_indices),
+        "evaluation_samples": len(evaluation_indices),
+        "training_indices_unchanged": True,
         "trigger_disjoint_from_training": True,
         "lr_schedule": (
-            "single CosineAnnealingLR initialized once at theta300 from the "
-            "checkpoint LR, T_max=200, no intervention-time restart"),
+            "exact optimizer and scheduler state restored from theta300; "
+            "continued only to the stored scheduler horizon"),
+        "scheduler_state_restored": True,
         "scheduler_restarted": False,
         "official_test_used": False,
     }
@@ -342,7 +346,7 @@ def main():
     fork_validation = evaluate(model, validation_loader, device) if not history else None
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
-    for offset in range(start_offset, CONTINUATION_EPOCHS):
+    for offset in range(start_offset, continuation_epochs):
         epoch = START_EPOCH + offset + 1
         train = train_epoch(model, train_loader, optimizer, device)
         scheduler.step()
@@ -361,9 +365,16 @@ def main():
                 continuation_epoch=offset + 1, global_epoch=epoch,
                 protocol=protocol, source_checkpoint_hash=actual_hash,
                 snapshot_kind="pre_intervention_plateau")
-            intervention = run_intervention(
-                model, optimizer, eval_set, train_indices, args, device,
-                len(interventions))
+            # TINY/projection may consume RNG internally. Restore it afterward
+            # so future SGD shuffling and augmentation follow the same random
+            # stream as Vanilla; only the accepted parameter correction differs.
+            pre_probe_rng = rng_state()
+            try:
+                intervention = run_intervention(
+                    model, optimizer, eval_set, train_indices, args, device,
+                    len(interventions))
+            finally:
+                restore_rng(pre_probe_rng)
             intervention.update(
                 epoch=epoch, trigger=plateau,
                 pre_intervention_checkpoint=str(pre_intervention))
@@ -395,7 +406,7 @@ def main():
             continuation_epoch=offset + 1, global_epoch=epoch,
             protocol=protocol, training_seconds=elapsed,
             peak_gpu_memory=peak, train_indices=train_indices,
-            validation_indices=validation_indices,
+            evaluation_indices=evaluation_indices,
             trigger_indices=trigger_indices)
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
@@ -410,12 +421,13 @@ def main():
                if item["correction_applied"]]
     result = {
         "method": args.method, "source_epoch": START_EPOCH,
-        "final_epoch": TOTAL_EPOCHS,
+        "final_epoch": total_epochs,
         "continuation_epochs": len(history),
         "source_checkpoint_hash": actual_hash,
         "fork_learning_rates": fork_learning_rates,
         "source_optimizer_state_entries": len(source["optimizer"]["state"]),
         "optimizer_state_preserved": True,
+        "scheduler_state_restored": True,
         "scheduler_restarted": False,
         "fork_validation_accuracy": baseline_validation["accuracy"],
         "fork_validation_loss": baseline_validation["loss"],

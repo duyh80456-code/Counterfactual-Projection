@@ -1,4 +1,4 @@
-"""Build the fair theta300-to-500 plateau-triggered comparison notebook."""
+"""Build the exact-original-schedule plateau comparison notebook."""
 
 import json
 from pathlib import Path
@@ -15,18 +15,19 @@ def code(source):
 
 
 cells = [
-    markdown("""# Fair plateau-triggered E→O comparison from theta300
+    markdown("""# Exact-original plateau-triggered E→O from theta300
 
 This T4x2 run forks the exact shared checkpoint at epoch 300 into two equal
-200-epoch trajectories ending at epoch 500:
+trajectories that stop at the horizon stored in the original scheduler:
 
 - GPU 0: Vanilla continuation;
 - GPU 1: plateau-triggered structural E→O.
 
-Both arms preserve model weights, SGD momentum, RNG, split, loader state, and
-the positive LR stored at theta300. One common 200-epoch cosine schedule is
-initialized at the fork and is never reset at a plateau or intervention. The
-official test set is never constructed.
+Both arms restore the exact model, optimizer, scheduler, RNG, split, and loader
+state. No LR, `initial_lr`, `T_max`, or scheduler state is changed. The original
+training indices are unchanged. The original 5,000-example held-out validation
+pool is split into 2,000 trigger and 3,000 evaluation examples. The official
+test set is never constructed.
 
 E→O is not run every epoch. A separate 2,000-example trigger set declares a
 plateau after 15 observations with <0.05 percentage-point accuracy gain and
@@ -46,7 +47,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/fair_plateau_eo_theta300_500_v2")
+OUTPUT = Path("/kaggle/working/exact_plateau_eo_theta300_v3")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -139,9 +140,18 @@ hashes = {item[1] for item in candidates}
 if len(hashes) != 1:
     raise RuntimeError("Multiple different valid theta300 checkpoints attached")
 THETA300, THETA300_HASH, RAW_THETA300 = candidates[0]
+THETA300_PAYLOAD = torch.load(THETA300, map_location="cpu", weights_only=False)
+SCHEDULER_STATE = THETA300_PAYLOAD["scheduler"]
+EXPECTED_CONTINUATION_EPOCHS = (
+    int(SCHEDULER_STATE["T_max"]) - int(SCHEDULER_STATE["last_epoch"]))
+if EXPECTED_CONTINUATION_EPOCHS <= 0:
+    raise RuntimeError("theta300 scheduler has already reached its horizon")
+EXPECTED_FINAL_EPOCH = 300 + EXPECTED_CONTINUATION_EPOCHS
 print("shared theta300 input:", RAW_THETA300)
 print("materialized checkpoint:", THETA300)
 print("theta300 SHA-256:", THETA300_HASH)
+print("original scheduler continuation:", EXPECTED_CONTINUATION_EPOCHS,
+      "epochs; final epoch:", EXPECTED_FINAL_EPOCH)
 """),
     code("""SEED = 1
 def base_args(output):
@@ -203,13 +213,17 @@ for name in ("vanilla_continue", "plateau_e_driven_o"):
     result = json.loads(path.read_text())
     if result["source_checkpoint_hash"] != THETA300_HASH:
         raise RuntimeError(f"{name} used a different theta300")
-    if result["final_epoch"] != 500 or result["continuation_epochs"] != 200:
-        raise RuntimeError(f"{name} did not finish epoch500")
+    if (result["final_epoch"] != EXPECTED_FINAL_EPOCH or
+            result["continuation_epochs"] != EXPECTED_CONTINUATION_EPOCHS):
+        raise RuntimeError(f"{name} did not finish the original schedule")
+    if (result["scheduler_state_restored"] is not True or
+            result["scheduler_restarted"] is not False):
+        raise RuntimeError(f"{name} did not preserve the original scheduler")
     results[name] = result
 
 summary = {
-    "source_epoch": 300, "final_epoch": 500,
-    "continuation_epochs": 200,
+    "source_epoch": 300, "final_epoch": EXPECTED_FINAL_EPOCH,
+    "continuation_epochs": EXPECTED_CONTINUATION_EPOCHS,
     "source_checkpoint_hash": THETA300_HASH,
     "official_test_used": False,
     "results": {
@@ -219,7 +233,8 @@ summary = {
             "validation_accuracy_delta", "intervention_count",
             "correction_application_count", "correction_application_rate",
             "training_seconds", "peak_gpu_memory", "deploy_params",
-            "optimizer_state_preserved", "scheduler_restarted"}}
+            "optimizer_state_preserved", "scheduler_state_restored",
+            "scheduler_restarted"}}
         for name, result in results.items()
     },
     "plateau_sequence": [

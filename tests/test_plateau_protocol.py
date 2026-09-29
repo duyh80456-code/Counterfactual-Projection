@@ -3,8 +3,7 @@ from types import SimpleNamespace
 import torch
 
 from experiments import run_plateau_comparison as runner
-from experiments.plateau_protocol import (
-    PlateauDetector, single_fork_cosine_scheduler)
+from experiments.plateau_protocol import PlateauDetector
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -36,16 +35,31 @@ def test_plateau_state_round_trip():
     assert restored.records == detector.records
 
 
-def test_single_fork_schedule_preserves_lr_and_momentum():
+def test_loading_original_scheduler_preserves_horizon_lr_and_momentum():
     parameter = torch.nn.Parameter(torch.tensor([1.0]))
     optimizer = torch.optim.SGD([parameter], lr=0.037, momentum=0.9)
     optimizer.state[parameter]["momentum_buffer"] = torch.tensor([2.0])
-    optimizer.param_groups[0]["initial_lr"] = 0.1
-    scheduler = single_fork_cosine_scheduler(optimizer, 200)
-    assert optimizer.param_groups[0]["lr"] == 0.037
-    assert scheduler.base_lrs == [0.037]
+    original = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=60)
+    for _ in range(10):
+        parameter.grad = torch.zeros_like(parameter)
+        optimizer.step()
+        original.step()
+    optimizer_state = optimizer.state_dict()
+    scheduler_state = original.state_dict()
+    saved_momentum = optimizer.state[parameter]["momentum_buffer"].clone()
+    restored_parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    restored_optimizer = torch.optim.SGD(
+        [restored_parameter], lr=0.1, momentum=0.9)
+    restored = torch.optim.lr_scheduler.CosineAnnealingLR(
+        restored_optimizer, T_max=999)
+    restored_optimizer.load_state_dict(optimizer_state)
+    restored.load_state_dict(scheduler_state)
+    assert restored.T_max == 60
+    assert restored.last_epoch == 10
+    assert restored_optimizer.param_groups[0]["lr"] == optimizer.param_groups[0]["lr"]
     assert torch.equal(
-        optimizer.state[parameter]["momentum_buffer"], torch.tensor([2.0]))
+        restored_optimizer.state[restored_parameter]["momentum_buffer"],
+        saved_momentum)
 
 
 def test_where_uses_mean_e_gain_not_tiny_score(monkeypatch):
@@ -84,10 +98,19 @@ def test_plateau_runner_uses_shared_theta300_and_e_only_selects_where():
     assert 'source.get("kind") != "shared_fork_checkpoint"' in source
     assert 'int(source.get("epoch", -1)) != START_EPOCH' in source
     assert "optimizer.load_state_dict(source[\"optimizer\"])" in source
+    assert "scheduler.load_state_dict(source[\"scheduler\"])" in source
     assert "theta300 checkpoint has no SGD optimizer state" in source
     assert 'group["lr"] =' not in source
-    assert "single_fork_cosine_scheduler" in source
+    assert "single_fork_cosine_scheduler" not in source
+    assert "scheduler.T_max" in source
+    assert "scheduler.last_epoch" in source
     assert '"scheduler_restarted": False' in source
+    assert '"scheduler_state_restored": True' in source
+    assert "train_indices = list(source[\"train_indices\"])" in source
+    assert "validation_indices[:args.trigger_samples]" in source
+    assert "source_train[:" not in source
+    assert "pre_probe_rng = rng_state()" in source
+    assert "restore_rng(pre_probe_rng)" in source
     assert 'default=2000' in source
     assert 'default=15' in source
     assert "checkpoint_pre_intervention_epoch" in source
