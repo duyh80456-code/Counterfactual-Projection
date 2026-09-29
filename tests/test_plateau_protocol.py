@@ -113,6 +113,7 @@ def test_plateau_runner_uses_shared_theta300_and_e_only_selects_where():
     assert "restore_rng(pre_probe_rng)" in source
     assert 'default=2000' in source
     assert 'default=15' in source
+    assert 'default=1e-3' in source
     assert "checkpoint_pre_intervention_epoch" in source
     assert 'snapshot_kind="pre_intervention_plateau"' in source
     assert "mean_observed_structural_E_gain" in source

@@ -30,7 +30,7 @@ pool is split into 2,000 trigger and 3,000 evaluation examples. The official
 test set is never constructed.
 
 E→O is not run every epoch. A separate 2,000-example trigger set declares a
-plateau after 15 observations with <0.05 percentage-point accuracy gain and
+plateau after 15 observations with <0.1 percentage-point accuracy gain and
 negligible loss-EMA decrease. At a plateau, TINY proposes all eight blocks;
 WHERE is selected only by mean observed structural E loss gain over three
 separate batches. O projects only the winner. A correction is applied only if
@@ -168,7 +168,7 @@ vanilla = [sys.executable, "-m", "experiments.run_plateau_comparison",
            "--method", "vanilla_continue"] + base_args(OUTPUT / "vanilla_continue")
 plateau = [sys.executable, "-m", "experiments.run_plateau_comparison",
            "--method", "plateau_e_driven_o"] + base_args(OUTPUT / "plateau_e_driven_o") + [
-    "--plateau-window", "15", "--plateau-accuracy-min-gain", "0.0005",
+    "--plateau-window", "15", "--plateau-accuracy-min-gain", "0.001",
     "--plateau-loss-ema-min-drop", "0.001", "--minimum-sgd-epochs", "15",
     "--rank", "4", "--probe-epsilon", "0.05", "--where-batches", "3",
     "--line-search-scales", "0.0125,0.025,0.05"]

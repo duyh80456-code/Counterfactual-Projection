@@ -22,6 +22,7 @@ def test_plateau_notebook_forks_two_arms_from_shared_theta300():
     assert 'SCHEDULER_STATE["last_epoch"]' in text
     assert '"--trigger-samples", "2000"' in text
     assert '"--minimum-sgd-epochs", "15"' in text
+    assert '"--plateau-accuracy-min-gain", "0.001"' in text
     assert "--continuation-lr" not in text
     assert 'result["scheduler_state_restored"] is not True' in text
     assert 'result["scheduler_restarted"] is not False' in text

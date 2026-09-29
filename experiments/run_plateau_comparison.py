@@ -47,7 +47,7 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--plateau-window", type=int, default=15)
-    parser.add_argument("--plateau-accuracy-min-gain", type=float, default=5e-4)
+    parser.add_argument("--plateau-accuracy-min-gain", type=float, default=1e-3)
     parser.add_argument("--plateau-loss-ema-min-drop", type=float, default=1e-3)
     parser.add_argument("--plateau-ema-alpha", type=float, default=0.3)
     parser.add_argument("--minimum-sgd-epochs", type=int, default=15)
