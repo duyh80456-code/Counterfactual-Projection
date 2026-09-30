@@ -71,9 +71,9 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
     best["kind"] = "plateau_fork_checkpoint"
     best["stall_evidence"] = detector.state_dict()
     best["stall_detected_epoch"] = detector.observations[-1]["epoch"]
-    best["vanilla_control_history"] = control
-    best["vanilla_control"] = {
-        "method": "vanilla_reused_from_phase1",
+    best["stall_evidence_history"] = control
+    best["stall_evidence"] = {
+        "role": "stall_confirmation_only_not_comparison_baseline",
         "fork_epoch": best_epoch,
         "stall_window_start_epoch": stall_start,
         "stall_detected_epoch": best["stall_detected_epoch"],

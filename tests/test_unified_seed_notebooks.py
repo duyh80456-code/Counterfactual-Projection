@@ -29,9 +29,10 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert "Only after the base recipe completes" in source
         assert "exact-best search is rebased at the" in source
         assert '"--post-fork-epochs", "100"' in source
-        assert 'ours_job = launch(0, "ours_e_driven_o")' in source
-        assert 'bypass_job = launch(1, "bypass")' in source
-        assert 'o_only_job = launch(1, "o_projection_only")' in source
+        assert '("ours_e_driven_o", "vanilla")' in source
+        assert '("bypass", "o_projection_only")' in source
+        assert 'results["vanilla"] = VANILLA_CONTROL' not in source
+        assert '"--gamma-post-increase-multiplier", "2.0"' in source
         assert "shared_seed1_epoch300" not in source
         assert "run_vanilla_to_plateau" not in source
         for cell in notebook["cells"]:

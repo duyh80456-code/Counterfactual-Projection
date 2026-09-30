@@ -25,7 +25,7 @@ phase2 = json.loads(Path(
 def build(seed):
     run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v2"
     bootstrap = text(phase2["cells"][1]).replace(
-        'OUTPUT = Path("/kaggle/working/plateau_fork_three_jobs_100ep_v3")',
+        'OUTPUT = Path("/kaggle/working/plateau_fork_four_jobs_100ep_v4")',
         f'RUN_ROOT = Path("{run_root}")\nOUTPUT = RUN_ROOT / "phase2"')
     phase2_commands = text(phase2["cells"][4]).replace(
         '"--seed", "1"', f'"--seed", "{seed}"')
@@ -45,13 +45,13 @@ base recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs
 trigger best is fully checkpointed. Only after the base recipe completes is the
 method-independent stall detector armed. Another 100 consecutive epochs
 without a significant +0.1 pp trigger gain confirm stall; those 100 observed
-epochs are the Vanilla control. The theta_P exact-best search is rebased at the
+epochs are stall evidence only. The theta_P exact-best search is rebased at the
 arm epoch, so no pre-recipe checkpoint can be forked into Phase 2.
 
 Phase 2 forks that run's exact theta_best, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent
-E-driven O. GPU1 runs scaled Bypass 70/30 and then launches a fresh recurrent
-O-only process. Each method consumes 100 SGD epochs and writes per-epoch history,
+E-driven O then fresh Vanilla. GPU1 runs scaled Bypass 70/30 and then launches
+a fresh recurrent O-only process. Each method consumes 100 SGD epochs and writes per-epoch history,
 latest/best checkpoints, diagnostics, timing, memory, and final/best accuracy.
 Only `seed={seed}` differs from the other two generated notebooks.
 """),
@@ -105,19 +105,21 @@ if PLATEAU_PAYLOAD.get("kind") != "plateau_fork_checkpoint":
 PLATEAU_HASH = hashlib.sha256(
     PLATEAU_CHECKPOINT.read_bytes()).hexdigest()
 PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
-VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
-if VANILLA_CONTROL["post_fork_epochs"] != 100:
-    raise RuntimeError("Vanilla control is not exactly 100 observed epochs")
+STALL_EVIDENCE = dict(PLATEAU_PAYLOAD["stall_evidence"])
+if STALL_EVIDENCE["post_fork_epochs"] != 100:
+    raise RuntimeError("Stall evidence is not exactly 100 observed epochs")
+if STALL_EVIDENCE["role"] != "stall_confirmation_only_not_comparison_baseline":
+    raise RuntimeError("Phase-1 history cannot be reused as a comparator")
 if int(PLATEAU_PAYLOAD["protocol"]["seed"]) != SEED:
     raise RuntimeError("theta_best seed mismatch")
 print("theta_best:", PLATEAU_EPOCH, PLATEAU_HASH)
-print(json.dumps(VANILLA_CONTROL, indent=2, sort_keys=True))
+print(json.dumps(STALL_EVIDENCE, indent=2, sort_keys=True))
 """),
-        markdown("""## Phase 2 — identical four-arm comparison
+        markdown("""## Phase 2 — four fresh, byte-identical forks
 
-The Vanilla control is the already observed stall trajectory. Three new jobs
-start from the byte-identical theta_best checkpoint. GPU0 is dedicated to the
-heavier E-driven O job; GPU1 runs Bypass and then a fresh O-only process.
+Phase-1 history is not a comparison arm. All four jobs start from the
+byte-identical theta_best checkpoint. GPU0 runs E-driven O then Vanilla; GPU1
+runs Bypass then O-only.
 """),
         code("""import threading
 

@@ -1,4 +1,4 @@
-"""Build the three-arm theta_P plateau-fork Kaggle notebook."""
+"""Build the four-arm theta_P plateau-fork Kaggle notebook."""
 
 import json
 from pathlib import Path
@@ -15,22 +15,23 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 2 — Three jobs from stalled Vanilla's best theta_P
+    markdown("""# Phase 2 — Four fresh jobs from stalled Vanilla's best theta_P
 
 Attach the Phase-1 output containing `plateau_checkpoint.pt`. It is the exact
 best state saved before the no-new-best patience expired. This notebook forks
 its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
-into three newly trained 100-epoch arms. The observed 100-epoch Vanilla stall
-trajectory from Phase 1 is reused directly as the control:
+into four newly trained 100-epoch arms. Phase-1 stall history is evidence only;
+it is never reused as the Vanilla comparison:
 
+- Vanilla: uninterrupted SGD from theta_P;
 - scaled matched-horizon Bypass (70 opt1 + up to 30 opt2; never force-project);
 - Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
   winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
 - O-only: supervised functional projection at the fixed residual-path site,
   with the same recurrent rollback/retrigger schedule for a fair ablation.
 
-GPU0 is reserved for E-driven O. GPU1 runs Bypass and, only after that process
-finishes, starts a new O-only process from the same theta_best checkpoint. The
+GPU0 runs E-driven O and then fresh Vanilla. GPU1 runs Bypass and then fresh
+O-only. Every process reloads the same theta_best checkpoint. The
 official test set is never constructed. Bypass accuracy remains diagnostic if
 contraction does not complete within the matched budget.
 """),
@@ -45,7 +46,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/plateau_fork_three_jobs_100ep_v3")
+OUTPUT = Path("/kaggle/working/plateau_fork_four_jobs_100ep_v4")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -110,9 +111,11 @@ PLATEAU_CHECKPOINT = selected["path"]
 PLATEAU_HASH = selected["sha256"]
 PLATEAU_PAYLOAD = selected["payload"]
 PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
-VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
-if VANILLA_CONTROL["post_fork_epochs"] != 100:
-    raise RuntimeError("Phase 1 must contain exactly 100 Vanilla control epochs")
+STALL_EVIDENCE = dict(PLATEAU_PAYLOAD["stall_evidence"])
+if STALL_EVIDENCE["post_fork_epochs"] != 100:
+    raise RuntimeError("Phase 1 must contain exactly 100 stall-evidence epochs")
+if STALL_EVIDENCE["role"] != "stall_confirmation_only_not_comparison_baseline":
+    raise RuntimeError("Phase 1 stall history has an invalid role")
 print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 print("theta_P source:", selected["source"])
 """),
@@ -128,13 +131,13 @@ print("theta_P source:", selected["source"])
         "--retrigger-patience", "10",
         "--significant-improvement", "0.001",
         "--gamma-increase-opt2-epoch", "15",
-        "--gamma-post-increase-multiplier", "10.0",
+        "--gamma-post-increase-multiplier", "2.0",
         "--line-search-scales", "0.0125,0.025,0.05"]
 
 commands = {
     name: [sys.executable, "-m", "experiments.run_plateau_fork",
            "--method", name] + base_args(OUTPUT / name)
-    for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
+    for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
 
 def stream(name, process, log):
     for line in process.stdout:
@@ -162,21 +165,34 @@ def finish(job):
     print(name, "exit=", code)
     return name, code
 
-print("GPU0: E-driven O; GPU1: Bypass -> fresh O-only")
-ours_job = launch(0, "ours_e_driven_o")
-bypass_job = launch(1, "bypass")
-bypass_status = finish(bypass_job)
-if bypass_status[1]:
-    raise RuntimeError(f"failed arm: {bypass_status}")
-# This is deliberately a new process. It reloads theta_best and cannot inherit
-# model, optimizer, scheduler, RNG, or CUDA state from Bypass.
-o_only_job = launch(1, "o_projection_only")
-statuses = [finish(ours_job), finish(o_only_job)]
+statuses = []
+status_lock = threading.Lock()
+
+def run_chain(gpu, names):
+    local = []
+    for name in names:
+        # Every item is a new process that reloads theta_P. No state can leak
+        # from the preceding method on the same physical GPU.
+        status = finish(launch(gpu, name))
+        local.append(status)
+        if status[1]: break
+    with status_lock: statuses.extend(local)
+
+print("GPU0: E-driven O -> fresh Vanilla")
+print("GPU1: Bypass -> fresh O-only")
+chains = [
+    threading.Thread(target=run_chain, args=(
+        0, ("ours_e_driven_o", "vanilla"))),
+    threading.Thread(target=run_chain, args=(
+        1, ("bypass", "o_projection_only"))),
+]
+for chain in chains: chain.start()
+for chain in chains: chain.join()
 failures = [status for status in statuses if status[1]]
 if failures: raise RuntimeError(f"failed arms: {failures}")
 """),
     code("""results = {name: json.loads((OUTPUT / name / "result.json").read_text())
-           for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
+           for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")}
 for name, result in results.items():
     if result["plateau_checkpoint_hash"] != PLATEAU_HASH:
         raise RuntimeError(f"{name} used another theta_P")
@@ -186,15 +202,12 @@ for name, result in results.items():
         raise RuntimeError(f"{name} did not complete 100 epochs")
     if not Path(result["best_checkpoint"]).is_file():
         raise RuntimeError(f"{name} did not save checkpoint_best.pt")
-VANILLA_CONTROL["plateau_checkpoint_hash"] = PLATEAU_HASH
-VANILLA_CONTROL["theta_best_hash"] = PLATEAU_HASH
-VANILLA_CONTROL["best_checkpoint"] = str(PLATEAU_CHECKPOINT)
-results["vanilla"] = VANILLA_CONTROL
 summary = {
     "plateau_epoch": PLATEAU_EPOCH,
     "plateau_checkpoint_hash": PLATEAU_HASH,
     "theta_best_hash": PLATEAU_HASH,
     "post_fork_epochs": 100, "official_test_used": False,
+    "phase1_stall_evidence": STALL_EVIDENCE,
     "results": {name: {key: result.get(key) for key in (
         "fork_validation_accuracy", "fork_validation_loss",
         "fork_trigger_accuracy", "fork_trigger_loss",

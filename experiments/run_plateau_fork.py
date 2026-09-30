@@ -68,7 +68,7 @@ def arguments():
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
     parser.add_argument("--gamma-slope", type=float, default=3e-6)
     parser.add_argument("--gamma-increase-opt2-epoch", type=int, default=15)
-    parser.add_argument("--gamma-post-increase-multiplier", type=float, default=10.0)
+    parser.add_argument("--gamma-post-increase-multiplier", type=float, default=2.0)
     return parser.parse_args()
 
 

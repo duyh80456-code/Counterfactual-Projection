@@ -63,16 +63,17 @@ recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs 100 and
 controls LR. Every exact trigger-set best is a complete resumable checkpoint.
 The final stall clock is armed only after the base recipe completes; only a
 +0.1 pp gain resets its 100-epoch patience. Once stalled, the already observed
-100 post-recipe epochs are the Vanilla control. The exact-best search is
+100 post-recipe epochs are stall evidence only. The exact-best search is
 rebased when the detector is armed, so theta_P is guaranteed to come from the
 post-recipe stall phase rather than from an earlier training epoch.
-and the exact best checkpoint is forked into recurrent E-driven O, scaled
-Bypass 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
+The exact best checkpoint is then loaded afresh into Vanilla, recurrent
+E-driven O, scaled Bypass 70/30, and recurrent O-only, each with a
+100-SGD-epoch budget.
 
 All configuration, splits, schedules, GPU placement, checkpoint fields, and
 metrics are identical across notebooks; only the seed and output directory
-differ. GPU0 runs E-driven O. GPU1 runs Bypass and then starts O-only in a fresh
-process from the same checkpoint hash. Per-epoch histories plus latest, best,
+differ. GPU0 runs E-driven O then fresh Vanilla. GPU1 runs Bypass then fresh
+O-only. Every process starts from the same checkpoint hash. Per-epoch histories plus latest, best,
 fork, and intervention checkpoints are retained for later plots and resume.
 
 ## Legacy shared-checkpoint runs
@@ -84,8 +85,8 @@ For the simplest Kaggle workflow, use the single-file
 It accepts theta300 plus CIFAR-100, saves every exact Vanilla trigger-set best,
 and waits for 100 epochs without a significant +0.1 pp trigger improvement
 before launching the method jobs
-from that exact best checkpoint. The already-observed 100-epoch Vanilla stall
-trajectory is reused as the control rather than trained twice. If epoch 500 is
+from that exact best checkpoint. Phase-1 stall history is evidence only; a
+fresh 100-epoch Vanilla arm is trained from the same checkpoint. If epoch 500 is
 reached without a stall, attach its output and rerun with a larger `MAX_EPOCH`;
 both the latest and best Phase-1 states resume.
 
@@ -101,19 +102,19 @@ The same workflow is also available as two explicit notebooks:
    from the later potentially degraded model. Epoch 500 remains a review point;
    both latest progress and the best checkpoint are required when resuming.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
-   launches supervised O-only, scaled matched-horizon Bypass, and E→O, each for
-   a 100-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
+   launches fresh Vanilla, supervised O-only, scaled matched-horizon Bypass,
+   and E→O, each for a 100-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
    new best appears, trainable state rolls back to the arm's best checkpoint,
    the stochastic stream remains advanced, and a fresh intervention starts.
-   Vanilla is reused from
-   Phase 1. All methods inherit the same model, optimizer, scheduler, momentum,
+   Phase-1 history is not used as a comparison arm. All methods inherit the
+   same model, optimizer, scheduler, momentum,
    RNG, training order, and held-out split. Every trained method saves latest
    and exact-trigger-best checkpoints and reports fork/best/final evaluation
    accuracy, loss, deltas, epoch to best, wall time, peak memory/parameters,
-   and expanded time. GPU0 runs E→O to completion. GPU1 runs Bypass with a
-   70-epoch opt1 and at most 30-epoch opt2, then starts O-only as a fresh
-   process from the same hashed theta_best checkpoint. The scaled Bypass
-   penalty switches from ×1 to ×10 at opt2 epoch 15; this is explicitly a
+   and expanded time. GPU0 runs E→O then Vanilla. GPU1 runs Bypass with a
+   70-epoch opt1 and at most 30-epoch opt2, then starts O-only. Every method is
+   a fresh process from the same hashed theta_best checkpoint. The scaled Bypass
+   penalty switches from ×1 to ×2 at opt2 epoch 15; this is explicitly a
    matched-horizon scaling, not an exact reproduction of the native schedule.
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.

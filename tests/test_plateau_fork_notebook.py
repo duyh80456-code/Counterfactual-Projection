@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 
-def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
+def test_plateau_fork_notebook_runs_four_fresh_jobs_from_theta_p():
     notebook = json.loads(Path(
         "notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
     source = "\n".join("".join(cell.get("source", []))
@@ -15,11 +15,11 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
     assert 'rglob("plateau_checkpoint.pt")' not in source
     assert "followlinks=True" in Path(
         "experiments/kaggle_checkpoint_discovery.py").read_text()
-    assert 'results["vanilla"] = VANILLA_CONTROL' in source
-    assert 'ours_job = launch(0, "ours_e_driven_o")' in source
-    assert 'bypass_job = launch(1, "bypass")' in source
-    assert 'o_only_job = launch(1, "o_projection_only")' in source
-    assert 'bypass_status = finish(bypass_job)' in source
+    assert '"stall_confirmation_only_not_comparison_baseline"' in source
+    assert 'results["vanilla"] = VANILLA_CONTROL' not in source
+    assert '("ours_e_driven_o", "vanilla")' in source
+    assert '("bypass", "o_projection_only")' in source
+    assert 'for name in ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")' in source
     assert "pending" not in source
     assert '"--post-fork-epochs", "100"' in source
     assert '"--opt1-epochs", "70"' in source
@@ -27,9 +27,9 @@ def test_plateau_fork_notebook_runs_three_jobs_and_reuses_vanilla_control():
     assert '"--retrigger-patience", "10"' in source
     assert '"--significant-improvement", "0.001"' in source
     assert '"--gamma-increase-opt2-epoch", "15"' in source
-    assert '"--gamma-post-increase-multiplier", "10.0"' in source
-    assert '"--gamma-post-increase-multiplier", "2.0"' not in source
-    assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
+    assert '"--gamma-post-increase-multiplier", "2.0"' in source
+    assert '"--gamma-post-increase-multiplier", "10.0"' not in source
+    assert 'STALL_EVIDENCE["post_fork_epochs"] != 100' in source
     assert 'Path(result["best_checkpoint"]).is_file()' in source
     assert "best_acc" in source
     assert "final_acc" in source

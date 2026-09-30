@@ -80,20 +80,20 @@ if plateau_payload.get("kind") != "plateau_fork_checkpoint":
 PLATEAU_EPOCH = int(plateau_payload["epoch"])
 PLATEAU_HASH = hashlib.sha256(PLATEAU_CHECKPOINT.read_bytes()).hexdigest()
 PLATEAU_PAYLOAD = plateau_payload
-VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
-if VANILLA_CONTROL["post_fork_epochs"] != 100:
-    raise RuntimeError("Phase 1 must contain exactly 100 Vanilla control epochs")
+STALL_EVIDENCE = dict(PLATEAU_PAYLOAD["stall_evidence"])
+if STALL_EVIDENCE["post_fork_epochs"] != 100:
+    raise RuntimeError("Phase 1 must contain exactly 100 stall-evidence epochs")
 print("theta_P ready:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 """),
     markdown("""## Phase 2 — Fixed T4 x2 schedule
 
-GPU0 runs E-driven O to completion. GPU1 runs Bypass first and then starts a
-fresh O-only process from the same theta_best. Every arm is required to report
+GPU0 runs E-driven O then fresh Vanilla. GPU1 runs Bypass then fresh O-only.
+Every arm is required to report
 the exact hash produced by Phase 1.
 """),
     code("""import threading
 
-OUTPUT = Path("/kaggle/working/plateau_end_to_end_three_jobs_100ep_v2")
+OUTPUT = Path("/kaggle/working/plateau_end_to_end_four_jobs_100ep_v3")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 """),
     # Reuse the already-tested Phase-2 command/queue and aggregation cells.

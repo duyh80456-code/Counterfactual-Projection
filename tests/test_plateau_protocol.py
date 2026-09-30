@@ -87,7 +87,8 @@ def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
     torch.save({"epoch": 350, "kind": "vanilla_best_checkpoint"}, best_path)
     payload = finalize_best_stall(
         best_path, plateau_path, detector, history, {}, 42)
-    control = payload["vanilla_control"]
+    control = payload["stall_evidence"]
+    assert control["role"] == "stall_confirmation_only_not_comparison_baseline"
     assert control["post_fork_epochs"] == 100
     assert control["fork_validation_accuracy"] == 0.7705
     assert control["final_validation_accuracy"] == 0.76
