@@ -6,8 +6,8 @@ from experiments import run_plateau_comparison as runner
 from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.plateau_protocol import (
     BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
-    ConstantCheckpointScheduler, CosineFloorScheduler, scheduler_from_state,
-    PlateauDetector)
+    ConstantCheckpointScheduler, CosineFloorScheduler,
+    SignificantPlateauScheduler, scheduler_from_state, PlateauDetector)
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -148,6 +148,30 @@ def test_cosine_floor_scheduler_registers_bypass_group_without_restart():
     assert optimizer.param_groups[1]["lr"] == inherited_lr
     scheduler.step()
     assert optimizer.param_groups[0]["lr"] == optimizer.param_groups[1]["lr"]
+
+
+def test_event_driven_scheduler_has_no_epoch_horizon_and_reaches_floor():
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    scheduler = SignificantPlateauScheduler(
+        optimizer, patience=2, factor=0.2, min_lr=0.002,
+        threshold=0.001)
+    scheduler.step(0.70)
+    scheduler.step(0.70)
+    scheduler.step(0.70)
+    assert abs(optimizer.param_groups[0]["lr"] - 0.02) < 1e-12
+    scheduler.step(0.70)
+    scheduler.step(0.70)
+    assert abs(optimizer.param_groups[0]["lr"] - 0.004) < 1e-12
+    scheduler.step(0.70)
+    scheduler.step(0.70)
+    assert optimizer.param_groups[0]["lr"] == 0.002
+    # A significant gain resets only the event counter, not the LR.
+    scheduler.step(0.701)
+    assert scheduler.bad_epochs == 0
+    assert optimizer.param_groups[0]["lr"] == 0.002
+    restored = scheduler_from_state(optimizer, scheduler.state_dict())
+    assert restored.state_dict() == scheduler.state_dict()
 
 
 def test_loading_original_scheduler_preserves_horizon_lr_and_momentum():

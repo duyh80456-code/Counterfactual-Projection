@@ -82,7 +82,7 @@ class ConstantCheckpointScheduler:
         self.learning_rates = tuple(
             float(group["lr"]) for group in optimizer.param_groups)
 
-    def step(self) -> None:
+    def step(self, metric=None) -> None:
         current = tuple(float(group["lr"])
                         for group in self.optimizer.param_groups)
         if current != self.learning_rates:
@@ -139,7 +139,7 @@ class CosineFloorScheduler:
         for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
             group["lr"] = self.eta_min + (base_lr - self.eta_min) * cosine
 
-    def step(self):
+    def step(self, metric=None):
         self.steps += 1
         self._apply()
 
@@ -182,10 +182,95 @@ def scheduler_from_state(optimizer, state):
         scheduler = CosineFloorScheduler(
             optimizer, decay_epochs=int(state["decay_epochs"]),
             eta_min=float(state["eta_min"]), base_lrs=state["base_lrs"])
+    elif kind == "significant_plateau_lr":
+        scheduler = SignificantPlateauScheduler(
+            optimizer, patience=int(state["patience"]),
+            factor=float(state["factor"]), min_lr=float(state["min_lr"]),
+            threshold=float(state["threshold"]))
     else:
         raise RuntimeError(f"unsupported plateau scheduler kind: {kind}")
     scheduler.load_state_dict(state)
     return scheduler
+
+
+class SignificantPlateauScheduler:
+    """Reduce LR after metric stalls; no predeclared epoch horizon."""
+
+    def __init__(self, optimizer, patience: int = 20, factor: float = 0.2,
+                 min_lr: float = 0.002, threshold: float = 1e-3):
+        if (patience < 1 or not 0 < factor < 1 or min_lr < 0 or
+                threshold <= 0):
+            raise ValueError("invalid significant-plateau LR configuration")
+        self.optimizer = optimizer
+        self.patience = int(patience)
+        self.factor = float(factor)
+        self.min_lr = float(min_lr)
+        self.threshold = float(threshold)
+        self.steps = 0
+        self.bad_epochs = 0
+        self.reference_metric = float("-inf")
+        self.reductions = 0
+
+    def step(self, metric=None):
+        if metric is None:
+            raise ValueError("significant-plateau scheduler requires a metric")
+        metric = float(metric)
+        self.steps += 1
+        if (self.reference_metric == float("-inf") or
+                metric >= self.reference_metric + self.threshold):
+            self.reference_metric = metric
+            self.bad_epochs = 0
+            return
+        self.bad_epochs += 1
+        if self.bad_epochs < self.patience:
+            return
+        changed = False
+        for group in self.optimizer.param_groups:
+            old_lr = float(group["lr"])
+            new_lr = max(self.min_lr, old_lr * self.factor)
+            group["lr"] = new_lr
+            changed = changed or new_lr < old_lr
+        self.reductions += int(changed)
+        self.bad_epochs = 0
+
+    def sync_optimizer_groups(self):
+        """New Bypass coordinates inherit the already-current group LR."""
+        if not self.optimizer.param_groups:
+            raise RuntimeError("optimizer has no parameter groups")
+        inherited = float(self.optimizer.param_groups[0]["lr"])
+        for group in self.optimizer.param_groups[1:]:
+            group["lr"] = inherited
+
+    def state_dict(self):
+        return {
+            "kind": "significant_plateau_lr", "steps": self.steps,
+            "patience": self.patience, "factor": self.factor,
+            "min_lr": self.min_lr, "threshold": self.threshold,
+            "bad_epochs": self.bad_epochs,
+            "reference_metric": self.reference_metric,
+            "reductions": self.reductions,
+            "learning_rates": tuple(
+                float(group["lr"]) for group in self.optimizer.param_groups),
+        }
+
+    def load_state_dict(self, state):
+        if state.get("kind") != "significant_plateau_lr":
+            raise RuntimeError("not a significant-plateau scheduler state")
+        config = (int(state["patience"]), float(state["factor"]),
+                  float(state["min_lr"]), float(state["threshold"]))
+        expected = (self.patience, self.factor, self.min_lr, self.threshold)
+        if config != expected:
+            raise RuntimeError("significant-plateau scheduler mismatch")
+        learning_rates = tuple(float(value) for value in state["learning_rates"])
+        if len(learning_rates) != len(self.optimizer.param_groups):
+            raise RuntimeError("scheduler/optimizer group count mismatch")
+        for group, learning_rate in zip(
+                self.optimizer.param_groups, learning_rates):
+            group["lr"] = learning_rate
+        self.steps = int(state["steps"])
+        self.bad_epochs = int(state["bad_epochs"])
+        self.reference_metric = float(state["reference_metric"])
+        self.reductions = int(state["reductions"])
 
 
 @dataclass

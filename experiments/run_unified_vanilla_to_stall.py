@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from experiments.plateau_protocol import (
-    BestCheckpointStallDetector, CosineFloorScheduler)
+    BestCheckpointStallDetector, SignificantPlateauScheduler)
 from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.shared_protocol import (
     atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
@@ -32,8 +32,9 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--tuning-samples", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--eta-min", type=float, default=0.002)
-    parser.add_argument("--decay-epochs", type=int, default=300)
+    parser.add_argument("--min-lr", type=float, default=0.002)
+    parser.add_argument("--lr-reduction-patience", type=int, default=20)
+    parser.add_argument("--lr-reduction-factor", type=float, default=0.2)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--stall-patience", type=int, default=100)
     parser.add_argument("--best-min-gain", type=float, default=0.0)
@@ -70,8 +71,10 @@ def main():
     optimizer = torch.optim.SGD(
         model.parameters(), lr=args.lr, momentum=0.9,
         weight_decay=args.weight_decay)
-    scheduler = CosineFloorScheduler(
-        optimizer, decay_epochs=args.decay_epochs, eta_min=args.eta_min)
+    scheduler = SignificantPlateauScheduler(
+        optimizer, patience=args.lr_reduction_patience,
+        factor=args.lr_reduction_factor, min_lr=args.min_lr,
+        threshold=args.significant_min_gain)
     detector = BestCheckpointStallDetector(
         args.stall_patience, args.significant_min_gain)
     protocol = {
@@ -79,9 +82,11 @@ def main():
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "input_size": 32, "learning_rate": args.lr,
         "weight_decay": args.weight_decay,
-        "schedule_id": "single-cosine300-then-floor-v1",
-        "schedule": (f"cosine epoch0-{args.decay_epochs} to "
-                     f"eta_min={args.eta_min}; constant thereafter"),
+        "schedule_id": "event-driven-significant-plateau-v1",
+        "schedule": (
+            f"reduce LR x{args.lr_reduction_factor} after "
+            f"{args.lr_reduction_patience} epochs without +"
+            f"{args.significant_min_gain} trigger gain; floor={args.min_lr}"),
         "scheduler_restart_count": 0, "trigger_samples": len(trigger_indices),
         "evaluation_samples": len(evaluation_indices),
         "tuning_samples": len(tuning_indices),
@@ -144,6 +149,7 @@ def main():
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(0, trigger["accuracy"])
+        scheduler.step(trigger["accuracy"])
         history.append({
             "epoch": 0, "train_loss": None, "train_accuracy": None,
             "trigger_accuracy": trigger["accuracy"],
@@ -151,6 +157,8 @@ def main():
             "validation_accuracy": evaluation["accuracy"],
             "validation_loss": evaluation["loss"],
             "learning_rates": [args.lr],
+            "next_learning_rates": [float(group["lr"])
+                                    for group in optimizer.param_groups],
             "best_checkpoint_statistics": selection,
         })
         save(best_path, payload("vanilla_best_checkpoint", 0, 0.0, 0))
@@ -172,11 +180,13 @@ def main():
         if plateau_path.is_file():
             break
         epoch_started = time.perf_counter()
+        training_lrs = [float(group["lr"])
+                        for group in optimizer.param_groups]
         train = train_epoch(model, train_loader, optimizer, device)
-        scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(epoch, trigger["accuracy"])
+        scheduler.step(trigger["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
@@ -184,8 +194,9 @@ def main():
             "trigger_loss": trigger["loss"],
             "validation_accuracy": evaluation["accuracy"],
             "validation_loss": evaluation["loss"],
-            "learning_rates": [float(group["lr"])
-                               for group in optimizer.param_groups],
+            "learning_rates": training_lrs,
+            "next_learning_rates": [float(group["lr"])
+                                    for group in optimizer.param_groups],
             "best_checkpoint_statistics": selection,
             "epoch_seconds": time.perf_counter() - epoch_started,
             "peak_gpu_memory": int(torch.cuda.max_memory_allocated(device)),

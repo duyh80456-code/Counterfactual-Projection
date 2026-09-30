@@ -453,7 +453,6 @@ def main():
                 projection_loss_jump = (
                     evaluate(model, evaluation_loader, device)["loss"] - before)
                 phase = "train3"
-        scheduler.step()
         if args.method == "bypass" and epoch_phase in {"opt1", "opt2"}:
             expanded_seconds += time.perf_counter() - epoch_started
         peak_train_params = max(
@@ -461,6 +460,7 @@ def main():
             sum(parameter.numel() for parameter in model.parameters()))
         trigger = evaluate(model, trigger_loader, device)
         validation = evaluate(model, evaluation_loader, device)
+        scheduler.step(trigger["accuracy"])
         row = {
             "epoch": epoch, "post_fork_epoch": offset + 1,
             "phase": epoch_phase, "train_loss": train["task_loss"],
