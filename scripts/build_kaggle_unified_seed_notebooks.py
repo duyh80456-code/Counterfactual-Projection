@@ -42,9 +42,10 @@ schedule.
 Phase 1 trains a randomly initialized CIFAR-ResNet18 with an event-driven
 schedule: after 20 epochs without a significant +0.1 pp trigger gain, LR is
 multiplied by 0.2 down to a non-zero 0.002 floor. There is no fixed decay
-horizon. Every exact trigger best is fully checkpointed. A stall is confirmed
-after 100 consecutive epochs without a significant +0.1 pp trigger gain; those
-100 observed epochs are the Vanilla control.
+horizon. Every exact trigger best is fully checkpointed. Final stall patience
+is armed only once LR reaches that floor. Another 100 consecutive floor-LR
+epochs without a significant +0.1 pp trigger gain confirm stall; those 100
+observed epochs are the Vanilla control.
 
 Phase 2 forks that run's exact theta_best, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent

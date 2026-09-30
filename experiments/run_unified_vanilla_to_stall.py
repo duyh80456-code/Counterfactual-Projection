@@ -76,7 +76,7 @@ def main():
         factor=args.lr_reduction_factor, min_lr=args.min_lr,
         threshold=args.significant_min_gain)
     detector = BestCheckpointStallDetector(
-        args.stall_patience, args.significant_min_gain)
+        args.stall_patience, args.significant_min_gain, require_arm=True)
     protocol = {
         "phase": "unified_vanilla_from_initialization", "seed": args.seed,
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
@@ -93,6 +93,7 @@ def main():
         "selection_metric": "trigger accuracy",
         "evaluation_role": "report-only",
         "stall_patience": args.stall_patience,
+        "stall_gate": "LR at min_lr before final patience starts",
         "exact_best_min_gain": args.best_min_gain,
         "significant_min_gain": args.significant_min_gain,
         "train_indices_sha256": index_sha256(train_indices),
@@ -150,6 +151,8 @@ def main():
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(0, trigger["accuracy"])
         scheduler.step(trigger["accuracy"])
+        if scheduler.at_floor():
+            detector.arm_stall(0, trigger["accuracy"])
         history.append({
             "epoch": 0, "train_loss": None, "train_accuracy": None,
             "trigger_accuracy": trigger["accuracy"],
@@ -187,6 +190,8 @@ def main():
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(epoch, trigger["accuracy"])
         scheduler.step(trigger["accuracy"])
+        if scheduler.at_floor() and not detector.stall_armed:
+            detector.arm_stall(epoch, trigger["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
@@ -225,7 +230,12 @@ def main():
     last = history[-1]
     atomic_json_save({
         "phase": "unified_vanilla_from_initialization",
-        "seed": args.seed, "plateau_found": plateau_found,
+        "seed": args.seed,
+        "status": ("stall_detected" if plateau_found else
+                   "no_stall_detected"),
+        "plateau_found": plateau_found,
+        "lr_floor_reached": scheduler.at_floor(),
+        "stall_armed_epoch": detector.stall_armed_epoch,
         "best_epoch": detector.best_epoch,
         "stall_detected_epoch": (
             detector.observations[-1]["epoch"] if plateau_found else None),

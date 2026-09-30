@@ -60,9 +60,10 @@ Each starts a randomly initialized CIFAR-ResNet18 at epoch 0. No theta150 or
 theta300 input is accepted. LR is event-driven: after 20 epochs without a
 significant +0.1 pp trigger gain it is multiplied by 0.2 down to a non-zero
 0.002 floor. There is no fixed decay horizon and no LR or scheduler restart.
-Every exact trigger-set best is a
-complete resumable checkpoint; only a +0.1 pp gain resets the 100-epoch stall
-clock. Once stalled, the already observed 100 epochs are the Vanilla control
+Every exact trigger-set best is a complete resumable checkpoint. The final
+stall clock is armed only after LR reaches 0.002; only a +0.1 pp gain resets its
+100-epoch patience. Once stalled, the already observed 100 floor-LR epochs are
+the Vanilla control
 and the exact best checkpoint is forked into recurrent E-driven O, scaled
 Bypass 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
 

@@ -105,6 +105,19 @@ def test_significant_threshold_is_inclusive_but_tiny_best_does_not_reset():
     assert threshold["meaningful_improvement"] is True
 
 
+def test_final_stall_patience_does_not_count_before_lr_floor_arm():
+    detector = BestCheckpointStallDetector(
+        patience=3, min_gain=0.001, require_arm=True)
+    detector.update(0, 0.70)
+    assert detector.update(3, 0.70)["stalled"] is False
+    detector.arm_stall(3, 0.70)
+    assert detector.observations[-1]["epochs_without_improvement"] == 0
+    assert detector.update(5, 0.70)["stalled"] is False
+    result = detector.update(6, 0.70)
+    assert result["stalled"] is True
+    assert result["stall_armed_epoch"] == 3
+
+
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():
     parameter = torch.nn.Parameter(torch.tensor([1.0]))
     optimizer = torch.optim.SGD([parameter], lr=0.037, momentum=0.9)
@@ -166,6 +179,7 @@ def test_event_driven_scheduler_has_no_epoch_horizon_and_reaches_floor():
     scheduler.step(0.70)
     scheduler.step(0.70)
     assert optimizer.param_groups[0]["lr"] == 0.002
+    assert scheduler.at_floor() is True
     # A significant gain resets only the event counter, not the LR.
     scheduler.step(0.701)
     assert scheduler.bad_epochs == 0

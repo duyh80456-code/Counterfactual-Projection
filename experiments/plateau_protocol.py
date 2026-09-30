@@ -18,6 +18,9 @@ class BestCheckpointStallDetector:
     patience_reference_metric: float = float("-inf")
     last_meaningful_improvement_epoch: int | None = None
     observations: list[dict] = field(default_factory=list)
+    require_arm: bool = False
+    stall_armed: bool = False
+    stall_armed_epoch: int | None = None
 
     def __post_init__(self):
         if self.patience < 1 or self.min_gain < 0:
@@ -45,10 +48,30 @@ class BestCheckpointStallDetector:
             "last_meaningful_improvement_epoch":
                 self.last_meaningful_improvement_epoch,
             "epochs_without_improvement": without_improvement,
-            "stalled": without_improvement >= self.patience,
+            "stall_armed": self.stall_armed or not self.require_arm,
+            "stall_armed_epoch": self.stall_armed_epoch,
+            "stalled": ((self.stall_armed or not self.require_arm) and
+                        without_improvement >= self.patience),
         }
         self.observations.append(row)
         return row
+
+    def arm_stall(self, epoch: int, metric: float) -> None:
+        """Start final stall patience without discarding the exact best."""
+        if self.stall_armed:
+            return
+        self.stall_armed = True
+        self.stall_armed_epoch = int(epoch)
+        self.patience_reference_metric = float(metric)
+        self.last_meaningful_improvement_epoch = int(epoch)
+        if self.observations and self.observations[-1]["epoch"] == int(epoch):
+            row = self.observations[-1]
+            row["patience_reference_metric"] = float(metric)
+            row["last_meaningful_improvement_epoch"] = int(epoch)
+            row["epochs_without_improvement"] = 0
+            row["stall_armed"] = True
+            row["stall_armed_epoch"] = int(epoch)
+            row["stalled"] = False
 
     def state_dict(self) -> dict:
         return {
@@ -57,12 +80,16 @@ class BestCheckpointStallDetector:
             "patience_reference_metric": self.patience_reference_metric,
             "last_meaningful_improvement_epoch":
                 self.last_meaningful_improvement_epoch,
+            "require_arm": self.require_arm,
+            "stall_armed": self.stall_armed,
+            "stall_armed_epoch": self.stall_armed_epoch,
             "observations": list(self.observations),
         }
 
     def load_state_dict(self, state: dict) -> None:
         if (int(state["patience"]) != self.patience or
-                float(state["min_gain"]) != self.min_gain):
+                float(state["min_gain"]) != self.min_gain or
+                bool(state.get("require_arm", False)) != self.require_arm):
             raise RuntimeError("best-checkpoint detector configuration mismatch")
         self.best_metric = float(state["best_metric"])
         self.best_epoch = int(state["best_epoch"])
@@ -70,6 +97,10 @@ class BestCheckpointStallDetector:
             state["patience_reference_metric"])
         self.last_meaningful_improvement_epoch = int(
             state["last_meaningful_improvement_epoch"])
+        self.stall_armed = bool(state.get("stall_armed", False))
+        armed_epoch = state.get("stall_armed_epoch")
+        self.stall_armed_epoch = (
+            None if armed_epoch is None else int(armed_epoch))
         self.observations = [dict(row) for row in state["observations"]]
 
 
@@ -240,6 +271,10 @@ class SignificantPlateauScheduler:
         inherited = float(self.optimizer.param_groups[0]["lr"])
         for group in self.optimizer.param_groups[1:]:
             group["lr"] = inherited
+
+    def at_floor(self) -> bool:
+        return all(float(group["lr"]) <= self.min_lr + 1e-12
+                   for group in self.optimizer.param_groups)
 
     def state_dict(self):
         return {
