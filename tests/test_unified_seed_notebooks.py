@@ -16,7 +16,7 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         notebook, source = notebook_source(seed)
         assert f"SEED = {seed}" in source
         assert f'"--seed", "{seed}"' in source
-        assert f"unified_seed{seed}_end_to_end_v1" in source
+        assert f"unified_seed{seed}_end_to_end_v2" in source
         assert "experiments.run_unified_vanilla_to_stall" in source
         assert '"--stall-patience", "100"' in source
         assert '"--best-min-gain", "0.0"' in source
@@ -27,6 +27,7 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert '"--lr-reduction-patience"' not in source
         assert '"--decay-epochs"' not in source
         assert "Only after the base recipe completes" in source
+        assert "exact-best search is rebased at the" in source
         assert '"--post-fork-epochs", "100"' in source
         assert 'ours_job = launch(0, "ours_e_driven_o")' in source
         assert 'bypass_job = launch(1, "bypass")' in source
@@ -39,8 +40,8 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         normalized.append(
             source.replace(f"SEED = {seed}", "SEED = <seed>")
                   .replace(f'"--seed", "{seed}"', '"--seed", "<seed>"')
-                  .replace(f"unified_seed{seed}_end_to_end_v1",
-                           "unified_seed<seed>_end_to_end_v1")
+                  .replace(f"unified_seed{seed}_end_to_end_v2",
+                           "unified_seed<seed>_end_to_end_v2")
                   .replace(f"seed {seed}", "seed <seed>")
                   .replace(f"seed={seed}", "seed=<seed>"))
     assert normalized[0] == normalized[1] == normalized[2]
@@ -50,8 +51,10 @@ def test_unified_runner_has_one_schedule_and_complete_resume_state():
     source = Path("experiments/run_unified_vanilla_to_stall.py").read_text()
     assert "StandardMultiStepScheduler" in source
     assert '"scheduler_restart_count": 0' in source
-    assert '"schedule_id": "cifar-resnet18-sgd-multistep-200-v1"' in source
+    assert ('"schedule_id": '
+            '"cifar-resnet18-sgd-multistep-200-v2-post-arm-best"') in source
     assert '"stall_gate": "base backbone recipe complete"' in source
+    assert '"theta_P_scope": "exact trigger best at or after stall arm"' in source
     assert "optimizer.load_state_dict(saved[\"optimizer\"])" in source
     assert "scheduler.load_state_dict(saved[\"scheduler\"])" in source
     assert 'restore_rng(saved["rng"])' in source

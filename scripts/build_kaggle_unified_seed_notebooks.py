@@ -23,7 +23,7 @@ phase2 = json.loads(Path(
 
 
 def build(seed):
-    run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v1"
+    run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v2"
     bootstrap = text(phase2["cells"][1]).replace(
         'OUTPUT = Path("/kaggle/working/plateau_fork_three_jobs_100ep_v3")',
         f'RUN_ROOT = Path("{run_root}")\nOUTPUT = RUN_ROOT / "phase2"')
@@ -45,7 +45,8 @@ base recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs
 trigger best is fully checkpointed. Only after the base recipe completes is the
 method-independent stall detector armed. Another 100 consecutive epochs
 without a significant +0.1 pp trigger gain confirm stall; those 100 observed
-epochs are the Vanilla control.
+epochs are the Vanilla control. The theta_P exact-best search is rebased at the
+arm epoch, so no pre-recipe checkpoint can be forked into Phase 2.
 
 Phase 2 forks that run's exact theta_best, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent

@@ -52,6 +52,10 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
         raise RuntimeError("stall detected but checkpoint_best.pt is missing")
     best = torch.load(best_path, map_location="cpu", weights_only=False)
     best_epoch = int(best["epoch"])
+    armed_epoch = detector.stall_armed_epoch
+    if armed_epoch is not None and best_epoch < int(armed_epoch):
+        raise RuntimeError(
+            "theta_P exact best predates the armed stall-search phase")
     stall_start = int(detector.last_meaningful_improvement_epoch) + 1
     stall_end = int(detector.observations[-1]["epoch"])
     control = [dict(row) for row in history

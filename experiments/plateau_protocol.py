@@ -21,6 +21,8 @@ class BestCheckpointStallDetector:
     require_arm: bool = False
     stall_armed: bool = False
     stall_armed_epoch: int | None = None
+    pre_arm_best_metric: float | None = None
+    pre_arm_best_epoch: int | None = None
 
     def __post_init__(self):
         if self.patience < 1 or self.min_gain < 0:
@@ -57,11 +59,15 @@ class BestCheckpointStallDetector:
         return row
 
     def arm_stall(self, epoch: int, metric: float) -> None:
-        """Start final stall patience without discarding the exact best."""
+        """Start final patience and rebase theta_P search to this epoch."""
         if self.stall_armed:
             return
+        self.pre_arm_best_metric = self.best_metric
+        self.pre_arm_best_epoch = self.best_epoch
         self.stall_armed = True
         self.stall_armed_epoch = int(epoch)
+        self.best_metric = float(metric)
+        self.best_epoch = int(epoch)
         self.patience_reference_metric = float(metric)
         self.last_meaningful_improvement_epoch = int(epoch)
         if self.observations and self.observations[-1]["epoch"] == int(epoch):
@@ -69,6 +75,9 @@ class BestCheckpointStallDetector:
             row["patience_reference_metric"] = float(metric)
             row["last_meaningful_improvement_epoch"] = int(epoch)
             row["epochs_without_improvement"] = 0
+            row["improved"] = True
+            row["best_metric"] = float(metric)
+            row["best_epoch"] = int(epoch)
             row["stall_armed"] = True
             row["stall_armed_epoch"] = int(epoch)
             row["stalled"] = False
@@ -83,6 +92,8 @@ class BestCheckpointStallDetector:
             "require_arm": self.require_arm,
             "stall_armed": self.stall_armed,
             "stall_armed_epoch": self.stall_armed_epoch,
+            "pre_arm_best_metric": self.pre_arm_best_metric,
+            "pre_arm_best_epoch": self.pre_arm_best_epoch,
             "observations": list(self.observations),
         }
 
@@ -101,6 +112,12 @@ class BestCheckpointStallDetector:
         armed_epoch = state.get("stall_armed_epoch")
         self.stall_armed_epoch = (
             None if armed_epoch is None else int(armed_epoch))
+        pre_arm_metric = state.get("pre_arm_best_metric")
+        self.pre_arm_best_metric = (
+            None if pre_arm_metric is None else float(pre_arm_metric))
+        pre_arm_epoch = state.get("pre_arm_best_epoch")
+        self.pre_arm_best_epoch = (
+            None if pre_arm_epoch is None else int(pre_arm_epoch))
         self.observations = [dict(row) for row in state["observations"]]
 
 

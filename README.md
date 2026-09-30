@@ -63,7 +63,9 @@ recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs 100 and
 controls LR. Every exact trigger-set best is a complete resumable checkpoint.
 The final stall clock is armed only after the base recipe completes; only a
 +0.1 pp gain resets its 100-epoch patience. Once stalled, the already observed
-100 post-recipe epochs are the Vanilla control
+100 post-recipe epochs are the Vanilla control. The exact-best search is
+rebased when the detector is armed, so theta_P is guaranteed to come from the
+post-recipe stall phase rather than from an earlier training epoch.
 and the exact best checkpoint is forked into recurrent E-driven O, scaled
 Bypass 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
 

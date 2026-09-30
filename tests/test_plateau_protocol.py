@@ -110,13 +110,35 @@ def test_final_stall_patience_does_not_count_before_lr_floor_arm():
     detector = BestCheckpointStallDetector(
         patience=3, min_gain=0.001, require_arm=True)
     detector.update(0, 0.70)
+    detector.update(1, 0.80)
     assert detector.update(3, 0.70)["stalled"] is False
     detector.arm_stall(3, 0.70)
     assert detector.observations[-1]["epochs_without_improvement"] == 0
+    assert detector.pre_arm_best_epoch == 1
+    assert detector.pre_arm_best_metric == 0.80
+    assert detector.best_epoch == 3
+    assert detector.best_metric == 0.70
     assert detector.update(5, 0.70)["stalled"] is False
     result = detector.update(6, 0.70)
     assert result["stalled"] is True
     assert result["stall_armed_epoch"] == 3
+
+
+def test_post_arm_exact_best_and_significant_reference_are_separate():
+    detector = BestCheckpointStallDetector(
+        patience=100, min_gain=0.001, require_arm=True)
+    detector.update(160, 0.80)
+    detector.update(200, 0.78)
+    detector.arm_stall(200, 0.78)
+    tiny = detector.update(217, 0.7805)
+    assert tiny["improved"] is True
+    assert tiny["meaningful_improvement"] is False
+    assert detector.best_epoch == 217
+    significant = detector.update(236, 0.7812)
+    assert significant["improved"] is True
+    assert significant["meaningful_improvement"] is True
+    assert detector.best_epoch == 236
+    assert detector.last_meaningful_improvement_epoch == 236
 
 
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():

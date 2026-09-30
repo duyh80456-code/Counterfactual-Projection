@@ -82,7 +82,7 @@ def main():
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "input_size": 32, "learning_rate": args.lr,
         "weight_decay": args.weight_decay,
-        "schedule_id": "cifar-resnet18-sgd-multistep-200-v1",
+        "schedule_id": "cifar-resnet18-sgd-multistep-200-v2-post-arm-best",
         "schedule": (
             f"base recipe: {args.recipe_epochs} epochs, milestones="
             f"{milestones}, gamma={args.lr_gamma}; metric-independent"),
@@ -93,6 +93,7 @@ def main():
         "evaluation_role": "report-only",
         "stall_patience": args.stall_patience,
         "stall_gate": "base backbone recipe complete",
+        "theta_P_scope": "exact trigger best at or after stall arm",
         "exact_best_min_gain": args.best_min_gain,
         "significant_min_gain": args.significant_min_gain,
         "train_indices_sha256": index_sha256(train_indices),
@@ -232,6 +233,8 @@ def main():
         "plateau_found": plateau_found,
         "base_recipe_complete": scheduler.recipe_complete(),
         "stall_armed_epoch": detector.stall_armed_epoch,
+        "pre_arm_global_best_epoch": detector.pre_arm_best_epoch,
+        "pre_arm_global_best_accuracy": detector.pre_arm_best_metric,
         "best_epoch": detector.best_epoch,
         "stall_detected_epoch": (
             detector.observations[-1]["epoch"] if plateau_found else None),
