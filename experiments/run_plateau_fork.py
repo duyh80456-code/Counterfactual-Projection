@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Subset
 from baselines.bypass import (
     add_extension_parameters_, contraction_norm, embed_relaxed_bypass,
     extension_parameters, project_ready_activations, transition_from_opt2_)
-from experiments.plateau_protocol import ConstantCheckpointScheduler
+from experiments.plateau_protocol import scheduler_from_state
 from experiments.run_gromo_pilot import (
     actual_update_metrics, batch_loss, cg_diagnostics, eval_logits,
     evaluate_heldout_direction, heldout_metrics, parameter_delta_norm,
@@ -192,8 +192,7 @@ def main():
     optimizer, _ = build_optimizer_scheduler(model, 0.1, args.weight_decay)
     model.load_state_dict(source["model"], strict=True)
     optimizer.load_state_dict(source["optimizer"])
-    scheduler = ConstantCheckpointScheduler(optimizer)
-    scheduler.load_state_dict(source["scheduler"])
+    scheduler = scheduler_from_state(optimizer, source["scheduler"])
     fork_lrs = [float(group["lr"]) for group in optimizer.param_groups]
     restore_rng(source["rng"])
     train_loader = make_train_loader(
@@ -263,13 +262,10 @@ def main():
             embed_started = time.perf_counter()
             extension_paths = embed_relaxed_bypass(model)
             add_extension_parameters_(optimizer, extension_parameters(model))
+            scheduler.sync_optimizer_groups()
             expanded_seconds += time.perf_counter() - embed_started
-            scheduler = ConstantCheckpointScheduler(optimizer)
-            # Extensions share the existing optimizer group and therefore the
-            # same constant base LR; preserve elapsed schedule steps explicitly.
-            scheduler.steps = int(source["scheduler"]["steps"])
-            scheduler.learning_rates = tuple(
-                float(group["lr"]) for group in optimizer.param_groups)
+            # Extension coordinates join the existing optimizer group, so the
+            # inherited scheduler continues unchanged without a restart.
 
     history = []
     intervention = None

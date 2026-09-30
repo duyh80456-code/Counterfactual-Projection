@@ -6,7 +6,7 @@ from experiments import run_plateau_comparison as runner
 from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.plateau_protocol import (
     BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
-    ConstantCheckpointScheduler,
+    ConstantCheckpointScheduler, CosineFloorScheduler, scheduler_from_state,
     PlateauDetector)
 
 
@@ -114,6 +114,40 @@ def test_constant_checkpoint_scheduler_preserves_lr_and_state():
     restored = ConstantCheckpointScheduler(optimizer)
     restored.load_state_dict(scheduler.state_dict())
     assert restored.steps == 1
+
+
+def test_cosine_floor_scheduler_is_single_trajectory_with_nonzero_floor():
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    scheduler = CosineFloorScheduler(
+        optimizer, decay_epochs=300, eta_min=0.002)
+    assert optimizer.param_groups[0]["lr"] == 0.1
+    for _ in range(300):
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.002
+    for _ in range(100):
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.002
+    restored = scheduler_from_state(optimizer, scheduler.state_dict())
+    assert restored.steps == 400
+    assert restored.state_dict() == scheduler.state_dict()
+
+
+def test_cosine_floor_scheduler_registers_bypass_group_without_restart():
+    first = torch.nn.Parameter(torch.tensor([1.0]))
+    second = torch.nn.Parameter(torch.tensor([2.0]))
+    optimizer = torch.optim.SGD([first], lr=0.1)
+    scheduler = CosineFloorScheduler(
+        optimizer, decay_epochs=10, eta_min=0.002)
+    for _ in range(5):
+        scheduler.step()
+    inherited_lr = optimizer.param_groups[0]["lr"]
+    optimizer.add_param_group({"params": [second], "lr": inherited_lr})
+    scheduler.sync_optimizer_groups()
+    assert len(scheduler.base_lrs) == 2
+    assert optimizer.param_groups[1]["lr"] == inherited_lr
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == optimizer.param_groups[1]["lr"]
 
 
 def test_loading_original_scheduler_preserves_horizon_lr_and_momentum():

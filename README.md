@@ -47,9 +47,33 @@ coordinates needed by that optimizer.
 python3 -m pytest
 ```
 
-## Kaggle T4 x2 shared-checkpoint run
+## Kaggle T4 x2 unified three-seed experiment
 
-The current main experiment is split into two notebooks:
+The current comparison uses three separately generated, protocol-identical
+notebooks:
+
+- [`notebooks/kaggle_unified_seed1_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed1_end_to_end_t4x2.ipynb)
+- [`notebooks/kaggle_unified_seed2_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed2_end_to_end_t4x2.ipynb)
+- [`notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb)
+
+Each starts a randomly initialized CIFAR-ResNet18 at epoch 0. No theta150 or
+theta300 input is accepted. A single schedule is declared before training:
+cosine decay from 0.1 to 0.002 over 300 epochs, followed by the same non-zero
+floor. There is no LR or scheduler restart. Every exact trigger-set best is a
+complete resumable checkpoint; only a +0.1 pp gain resets the 100-epoch stall
+clock. Once stalled, the already observed 100 epochs are the Vanilla control
+and the exact best checkpoint is forked into recurrent E-driven O, scaled
+Bypass 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
+
+All configuration, splits, schedules, GPU placement, checkpoint fields, and
+metrics are identical across notebooks; only the seed and output directory
+differ. GPU0 runs E-driven O. GPU1 runs Bypass and then starts O-only in a fresh
+process from the same checkpoint hash. Per-epoch histories plus latest, best,
+fork, and intervention checkpoints are retained for later plots and resume.
+
+## Legacy shared-checkpoint runs
+
+The earlier theta300 workflow remains available for reproducing pilot runs:
 
 For the simplest Kaggle workflow, use the single-file
 [`notebooks/kaggle_plateau_end_to_end_t4x2.ipynb`](notebooks/kaggle_plateau_end_to_end_t4x2.ipynb).

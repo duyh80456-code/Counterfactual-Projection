@@ -6,7 +6,8 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert '"o_projection_only")' in source
     assert 'source.get("kind") != "plateau_fork_checkpoint"' in source
     assert "optimizer.load_state_dict(source[\"optimizer\"])" in source
-    assert "scheduler.load_state_dict(source[\"scheduler\"])" in source
+    assert 'scheduler_from_state(optimizer, source["scheduler"])' in source
+    assert "scheduler.sync_optimizer_groups()" in source
     assert "train_indices = list(source[\"train_indices\"])" in source
     assert '"mode": "recurrent_best_rollback"' in source
     assert '"patience": args.retrigger_patience' in source

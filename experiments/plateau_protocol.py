@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import math
+
 
 @dataclass
 class BestCheckpointStallDetector:
@@ -87,6 +89,14 @@ class ConstantCheckpointScheduler:
             raise RuntimeError("constant convergence LR changed unexpectedly")
         self.steps += 1
 
+    def sync_optimizer_groups(self) -> None:
+        """Register newly added groups at their current constant LR."""
+        if len(self.learning_rates) > len(self.optimizer.param_groups):
+            raise RuntimeError("optimizer groups disappeared")
+        if len(self.learning_rates) < len(self.optimizer.param_groups):
+            self.learning_rates = tuple(
+                float(group["lr"]) for group in self.optimizer.param_groups)
+
     def state_dict(self) -> dict:
         return {"kind": "constant_checkpoint_lr", "steps": self.steps,
                 "learning_rates": self.learning_rates}
@@ -101,6 +111,81 @@ class ConstantCheckpointScheduler:
             raise RuntimeError("optimizer LR differs from scheduler state")
         self.learning_rates = expected
         self.steps = int(state["steps"])
+
+
+class CosineFloorScheduler:
+    """One predeclared cosine decay followed by a non-zero constant floor."""
+
+    def __init__(self, optimizer, decay_epochs: int = 300,
+                 eta_min: float = 0.002, base_lrs=None):
+        if decay_epochs < 1 or eta_min < 0:
+            raise ValueError("invalid cosine-floor scheduler configuration")
+        self.optimizer = optimizer
+        self.decay_epochs = int(decay_epochs)
+        self.eta_min = float(eta_min)
+        self.base_lrs = tuple(
+            float(value) for value in (
+                base_lrs if base_lrs is not None else
+                [group["lr"] for group in optimizer.param_groups]))
+        if len(self.base_lrs) != len(optimizer.param_groups):
+            raise ValueError("base LR count differs from optimizer groups")
+        self.steps = 0
+        self._apply()
+
+    def _apply(self):
+        position = min(self.steps, self.decay_epochs)
+        cosine = 0.5 * (1.0 + math.cos(
+            math.pi * position / self.decay_epochs))
+        for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+            group["lr"] = self.eta_min + (base_lr - self.eta_min) * cosine
+
+    def step(self):
+        self.steps += 1
+        self._apply()
+
+    def sync_optimizer_groups(self) -> None:
+        """Put extension groups on the same uninterrupted LR trajectory."""
+        missing = len(self.optimizer.param_groups) - len(self.base_lrs)
+        if missing < 0:
+            raise RuntimeError("optimizer groups disappeared")
+        if missing:
+            if not self.base_lrs:
+                raise RuntimeError("cannot infer base LR for a new group")
+            self.base_lrs = self.base_lrs + (self.base_lrs[0],) * missing
+            self._apply()
+
+    def state_dict(self):
+        return {
+            "kind": "cosine_then_constant_floor", "steps": self.steps,
+            "decay_epochs": self.decay_epochs, "eta_min": self.eta_min,
+            "base_lrs": self.base_lrs,
+        }
+
+    def load_state_dict(self, state):
+        if state.get("kind") != "cosine_then_constant_floor":
+            raise RuntimeError("not a cosine-floor scheduler state")
+        if (int(state["decay_epochs"]) != self.decay_epochs or
+                float(state["eta_min"]) != self.eta_min or
+                tuple(float(value) for value in state["base_lrs"]) !=
+                self.base_lrs):
+            raise RuntimeError("cosine-floor scheduler configuration mismatch")
+        self.steps = int(state["steps"])
+        self._apply()
+
+
+def scheduler_from_state(optimizer, state):
+    """Recreate a supported plateau scheduler without changing its trajectory."""
+    kind = state.get("kind")
+    if kind == "constant_checkpoint_lr":
+        scheduler = ConstantCheckpointScheduler(optimizer)
+    elif kind == "cosine_then_constant_floor":
+        scheduler = CosineFloorScheduler(
+            optimizer, decay_epochs=int(state["decay_epochs"]),
+            eta_min=float(state["eta_min"]), base_lrs=state["base_lrs"])
+    else:
+        raise RuntimeError(f"unsupported plateau scheduler kind: {kind}")
+    scheduler.load_state_dict(state)
+    return scheduler
 
 
 @dataclass
