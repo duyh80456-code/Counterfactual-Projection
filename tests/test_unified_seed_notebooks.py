@@ -12,7 +12,7 @@ def notebook_source(seed):
 
 def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
     normalized = []
-    for seed in (1, 2, 3):
+    for seed in (0, 1, 2):
         notebook, source = notebook_source(seed)
         assert f"SEED = {seed}" in source
         assert f'"--seed", "{seed}"' in source

@@ -146,7 +146,7 @@ print("Fork checkpoint:", PLATEAU_CHECKPOINT)
         "nbformat": 4, "nbformat_minor": 5}
 
 
-for seed in (1, 2, 3):
+for seed in (0, 1, 2):
     destination = Path(
         f"notebooks/kaggle_unified_seed{seed}_end_to_end_t4x2.ipynb")
     destination.write_text(

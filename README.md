@@ -52,9 +52,9 @@ python3 -m pytest
 The current comparison uses three separately generated, protocol-identical
 notebooks:
 
+- [`notebooks/kaggle_unified_seed0_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed0_end_to_end_t4x2.ipynb)
 - [`notebooks/kaggle_unified_seed1_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed1_end_to_end_t4x2.ipynb)
 - [`notebooks/kaggle_unified_seed2_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed2_end_to_end_t4x2.ipynb)
-- [`notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb)
 
 Each starts a randomly initialized CIFAR-ResNet18 at epoch 0. No theta150 or
 theta300 input is accepted. Base training uses a metric-independent CIFAR
