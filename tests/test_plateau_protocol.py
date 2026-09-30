@@ -7,7 +7,8 @@ from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.plateau_protocol import (
     BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
     ConstantCheckpointScheduler, CosineFloorScheduler,
-    SignificantPlateauScheduler, scheduler_from_state, PlateauDetector)
+    SignificantPlateauScheduler, StandardMultiStepScheduler,
+    scheduler_from_state, PlateauDetector)
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -184,6 +185,24 @@ def test_event_driven_scheduler_has_no_epoch_horizon_and_reaches_floor():
     scheduler.step(0.701)
     assert scheduler.bad_epochs == 0
     assert optimizer.param_groups[0]["lr"] == 0.002
+    restored = scheduler_from_state(optimizer, scheduler.state_dict())
+    assert restored.state_dict() == scheduler.state_dict()
+
+
+def test_standard_backbone_recipe_is_metric_independent_and_resumable():
+    parameter = torch.nn.Parameter(torch.tensor([1.0]))
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    scheduler = StandardMultiStepScheduler(
+        optimizer, milestones=(2, 3), gamma=0.1, recipe_epochs=4)
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == 0.1
+    scheduler.step()
+    assert abs(optimizer.param_groups[0]["lr"] - 0.01) < 1e-12
+    scheduler.step()
+    assert abs(optimizer.param_groups[0]["lr"] - 0.001) < 1e-12
+    assert scheduler.recipe_complete() is False
+    scheduler.step()
+    assert scheduler.recipe_complete() is True
     restored = scheduler_from_state(optimizer, scheduler.state_dict())
     assert restored.state_dict() == scheduler.state_dict()
 

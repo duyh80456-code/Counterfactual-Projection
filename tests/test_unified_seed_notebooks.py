@@ -21,11 +21,12 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert '"--stall-patience", "100"' in source
         assert '"--best-min-gain", "0.0"' in source
         assert '"--significant-min-gain", "0.001"' in source
-        assert '"--lr-reduction-patience", "20"' in source
-        assert '"--lr-reduction-factor", "0.2"' in source
-        assert '"--min-lr", "0.002"' in source
+        assert '"--recipe-epochs", "200"' in source
+        assert '"--lr-milestones", "100,150"' in source
+        assert '"--lr-gamma", "0.1"' in source
+        assert '"--lr-reduction-patience"' not in source
         assert '"--decay-epochs"' not in source
-        assert "armed only once LR reaches that floor" in source
+        assert "Only after the base recipe completes" in source
         assert '"--post-fork-epochs", "100"' in source
         assert 'ours_job = launch(0, "ours_e_driven_o")' in source
         assert 'bypass_job = launch(1, "bypass")' in source
@@ -47,17 +48,17 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
 
 def test_unified_runner_has_one_schedule_and_complete_resume_state():
     source = Path("experiments/run_unified_vanilla_to_stall.py").read_text()
-    assert "SignificantPlateauScheduler" in source
+    assert "StandardMultiStepScheduler" in source
     assert '"scheduler_restart_count": 0' in source
-    assert '"schedule_id": "event-driven-significant-plateau-v1"' in source
-    assert '"stall_gate": "LR at min_lr before final patience starts"' in source
+    assert '"schedule_id": "cifar-resnet18-sgd-multistep-200-v1"' in source
+    assert '"stall_gate": "base backbone recipe complete"' in source
     assert "optimizer.load_state_dict(saved[\"optimizer\"])" in source
     assert "scheduler.load_state_dict(saved[\"scheduler\"])" in source
     assert 'restore_rng(saved["rng"])' in source
     assert 'saved["train_loader_generator_state"]' in source
     assert "detector.update(epoch, trigger[\"accuracy\"])" in source
-    assert "scheduler.step(trigger[\"accuracy\"])" in source
-    assert "scheduler.step()" not in source
+    assert "scheduler.step(trigger[\"accuracy\"])" not in source
+    assert source.count("scheduler.step()") == 1
     assert "detector.arm_stall(epoch, trigger[\"accuracy\"])" in source
     assert source.count('"learning_rates": training_lrs') == 1
     assert source.count('"next_learning_rates":') == 2

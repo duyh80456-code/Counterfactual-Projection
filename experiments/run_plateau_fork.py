@@ -460,7 +460,10 @@ def main():
             sum(parameter.numel() for parameter in model.parameters()))
         trigger = evaluate(model, trigger_loader, device)
         validation = evaluate(model, evaluation_loader, device)
-        scheduler.step(trigger["accuracy"])
+        if scheduler.state_dict()["kind"] == "significant_plateau_lr":
+            scheduler.step(trigger["accuracy"])
+        else:
+            scheduler.step()
         row = {
             "epoch": epoch, "post_fork_epoch": offset + 1,
             "phase": epoch_phase, "train_loss": train["task_loss"],

@@ -39,13 +39,13 @@ CIFAR-100, Kaggle **T4 x2**, and the `github_token` secret. It does not load a
 theta150/theta300 checkpoint and never rebases or restarts the learning-rate
 schedule.
 
-Phase 1 trains a randomly initialized CIFAR-ResNet18 with an event-driven
-schedule: after 20 epochs without a significant +0.1 pp trigger gain, LR is
-multiplied by 0.2 down to a non-zero 0.002 floor. There is no fixed decay
-horizon. Every exact trigger best is fully checkpointed. Final stall patience
-is armed only once LR reaches that floor. Another 100 consecutive floor-LR
-epochs without a significant +0.1 pp trigger gain confirm stall; those 100
-observed epochs are the Vanilla control.
+Phase 1 trains a randomly initialized CIFAR-ResNet18 with its metric-independent
+base recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs
+100 and 150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Every exact
+trigger best is fully checkpointed. Only after the base recipe completes is the
+method-independent stall detector armed. Another 100 consecutive epochs
+without a significant +0.1 pp trigger gain confirm stall; those 100 observed
+epochs are the Vanilla control.
 
 Phase 2 forks that run's exact theta_best, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent
@@ -66,8 +66,8 @@ phase1_command = [
     "--output", str(PHASE1_OUTPUT), "--seed", str(SEED),
     "--max-epoch", "800", "--batch-size", "64",
     "--validation-samples", "5000", "--trigger-samples", "2000",
-    "--tuning-samples", "128", "--lr", "0.1", "--min-lr", "0.002",
-    "--lr-reduction-patience", "20", "--lr-reduction-factor", "0.2",
+    "--tuning-samples", "128", "--lr", "0.1", "--recipe-epochs", "200",
+    "--lr-milestones", "100,150", "--lr-gamma", "0.1",
     "--weight-decay", "0.0005",
     "--stall-patience", "100", "--best-min-gain", "0.0",
     "--significant-min-gain", "0.001"]

@@ -218,10 +218,72 @@ def scheduler_from_state(optimizer, state):
             optimizer, patience=int(state["patience"]),
             factor=float(state["factor"]), min_lr=float(state["min_lr"]),
             threshold=float(state["threshold"]))
+    elif kind == "standard_multistep_recipe":
+        scheduler = StandardMultiStepScheduler(
+            optimizer, milestones=state["milestones"],
+            gamma=float(state["gamma"]),
+            recipe_epochs=int(state["recipe_epochs"]))
     else:
         raise RuntimeError(f"unsupported plateau scheduler kind: {kind}")
     scheduler.load_state_dict(state)
     return scheduler
+
+
+class StandardMultiStepScheduler:
+    """Serializable backbone recipe independent of validation metrics."""
+
+    def __init__(self, optimizer, milestones=(100, 150), gamma=0.1,
+                 recipe_epochs=200):
+        milestones = tuple(sorted(int(value) for value in milestones))
+        if (not milestones or milestones[0] < 1 or
+                recipe_epochs < milestones[-1] or not 0 < gamma < 1):
+            raise ValueError("invalid standard multistep recipe")
+        self.optimizer = optimizer
+        self.milestones = milestones
+        self.gamma = float(gamma)
+        self.recipe_epochs = int(recipe_epochs)
+        self.steps = 0
+
+    def step(self, metric=None):
+        self.steps += 1
+        if self.steps in self.milestones:
+            for group in self.optimizer.param_groups:
+                group["lr"] = float(group["lr"]) * self.gamma
+
+    def recipe_complete(self):
+        return self.steps >= self.recipe_epochs
+
+    def sync_optimizer_groups(self):
+        if not self.optimizer.param_groups:
+            raise RuntimeError("optimizer has no parameter groups")
+        inherited = float(self.optimizer.param_groups[0]["lr"])
+        for group in self.optimizer.param_groups[1:]:
+            group["lr"] = inherited
+
+    def state_dict(self):
+        return {
+            "kind": "standard_multistep_recipe", "steps": self.steps,
+            "milestones": self.milestones, "gamma": self.gamma,
+            "recipe_epochs": self.recipe_epochs,
+            "learning_rates": tuple(
+                float(group["lr"]) for group in self.optimizer.param_groups),
+        }
+
+    def load_state_dict(self, state):
+        if state.get("kind") != "standard_multistep_recipe":
+            raise RuntimeError("not a standard multistep recipe state")
+        config = (tuple(int(value) for value in state["milestones"]),
+                  float(state["gamma"]), int(state["recipe_epochs"]))
+        expected = (self.milestones, self.gamma, self.recipe_epochs)
+        if config != expected:
+            raise RuntimeError("standard multistep recipe mismatch")
+        learning_rates = tuple(float(value) for value in state["learning_rates"])
+        if len(learning_rates) != len(self.optimizer.param_groups):
+            raise RuntimeError("scheduler/optimizer group count mismatch")
+        for group, learning_rate in zip(
+                self.optimizer.param_groups, learning_rates):
+            group["lr"] = learning_rate
+        self.steps = int(state["steps"])
 
 
 class SignificantPlateauScheduler:

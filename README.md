@@ -57,13 +57,13 @@ notebooks:
 - [`notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb`](notebooks/kaggle_unified_seed3_end_to_end_t4x2.ipynb)
 
 Each starts a randomly initialized CIFAR-ResNet18 at epoch 0. No theta150 or
-theta300 input is accepted. LR is event-driven: after 20 epochs without a
-significant +0.1 pp trigger gain it is multiplied by 0.2 down to a non-zero
-0.002 floor. There is no fixed decay horizon and no LR or scheduler restart.
-Every exact trigger-set best is a complete resumable checkpoint. The final
-stall clock is armed only after LR reaches 0.002; only a +0.1 pp gain resets its
-100-epoch patience. Once stalled, the already observed 100 floor-LR epochs are
-the Vanilla control
+theta300 input is accepted. Base training uses a metric-independent CIFAR
+recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs 100 and
+150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Trigger accuracy never
+controls LR. Every exact trigger-set best is a complete resumable checkpoint.
+The final stall clock is armed only after the base recipe completes; only a
++0.1 pp gain resets its 100-epoch patience. Once stalled, the already observed
+100 post-recipe epochs are the Vanilla control
 and the exact best checkpoint is forked into recurrent E-driven O, scaled
 Bypass 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
 

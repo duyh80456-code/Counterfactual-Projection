@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from experiments.plateau_protocol import (
-    BestCheckpointStallDetector, SignificantPlateauScheduler)
+    BestCheckpointStallDetector, StandardMultiStepScheduler)
 from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.shared_protocol import (
     atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
@@ -32,9 +32,9 @@ def arguments():
     parser.add_argument("--trigger-samples", type=int, default=2000)
     parser.add_argument("--tuning-samples", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--min-lr", type=float, default=0.002)
-    parser.add_argument("--lr-reduction-patience", type=int, default=20)
-    parser.add_argument("--lr-reduction-factor", type=float, default=0.2)
+    parser.add_argument("--recipe-epochs", type=int, default=200)
+    parser.add_argument("--lr-milestones", default="100,150")
+    parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--stall-patience", type=int, default=100)
     parser.add_argument("--best-min-gain", type=float, default=0.0)
@@ -71,10 +71,10 @@ def main():
     optimizer = torch.optim.SGD(
         model.parameters(), lr=args.lr, momentum=0.9,
         weight_decay=args.weight_decay)
-    scheduler = SignificantPlateauScheduler(
-        optimizer, patience=args.lr_reduction_patience,
-        factor=args.lr_reduction_factor, min_lr=args.min_lr,
-        threshold=args.significant_min_gain)
+    milestones = tuple(int(value) for value in args.lr_milestones.split(","))
+    scheduler = StandardMultiStepScheduler(
+        optimizer, milestones=milestones, gamma=args.lr_gamma,
+        recipe_epochs=args.recipe_epochs)
     detector = BestCheckpointStallDetector(
         args.stall_patience, args.significant_min_gain, require_arm=True)
     protocol = {
@@ -82,18 +82,17 @@ def main():
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "input_size": 32, "learning_rate": args.lr,
         "weight_decay": args.weight_decay,
-        "schedule_id": "event-driven-significant-plateau-v1",
+        "schedule_id": "cifar-resnet18-sgd-multistep-200-v1",
         "schedule": (
-            f"reduce LR x{args.lr_reduction_factor} after "
-            f"{args.lr_reduction_patience} epochs without +"
-            f"{args.significant_min_gain} trigger gain; floor={args.min_lr}"),
+            f"base recipe: {args.recipe_epochs} epochs, milestones="
+            f"{milestones}, gamma={args.lr_gamma}; metric-independent"),
         "scheduler_restart_count": 0, "trigger_samples": len(trigger_indices),
         "evaluation_samples": len(evaluation_indices),
         "tuning_samples": len(tuning_indices),
         "selection_metric": "trigger accuracy",
         "evaluation_role": "report-only",
         "stall_patience": args.stall_patience,
-        "stall_gate": "LR at min_lr before final patience starts",
+        "stall_gate": "base backbone recipe complete",
         "exact_best_min_gain": args.best_min_gain,
         "significant_min_gain": args.significant_min_gain,
         "train_indices_sha256": index_sha256(train_indices),
@@ -150,9 +149,6 @@ def main():
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(0, trigger["accuracy"])
-        scheduler.step(trigger["accuracy"])
-        if scheduler.at_floor():
-            detector.arm_stall(0, trigger["accuracy"])
         history.append({
             "epoch": 0, "train_loss": None, "train_accuracy": None,
             "trigger_accuracy": trigger["accuracy"],
@@ -186,11 +182,11 @@ def main():
         training_lrs = [float(group["lr"])
                         for group in optimizer.param_groups]
         train = train_epoch(model, train_loader, optimizer, device)
+        scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
         selection = detector.update(epoch, trigger["accuracy"])
-        scheduler.step(trigger["accuracy"])
-        if scheduler.at_floor() and not detector.stall_armed:
+        if scheduler.recipe_complete() and not detector.stall_armed:
             detector.arm_stall(epoch, trigger["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
@@ -234,7 +230,7 @@ def main():
         "status": ("stall_detected" if plateau_found else
                    "no_stall_detected"),
         "plateau_found": plateau_found,
-        "lr_floor_reached": scheduler.at_floor(),
+        "base_recipe_complete": scheduler.recipe_complete(),
         "stall_armed_epoch": detector.stall_armed_epoch,
         "best_epoch": detector.best_epoch,
         "stall_detected_epoch": (
