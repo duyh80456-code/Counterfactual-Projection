@@ -1,4 +1,4 @@
-"""Build the one-file theta300 -> best-stall -> four-arm Kaggle notebook."""
+"""Build the legacy theta300 -> meaningful-stall -> method Kaggle notebook."""
 
 import json
 from pathlib import Path
@@ -22,7 +22,7 @@ phase1 = json.loads(Path("notebooks/kaggle_vanilla_to_plateau.ipynb").read_text(
 phase2 = json.loads(Path("notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
 
 cells = [
-    markdown("""# End-to-end best-stall experiment — theta300 to four-arm fork
+    markdown("""# End-to-end meaningful-stall experiment — theta300 to method fork
 
 This is the single-file runner. Attach only CIFAR-100 and the dataset containing
 `shared_seed1_epoch300.pt`, select **T4 x2**, and provide the Kaggle Secret
@@ -80,20 +80,20 @@ if plateau_payload.get("kind") != "plateau_fork_checkpoint":
 PLATEAU_EPOCH = int(plateau_payload["epoch"])
 PLATEAU_HASH = hashlib.sha256(PLATEAU_CHECKPOINT.read_bytes()).hexdigest()
 PLATEAU_PAYLOAD = plateau_payload
-STALL_EVIDENCE = dict(PLATEAU_PAYLOAD["stall_evidence"])
-if STALL_EVIDENCE["post_fork_epochs"] != 100:
-    raise RuntimeError("Phase 1 must contain exactly 100 stall-evidence epochs")
+VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
+if VANILLA_CONTROL["post_fork_epochs"] != 100:
+    raise RuntimeError("Phase 1 must contain exactly 100 matched Vanilla epochs")
 print("theta_P ready:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 """),
     markdown("""## Phase 2 — Fixed T4 x2 schedule
 
-GPU0 runs E-driven O then fresh Vanilla. GPU1 runs Bypass then fresh O-only.
-Every arm is required to report
+GPU0 runs E-driven O only. GPU1 runs Bypass then fresh O-only. Every method is
+required to report
 the exact hash produced by Phase 1.
 """),
     code("""import threading
 
-OUTPUT = Path("/kaggle/working/plateau_end_to_end_four_jobs_100ep_v3")
+OUTPUT = Path("/kaggle/working/plateau_end_to_end_three_methods_100ep_v4")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 """),
     # Reuse the already-tested Phase-2 command/queue and aggregation cells.

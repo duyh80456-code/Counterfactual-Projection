@@ -45,18 +45,21 @@ def save(path, payload):
     atomic_torch_save({"format_version": 1, **payload}, path)
 
 
-def finalize_best_stall(best_path, plateau_path, detector, history,
+def finalize_best_stall(significant_best_path, plateau_path, detector, history,
                         protocol, deploy_params):
-    """Fork exact theta_best and attach its already-observed Vanilla control."""
-    if not best_path.is_file():
-        raise RuntimeError("stall detected but checkpoint_best.pt is missing")
-    best = torch.load(best_path, map_location="cpu", weights_only=False)
+    """Fork the last meaningful best and attach its 100-epoch control."""
+    if not significant_best_path.is_file():
+        raise RuntimeError("stall detected but significant best is missing")
+    best = torch.load(
+        significant_best_path, map_location="cpu", weights_only=False)
     best_epoch = int(best["epoch"])
     armed_epoch = detector.stall_armed_epoch
     if armed_epoch is not None and best_epoch < int(armed_epoch):
         raise RuntimeError(
-            "theta_P exact best predates the armed stall-search phase")
-    stall_start = int(detector.last_meaningful_improvement_epoch) + 1
+            "theta_P meaningful best predates the armed stall-search phase")
+    if best_epoch != int(detector.last_meaningful_improvement_epoch):
+        raise RuntimeError("theta_P is not the last meaningful improvement")
+    stall_start = best_epoch + 1
     stall_end = int(detector.observations[-1]["epoch"])
     control = [dict(row) for row in history
                if stall_start <= int(row["epoch"]) <= stall_end]
@@ -64,16 +67,12 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
         raise RuntimeError(
             "significant-best patience must provide 100 Vanilla control epochs")
     fork_row = next(row for row in history if int(row["epoch"]) == best_epoch)
-    candidates = [fork_row, *control]
-    best_accuracy = max(row["validation_accuracy"] for row in candidates)
-    best_row = next(row for row in candidates
-                    if row["validation_accuracy"] == best_accuracy)
     best["kind"] = "plateau_fork_checkpoint"
     best["stall_evidence"] = detector.state_dict()
     best["stall_detected_epoch"] = detector.observations[-1]["epoch"]
-    best["stall_evidence_history"] = control
-    best["stall_evidence"] = {
-        "role": "stall_confirmation_only_not_comparison_baseline",
+    best["vanilla_control_history"] = control
+    best["vanilla_control"] = {
+        "role": "matched_significant_best_to_stall_window",
         "fork_epoch": best_epoch,
         "stall_window_start_epoch": stall_start,
         "stall_detected_epoch": best["stall_detected_epoch"],
@@ -81,16 +80,20 @@ def finalize_best_stall(best_path, plateau_path, detector, history,
         "fork_validation_accuracy": fork_row["validation_accuracy"],
         "fork_validation_loss": fork_row["validation_loss"],
         "final_validation_accuracy": control[-1]["validation_accuracy"],
-        "best_validation_accuracy": best_accuracy,
+        "best_validation_accuracy": fork_row["validation_accuracy"],
         "final_validation_loss": control[-1]["validation_loss"],
-        "best_validation_loss": min(
-            row["validation_loss"] for row in candidates),
+        "best_validation_loss": fork_row["validation_loss"],
+        "window_max_validation_accuracy": max(
+            row["validation_accuracy"] for row in control),
+        "window_min_validation_loss": min(
+            row["validation_loss"] for row in control),
         "validation_accuracy_delta": (
             control[-1]["validation_accuracy"] -
             fork_row["validation_accuracy"]),
-        "best_validation_accuracy_delta": (
-            best_accuracy - fork_row["validation_accuracy"]),
-        "epochs_to_best": int(best_row["epoch"]) - stall_start + 1,
+        "best_validation_accuracy_delta": 0.0,
+        "epochs_to_best": 0,
+        "exact_best_trigger_accuracy_diagnostic": detector.best_metric,
+        "exact_best_epoch_diagnostic": detector.best_epoch,
         "training_seconds": sum(
             float(row.get("epoch_seconds", 0.0)) for row in control),
         "peak_gpu_memory": max(
@@ -190,6 +193,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"
     best_path = output / "checkpoint_best.pt"
+    exact_best_path = output / "checkpoint_exact_best.pt"
     history = []
     start_epoch = START_EPOCH
     prior_seconds = 0.0
@@ -209,9 +213,9 @@ def main():
         start_epoch = int(saved["epoch"])
         prior_seconds = float(saved.get("training_seconds", 0.0))
         prior_peak = int(saved.get("peak_gpu_memory", 0))
-        if not best_path.is_file():
+        if not best_path.is_file() or not exact_best_path.is_file():
             raise RuntimeError(
-                "resume requires checkpoint_best.pt beside checkpoint_latest.pt")
+                "resume requires significant and exact best checkpoints")
 
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
@@ -236,7 +240,7 @@ def main():
         }
         history.append(baseline)
         initial_payload = {
-            "kind": "vanilla_best_checkpoint", "epoch": START_EPOCH,
+            "kind": "vanilla_significant_best_checkpoint", "epoch": START_EPOCH,
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "rng": rng_state(),
             "train_loader_generator_state": train_loader.generator.get_state(),
@@ -249,6 +253,8 @@ def main():
             "protocol": protocol,
         }
         save(best_path, initial_payload)
+        save(exact_best_path, {
+            **initial_payload, "kind": "vanilla_exact_best_diagnostic"})
         save(latest, {**initial_payload, "kind": "vanilla_convergence_progress"})
 
     if (detector.observations[-1]["stalled"] and not plateau_path.is_file()):
@@ -302,7 +308,11 @@ def main():
         }
         save(latest, payload)
         if selection["improved"]:
-            save(best_path, {**payload, "kind": "vanilla_best_checkpoint"})
+            save(exact_best_path, {
+                **payload, "kind": "vanilla_exact_best_diagnostic"})
+        if selection["meaningful_improvement"]:
+            save(best_path, {
+                **payload, "kind": "vanilla_significant_best_checkpoint"})
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"vanilla_convergence": row}, sort_keys=True), flush=True)
         if selection["stalled"]:

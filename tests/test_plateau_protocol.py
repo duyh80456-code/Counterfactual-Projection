@@ -84,15 +84,18 @@ def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
         })
     best_path = tmp_path / "checkpoint_best.pt"
     plateau_path = tmp_path / "plateau_checkpoint.pt"
-    torch.save({"epoch": 350, "kind": "vanilla_best_checkpoint"}, best_path)
+    # theta_P is the last meaningful best (epoch 300); the smaller exact best
+    # at epoch 350 is retained only as a diagnostic.
+    torch.save({"epoch": 300, "kind": "vanilla_best_checkpoint"}, best_path)
     payload = finalize_best_stall(
         best_path, plateau_path, detector, history, {}, 42)
-    control = payload["stall_evidence"]
-    assert control["role"] == "stall_confirmation_only_not_comparison_baseline"
+    control = payload["vanilla_control"]
+    assert control["role"] == "matched_significant_best_to_stall_window"
     assert control["post_fork_epochs"] == 100
-    assert control["fork_validation_accuracy"] == 0.7705
+    assert control["fork_validation_accuracy"] == 0.77
     assert control["final_validation_accuracy"] == 0.76
-    assert control["epochs_to_best"] == 50
+    assert control["epochs_to_best"] == 0
+    assert control["exact_best_epoch_diagnostic"] == 350
     assert control["training_seconds"] == 200.0
 
 
@@ -140,6 +143,32 @@ def test_post_arm_exact_best_and_significant_reference_are_separate():
     assert significant["meaningful_improvement"] is True
     assert detector.best_epoch == 236
     assert detector.last_meaningful_improvement_epoch == 236
+
+
+def test_strict_plateau_fork_uses_significant_best_not_tiny_exact_best(
+        tmp_path):
+    detector = BestCheckpointStallDetector(
+        patience=3, min_gain=0.001, require_arm=True)
+    detector.update(200, 0.70)
+    detector.arm_stall(200, 0.70)
+    history = [{
+        "epoch": 200, "validation_accuracy": 0.75,
+        "validation_loss": 1.0, "epoch_seconds": 0.0,
+        "peak_gpu_memory": 1}]
+    for epoch, trigger in ((201, 0.7005), (202, 0.7004), (203, 0.7003)):
+        detector.update(epoch, trigger)
+        history.append({
+            "epoch": epoch, "validation_accuracy": 0.74,
+            "validation_loss": 1.1, "epoch_seconds": 1.0,
+            "peak_gpu_memory": 1})
+    significant = tmp_path / "checkpoint_best.pt"
+    plateau = tmp_path / "plateau_checkpoint.pt"
+    torch.save({"epoch": 200}, significant)
+    payload = finalize_best_stall(
+        significant, plateau, detector, history, {}, 42)
+    assert payload["epoch"] == 200
+    assert payload["vanilla_control"]["post_fork_epochs"] == 3
+    assert payload["vanilla_control"]["exact_best_epoch_diagnostic"] == 201
 
 
 def test_constant_checkpoint_scheduler_preserves_lr_and_state():

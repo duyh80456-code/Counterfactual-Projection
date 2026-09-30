@@ -76,6 +76,7 @@ class BestCheckpointStallDetector:
             row["last_meaningful_improvement_epoch"] = int(epoch)
             row["epochs_without_improvement"] = 0
             row["improved"] = True
+            row["meaningful_improvement"] = True
             row["best_metric"] = float(metric)
             row["best_epoch"] = int(epoch)
             row["stall_armed"] = True

@@ -82,7 +82,7 @@ def main():
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "input_size": 32, "learning_rate": args.lr,
         "weight_decay": args.weight_decay,
-        "schedule_id": "cifar-resnet18-sgd-multistep-200-v2-post-arm-best",
+        "schedule_id": "cifar-resnet18-sgd-multistep-200-v3-significant-fork",
         "schedule": (
             f"base recipe: {args.recipe_epochs} epochs, milestones="
             f"{milestones}, gamma={args.lr_gamma}; metric-independent"),
@@ -93,7 +93,7 @@ def main():
         "evaluation_role": "report-only",
         "stall_patience": args.stall_patience,
         "stall_gate": "base backbone recipe complete",
-        "theta_P_scope": "exact trigger best at or after stall arm",
+        "theta_P_scope": "last post-arm meaningful trigger improvement",
         "exact_best_min_gain": args.best_min_gain,
         "significant_min_gain": args.significant_min_gain,
         "train_indices_sha256": index_sha256(train_indices),
@@ -105,6 +105,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"
     best_path = output / "checkpoint_best.pt"
+    exact_best_path = output / "checkpoint_exact_best.pt"
     plateau_path = output / "plateau_checkpoint.pt"
     history, start_epoch, elapsed_before, peak_before = [], 0, 0.0, 0
     generator_state = None
@@ -122,8 +123,10 @@ def main():
         start_epoch = int(saved["epoch"])
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
-        if not best_path.is_file():
-            raise RuntimeError("resume requires checkpoint_best.pt")
+        if not exact_best_path.is_file():
+            raise RuntimeError("resume requires checkpoint_exact_best.pt")
+        if detector.stall_armed and not best_path.is_file():
+            raise RuntimeError("armed resume requires checkpoint_best.pt")
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         generator_state, args.seed)
@@ -161,11 +164,13 @@ def main():
                                     for group in optimizer.param_groups],
             "best_checkpoint_statistics": selection,
         })
-        save(best_path, payload("vanilla_best_checkpoint", 0, 0.0, 0))
+        save(exact_best_path, payload(
+            "vanilla_exact_best_diagnostic", 0, 0.0, 0))
         save(latest, payload("unified_vanilla_progress", 0, 0.0, 0))
     if detector.observations[-1]["stalled"] and not plateau_path.is_file():
         recovered = finalize_best_stall(
-            best_path, plateau_path, detector, history, protocol, deploy_params)
+            best_path, plateau_path, detector, history, protocol,
+            deploy_params)
         atomic_json_save({
             "checkpoint": str(plateau_path),
             "sha256": sha256_file(plateau_path),
@@ -209,7 +214,11 @@ def main():
         current = payload("unified_vanilla_progress", epoch, elapsed, peak)
         save(latest, current)
         if selection["improved"]:
-            save(best_path, {**current, "kind": "vanilla_best_checkpoint"})
+            save(exact_best_path, {
+                **current, "kind": "vanilla_exact_best_diagnostic"})
+        if detector.stall_armed and selection["meaningful_improvement"]:
+            save(best_path, {
+                **current, "kind": "vanilla_significant_best_checkpoint"})
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"unified_vanilla": row}, sort_keys=True), flush=True)
         if selection["stalled"]:
@@ -235,7 +244,9 @@ def main():
         "stall_armed_epoch": detector.stall_armed_epoch,
         "pre_arm_global_best_epoch": detector.pre_arm_best_epoch,
         "pre_arm_global_best_accuracy": detector.pre_arm_best_metric,
-        "best_epoch": detector.best_epoch,
+        "best_epoch": detector.last_meaningful_improvement_epoch,
+        "theta_P_epoch": detector.last_meaningful_improvement_epoch,
+        "exact_best_epoch_diagnostic": detector.best_epoch,
         "stall_detected_epoch": (
             detector.observations[-1]["epoch"] if plateau_found else None),
         "review_epoch_reached": last["epoch"],
@@ -247,6 +258,7 @@ def main():
             detector.patience_reference_metric,
         "plateau_checkpoint": str(plateau_path) if plateau_found else None,
         "checkpoint_latest": str(latest), "checkpoint_best": str(best_path),
+        "checkpoint_exact_best": str(exact_best_path),
         "history": history, "protocol": protocol,
     }, output / "result.json")
 

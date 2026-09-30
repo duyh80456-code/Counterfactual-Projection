@@ -18,7 +18,7 @@ def test_convergence_search_preserves_training_pool_and_saves_full_plateau():
     assert '"exact_best_min_gain": args.best_min_gain' in source
     assert '"significant_min_gain": args.significant_min_gain' in source
     assert 'best["kind"] = "plateau_fork_checkpoint"' in source
-    assert '"kind": "vanilla_best_checkpoint"' in source
+    assert '"kind": "vanilla_significant_best_checkpoint"' in source
     assert 'best_path = output / "checkpoint_best.pt"' in source
     assert 'detector.update(epoch, trigger["accuracy"])' in source
     assert 'detector.update(START_EPOCH, trigger["accuracy"])' in source
@@ -27,9 +27,9 @@ def test_convergence_search_preserves_training_pool_and_saves_full_plateau():
     assert '"evaluation_role": "report-only (3,000 held-out samples)"' in source
     assert 'if selection["improved"]:' in source
     assert "finalize_best_stall" in source
-    assert '"stall_evidence_history"' in source
-    assert '"stall_evidence"' in source
-    assert '"stall_confirmation_only_not_comparison_baseline"' in source
+    assert '"vanilla_control_history"' in source
+    assert '"vanilla_control"' in source
+    assert '"matched_significant_best_to_stall_window"' in source
     assert "len(control) != detector.patience" in source
     assert '"optimizer": optimizer.state_dict()' in source
     assert '"scheduler": scheduler.state_dict()' in source
