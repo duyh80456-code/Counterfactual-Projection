@@ -67,6 +67,13 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         raise RuntimeError(
             "significant-best patience must provide 100 Vanilla control epochs")
     fork_row = next(row for row in history if int(row["epoch"]) == best_epoch)
+    candidates = [fork_row, *control]
+    best_accuracy = max(
+        float(row["validation_accuracy"]) for row in candidates)
+    best_row = next(
+        row for row in candidates
+        if float(row["validation_accuracy"]) == best_accuracy)
+    best_loss = min(float(row["validation_loss"]) for row in candidates)
     best["kind"] = "plateau_fork_checkpoint"
     best["stall_evidence"] = detector.state_dict()
     best["stall_detected_epoch"] = detector.observations[-1]["epoch"]
@@ -79,10 +86,14 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         "post_fork_epochs": len(control),
         "fork_validation_accuracy": fork_row["validation_accuracy"],
         "fork_validation_loss": fork_row["validation_loss"],
+        "theta_P_validation_accuracy": fork_row["validation_accuracy"],
+        "theta_P_validation_loss": fork_row["validation_loss"],
+        "meaningful_best_validation_accuracy":
+            fork_row["validation_accuracy"],
         "final_validation_accuracy": control[-1]["validation_accuracy"],
-        "best_validation_accuracy": fork_row["validation_accuracy"],
+        "best_validation_accuracy": best_accuracy,
         "final_validation_loss": control[-1]["validation_loss"],
-        "best_validation_loss": fork_row["validation_loss"],
+        "best_validation_loss": best_loss,
         "window_max_validation_accuracy": max(
             row["validation_accuracy"] for row in control),
         "window_min_validation_loss": min(
@@ -90,8 +101,9 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         "validation_accuracy_delta": (
             control[-1]["validation_accuracy"] -
             fork_row["validation_accuracy"]),
-        "best_validation_accuracy_delta": 0.0,
-        "epochs_to_best": 0,
+        "best_validation_accuracy_delta": (
+            best_accuracy - float(fork_row["validation_accuracy"])),
+        "epochs_to_best": int(best_row["epoch"]) - best_epoch,
         "exact_best_trigger_accuracy_diagnostic": detector.best_metric,
         "exact_best_epoch_diagnostic": detector.best_epoch,
         "training_seconds": sum(

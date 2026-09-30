@@ -21,6 +21,8 @@ def test_one_file_notebook_connects_meaningful_stall_to_three_methods():
     assert '"bypass"' in source
     assert '"vanilla"' in source
     assert 'results["vanilla"] = VANILLA_CONTROL' in source
+    assert '"theta_P_validation_accuracy"' in source
+    assert '"meaningful_best_validation_accuracy"' in source
     assert 'VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])' in source
     assert 'VANILLA_CONTROL["post_fork_epochs"] != 100' in source
     assert '"--post-fork-epochs", "100"' in source

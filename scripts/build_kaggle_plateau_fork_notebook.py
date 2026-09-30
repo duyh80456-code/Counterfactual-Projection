@@ -198,6 +198,8 @@ summary = {
     "phase1_vanilla_control": VANILLA_CONTROL,
     "results": {name: {key: result.get(key) for key in (
         "fork_validation_accuracy", "fork_validation_loss",
+        "theta_P_validation_accuracy", "theta_P_validation_loss",
+        "meaningful_best_validation_accuracy",
         "fork_trigger_accuracy", "fork_trigger_loss",
         "exact_best_trigger_accuracy", "significant_best_trigger_accuracy",
         "final_validation_accuracy", "best_validation_accuracy",

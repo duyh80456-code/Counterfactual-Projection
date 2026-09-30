@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from experiments import run_plateau_comparison as runner
@@ -93,8 +94,14 @@ def test_stall_checkpoint_reuses_exactly_100_vanilla_epochs(tmp_path):
     assert control["role"] == "matched_significant_best_to_stall_window"
     assert control["post_fork_epochs"] == 100
     assert control["fork_validation_accuracy"] == 0.77
+    assert control["theta_P_validation_accuracy"] == 0.77
+    assert control["meaningful_best_validation_accuracy"] == 0.77
     assert control["final_validation_accuracy"] == 0.76
-    assert control["epochs_to_best"] == 0
+    assert control["best_validation_accuracy"] == 0.7705
+    assert control["best_validation_accuracy_delta"] == pytest.approx(0.0005)
+    assert control["epochs_to_best"] == 50
+    assert control["theta_P_validation_loss"] == 1.0
+    assert control["best_validation_loss"] == 1.0
     assert control["exact_best_epoch_diagnostic"] == 350
     assert control["training_seconds"] == 200.0
 

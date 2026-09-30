@@ -33,6 +33,8 @@ def test_plateau_fork_notebook_runs_three_methods_and_reuses_matched_vanilla():
     assert 'Path(result["best_checkpoint"]).is_file()' in source
     assert "best_acc" in source
     assert "final_acc" in source
+    assert '"theta_P_validation_accuracy"' in source
+    assert '"meaningful_best_validation_accuracy"' in source
     assert 'result["plateau_checkpoint_hash"] != PLATEAU_HASH' in source
     assert 'result["theta_best_hash"] != PLATEAU_HASH' in source
     assert "budget_exhausted_before_contraction_accuracy_is_diagnostic" in source
