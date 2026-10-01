@@ -126,8 +126,27 @@ checkpoint_kinds = {{
     "unified_vanilla_progress", "vanilla_validation_best_checkpoint",
     "vanilla_significant_best_checkpoint", "vanilla_exact_best_diagnostic",
     "plateau_fork_checkpoint"}}
-discovered, rejected_checkpoints = discover_checkpoints(
-    "/kaggle/input", PHASE1_OUTPUT, kind=checkpoint_kinds)
+input_discovered, input_rejected = discover_checkpoints(
+    "/kaggle/input", RUN_ROOT / "input_discovery_cache",
+    kind=checkpoint_kinds)
+local_discovered, local_rejected = discover_checkpoints(
+    PHASE1_OUTPUT, RUN_ROOT / "local_discovery_cache",
+    kind=checkpoint_kinds)
+discovered_by_identity = {{}}
+for item in [*input_discovered, *local_discovered]:
+    identity = (
+        item["sha256"], item["payload"].get("kind"),
+        int(item["payload"].get("epoch", -1)))
+    discovered_by_identity.setdefault(identity, item)
+discovered = list(discovered_by_identity.values())
+rejected_checkpoints = [*input_rejected, *local_rejected]
+print("Phase-1 checkpoint inventory:", [{{
+    "kind": item["payload"].get("kind"),
+    "epoch": int(item["payload"].get("epoch", -1)),
+    "schedule_id": item["payload"].get("protocol", {{}}).get("schedule_id"),
+    "seed": item["payload"].get("protocol", {{}}).get("seed"),
+    "source": item["source"],
+}} for item in discovered])
 progresses = [item for item in discovered
               if item["payload"].get("kind") == "unified_vanilla_progress"]
 bests = [item for item in discovered if is_post200_raw_best_snapshot(item)]
@@ -322,7 +341,8 @@ if compatible:
         "source": progress["source"],
     }})
 else:
-    print("No compatible Phase-1 checkpoint in /kaggle/input; starting epoch 0")
+    print("No compatible Phase-1 checkpoint in /kaggle/input or the current "
+          "working run; starting epoch 0")
 """),
         code(f"""SEED = {seed}
 PHASE1_OUTPUT = RUN_ROOT / "vanilla_stall"

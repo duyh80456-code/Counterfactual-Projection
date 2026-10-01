@@ -24,6 +24,9 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert '"minimum_additional_epochs_if_no_new_best"' in source
         assert "compatible_training_lineage" in source
         assert "is_post200_raw_best_snapshot" in source
+        assert "Phase-1 checkpoint inventory:" in source
+        assert "local_discovered" in source
+        assert "input_discovered" in source
         assert '"replay_missing_best_epoch"' in source
         assert "must observe a new strict raw validation best before fork" in source
         assert 'PHASE1_MAX_EPOCH = max(' in source
