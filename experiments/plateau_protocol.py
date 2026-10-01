@@ -7,6 +7,29 @@ from dataclasses import dataclass, field
 import math
 
 
+def validation_stall_plan(history: list[dict], patience: int = 100) -> dict:
+    """Return the raw-validation-best target and minimum remaining epochs."""
+    if patience < 1 or not history:
+        raise ValueError("history and positive patience are required")
+    rows = sorted(history, key=lambda row: int(row["epoch"]))
+    epochs = [int(row["epoch"]) for row in rows]
+    if len(set(epochs)) != len(epochs):
+        raise ValueError("history contains duplicate epochs")
+    best = max(rows, key=lambda row: float(row["validation_accuracy"]))
+    best_epoch = int(best["epoch"])
+    latest_epoch = epochs[-1]
+    target_epoch = best_epoch + int(patience)
+    return {
+        "validation_best_epoch": best_epoch,
+        "validation_best_accuracy": float(best["validation_accuracy"]),
+        "latest_epoch": latest_epoch,
+        "target_epoch": target_epoch,
+        "minimum_additional_epochs_if_no_new_best":
+            max(0, target_epoch - latest_epoch),
+        "has_100_post_best_epochs": latest_epoch >= target_epoch,
+    }
+
+
 @dataclass
 class BestCheckpointStallDetector:
     """Declare a stall only after validation fails to set a new best."""
@@ -19,6 +42,7 @@ class BestCheckpointStallDetector:
     last_meaningful_improvement_epoch: int | None = None
     observations: list[dict] = field(default_factory=list)
     require_arm: bool = False
+    exact_best_patience: bool = False
     stall_armed: bool = False
     stall_armed_epoch: int | None = None
     pre_arm_best_metric: float | None = None
@@ -34,9 +58,9 @@ class BestCheckpointStallDetector:
         if improved:
             self.best_metric = metric
             self.best_epoch = int(epoch)
-        meaningful = (
+        meaningful = (improved if self.exact_best_patience else (
             self.last_meaningful_improvement_epoch is None or
-            metric >= self.patience_reference_metric + self.min_gain)
+            metric >= self.patience_reference_metric + self.min_gain))
         if meaningful:
             self.patience_reference_metric = metric
             self.last_meaningful_improvement_epoch = int(epoch)
@@ -91,6 +115,7 @@ class BestCheckpointStallDetector:
             "last_meaningful_improvement_epoch":
                 self.last_meaningful_improvement_epoch,
             "require_arm": self.require_arm,
+            "exact_best_patience": self.exact_best_patience,
             "stall_armed": self.stall_armed,
             "stall_armed_epoch": self.stall_armed_epoch,
             "pre_arm_best_metric": self.pre_arm_best_metric,
@@ -101,7 +126,9 @@ class BestCheckpointStallDetector:
     def load_state_dict(self, state: dict) -> None:
         if (int(state["patience"]) != self.patience or
                 float(state["min_gain"]) != self.min_gain or
-                bool(state.get("require_arm", False)) != self.require_arm):
+                bool(state.get("require_arm", False)) != self.require_arm or
+                bool(state.get("exact_best_patience", False)) !=
+                self.exact_best_patience):
             raise RuntimeError("best-checkpoint detector configuration mismatch")
         self.best_metric = float(state["best_metric"])
         self.best_epoch = int(state["best_epoch"])

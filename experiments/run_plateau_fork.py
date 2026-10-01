@@ -211,8 +211,8 @@ def main():
         "stall_detected_epoch": source.get("stall_detected_epoch"),
         "plateau_checkpoint_hash": fork_hash,
         "theta_best_hash": fork_hash,
-        "selection_metric": "trigger accuracy (2,000 held-out samples)",
-        "evaluation_role": "report-only (3,000 held-out samples)",
+        "selection_metric": "validation accuracy (3,000-sample split)",
+        "evaluation_role": "model selection and reporting (3,000 samples)",
         "optimizer_state_preserved": True,
         "scheduler_state_preserved": True,
         "training_indices_unchanged": True,
@@ -244,6 +244,17 @@ def main():
     best_checkpoint = output / "checkpoint_best.pt"
     saved = (torch.load(latest, map_location=device, weights_only=False)
              if latest.is_file() else None)
+    saved_best = (torch.load(
+        best_checkpoint, map_location=device, weights_only=False)
+        if best_checkpoint.is_file() else None)
+    if (saved_best is not None and
+            (saved is None or int(saved_best.get("post_fork_epoch", -1)) >
+             int(saved.get("post_fork_epoch", -1)))):
+        # Best is written before latest. If a crash lands between the two
+        # atomic writes, the newer best payload is itself a complete progress
+        # checkpoint and can safely repair latest.
+        saved = saved_best
+        save_checkpoint(latest, saved)
     if saved is not None and saved["protocol"] != protocol:
         raise RuntimeError("plateau-fork resume protocol mismatch")
     if saved is not None and not best_checkpoint.is_file():
@@ -278,8 +289,8 @@ def main():
     best_accuracy = None
     best_loss = None
     best_offset = None
-    exact_best_trigger_accuracy = None
-    significant_best_trigger_accuracy = None
+    exact_best_validation_accuracy = None
+    significant_best_validation_accuracy = None
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -309,10 +320,10 @@ def main():
         best_accuracy = float(saved["best_validation_accuracy"])
         best_loss = float(saved["best_validation_loss"])
         best_offset = int(saved["best_post_fork_epoch"])
-        exact_best_trigger_accuracy = float(
-            saved["exact_best_trigger_accuracy"])
-        significant_best_trigger_accuracy = float(
-            saved["significant_best_trigger_accuracy"])
+        exact_best_validation_accuracy = float(
+            saved["exact_best_validation_accuracy"])
+        significant_best_validation_accuracy = float(
+            saved["significant_best_validation_accuracy"])
 
     def state_payload(kind, post_offset, training_seconds, peak_memory):
         return {
@@ -343,9 +354,9 @@ def main():
             "best_validation_accuracy": best_accuracy,
             "best_validation_loss": best_loss,
             "best_post_fork_epoch": best_offset,
-            "exact_best_trigger_accuracy": exact_best_trigger_accuracy,
-            "significant_best_trigger_accuracy":
-                significant_best_trigger_accuracy,
+            "exact_best_validation_accuracy": exact_best_validation_accuracy,
+            "significant_best_validation_accuracy":
+                significant_best_validation_accuracy,
             "protocol": protocol,
         }
 
@@ -383,8 +394,9 @@ def main():
         best_accuracy = float(fork_evaluation["accuracy"])
         best_loss = float(fork_evaluation["loss"])
         best_offset = 0
-        exact_best_trigger_accuracy = float(fork_trigger["accuracy"])
-        significant_best_trigger_accuracy = float(fork_trigger["accuracy"])
+        exact_best_validation_accuracy = float(fork_evaluation["accuracy"])
+        significant_best_validation_accuracy = float(
+            fork_evaluation["accuracy"])
         save_checkpoint(best_checkpoint, state_payload(
             "plateau_fork_arm_best", 0, 0.0, 0))
         if args.method in {"ours_e_driven_o", "o_projection_only"}:
@@ -396,17 +408,16 @@ def main():
                 best_offset = 0
             best_loss = min(best_loss, float(immediate["loss"]))
             immediate_exact = (
-                immediate_trigger["accuracy"] > exact_best_trigger_accuracy)
+                immediate["accuracy"] > exact_best_validation_accuracy)
             immediate_significant = (
-                immediate_trigger["accuracy"] >=
-                significant_best_trigger_accuracy +
+                immediate["accuracy"] >=
+                significant_best_validation_accuracy +
                 args.significant_improvement)
             if immediate_exact:
-                exact_best_trigger_accuracy = float(
-                    immediate_trigger["accuracy"])
+                exact_best_validation_accuracy = float(immediate["accuracy"])
             if immediate_significant:
-                significant_best_trigger_accuracy = float(
-                    immediate_trigger["accuracy"])
+                significant_best_validation_accuracy = float(
+                    immediate["accuracy"])
             if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", 0, 0.0, 0))
@@ -484,18 +495,20 @@ def main():
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
         report_improved = validation["accuracy"] > best_accuracy
-        exact_improved = trigger["accuracy"] > exact_best_trigger_accuracy
+        exact_improved = (
+            validation["accuracy"] > exact_best_validation_accuracy)
         significant_improved = (
-            trigger["accuracy"] >= significant_best_trigger_accuracy +
+            validation["accuracy"] >= significant_best_validation_accuracy +
             args.significant_improvement)
         if validation["accuracy"] > best_accuracy:
             best_accuracy = float(validation["accuracy"])
             best_offset = offset + 1
         best_loss = min(best_loss, float(validation["loss"]))
         if exact_improved:
-            exact_best_trigger_accuracy = float(trigger["accuracy"])
+            exact_best_validation_accuracy = float(validation["accuracy"])
         if significant_improved:
-            significant_best_trigger_accuracy = float(trigger["accuracy"])
+            significant_best_validation_accuracy = float(
+                validation["accuracy"])
             stall_counter = 0
         else:
             stall_counter += 1
@@ -521,7 +534,8 @@ def main():
             train_loader.generator.set_state(live_loader_state.cpu())
             rollback_count += 1
             stall_counter = 0
-            significant_best_trigger_accuracy = exact_best_trigger_accuracy
+            significant_best_validation_accuracy = (
+                exact_best_validation_accuracy)
             perform_intervention(
                 len(interventions), offset + 1,
                 "ten_sgd_epochs_without_new_best")
@@ -532,17 +546,16 @@ def main():
                 best_offset = offset + 1
             best_loss = min(best_loss, float(immediate["loss"]))
             immediate_exact = (
-                immediate_trigger["accuracy"] > exact_best_trigger_accuracy)
+                immediate["accuracy"] > exact_best_validation_accuracy)
             immediate_significant = (
-                immediate_trigger["accuracy"] >=
-                significant_best_trigger_accuracy +
+                immediate["accuracy"] >=
+                significant_best_validation_accuracy +
                 args.significant_improvement)
             if immediate_exact:
-                exact_best_trigger_accuracy = float(
-                    immediate_trigger["accuracy"])
+                exact_best_validation_accuracy = float(immediate["accuracy"])
             if immediate_significant:
-                significant_best_trigger_accuracy = float(
-                    immediate_trigger["accuracy"])
+                significant_best_validation_accuracy = float(
+                    immediate["accuracy"])
                 stall_counter = 0
             if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
@@ -567,9 +580,9 @@ def main():
         "theta_best_hash": fork_hash,
         "fork_trigger_accuracy": fork_trigger["accuracy"],
         "fork_trigger_loss": fork_trigger["loss"],
-        "exact_best_trigger_accuracy": exact_best_trigger_accuracy,
-        "significant_best_trigger_accuracy":
-            significant_best_trigger_accuracy,
+        "exact_best_validation_accuracy": exact_best_validation_accuracy,
+        "significant_best_validation_accuracy":
+            significant_best_validation_accuracy,
         "fork_validation_accuracy": fork_evaluation["accuracy"],
         "fork_validation_loss": fork_evaluation["loss"],
         "final_validation_accuracy": last["validation_accuracy"],

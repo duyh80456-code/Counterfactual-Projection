@@ -49,7 +49,7 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
                         protocol, deploy_params):
     """Fork the last meaningful best and attach its 100-epoch control."""
     if not significant_best_path.is_file():
-        raise RuntimeError("stall detected but significant best is missing")
+        raise RuntimeError("stall detected but selected best is missing")
     best = torch.load(
         significant_best_path, map_location="cpu", weights_only=False)
     best_epoch = int(best["epoch"])
@@ -58,14 +58,20 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         raise RuntimeError(
             "theta_P meaningful best predates the armed stall-search phase")
     if best_epoch != int(detector.last_meaningful_improvement_epoch):
-        raise RuntimeError("theta_P is not the last meaningful improvement")
+        raise RuntimeError("theta_P does not match the detector-selected best")
     stall_start = best_epoch + 1
-    stall_end = int(detector.observations[-1]["epoch"])
+    # The matched Vanilla control is always exactly the first ``patience``
+    # epochs after theta_P, even if a base-recipe gate notices the completed
+    # window later.
+    stall_end = best_epoch + int(detector.patience)
+    detected_epoch = int(detector.observations[-1]["epoch"])
+    if detected_epoch < stall_end:
+        raise RuntimeError("stall was finalized before 100 post-best epochs")
     control = [dict(row) for row in history
                if stall_start <= int(row["epoch"]) <= stall_end]
     if len(control) != detector.patience:
         raise RuntimeError(
-            "significant-best patience must provide 100 Vanilla control epochs")
+            "best-checkpoint patience must provide 100 Vanilla control epochs")
     fork_row = next(row for row in history if int(row["epoch"]) == best_epoch)
     candidates = [fork_row, *control]
     best_accuracy = max(
@@ -74,15 +80,20 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         row for row in candidates
         if float(row["validation_accuracy"]) == best_accuracy)
     best_loss = min(float(row["validation_loss"]) for row in candidates)
+    control_role = (
+        "matched_validation_best_to_100_epoch_window"
+        if protocol.get("theta_P_scope") == "global raw validation best"
+        else "matched_significant_best_to_stall_window")
     best["kind"] = "plateau_fork_checkpoint"
     best["stall_evidence"] = detector.state_dict()
-    best["stall_detected_epoch"] = detector.observations[-1]["epoch"]
+    best["stall_detected_epoch"] = detected_epoch
     best["vanilla_control_history"] = control
     best["vanilla_control"] = {
-        "role": "matched_significant_best_to_stall_window",
+        "role": control_role,
         "fork_epoch": best_epoch,
         "stall_window_start_epoch": stall_start,
-        "stall_detected_epoch": best["stall_detected_epoch"],
+        "stall_detected_epoch": detected_epoch,
+        "control_end_epoch": stall_end,
         "post_fork_epochs": len(control),
         "fork_validation_accuracy": fork_row["validation_accuracy"],
         "fork_validation_loss": fork_row["validation_loss"],

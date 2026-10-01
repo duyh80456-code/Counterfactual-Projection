@@ -43,7 +43,7 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert '"evaluation_indices": evaluation_indices' in source
     assert '"theta_best_hash": fork_hash' in source
     assert '"opt1_epochs": opt1_done if args.method == "bypass" else None' in source
-    assert 'exact_improved = trigger["accuracy"] > exact_best_trigger_accuracy' in source
+    assert 'validation["accuracy"] > exact_best_validation_accuracy' in source
     assert 'significant_improved = (' in source
     assert 'validation["accuracy"] > best_accuracy' in source
     assert "epochs_since_best" not in source

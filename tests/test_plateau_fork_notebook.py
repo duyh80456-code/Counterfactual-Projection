@@ -15,7 +15,8 @@ def test_plateau_fork_notebook_runs_three_methods_and_reuses_matched_vanilla():
     assert 'rglob("plateau_checkpoint.pt")' not in source
     assert "followlinks=True" in Path(
         "experiments/kaggle_checkpoint_discovery.py").read_text()
-    assert '"matched_significant_best_to_stall_window"' in source
+    assert '"matched_validation_best_to_100_epoch_window"' in source
+    assert '"plateau_fork_arm_progress", "plateau_fork_arm_best"' in source
     assert 'results["vanilla"] = VANILLA_CONTROL' in source
     assert 'ours_job = launch(0, "ours_e_driven_o")' in source
     assert 'bypass_job = launch(1, "bypass")' in source

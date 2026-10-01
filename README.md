@@ -59,14 +59,13 @@ notebooks:
 Each starts a randomly initialized CIFAR-ResNet18 at epoch 0. No theta150 or
 theta300 input is accepted. Base training uses a metric-independent CIFAR
 recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs 100 and
-150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Trigger accuracy never
-controls LR. Every exact trigger-set best is a complete resumable checkpoint.
-The final stall clock is armed only after the base recipe completes; only a
-+0.1 pp gain resets its 100-epoch patience. Once stalled, the already observed
-100 post-recipe epochs are the matched Vanilla control. Theta_P is the last
-post-arm checkpoint with a meaningful +0.1 pp trigger improvement; smaller
-exact improvements are retained only as diagnostics and do not move theta_P or
-reset patience. Theta_P is loaded into recurrent E-driven O, scaled Bypass
+150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Validation never
+controls LR. Every raw validation best is a complete resumable checkpoint.
+After the base recipe completes, stall is confirmed only when 100 epochs have
+elapsed since the latest raw validation best. That exact 100-epoch segment is
+the matched Vanilla control. Theta_P is the raw validation-best checkpoint;
+any later raw best moves theta_P and restarts the 100-epoch target. Theta_P is
+loaded into recurrent E-driven O, scaled Bypass
 70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
 
 All configuration, splits, schedules, GPU placement, checkpoint fields, and
@@ -74,6 +73,14 @@ metrics are identical across notebooks; only the seed and output directory
 differ. GPU0 runs E-driven O only. GPU1 runs Bypass then fresh O-only. Every
 method process starts from the same checkpoint hash. Per-epoch histories plus latest, best,
 fork, and intervention checkpoints are retained for later plots and resume.
+When a prior output is attached under `/kaggle/input`, the notebooks select the
+furthest compatible progress checkpoint, pair it with the corresponding raw
+validation-best checkpoint, print the minimum remaining epochs if no new best
+appears, and resume rather than restarting.
+An attached v3 trajectory is migrated only if one of its full checkpoints is
+exactly at the raw validation-best epoch found in its history; otherwise the
+notebook reports that reconstruction is impossible instead of pretending that
+metrics alone contain the missing weights.
 
 ## Legacy shared-checkpoint runs
 

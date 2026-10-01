@@ -10,7 +10,8 @@ from pathlib import Path
 import torch
 
 from experiments.plateau_protocol import (
-    BestCheckpointStallDetector, StandardMultiStepScheduler)
+    BestCheckpointStallDetector, StandardMultiStepScheduler,
+    validation_stall_plan)
 from experiments.run_vanilla_to_plateau import finalize_best_stall
 from experiments.shared_protocol import (
     atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
@@ -37,8 +38,6 @@ def arguments():
     parser.add_argument("--lr-gamma", type=float, default=0.1)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--stall-patience", type=int, default=100)
-    parser.add_argument("--best-min-gain", type=float, default=0.0)
-    parser.add_argument("--significant-min-gain", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -50,9 +49,7 @@ def main():
     args = arguments()
     if not torch.cuda.is_available():
         raise RuntimeError("one visible CUDA GPU is required")
-    if args.best_min_gain != 0.0:
-        raise ValueError("best_min_gain must be zero")
-    if args.significant_min_gain <= 0 or args.stall_patience < 1:
+    if args.stall_patience < 1:
         raise ValueError("invalid stall configuration")
     import sys
     reference_root = Path(args.reference_root).resolve()
@@ -76,26 +73,26 @@ def main():
         optimizer, milestones=milestones, gamma=args.lr_gamma,
         recipe_epochs=args.recipe_epochs)
     detector = BestCheckpointStallDetector(
-        args.stall_patience, args.significant_min_gain, require_arm=True)
+        args.stall_patience, min_gain=0.0, require_arm=False,
+        exact_best_patience=True)
     protocol = {
         "phase": "unified_vanilla_from_initialization", "seed": args.seed,
         "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
         "input_size": 32, "learning_rate": args.lr,
         "weight_decay": args.weight_decay,
-        "schedule_id": "cifar-resnet18-sgd-multistep-200-v3-significant-fork",
+        "schedule_id": "cifar-resnet18-sgd-multistep-200-v4-validation-best",
         "schedule": (
             f"base recipe: {args.recipe_epochs} epochs, milestones="
             f"{milestones}, gamma={args.lr_gamma}; metric-independent"),
         "scheduler_restart_count": 0, "trigger_samples": len(trigger_indices),
         "evaluation_samples": len(evaluation_indices),
         "tuning_samples": len(tuning_indices),
-        "selection_metric": "trigger accuracy",
-        "evaluation_role": "report-only",
+        "selection_metric": "validation accuracy (3,000-sample split)",
+        "evaluation_role": "model selection and reporting; official test unused",
         "stall_patience": args.stall_patience,
-        "stall_gate": "base backbone recipe complete",
-        "theta_P_scope": "last post-arm meaningful trigger improvement",
-        "exact_best_min_gain": args.best_min_gain,
-        "significant_min_gain": args.significant_min_gain,
+        "stall_gate": "base recipe complete and 100 epochs after raw validation best",
+        "theta_P_scope": "global raw validation best",
+        "validation_best_min_gain": 0.0,
         "train_indices_sha256": index_sha256(train_indices),
         "validation_indices_sha256": index_sha256(validation_indices),
         "tuning_indices_sha256": index_sha256(tuning_indices),
@@ -123,10 +120,22 @@ def main():
         start_epoch = int(saved["epoch"])
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
-        if not exact_best_path.is_file():
-            raise RuntimeError("resume requires checkpoint_exact_best.pt")
-        if detector.stall_armed and not best_path.is_file():
-            raise RuntimeError("armed resume requires checkpoint_best.pt")
+        if not best_path.is_file() or not exact_best_path.is_file():
+            raise RuntimeError("resume requires both validation-best checkpoints")
+        saved_best = torch.load(
+            best_path, map_location="cpu", weights_only=False)
+        expected_best_epoch = int(detector.best_epoch)
+        if int(saved_best["epoch"]) != expected_best_epoch:
+            # checkpoint_latest is written before the best aliases. A crash in
+            # that narrow gap is recoverable exactly when latest itself is the
+            # new raw validation best.
+            if start_epoch != expected_best_epoch:
+                raise RuntimeError(
+                    "validation-best checkpoint does not match progress")
+            repaired = {
+                **saved, "kind": "vanilla_validation_best_checkpoint"}
+            save(best_path, repaired)
+            save(exact_best_path, repaired)
     train_loader = make_train_loader(
         train_set, train_indices, args.batch_size, args.workers,
         generator_state, args.seed)
@@ -152,7 +161,7 @@ def main():
     if not history:
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
-        selection = detector.update(0, trigger["accuracy"])
+        selection = detector.update(0, evaluation["accuracy"])
         history.append({
             "epoch": 0, "train_loss": None, "train_accuracy": None,
             "trigger_accuracy": trigger["accuracy"],
@@ -164,10 +173,14 @@ def main():
                                     for group in optimizer.param_groups],
             "best_checkpoint_statistics": selection,
         })
-        save(exact_best_path, payload(
-            "vanilla_exact_best_diagnostic", 0, 0.0, 0))
+        initial_best = payload("vanilla_validation_best_checkpoint", 0, 0.0, 0)
+        save(best_path, initial_best)
+        save(exact_best_path, initial_best)
         save(latest, payload("unified_vanilla_progress", 0, 0.0, 0))
-    if detector.observations[-1]["stalled"] and not plateau_path.is_file():
+    recovered_plan = validation_stall_plan(history, args.stall_patience)
+    if (scheduler.recipe_complete() and
+            recovered_plan["has_100_post_best_epochs"] and
+            not plateau_path.is_file()):
         recovered = finalize_best_stall(
             best_path, plateau_path, detector, history, protocol,
             deploy_params)
@@ -191,9 +204,7 @@ def main():
         scheduler.step()
         trigger = evaluate(model, trigger_loader, device)
         evaluation = evaluate(model, evaluation_loader, device)
-        selection = detector.update(epoch, trigger["accuracy"])
-        if scheduler.recipe_complete() and not detector.stall_armed:
-            detector.arm_stall(epoch, trigger["accuracy"])
+        selection = detector.update(epoch, evaluation["accuracy"])
         row = {
             "epoch": epoch, "train_loss": train["task_loss"],
             "train_accuracy": train["accuracy"],
@@ -214,14 +225,16 @@ def main():
         current = payload("unified_vanilla_progress", epoch, elapsed, peak)
         save(latest, current)
         if selection["improved"]:
-            save(exact_best_path, {
-                **current, "kind": "vanilla_exact_best_diagnostic"})
-        if detector.stall_armed and selection["meaningful_improvement"]:
-            save(best_path, {
-                **current, "kind": "vanilla_significant_best_checkpoint"})
+            validation_best = {
+                **current, "kind": "vanilla_validation_best_checkpoint"}
+            save(best_path, validation_best)
+            save(exact_best_path, validation_best)
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"unified_vanilla": row}, sort_keys=True), flush=True)
-        if selection["stalled"]:
+        stall_plan = validation_stall_plan(history, args.stall_patience)
+        stall_ready = (scheduler.recipe_complete() and
+                       stall_plan["has_100_post_best_epochs"])
+        if stall_ready:
             best = finalize_best_stall(
                 best_path, plateau_path, detector, history, protocol,
                 deploy_params)
@@ -241,11 +254,11 @@ def main():
                    "no_stall_detected"),
         "plateau_found": plateau_found,
         "base_recipe_complete": scheduler.recipe_complete(),
-        "stall_armed_epoch": detector.stall_armed_epoch,
-        "pre_arm_global_best_epoch": detector.pre_arm_best_epoch,
-        "pre_arm_global_best_accuracy": detector.pre_arm_best_metric,
-        "best_epoch": detector.last_meaningful_improvement_epoch,
-        "theta_P_epoch": detector.last_meaningful_improvement_epoch,
+        "stall_armed_epoch": args.recipe_epochs,
+        "pre_arm_global_best_epoch": None,
+        "pre_arm_global_best_accuracy": None,
+        "best_epoch": detector.best_epoch,
+        "theta_P_epoch": detector.best_epoch,
         "exact_best_epoch_diagnostic": detector.best_epoch,
         "stall_detected_epoch": (
             detector.observations[-1]["epoch"] if plateau_found else None),
@@ -253,9 +266,8 @@ def main():
         "final_validation_accuracy": last["validation_accuracy"],
         "best_validation_accuracy": max(
             row["validation_accuracy"] for row in history),
-        "exact_best_trigger_accuracy": detector.best_metric,
-        "significant_best_trigger_accuracy":
-            detector.patience_reference_metric,
+        "validation_best_accuracy": detector.best_metric,
+        "validation_best_epoch": detector.best_epoch,
         "plateau_checkpoint": str(plateau_path) if plateau_found else None,
         "checkpoint_latest": str(latest), "checkpoint_best": str(best_path),
         "checkpoint_exact_best": str(exact_best_path),

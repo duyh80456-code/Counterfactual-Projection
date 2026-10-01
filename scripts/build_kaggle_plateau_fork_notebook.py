@@ -15,10 +15,10 @@ def code(source):
 
 
 cells = [
-    markdown("""# Phase 2 — Three methods from meaningful-best theta_P
+    markdown("""# Phase 2 — Three methods from selected theta_P
 
 Attach the Phase-1 output containing `plateau_checkpoint.pt`. It is the last
-meaningful-best state saved before the no-new-best patience expired. This notebook forks
+selected best state saved before the no-new-best patience expired. This notebook forks
 its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
 into three newly trained 100-epoch method arms. The 100 epochs after the last
 meaningful improvement in Phase 1 are the matched Vanilla control:
@@ -113,7 +113,9 @@ PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
 VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
 if VANILLA_CONTROL["post_fork_epochs"] != 100:
     raise RuntimeError("Phase 1 must contain exactly 100 matched Vanilla epochs")
-if VANILLA_CONTROL["role"] != "matched_significant_best_to_stall_window":
+if VANILLA_CONTROL["role"] not in {
+        "matched_validation_best_to_100_epoch_window",
+        "matched_significant_best_to_stall_window"}:
     raise RuntimeError("Phase 1 Vanilla control has an invalid role")
 print("theta_P:", PLATEAU_EPOCH, PLATEAU_CHECKPOINT, PLATEAU_HASH)
 print("theta_P source:", selected["source"])
@@ -137,6 +139,41 @@ commands = {
     name: [sys.executable, "-m", "experiments.run_plateau_fork",
            "--method", name] + base_args(OUTPUT / name)
     for name in ("bypass", "ours_e_driven_o", "o_projection_only")}
+
+# A newly started Kaggle session can resume arm-level progress from an attached
+# prior output. Only checkpoints with the same theta_P hash and full protocol
+# are paired; unrelated seeds/runs are ignored.
+arm_checkpoints, rejected_arm_checkpoints = discover_checkpoints(
+    "/kaggle/input", OUTPUT,
+    kind={"plateau_fork_arm_progress", "plateau_fork_arm_best"})
+arm_progress = [item for item in arm_checkpoints
+                if item["payload"]["kind"] == "plateau_fork_arm_progress"]
+arm_bests = [item for item in arm_checkpoints
+             if item["payload"]["kind"] == "plateau_fork_arm_best"]
+for name in ("bypass", "ours_e_driven_o", "o_projection_only"):
+    matches = [item for item in [*arm_progress, *arm_bests]
+               if item["payload"].get("theta_best_hash") == PLATEAU_HASH
+               and item["payload"].get("protocol", {}).get("method") == name]
+    if not matches:
+        continue
+    progress = max(
+        matches, key=lambda item: int(item["payload"]["post_fork_epoch"]))
+    best_matches = [item for item in arm_bests
+                    if item["payload"].get("theta_best_hash") == PLATEAU_HASH
+                    and item["payload"].get("protocol") ==
+                    progress["payload"].get("protocol")]
+    if not best_matches:
+        raise RuntimeError(
+            f"Found resumable {name} progress without its best checkpoint")
+    best = max(
+        best_matches,
+        key=lambda item: int(item["payload"]["post_fork_epoch"]))
+    arm_output = OUTPUT / name
+    arm_output.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(progress["path"], arm_output / "checkpoint_latest.pt")
+    shutil.copy2(best["path"], arm_output / "checkpoint_best.pt")
+    print(f"Resuming {name} at post-fork epoch "
+          f"{progress['payload']['post_fork_epoch']}")
 
 def stream(name, process, log):
     for line in process.stdout:
@@ -201,7 +238,8 @@ summary = {
         "theta_P_validation_accuracy", "theta_P_validation_loss",
         "meaningful_best_validation_accuracy",
         "fork_trigger_accuracy", "fork_trigger_loss",
-        "exact_best_trigger_accuracy", "significant_best_trigger_accuracy",
+        "exact_best_validation_accuracy",
+        "significant_best_validation_accuracy",
         "final_validation_accuracy", "best_validation_accuracy",
         "final_validation_loss", "best_validation_loss",
         "validation_accuracy_delta", "best_validation_accuracy_delta",

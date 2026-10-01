@@ -9,7 +9,7 @@ from experiments.plateau_protocol import (
     BestCheckpointStallDetector, ConsecutiveWindowPlateauDetector,
     ConstantCheckpointScheduler, CosineFloorScheduler,
     SignificantPlateauScheduler, StandardMultiStepScheduler,
-    scheduler_from_state, PlateauDetector)
+    scheduler_from_state, PlateauDetector, validation_stall_plan)
 
 
 def test_plateau_requires_full_window_and_small_accuracy_and_loss_change():
@@ -115,6 +115,54 @@ def test_significant_threshold_is_inclusive_but_tiny_best_does_not_reset():
     threshold = detector.update(2, 0.7010)
     assert threshold["improved"] is True
     assert threshold["meaningful_improvement"] is True
+
+
+def test_raw_validation_best_moves_the_exact_100_epoch_target():
+    history = [
+        {"epoch": epoch,
+         "validation_accuracy": 0.71 if epoch == 140 else 0.70}
+        for epoch in range(0, 240)]
+    before = validation_stall_plan(history, patience=100)
+    assert before["validation_best_epoch"] == 140
+    assert before["target_epoch"] == 240
+    assert before["minimum_additional_epochs_if_no_new_best"] == 1
+    history.append({"epoch": 240, "validation_accuracy": 0.70})
+    ready = validation_stall_plan(history, patience=100)
+    assert ready["minimum_additional_epochs_if_no_new_best"] == 0
+    assert ready["has_100_post_best_epochs"] is True
+
+
+def test_exact_best_patience_does_not_reset_on_a_tie():
+    detector = BestCheckpointStallDetector(
+        patience=3, min_gain=0.0, exact_best_patience=True)
+    assert detector.update(0, 0.70)["meaningful_improvement"] is True
+    assert detector.update(1, 0.71)["meaningful_improvement"] is True
+    assert detector.update(2, 0.71)["meaningful_improvement"] is False
+    assert detector.update(4, 0.70)["stalled"] is True
+
+
+def test_validation_best_fork_attaches_exactly_100_following_epochs(tmp_path):
+    detector = BestCheckpointStallDetector(
+        patience=100, min_gain=0.0, exact_best_patience=True)
+    history = []
+    for epoch in range(100, 241):
+        accuracy = 0.80 if epoch == 140 else 0.79
+        detector.update(epoch, accuracy)
+        history.append({
+            "epoch": epoch, "validation_accuracy": accuracy,
+            "validation_loss": 1.0, "epoch_seconds": 1.0,
+            "peak_gpu_memory": 1})
+    best = tmp_path / "checkpoint_best.pt"
+    plateau = tmp_path / "plateau_checkpoint.pt"
+    torch.save({"epoch": 140}, best)
+    payload = finalize_best_stall(
+        best, plateau, detector, history,
+        {"theta_P_scope": "global raw validation best"}, 42)
+    control = payload["vanilla_control"]
+    assert control["role"] == "matched_validation_best_to_100_epoch_window"
+    assert control["stall_window_start_epoch"] == 141
+    assert control["control_end_epoch"] == 240
+    assert control["post_fork_epochs"] == 100
 
 
 def test_final_stall_patience_does_not_count_before_lr_floor_arm():

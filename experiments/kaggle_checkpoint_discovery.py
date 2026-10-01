@@ -30,13 +30,17 @@ def _repack_archive(root: Path, target: Path) -> Path:
 
 
 def discover_checkpoints(input_root: str | Path, output: str | Path,
-                         *, kind: str) -> tuple[list[dict], list[dict]]:
-    """Load every plausible checkpoint and retain payloads of ``kind``.
+                         *, kind: str | set[str] | tuple[str, ...]
+                         ) -> tuple[list[dict], list[dict]]:
+    """Load every plausible checkpoint and retain requested payload kinds.
 
     Kaggle may expose a torch-save zip as a directory tree. Therefore discovery
     searches by payload type, not filename: ordinary ``*.pt`` files are tried
     directly and every directory containing ``data.pkl`` is repacked first.
     """
+    wanted = {kind} if isinstance(kind, str) else set(kind)
+    if not wanted:
+        raise ValueError("at least one checkpoint kind is required")
     input_root = Path(input_root)
     output = Path(output)
     # Notebook outputs can be mounted below /kaggle/input through directory
@@ -72,7 +76,7 @@ def discover_checkpoints(input_root: str | Path, output: str | Path,
             rejected.append({"path": str(path), "reason": type(error).__name__})
             continue
         found_kind = payload.get("kind") if isinstance(payload, dict) else None
-        if found_kind != kind:
+        if found_kind not in wanted:
             rejected.append({"path": str(path), "kind": found_kind})
             continue
         matches.append({
