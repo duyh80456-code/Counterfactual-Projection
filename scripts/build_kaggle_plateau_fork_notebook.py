@@ -25,7 +25,7 @@ the first 100 epochs confirm plateau and the final 50 continue the trajectory.
 
 - scaled matched-horizon Bypass (70 opt1 + up to 30 opt2; never force-project);
 - Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
-  winner-only O projection, then recurrent 15-epoch best-checkpoint trials.
+  winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
 - O-only: supervised functional projection at the fixed residual-path site,
   with the same recurrent rollback/retrigger schedule for a fair ablation.
 
@@ -130,7 +130,7 @@ print("theta_P source:", selected["source"])
         "--seed", "1", "--batch-size", "64", "--rank", "4",
         "--opt1-epochs", "70", "--max-opt2-epochs", "30",
         "--probe-epsilon", "0.05", "--where-batches", "3",
-        "--retrigger-patience", "15",
+        "--retrigger-patience", "10",
         "--gamma-increase-opt2-epoch", "15",
         "--gamma-post-increase-multiplier", "2.0",
         "--line-search-scales", "0.0125,0.025,0.05"]

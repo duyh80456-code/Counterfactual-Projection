@@ -40,7 +40,7 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert "100 epochs have elapsed since the" in source
         assert "raw validation-best checkpoint" in source
         assert '"--post-fork-epochs", "150"' in source
-        assert '"--retrigger-patience", "15"' in source
+        assert '"--retrigger-patience", "10"' in source
         assert 'ours_job = launch(0, "ours_e_driven_o")' in source
         assert 'bypass_job = launch(1, "bypass")' in source
         assert 'o_only_job = launch(1, "o_projection_only")' in source

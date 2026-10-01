@@ -61,7 +61,7 @@ def arguments():
     parser.add_argument("--cg-preconditioner-probes", type=int, default=8)
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
-    parser.add_argument("--retrigger-patience", type=int, default=15)
+    parser.add_argument("--retrigger-patience", type=int, default=10)
     parser.add_argument("--opt1-epochs", type=int, default=70)
     parser.add_argument("--max-opt2-epochs", type=int, default=30)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
