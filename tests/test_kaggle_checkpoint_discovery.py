@@ -1,3 +1,4 @@
+import tarfile
 import zipfile
 
 import torch
@@ -47,3 +48,19 @@ def test_follows_kaggle_notebook_output_directory_symlink(tmp_path):
         input_root, tmp_path / "repacked", kind="plateau_fork_checkpoint")
     assert len(matches) == 1
     assert matches[0]["payload"]["epoch"] == 328
+
+
+def test_discovers_checkpoint_inside_notebook_output_tarball(tmp_path):
+    checkpoint = tmp_path / "checkpoint_best.pt"
+    torch.save(payload(), checkpoint)
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    archive_path = input_root / "saved-run.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(checkpoint, arcname="run/checkpoint_best.pt")
+
+    matches, _ = discover_checkpoints(
+        input_root, tmp_path / "output", kind="plateau_fork_checkpoint")
+    assert len(matches) == 1
+    assert matches[0]["payload"]["epoch"] == 328
+    assert matches[0]["source"] == str(archive_path)

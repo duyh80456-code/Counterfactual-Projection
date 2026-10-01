@@ -72,6 +72,56 @@ def copy_checkpoint(source, destination):
     if source.resolve() != destination.resolve():
         shutil.copy2(source, destination)
 
+def compatible_training_lineage(candidate, reference):
+    # Compare state-producing invariants, not incidental report metadata.
+    required_state = {{
+        "model", "optimizer", "scheduler", "rng",
+        "train_loader_generator_state", "train_indices", "trigger_indices",
+        "evaluation_indices", "source_tuning_indices", "history", "epoch"}}
+    if not required_state.issubset(candidate) or not required_state.issubset(reference):
+        return False
+    protocol_fields = (
+        "seed", "dataset", "architecture", "input_size", "learning_rate",
+        "weight_decay", "batch_size", "schedule_id", "optimizer",
+        "model_state_lineage", "train_indices_sha256",
+        "validation_indices_sha256", "tuning_indices_sha256")
+    left, right = candidate.get("protocol", {{}}), reference.get("protocol", {{}})
+    if any(left.get(key) != right.get(key) for key in protocol_fields):
+        return False
+    for key in ("train_indices", "trigger_indices", "evaluation_indices",
+                "source_tuning_indices"):
+        if list(candidate[key]) != list(reference[key]):
+            return False
+    scheduler_fields = ("kind", "milestones", "gamma", "recipe_epochs")
+    if any(candidate["scheduler"].get(key) != reference["scheduler"].get(key)
+           for key in scheduler_fields):
+        return False
+    optimizer_fields = ("momentum", "dampening", "weight_decay", "nesterov")
+    candidate_groups = candidate["optimizer"].get("param_groups", [])
+    reference_groups = reference["optimizer"].get("param_groups", [])
+    if len(candidate_groups) != len(reference_groups):
+        return False
+    if any(any(a.get(key) != b.get(key) for key in optimizer_fields)
+           for a, b in zip(candidate_groups, reference_groups)):
+        return False
+    candidate_shapes = {{key: tuple(value.shape)
+                        for key, value in candidate["model"].items()}}
+    reference_shapes = {{key: tuple(value.shape)
+                        for key, value in reference["model"].items()}}
+    return candidate_shapes == reference_shapes
+
+def is_post200_raw_best_snapshot(item):
+    payload = item["payload"]
+    if not isinstance(payload, dict) or "history" not in payload:
+        return False
+    epoch = int(payload.get("epoch", -1))
+    rows = [row for row in payload["history"]
+            if 200 <= int(row["epoch"]) <= epoch]
+    if not rows:
+        return False
+    observed = max(rows, key=lambda row: float(row["validation_accuracy"]))
+    return int(observed["epoch"]) == epoch
+
 checkpoint_kinds = {{
     "unified_vanilla_progress", "vanilla_validation_best_checkpoint",
     "vanilla_significant_best_checkpoint", "vanilla_exact_best_diagnostic",
@@ -80,9 +130,7 @@ discovered, rejected_checkpoints = discover_checkpoints(
     "/kaggle/input", PHASE1_OUTPUT, kind=checkpoint_kinds)
 progresses = [item for item in discovered
               if item["payload"].get("kind") == "unified_vanilla_progress"]
-bests = [item for item in discovered
-         if item["payload"].get("kind") ==
-         "vanilla_validation_best_checkpoint"]
+bests = [item for item in discovered if is_post200_raw_best_snapshot(item)]
 compatible = [item for item in progresses
               if item["payload"].get("protocol", {{}}).get("seed") == SEED
               and item["payload"].get("protocol", {{}}).get(
@@ -208,12 +256,12 @@ if compatible:
     else:
         best_epoch = int(payload["best_stall_detector"]["best_epoch"])
     matching_bests = [item for item in bests
-                      if item["payload"].get("protocol") == payload["protocol"]
+                      if compatible_training_lineage(item["payload"], payload)
                       and int(item["payload"].get("epoch", -1)) == best_epoch]
     if not matching_bests:
         earlier_bests = [item for item in bests
-                         if item["payload"].get("protocol") ==
-                         payload["protocol"]
+                         if compatible_training_lineage(
+                             item["payload"], payload)
                          and int(item["payload"].get("epoch", -1)) <=
                          best_epoch]
         if earlier_bests:

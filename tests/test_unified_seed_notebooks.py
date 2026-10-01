@@ -22,6 +22,8 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert '"unified_vanilla_progress"' in source
         assert '"vanilla_validation_best_checkpoint"' in source
         assert '"minimum_additional_epochs_if_no_new_best"' in source
+        assert "compatible_training_lineage" in source
+        assert "is_post200_raw_best_snapshot" in source
         assert 'PHASE1_MAX_EPOCH = max(' in source
         assert "Cannot replay attached legacy run" in source
         assert "old_best_epoch" in source
