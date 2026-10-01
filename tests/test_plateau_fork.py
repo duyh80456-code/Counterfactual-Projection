@@ -15,7 +15,7 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert "run_intervention(" in source
     assert "run_o_only_intervention(" in source
     assert "supervised_functional_descent_direction" in source
-    assert "ten_sgd_epochs_without_new_best" in source
+    assert '"raw_validation_stall"' in source
     assert "live_rng = rng_state()" in source
     assert "live_loader_state = train_loader.generator.get_state().clone()" in source
     assert 'best_state["model"]' in source
@@ -31,12 +31,12 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert '"epochs_to_best"' in source
     assert 'best_checkpoint = output / "checkpoint_best.pt"' in source
     assert '"plateau_fork_arm_best"' in source
-    assert 'default=100' in source
+    assert '"--post-fork-epochs", type=int, default=150' in source
+    assert '"--retrigger-patience", type=int, default=20' in source
     assert '"--opt1-epochs", type=int, default=70' in source
     assert '"--max-opt2-epochs", type=int, default=30' in source
     assert '"--gamma-increase-opt2-epoch", type=int, default=15' in source
     assert '"--gamma-post-increase-multiplier", type=float, default=2.0' in source
-    assert '"--significant-improvement", type=float, default=1e-3' in source
     assert '"plateau_checkpoint_hash": fork_hash' in source
     assert '"train_indices": train_indices' in source
     assert '"trigger_indices": trigger_indices' in source
@@ -44,6 +44,11 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert '"theta_best_hash": fork_hash' in source
     assert '"opt1_epochs": opt1_done if args.method == "bypass" else None' in source
     assert 'validation["accuracy"] > exact_best_validation_accuracy' in source
-    assert 'significant_improved = (' in source
+    assert 'significant_improved = (' not in source
+    assert 'row["raw_validation_best_improved"] = exact_improved' in source
+    assert 'scheduler.step(trigger["accuracy"])' not in source
+    assert 'phase = "incomplete"' in source
+    assert '"budget_exhausted_before_contraction"' in source
+    assert '"compact_best_validation_accuracy"' in source
     assert 'validation["accuracy"] > best_accuracy' in source
     assert "epochs_since_best" not in source

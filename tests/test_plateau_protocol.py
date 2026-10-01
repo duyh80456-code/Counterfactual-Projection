@@ -132,6 +132,32 @@ def test_raw_validation_best_moves_the_exact_100_epoch_target():
     assert ready["has_100_post_best_epochs"] is True
 
 
+def test_post_recipe_validation_best_ignores_better_pre_recipe_epoch():
+    history = [
+        {"epoch": epoch,
+         "validation_accuracy": (
+             0.90 if epoch == 140 else 0.80 if epoch == 217 else 0.70)}
+        for epoch in range(0, 318)]
+    plan = validation_stall_plan(history, patience=100, min_epoch=200)
+    assert plan["validation_best_epoch"] == 217
+    assert plan["target_epoch"] == 317
+    assert plan["has_100_post_best_epochs"] is True
+
+
+def test_armed_exact_best_resets_patience_on_any_strict_validation_gain():
+    detector = BestCheckpointStallDetector(
+        patience=3, min_gain=0.0, require_arm=True,
+        exact_best_patience=True)
+    detector.update(199, 0.90)
+    detector.update(200, 0.70)
+    detector.arm_stall(200, 0.70)
+    assert detector.update(201, 0.70001)["meaningful_improvement"] is True
+    assert detector.update(202, 0.70001)["meaningful_improvement"] is False
+    assert detector.update(203, 0.69)["stalled"] is False
+    assert detector.update(204, 0.69)["stalled"] is True
+    assert detector.best_epoch == 201
+
+
 def test_exact_best_patience_does_not_reset_on_a_tie():
     detector = BestCheckpointStallDetector(
         patience=3, min_gain=0.0, exact_best_patience=True)

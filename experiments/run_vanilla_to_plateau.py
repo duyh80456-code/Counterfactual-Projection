@@ -82,7 +82,7 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
     best_loss = min(float(row["validation_loss"]) for row in candidates)
     control_role = (
         "matched_validation_best_to_100_epoch_window"
-        if protocol.get("theta_P_scope") == "global raw validation best"
+        if "raw validation best" in protocol.get("theta_P_scope", "")
         else "matched_significant_best_to_stall_window")
     best["kind"] = "plateau_fork_checkpoint"
     best["stall_evidence"] = detector.state_dict()
@@ -128,6 +128,57 @@ def finalize_best_stall(significant_best_path, plateau_path, detector, history,
         "intervention": None,
         "best_checkpoint": str(plateau_path),
     }
+    save(plateau_path, best)
+    return best
+
+
+def extend_vanilla_control(plateau_path, history, total_epochs,
+                           deploy_params):
+    """Attach the complete post-fork Vanilla trajectory without retraining."""
+    best = torch.load(plateau_path, map_location="cpu", weights_only=False)
+    fork_epoch = int(best["epoch"])
+    end_epoch = fork_epoch + int(total_epochs)
+    fork_row = next(
+        row for row in history if int(row["epoch"]) == fork_epoch)
+    control = [dict(row) for row in history
+               if fork_epoch < int(row["epoch"]) <= end_epoch]
+    if len(control) != int(total_epochs):
+        raise RuntimeError("Vanilla trajectory is not complete through +150")
+    candidates = [fork_row, *control]
+    best_accuracy = max(
+        float(row["validation_accuracy"]) for row in candidates)
+    best_row = next(
+        row for row in candidates
+        if float(row["validation_accuracy"]) == best_accuracy)
+    best_loss = min(float(row["validation_loss"]) for row in candidates)
+    summary = dict(best["vanilla_control"])
+    summary.update({
+        "post_fork_epochs": int(total_epochs),
+        "control_end_epoch": end_epoch,
+        "final_validation_accuracy": control[-1]["validation_accuracy"],
+        "best_validation_accuracy": best_accuracy,
+        "final_validation_loss": control[-1]["validation_loss"],
+        "best_validation_loss": best_loss,
+        "window_max_validation_accuracy": max(
+            row["validation_accuracy"] for row in control),
+        "window_min_validation_loss": min(
+            row["validation_loss"] for row in control),
+        "validation_accuracy_delta": (
+            control[-1]["validation_accuracy"] -
+            fork_row["validation_accuracy"]),
+        "best_validation_accuracy_delta": (
+            best_accuracy - float(fork_row["validation_accuracy"])),
+        "epochs_to_best": int(best_row["epoch"]) - fork_epoch,
+        "training_seconds": sum(
+            float(row.get("epoch_seconds", 0.0)) for row in control),
+        "peak_gpu_memory": max(
+            int(row.get("peak_gpu_memory", 0)) for row in control),
+        "peak_train_params": int(deploy_params),
+        "deploy_params": int(deploy_params),
+    })
+    best["vanilla_control_history"] = control
+    best["vanilla_control"] = summary
+    best["vanilla_baseline_complete"] = True
     save(plateau_path, best)
     return best
 

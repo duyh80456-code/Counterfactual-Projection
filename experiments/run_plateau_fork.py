@@ -43,7 +43,7 @@ def arguments():
     parser.add_argument("--plateau-checkpoint", required=True)
     parser.add_argument("--plateau-checkpoint-hash", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--post-fork-epochs", type=int, default=100)
+    parser.add_argument("--post-fork-epochs", type=int, default=150)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
@@ -61,8 +61,7 @@ def arguments():
     parser.add_argument("--cg-preconditioner-probes", type=int, default=8)
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
-    parser.add_argument("--retrigger-patience", type=int, default=10)
-    parser.add_argument("--significant-improvement", type=float, default=1e-3)
+    parser.add_argument("--retrigger-patience", type=int, default=20)
     parser.add_argument("--opt1-epochs", type=int, default=70)
     parser.add_argument("--max-opt2-epochs", type=int, default=30)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
@@ -155,11 +154,9 @@ def main():
         raise ValueError("post_fork_epochs must be positive")
     if args.retrigger_patience < 1:
         raise ValueError("retrigger_patience must be positive")
-    if args.significant_improvement <= 0:
-        raise ValueError("significant_improvement must be positive")
     if (args.method == "bypass" and
-            args.opt1_epochs + args.max_opt2_epochs != args.post_fork_epochs):
-        raise ValueError("scaled Bypass must partition the full epoch budget")
+            args.opt1_epochs + args.max_opt2_epochs > args.post_fork_epochs):
+        raise ValueError("Bypass opt1/opt2 exceed the post-fork budget")
     import sys
     reference_root = Path(args.reference_root).resolve()
     sys.path.insert(0, str(reference_root))
@@ -189,6 +186,8 @@ def main():
         raise RuntimeError("plateau checkpoint data split mismatch")
 
     model = build_cifar_gromo_resnet18(device)
+    fork_deploy_params = sum(
+        parameter.numel() for parameter in model.parameters())
     optimizer, _ = build_optimizer_scheduler(model, 0.1, args.weight_decay)
     model.load_state_dict(source["model"], strict=True)
     optimizer.load_state_dict(source["optimizer"])
@@ -220,7 +219,7 @@ def main():
         "intervention_schedule": (
             {"mode": "recurrent_best_rollback",
              "patience": args.retrigger_patience,
-             "significant_improvement": args.significant_improvement,
+             "metric": "strict raw validation best",
              "sgd_epoch_budget": args.post_fork_epochs,
              "rollback_rng": False,
              "rollback_loader_stream": False}
@@ -265,6 +264,7 @@ def main():
     extension_paths = []
     opt1_done = opt2_done = train3_done = opt2_steps = 0
     contraction_at_projection = projection_loss_jump = None
+    budget_exhausted_before_contraction = False
     expanded_seconds = 0.0
     peak_train_params = sum(parameter.numel() for parameter in model.parameters())
     if args.method == "bypass":
@@ -290,7 +290,6 @@ def main():
     best_loss = None
     best_offset = None
     exact_best_validation_accuracy = None
-    significant_best_validation_accuracy = None
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -312,6 +311,8 @@ def main():
         opt2_steps = int(saved.get("opt2_steps", 0))
         contraction_at_projection = saved.get("contraction_at_projection")
         projection_loss_jump = saved.get("projection_loss_jump")
+        budget_exhausted_before_contraction = bool(
+            saved.get("budget_exhausted_before_contraction", False))
         extension_paths = saved.get("extension_paths", extension_paths)
         expanded_seconds = float(saved.get("time_spent_expanded_seconds", 0.0))
         peak_train_params = int(saved.get("peak_train_params", peak_train_params))
@@ -322,8 +323,6 @@ def main():
         best_offset = int(saved["best_post_fork_epoch"])
         exact_best_validation_accuracy = float(
             saved["exact_best_validation_accuracy"])
-        significant_best_validation_accuracy = float(
-            saved["significant_best_validation_accuracy"])
 
     def state_payload(kind, post_offset, training_seconds, peak_memory):
         return {
@@ -346,6 +345,8 @@ def main():
             "train3_epochs": train3_done, "opt2_steps": opt2_steps,
             "contraction_at_projection": contraction_at_projection,
             "projection_loss_jump": projection_loss_jump,
+            "budget_exhausted_before_contraction":
+                budget_exhausted_before_contraction,
             "extension_paths": extension_paths,
             "time_spent_expanded_seconds": expanded_seconds,
             "peak_train_params": peak_train_params,
@@ -355,8 +356,6 @@ def main():
             "best_validation_loss": best_loss,
             "best_post_fork_epoch": best_offset,
             "exact_best_validation_accuracy": exact_best_validation_accuracy,
-            "significant_best_validation_accuracy":
-                significant_best_validation_accuracy,
             "protocol": protocol,
         }
 
@@ -395,8 +394,6 @@ def main():
         best_loss = float(fork_evaluation["loss"])
         best_offset = 0
         exact_best_validation_accuracy = float(fork_evaluation["accuracy"])
-        significant_best_validation_accuracy = float(
-            fork_evaluation["accuracy"])
         save_checkpoint(best_checkpoint, state_payload(
             "plateau_fork_arm_best", 0, 0.0, 0))
         if args.method in {"ours_e_driven_o", "o_projection_only"}:
@@ -409,15 +406,9 @@ def main():
             best_loss = min(best_loss, float(immediate["loss"]))
             immediate_exact = (
                 immediate["accuracy"] > exact_best_validation_accuracy)
-            immediate_significant = (
-                immediate["accuracy"] >=
-                significant_best_validation_accuracy +
-                args.significant_improvement)
             if immediate_exact:
                 exact_best_validation_accuracy = float(immediate["accuracy"])
-            if immediate_significant:
-                significant_best_validation_accuracy = float(
-                    immediate["accuracy"])
+                stall_counter = 0
             if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", 0, 0.0, 0))
@@ -425,6 +416,8 @@ def main():
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats(device)
     for offset in range(start_offset, args.post_fork_epochs):
+        if args.method == "bypass" and phase == "incomplete":
+            break
         epoch = fork_epoch + offset + 1
         epoch_phase = phase
         epoch_started = time.perf_counter()
@@ -464,6 +457,13 @@ def main():
                 projection_loss_jump = (
                     evaluate(model, evaluation_loader, device)["loss"] - before)
                 phase = "train3"
+            elif opt2_done >= args.max_opt2_epochs:
+                # The method is not allowed to spend the train3 allocation in
+                # opt2 or to force a projection. Without contraction there is
+                # no valid compact train3 state, so this arm ends as an
+                # explicitly incomplete diagnostic comparator.
+                budget_exhausted_before_contraction = True
+                phase = "incomplete"
         if args.method == "bypass" and epoch_phase in {"opt1", "opt2"}:
             expanded_seconds += time.perf_counter() - epoch_started
         peak_train_params = max(
@@ -471,10 +471,10 @@ def main():
             sum(parameter.numel() for parameter in model.parameters()))
         trigger = evaluate(model, trigger_loader, device)
         validation = evaluate(model, evaluation_loader, device)
-        if scheduler.state_dict()["kind"] == "significant_plateau_lr":
-            scheduler.step(trigger["accuracy"])
-        else:
-            scheduler.step()
+        # The inherited base scheduler is metric-independent. Trigger metrics
+        # are diagnostic only and must never alter the optimization path.
+        scheduler.step()
+        deploy_compact = args.method != "bypass" or phase == "train3"
         row = {
             "epoch": epoch, "post_fork_epoch": offset + 1,
             "phase": epoch_phase, "train_loss": train["task_loss"],
@@ -486,6 +486,7 @@ def main():
             "learning_rates": [float(group["lr"])
                                for group in optimizer.param_groups],
             "gamma": gamma, "contraction_criterion_met": criterion_met,
+            "deploy_compact": deploy_compact,
             "gamma_multiplier": gamma_multiplier,
             "contraction_norm": (float(contraction_norm(model).detach())
                                  if args.method == "bypass" and
@@ -497,18 +498,12 @@ def main():
         report_improved = validation["accuracy"] > best_accuracy
         exact_improved = (
             validation["accuracy"] > exact_best_validation_accuracy)
-        significant_improved = (
-            validation["accuracy"] >= significant_best_validation_accuracy +
-            args.significant_improvement)
         if validation["accuracy"] > best_accuracy:
             best_accuracy = float(validation["accuracy"])
             best_offset = offset + 1
         best_loss = min(best_loss, float(validation["loss"]))
         if exact_improved:
             exact_best_validation_accuracy = float(validation["accuracy"])
-        if significant_improved:
-            significant_best_validation_accuracy = float(
-                validation["accuracy"])
             stall_counter = 0
         else:
             stall_counter += 1
@@ -534,11 +529,9 @@ def main():
             train_loader.generator.set_state(live_loader_state.cpu())
             rollback_count += 1
             stall_counter = 0
-            significant_best_validation_accuracy = (
-                exact_best_validation_accuracy)
             perform_intervention(
                 len(interventions), offset + 1,
-                "ten_sgd_epochs_without_new_best")
+                "raw_validation_stall")
             immediate_trigger = evaluate(model, trigger_loader, device)
             immediate = evaluate(model, evaluation_loader, device)
             if immediate["accuracy"] > best_accuracy:
@@ -547,15 +540,8 @@ def main():
             best_loss = min(best_loss, float(immediate["loss"]))
             immediate_exact = (
                 immediate["accuracy"] > exact_best_validation_accuracy)
-            immediate_significant = (
-                immediate["accuracy"] >=
-                significant_best_validation_accuracy +
-                args.significant_improvement)
             if immediate_exact:
                 exact_best_validation_accuracy = float(immediate["accuracy"])
-            if immediate_significant:
-                significant_best_validation_accuracy = float(
-                    immediate["accuracy"])
                 stall_counter = 0
             if immediate_exact:
                 save_checkpoint(best_checkpoint, state_payload(
@@ -563,15 +549,41 @@ def main():
             retriggered = True
         row["report_best_improved"] = report_improved
         row["exact_best_improved"] = exact_improved
-        row["significant_best_improved"] = significant_improved
+        row["raw_validation_best_improved"] = exact_improved
         row["stall_counter"] = stall_counter
         row["rollback_triggered"] = retriggered
         row["intervention_count"] = len(interventions)
         save_checkpoint(latest, state_payload(
             "plateau_fork_arm_progress", offset + 1, elapsed, peak))
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
+        if args.method == "bypass" and phase == "incomplete":
+            break
 
     last = history[-1]
+    expanded_rows = ([row for row in history
+                      if not bool(row.get("deploy_compact", True))]
+                     if args.method == "bypass" else [])
+    compact_rows = ([row for row in history
+                     if bool(row.get("deploy_compact", False))]
+                    if args.method == "bypass" else history)
+    compact_candidates = [{
+        "post_fork_epoch": 0,
+        "validation_accuracy": fork_evaluation["accuracy"],
+        "validation_loss": fork_evaluation["loss"],
+    }, *compact_rows]
+    compact_best_row = max(
+        compact_candidates, key=lambda row: float(row["validation_accuracy"]))
+    compact_best_loss = min(
+        float(row["validation_loss"]) for row in compact_candidates)
+    reported_best_accuracy = (
+        float(compact_best_row["validation_accuracy"])
+        if args.method == "bypass" else best_accuracy)
+    reported_best_loss = (
+        compact_best_loss if args.method == "bypass" else best_loss)
+    reported_best_offset = (
+        int(compact_best_row["post_fork_epoch"])
+        if args.method == "bypass" else best_offset)
+    bypass_completed = phase == "train3" if args.method == "bypass" else None
     result = {
         "method": args.method, "fork_epoch": fork_epoch,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
@@ -581,24 +593,32 @@ def main():
         "fork_trigger_accuracy": fork_trigger["accuracy"],
         "fork_trigger_loss": fork_trigger["loss"],
         "exact_best_validation_accuracy": exact_best_validation_accuracy,
-        "significant_best_validation_accuracy":
-            significant_best_validation_accuracy,
         "fork_validation_accuracy": fork_evaluation["accuracy"],
         "fork_validation_loss": fork_evaluation["loss"],
         "final_validation_accuracy": last["validation_accuracy"],
-        "best_validation_accuracy": best_accuracy,
+        "final_validation_accuracy_space": (
+            "expanded_diagnostic"
+            if args.method == "bypass" and not bypass_completed
+            else "compact_deploy"),
+        "best_validation_accuracy": reported_best_accuracy,
+        "best_validation_accuracy_space": "compact_deploy",
         "final_validation_loss": last["validation_loss"],
-        "best_validation_loss": best_loss,
+        "best_validation_loss": reported_best_loss,
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_evaluation["accuracy"]),
         "best_validation_accuracy_delta": (
-            best_accuracy - fork_evaluation["accuracy"]),
-        "epochs_to_best": best_offset,
+            reported_best_accuracy - fork_evaluation["accuracy"]),
+        "epochs_to_best": reported_best_offset,
         "training_seconds": elapsed_before + time.perf_counter() - started,
         "peak_gpu_memory": max(
             peak_before, int(torch.cuda.max_memory_allocated(device))),
         "peak_train_params": peak_train_params,
-        "deploy_params": sum(parameter.numel() for parameter in model.parameters()),
+        "deploy_params": (
+            sum(parameter.numel() for parameter in model.parameters())
+            if args.method != "bypass" or bypass_completed else None),
+        "current_params": sum(
+            parameter.numel() for parameter in model.parameters()),
+        "fork_deploy_params": fork_deploy_params,
         "time_spent_expanded_seconds": expanded_seconds,
         "intervention": intervention, "interventions": interventions,
         "intervention_count": len(interventions),
@@ -612,8 +632,28 @@ def main():
             for item in interventions),
         "rollback_count": rollback_count,
         "retrigger_patience": args.retrigger_patience,
-        "significant_improvement": args.significant_improvement,
-        "bypass_completed": (phase == "train3" if args.method == "bypass" else None),
+        "retrigger_metric": "strict raw validation best",
+        "bypass_completed": bypass_completed,
+        "bypass_comparison_eligible": (
+            bypass_completed if args.method == "bypass" else None),
+        "budget_exhausted_before_contraction": (
+            budget_exhausted_before_contraction
+            if args.method == "bypass" else None),
+        "unused_post_fork_epoch_budget": (
+            args.post_fork_epochs - len(history)
+            if args.method == "bypass" and not bypass_completed else 0),
+        "expanded_best_validation_accuracy": (
+            max(float(row["validation_accuracy"]) for row in expanded_rows)
+            if expanded_rows else None),
+        "expanded_final_validation_accuracy": (
+            float(expanded_rows[-1]["validation_accuracy"])
+            if expanded_rows else None),
+        "compact_best_validation_accuracy": (
+            float(compact_best_row["validation_accuracy"])
+            if args.method == "bypass" else None),
+        "compact_final_validation_accuracy": (
+            float(last["validation_accuracy"])
+            if args.method == "bypass" and bypass_completed else None),
         "opt1_epochs": opt1_done if args.method == "bypass" else None,
         "opt2_epochs": opt2_done if args.method == "bypass" else None,
         "train3_epochs": train3_done if args.method == "bypass" else None,

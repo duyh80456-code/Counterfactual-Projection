@@ -23,9 +23,9 @@ phase2 = json.loads(Path(
 
 
 def build(seed):
-    run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v4"
+    run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v5"
     bootstrap = text(phase2["cells"][1]).replace(
-        'OUTPUT = Path("/kaggle/working/plateau_fork_three_methods_100ep_v5")',
+        'OUTPUT = Path("/kaggle/working/plateau_fork_three_methods_150ep_v6")',
         f'RUN_ROOT = Path("{run_root}")\nOUTPUT = RUN_ROOT / "phase2"')
     phase2_commands = text(phase2["cells"][4]).replace(
         '"--seed", "1"', f'"--seed", "{seed}"')
@@ -42,15 +42,16 @@ schedule.
 Phase 1 trains a randomly initialized CIFAR-ResNet18 with its metric-independent
 base recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs
 100 and 150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Every raw
-validation best is fully checkpointed from the start. Once the base recipe is
-complete, a stall is confirmed when exactly 100 epochs have elapsed since the
-last raw validation best. Those 100 epochs are the matched Vanilla control and
-Theta_P is that raw validation-best checkpoint.
+validation best from epoch 200 onward is fully checkpointed. A stall is
+confirmed when exactly 100 epochs have elapsed since the latest such best.
+Vanilla then continues the same trajectory for 50 more epochs, giving every arm
+the same 150-epoch post-fork horizon. Theta_P is the raw validation-best
+checkpoint at or after epoch 200.
 
-Phase 2 forks that run's raw validation-best theta_P, including optimizer momentum,
+Phase 2 forks that run's raw validation-best checkpoint theta_P, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent
 E-driven O only. GPU1 runs scaled Bypass 70/30 and then launches
-a fresh recurrent O-only process. Each method consumes 100 SGD epochs and writes per-epoch history,
+a fresh recurrent O-only process. Each method consumes 150 SGD epochs and writes per-epoch history,
 latest/best checkpoints, diagnostics, timing, memory, and final/best accuracy.
 Only `seed={seed}` differs from the other two generated notebooks.
 """),
@@ -64,7 +65,7 @@ from experiments.plateau_protocol import BestCheckpointStallDetector
 SEED = {seed}
 PHASE1_OUTPUT = RUN_ROOT / "vanilla_stall"
 PHASE1_OUTPUT.mkdir(parents=True, exist_ok=True)
-schedule_id = "cifar-resnet18-sgd-multistep-200-v4-validation-best"
+schedule_id = "cifar-resnet18-sgd-multistep-200-v5-post200-val-best"
 
 def copy_checkpoint(source, destination):
     source, destination = Path(source), Path(destination)
@@ -85,31 +86,54 @@ bests = [item for item in discovered
 compatible = [item for item in progresses
               if item["payload"].get("protocol", {{}}).get("seed") == SEED
               and item["payload"].get("protocol", {{}}).get(
-                  "schedule_id") == schedule_id]
+                  "schedule_id") == schedule_id
+              and item["payload"].get("protocol", {{}}).get(
+                  "dataset") == "CIFAR-100"
+              and item["payload"].get("protocol", {{}}).get(
+                  "architecture") == "CIFAR-ResNet18"
+              and item["payload"].get("protocol", {{}}).get(
+                  "batch_size") == 64
+              and item["payload"].get("protocol", {{}}).get(
+                  "optimizer") ==
+                  "SGD(momentum=0.9, weight_decay=0.0005)"
+              and item["payload"].get("protocol", {{}}).get(
+                  "model_state_lineage") == f"random_init_seed_{{SEED}}"]
 PHASE1_MAX_EPOCH = 800
 if not compatible:
-    # A v3 run used the same training recipe but selected theta_P by trigger.
-    # It is safe to migrate only when one attached full checkpoint lands
-    # exactly on the raw validation-best epoch recorded in its history.
+    # Older unified runs used the same base recipe. Choose the closest full
+    # checkpoint at or before the observed post-200 validation best and replay
+    # forward; never synthesize weights from history alone.
     legacy = [item for item in progresses
               if item["payload"].get("protocol", {{}}).get("seed") == SEED
               and item["payload"].get("protocol", {{}}).get(
-                  "schedule_id") ==
-                  "cifar-resnet18-sgd-multistep-200-v3-significant-fork"]
+                  "schedule_id") in {{
+                  "cifar-resnet18-sgd-multistep-200-v3-significant-fork",
+                  "cifar-resnet18-sgd-multistep-200-v4-validation-best"}}]
     if legacy:
         old_progress = max(
             legacy, key=lambda item: int(item["payload"]["epoch"]))
         old_payload = old_progress["payload"]
         old_history = old_payload["history"]
+        post200 = [row for row in old_history if int(row["epoch"]) >= 200]
+        if not post200:
+            raise RuntimeError("Legacy progress does not reach epoch 200")
         old_best_row = max(
-            old_history, key=lambda row: row["validation_accuracy"])
+            post200, key=lambda row: row["validation_accuracy"])
         old_best_epoch = int(old_best_row["epoch"])
-        exact_snapshots = [item for item in discovered
-                           if item["payload"].get("protocol", {{}}).get(
-                               "seed") == SEED
-                           and int(item["payload"].get("epoch", -1)) ==
-                               old_best_epoch]
-        if exact_snapshots:
+        replay_sources = [item for item in discovered
+                          if item["payload"].get("protocol", {{}}).get(
+                              "seed") == SEED
+                          and item["payload"].get("protocol", {{}}).get(
+                              "schedule_id") ==
+                              old_payload["protocol"].get("schedule_id")
+                          and int(item["payload"].get("epoch", -1)) <=
+                              old_best_epoch]
+        if replay_sources:
+            replay_source = max(
+                replay_sources,
+                key=lambda item: int(item["payload"]["epoch"]))
+            replay_payload = replay_source["payload"]
+            replay_epoch = int(replay_payload["epoch"])
             old_protocol = dict(old_payload["protocol"])
             old_protocol.pop("exact_best_min_gain", None)
             old_protocol.pop("significant_min_gain", None)
@@ -120,22 +144,35 @@ if not compatible:
                 "evaluation_role":
                     "model selection and reporting; official test unused",
                 "stall_gate": (
-                    "base recipe complete and 100 epochs after raw "
-                    "validation best"),
-                "theta_P_scope": "global raw validation best",
+                    "100 epochs after raw validation best at epoch >=200"),
+                "theta_P_scope": (
+                    "raw validation best at or after recipe epoch 200"),
                 "validation_best_min_gain": 0.0,
+                "post_fork_epochs": 150,
+                "optimizer": "SGD(momentum=0.9, weight_decay=0.0005)",
+                "model_state_lineage": f"random_init_seed_{{SEED}}",
+                "batch_size": 64,
             }})
             detector = BestCheckpointStallDetector(
-                patience=100, min_gain=0.0, require_arm=False,
+                patience=100, min_gain=0.0, require_arm=True,
                 exact_best_patience=True)
-            for row in old_history:
-                detector.update(
-                    int(row["epoch"]), float(row["validation_accuracy"]))
+            replay_history = list(replay_payload["history"])
+            for row in replay_history:
+                row_epoch = int(row["epoch"])
+                if replay_epoch >= 200 and row_epoch >= 200:
+                    continue
+                detector.update(row_epoch, float(row["validation_accuracy"]))
+            if replay_epoch >= 200:
+                replay_metric = float(
+                    replay_history[-1]["validation_accuracy"])
+                detector.update(replay_epoch, replay_metric)
+                detector.arm_stall(
+                    replay_epoch, replay_metric)
             migrated_progress = {{
-                **old_payload, "protocol": old_protocol,
+                **replay_payload, "protocol": old_protocol,
                 "best_stall_detector": detector.state_dict()}}
             migrated_best = {{
-                **exact_snapshots[0]["payload"],
+                **replay_payload,
                 "kind": "vanilla_validation_best_checkpoint",
                 "protocol": old_protocol}}
             torch.save(
@@ -146,32 +183,63 @@ if not compatible:
             compatible = [{{
                 "path": PHASE1_OUTPUT / "checkpoint_latest.pt",
                 "payload": migrated_progress,
-                "source": f"migrated:{{old_progress['source']}}"}}]
+                "source": f"replay:{{replay_source['source']}}"}}]
             bests = [{{
                 "path": PHASE1_OUTPUT / "checkpoint_best.pt",
                 "payload": migrated_best,
                 "source": "migrated-validation-best"}}]
-            print("Migrated compatible v3 trajectory at exact validation best",
-                  old_best_epoch)
+            print("Replaying legacy trajectory:", {{
+                "observed_validation_best_epoch": old_best_epoch,
+                "replay_checkpoint_epoch": replay_epoch,
+                "epochs_to_observed_best": old_best_epoch - replay_epoch,
+            }})
         else:
-            print("Cannot migrate attached v3 run: validation-best epoch",
-                  old_best_epoch, "has no full checkpoint snapshot")
+            print("Cannot replay attached legacy run: no compatible full "
+                  "checkpoint at or before validation-best epoch",
+                  old_best_epoch)
 if compatible:
     progress = max(compatible, key=lambda item: int(item["payload"]["epoch"]))
     payload = progress["payload"]
     history = payload["history"]
-    best_row = max(history, key=lambda row: row["validation_accuracy"])
-    best_epoch = int(best_row["epoch"])
+    post200 = [row for row in history if int(row["epoch"]) >= 200]
+    if post200:
+        best_row = max(post200, key=lambda row: row["validation_accuracy"])
+        best_epoch = int(best_row["epoch"])
+    else:
+        best_epoch = int(payload["best_stall_detector"]["best_epoch"])
     matching_bests = [item for item in bests
                       if item["payload"].get("protocol") == payload["protocol"]
                       and int(item["payload"].get("epoch", -1)) == best_epoch]
     if not matching_bests:
-        if int(payload["epoch"]) != best_epoch:
+        earlier_bests = [item for item in bests
+                         if item["payload"].get("protocol") ==
+                         payload["protocol"]
+                         and int(item["payload"].get("epoch", -1)) <=
+                         best_epoch]
+        if earlier_bests:
+            # The observed best weights are unavailable, so replay from the
+            # closest complete raw-best checkpoint at or before that epoch.
+            # Its model/optimizer/scheduler/RNG/loader state remain intact.
+            selected_best = max(
+                earlier_bests,
+                key=lambda item: int(item["payload"]["epoch"]))
+            progress = selected_best
+            payload = progress["payload"]
+            history = payload["history"]
+            print("Exact observed validation-best checkpoint is absent; "
+                  "replaying from closest compatible raw best:", {{
+                      "required_epoch": best_epoch,
+                      "replay_epoch": int(payload["epoch"]),
+                      "source": progress["source"],
+                  }})
+        elif int(payload["epoch"]) == best_epoch:
+            selected_best = progress
+            print("Repairing best checkpoint from atomic latest checkpoint")
+        else:
             raise RuntimeError(
-                f"Found resumable epoch {{payload['epoch']}} but no matching "
-                f"validation-best checkpoint at epoch {{best_epoch}}")
-        selected_best = progress
-        print("Repairing best checkpoint from atomic latest checkpoint")
+                f"Found resumable epoch {{payload['epoch']}} but no compatible "
+                f"full checkpoint at or before validation-best epoch "
+                f"{{best_epoch}}")
     else:
         selected_best = matching_bests[0]
     copy_checkpoint(progress["path"], PHASE1_OUTPUT / "checkpoint_latest.pt")
@@ -179,12 +247,20 @@ if compatible:
         selected_best["path"], PHASE1_OUTPUT / "checkpoint_best.pt")
     copy_checkpoint(
         selected_best["path"], PHASE1_OUTPUT / "checkpoint_exact_best.pt")
-    remaining = max(0, best_epoch + 100 - int(payload["epoch"]))
+    resumed_history = payload["history"]
+    resumed_post200 = [row for row in resumed_history
+                       if int(row["epoch"]) >= 200]
+    resumed_best_epoch = (
+        int(max(resumed_post200,
+                key=lambda row: row["validation_accuracy"])["epoch"])
+        if resumed_post200 else 200)
+    target_epoch = resumed_best_epoch + 150
+    remaining = max(0, target_epoch - int(payload["epoch"]))
     PHASE1_MAX_EPOCH = max(
         PHASE1_MAX_EPOCH, int(payload["epoch"]) + remaining)
     print("Resuming Phase 1:", {{
         "checkpoint_epoch": int(payload["epoch"]),
-        "validation_best_epoch": best_epoch,
+        "validation_best_epoch": resumed_best_epoch,
         "minimum_additional_epochs_if_no_new_best": remaining,
         "source": progress["source"],
     }})
@@ -203,7 +279,8 @@ phase1_command = [
     "--validation-samples", "5000", "--trigger-samples", "2000",
     "--tuning-samples", "128", "--lr", "0.1", "--recipe-epochs", "200",
     "--lr-milestones", "100,150", "--lr-gamma", "0.1",
-    "--weight-decay", "0.0005", "--stall-patience", "100"]
+    "--weight-decay", "0.0005", "--stall-patience", "100",
+    "--post-fork-epochs", "150"]
 
 phase1_log = (PHASE1_OUTPUT / "notebook_stream.log").open("a", buffering=1)
 phase1_env = os.environ.copy()
@@ -238,8 +315,8 @@ PLATEAU_HASH = hashlib.sha256(
     PLATEAU_CHECKPOINT.read_bytes()).hexdigest()
 PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
 VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
-if VANILLA_CONTROL["post_fork_epochs"] != 100:
-    raise RuntimeError("Vanilla control is not exactly 100 observed epochs")
+if VANILLA_CONTROL["post_fork_epochs"] != 150:
+    raise RuntimeError("Vanilla baseline is not exactly 150 post-fork epochs")
 if VANILLA_CONTROL["role"] != "matched_validation_best_to_100_epoch_window":
     raise RuntimeError("Phase-1 Vanilla control has an invalid role")
 if int(PLATEAU_PAYLOAD["protocol"]["seed"]) != SEED:
@@ -249,8 +326,9 @@ print(json.dumps(VANILLA_CONTROL, indent=2, sort_keys=True))
 """),
         markdown("""## Phase 2 — three method forks plus matched Vanilla history
 
-The Phase-1 window is exactly 100 epochs after raw validation-best theta_P and is
-the Vanilla control. Three method jobs load byte-identical theta_P. GPU0 runs
+The first 100 Phase-1 epochs after raw validation-best theta_P confirm plateau;
+the same trajectory continues for 50 more epochs as the 150-epoch Vanilla
+baseline. Three method jobs load byte-identical theta_P. GPU0 runs
 E-driven O only; GPU1 runs Bypass then O-only.
 """),
         code("""import threading

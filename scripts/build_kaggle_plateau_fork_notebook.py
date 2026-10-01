@@ -19,13 +19,13 @@ cells = [
 
 Attach the Phase-1 output containing `plateau_checkpoint.pt`. It is the last
 selected best state saved before the no-new-best patience expired. This notebook forks
-its model, optimizer, constant-LR scheduler, RNG, loader state, and data split
-into three newly trained 100-epoch method arms. The 100 epochs after the last
-meaningful improvement in Phase 1 are the matched Vanilla control:
+its model, optimizer, scheduler, RNG, loader state, and data split into three
+newly trained 150-epoch method arms. Vanilla uses the same 150-epoch horizon:
+the first 100 epochs confirm plateau and the final 50 continue the trajectory.
 
 - scaled matched-horizon Bypass (70 opt1 + up to 30 opt2; never force-project);
 - Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
-  winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
+  winner-only O projection, then recurrent 20-epoch best-checkpoint trials.
 - O-only: supervised functional projection at the fixed residual-path site,
   with the same recurrent rollback/retrigger schedule for a fair ablation.
 
@@ -45,7 +45,7 @@ REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")
 GROMO_URL = "https://github.com/growingnet/gromo.git"
 GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"
 GROMO = Path("/kaggle/working/gromo")
-OUTPUT = Path("/kaggle/working/plateau_fork_three_methods_100ep_v5")
+OUTPUT = Path("/kaggle/working/plateau_fork_three_methods_150ep_v6")
 
 def private_clone(url, destination, branch):
     token = UserSecretsClient().get_secret("github_token").strip()
@@ -111,8 +111,9 @@ PLATEAU_HASH = selected["sha256"]
 PLATEAU_PAYLOAD = selected["payload"]
 PLATEAU_EPOCH = int(PLATEAU_PAYLOAD["epoch"])
 VANILLA_CONTROL = dict(PLATEAU_PAYLOAD["vanilla_control"])
-if VANILLA_CONTROL["post_fork_epochs"] != 100:
-    raise RuntimeError("Phase 1 must contain exactly 100 matched Vanilla epochs")
+if VANILLA_CONTROL["post_fork_epochs"] != 150:
+    raise RuntimeError(
+        "Phase 1 must contain the complete 150-epoch Vanilla horizon")
 if VANILLA_CONTROL["role"] not in {
         "matched_validation_best_to_100_epoch_window",
         "matched_significant_best_to_stall_window"}:
@@ -125,12 +126,11 @@ print("theta_P source:", selected["source"])
         "--reference-root", str(REFERENCE), "--data-root", str(DATA_ROOT),
         "--plateau-checkpoint", str(PLATEAU_CHECKPOINT),
         "--plateau-checkpoint-hash", PLATEAU_HASH,
-        "--output", str(output), "--post-fork-epochs", "100",
+        "--output", str(output), "--post-fork-epochs", "150",
         "--seed", "1", "--batch-size", "64", "--rank", "4",
         "--opt1-epochs", "70", "--max-opt2-epochs", "30",
         "--probe-epsilon", "0.05", "--where-batches", "3",
-        "--retrigger-patience", "10",
-        "--significant-improvement", "0.001",
+        "--retrigger-patience", "20",
         "--gamma-increase-opt2-epoch", "15",
         "--gamma-post-increase-multiplier", "2.0",
         "--line-search-scales", "0.0125,0.025,0.05"]
@@ -219,8 +219,11 @@ for name, result in results.items():
         raise RuntimeError(f"{name} used another theta_P")
     if result["theta_best_hash"] != PLATEAU_HASH:
         raise RuntimeError(f"{name} used another theta_best")
-    if result["post_fork_epochs"] != 100:
-        raise RuntimeError(f"{name} did not complete 100 epochs")
+    if (name != "bypass" or result["bypass_completed"]):
+        if result["post_fork_epochs"] != 150:
+            raise RuntimeError(f"{name} did not complete 150 epochs")
+    elif not result["budget_exhausted_before_contraction"]:
+        raise RuntimeError("Incomplete Bypass has no contraction-budget marker")
     if not Path(result["best_checkpoint"]).is_file():
         raise RuntimeError(f"{name} did not save checkpoint_best.pt")
 VANILLA_CONTROL["plateau_checkpoint_hash"] = PLATEAU_HASH
@@ -231,7 +234,7 @@ summary = {
     "plateau_epoch": PLATEAU_EPOCH,
     "plateau_checkpoint_hash": PLATEAU_HASH,
     "theta_best_hash": PLATEAU_HASH,
-    "post_fork_epochs": 100, "official_test_used": False,
+    "post_fork_epochs": 150, "official_test_used": False,
     "phase1_vanilla_control": VANILLA_CONTROL,
     "results": {name: {key: result.get(key) for key in (
         "fork_validation_accuracy", "fork_validation_loss",
@@ -239,13 +242,20 @@ summary = {
         "meaningful_best_validation_accuracy",
         "fork_trigger_accuracy", "fork_trigger_loss",
         "exact_best_validation_accuracy",
-        "significant_best_validation_accuracy",
         "final_validation_accuracy", "best_validation_accuracy",
+        "final_validation_accuracy_space", "best_validation_accuracy_space",
         "final_validation_loss", "best_validation_loss",
         "validation_accuracy_delta", "best_validation_accuracy_delta",
         "epochs_to_best", "training_seconds", "peak_gpu_memory",
         "peak_train_params", "deploy_params", "time_spent_expanded_seconds",
         "bypass_completed", "contraction_at_projection",
+        "bypass_comparison_eligible",
+        "budget_exhausted_before_contraction",
+        "unused_post_fork_epoch_budget",
+        "expanded_best_validation_accuracy",
+        "expanded_final_validation_accuracy",
+        "compact_best_validation_accuracy",
+        "compact_final_validation_accuracy",
         "opt1_epochs", "opt2_epochs", "train3_epochs",
         "gamma_increase_opt2_epoch", "gamma_post_increase_multiplier",
         "projection_loss_jump", "best_checkpoint", "intervention_count",

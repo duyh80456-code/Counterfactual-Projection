@@ -62,11 +62,15 @@ recipe: SGD for 200 recipe epochs, LR 0.1 with MultiStep drops at epochs 100 and
 150 (`gamma=0.1`), momentum 0.9, and weight decay 5e-4. Validation never
 controls LR. Every raw validation best is a complete resumable checkpoint.
 After the base recipe completes, stall is confirmed only when 100 epochs have
-elapsed since the latest raw validation best. That exact 100-epoch segment is
-the matched Vanilla control. Theta_P is the raw validation-best checkpoint;
-any later raw best moves theta_P and restarts the 100-epoch target. Theta_P is
-loaded into recurrent E-driven O, scaled Bypass
-70/30, and recurrent O-only, each with a 100-SGD-epoch budget.
+elapsed since the latest strict raw validation best at or after epoch 200.
+Theta_P is that raw validation-best checkpoint; any later strict best moves
+theta_P and restarts the 100-epoch target. The already observed Vanilla
+trajectory then continues for 50 more epochs, yielding a 150-epoch post-fork
+baseline without restarting. Theta_P is loaded into recurrent E-driven O,
+scaled Bypass 70/30 plus compact train3, and recurrent O-only; every completed
+comparator receives a 150-SGD-epoch post-fork budget. E-driven O and O-only
+roll back and retrigger after 20 epochs without a new strict validation best.
+The 2,000-sample trigger split is diagnostic only.
 
 All configuration, splits, schedules, GPU placement, checkpoint fields, and
 metrics are identical across notebooks; only the seed and output directory
@@ -76,11 +80,12 @@ fork, and intervention checkpoints are retained for later plots and resume.
 When a prior output is attached under `/kaggle/input`, the notebooks select the
 furthest compatible progress checkpoint, pair it with the corresponding raw
 validation-best checkpoint, print the minimum remaining epochs if no new best
-appears, and resume rather than restarting.
-An attached v3 trajectory is migrated only if one of its full checkpoints is
-exactly at the raw validation-best epoch found in its history; otherwise the
-notebook reports that reconstruction is impossible instead of pretending that
-metrics alone contain the missing weights.
+appears, and resume rather than restarting. If the exact observed-best weights
+are unavailable, the notebook selects the closest compatible full checkpoint
+at or before that epoch and replays forward with model, optimizer, scheduler,
+RNG, and loader state intact. Metrics alone are never used to reconstruct
+weights. Every newly observed post-recipe raw validation best is also retained
+as an immutable full-state checkpoint.
 
 ## Legacy shared-checkpoint runs
 
@@ -110,7 +115,7 @@ The same workflow is also available as two explicit notebooks:
    checkpoint streams are retained for resuming and diagnosis.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
    launches supervised O-only, scaled matched-horizon Bypass, and E→O, each for
-   a 100-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
+   a 150-SGD-epoch budget. E→O and O-only run recurrent 20-epoch trials: if no
    new best appears, trainable state rolls back to the arm's best checkpoint,
    the stochastic stream remains advanced, and a fresh intervention starts.
    The matched Phase-1 window is Vanilla. All methods inherit the same model,

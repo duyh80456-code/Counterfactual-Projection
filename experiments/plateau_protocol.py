@@ -7,11 +7,16 @@ from dataclasses import dataclass, field
 import math
 
 
-def validation_stall_plan(history: list[dict], patience: int = 100) -> dict:
+def validation_stall_plan(history: list[dict], patience: int = 100,
+                          min_epoch: int = 0) -> dict:
     """Return the raw-validation-best target and minimum remaining epochs."""
     if patience < 1 or not history:
         raise ValueError("history and positive patience are required")
-    rows = sorted(history, key=lambda row: int(row["epoch"]))
+    rows = sorted(
+        (row for row in history if int(row["epoch"]) >= int(min_epoch)),
+        key=lambda row: int(row["epoch"]))
+    if not rows:
+        raise ValueError("history has no rows in the requested search range")
     epochs = [int(row["epoch"]) for row in rows]
     if len(set(epochs)) != len(epochs):
         raise ValueError("history contains duplicate epochs")
