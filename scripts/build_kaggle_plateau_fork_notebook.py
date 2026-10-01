@@ -270,12 +270,15 @@ summary = {
 (OUTPUT / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 print(json.dumps(summary, indent=2, sort_keys=True))
 print("\\nmethod                  fork_acc   best_acc  final_acc  epoch_best")
+def metric(value):
+    return "n/a" if value is None else f"{value:.4f}"
+
 for name in ("vanilla", "ours_e_driven_o", "bypass", "o_projection_only"):
     row = results[name]
-    print(f"{name:23s} {row['fork_validation_accuracy']:.4f}     "
-          f"{row['best_validation_accuracy']:.4f}    "
-          f"{row['final_validation_accuracy']:.4f}    "
-          f"{row['epochs_to_best']:>4}")
+    print(f"{name:23s} {metric(row['fork_validation_accuracy']):>8s} "
+          f"{metric(row['best_validation_accuracy']):>9s} "
+          f"{metric(row['final_validation_accuracy']):>10s} "
+          f"{str(row['epochs_to_best']):>10s}")
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)
 print("Archive:", archive)
 """),

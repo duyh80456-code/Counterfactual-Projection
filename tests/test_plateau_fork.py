@@ -50,5 +50,7 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert 'phase = "incomplete"' in source
     assert '"budget_exhausted_before_contraction"' in source
     assert '"compact_best_validation_accuracy"' in source
+    assert "max(compact_rows," in source
+    assert '"post_fork_epoch": 0' not in source
     assert 'validation["accuracy"] > best_accuracy' in source
     assert "epochs_since_best" not in source

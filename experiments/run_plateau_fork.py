@@ -566,24 +566,24 @@ def main():
     compact_rows = ([row for row in history
                      if bool(row.get("deploy_compact", False))]
                     if args.method == "bypass" else history)
-    compact_candidates = [{
-        "post_fork_epoch": 0,
-        "validation_accuracy": fork_evaluation["accuracy"],
-        "validation_loss": fork_evaluation["loss"],
-    }, *compact_rows]
-    compact_best_row = max(
-        compact_candidates, key=lambda row: float(row["validation_accuracy"]))
-    compact_best_loss = min(
-        float(row["validation_loss"]) for row in compact_candidates)
+    bypass_completed = phase == "train3" if args.method == "bypass" else None
+    compact_best_row = (
+        max(compact_rows,
+            key=lambda row: float(row["validation_accuracy"]))
+        if args.method == "bypass" and compact_rows else None)
+    compact_best_loss = (
+        min(float(row["validation_loss"]) for row in compact_rows)
+        if args.method == "bypass" and compact_rows else None)
     reported_best_accuracy = (
-        float(compact_best_row["validation_accuracy"])
+        (float(compact_best_row["validation_accuracy"])
+         if compact_best_row is not None else None)
         if args.method == "bypass" else best_accuracy)
     reported_best_loss = (
         compact_best_loss if args.method == "bypass" else best_loss)
     reported_best_offset = (
-        int(compact_best_row["post_fork_epoch"])
+        (int(compact_best_row["post_fork_epoch"])
+         if compact_best_row is not None else None)
         if args.method == "bypass" else best_offset)
-    bypass_completed = phase == "train3" if args.method == "bypass" else None
     result = {
         "method": args.method, "fork_epoch": fork_epoch,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
@@ -607,7 +607,8 @@ def main():
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_evaluation["accuracy"]),
         "best_validation_accuracy_delta": (
-            reported_best_accuracy - fork_evaluation["accuracy"]),
+            reported_best_accuracy - fork_evaluation["accuracy"]
+            if reported_best_accuracy is not None else None),
         "epochs_to_best": reported_best_offset,
         "training_seconds": elapsed_before + time.perf_counter() - started,
         "peak_gpu_memory": max(
@@ -650,7 +651,8 @@ def main():
             if expanded_rows else None),
         "compact_best_validation_accuracy": (
             float(compact_best_row["validation_accuracy"])
-            if args.method == "bypass" else None),
+            if args.method == "bypass" and compact_best_row is not None
+            else None),
         "compact_final_validation_accuracy": (
             float(last["validation_accuracy"])
             if args.method == "bypass" and bypass_completed else None),
