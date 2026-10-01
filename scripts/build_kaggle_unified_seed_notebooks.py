@@ -207,22 +207,23 @@ if not compatible:
             replay_history = list(replay_payload["history"])
             for row in replay_history:
                 row_epoch = int(row["epoch"])
-                if replay_epoch >= 200 and row_epoch >= 200:
-                    continue
-                detector.update(row_epoch, float(row["validation_accuracy"]))
-            if replay_epoch >= 200:
-                replay_metric = float(
-                    replay_history[-1]["validation_accuracy"])
-                detector.update(replay_epoch, replay_metric)
-                detector.arm_stall(
-                    replay_epoch, replay_metric)
+                metric = float(row["validation_accuracy"])
+                detector.update(row_epoch, metric)
+                if row_epoch == 200:
+                    detector.arm_stall(row_epoch, metric)
+            missing_best_epoch = (
+                int(detector.best_epoch)
+                if int(detector.best_epoch) != replay_epoch else None)
             migrated_progress = {{
                 **replay_payload, "protocol": old_protocol,
-                "best_stall_detector": detector.state_dict()}}
+                "best_stall_detector": detector.state_dict(),
+                "replay_missing_best_epoch": missing_best_epoch}}
             migrated_best = {{
                 **replay_payload,
                 "kind": "vanilla_validation_best_checkpoint",
-                "protocol": old_protocol}}
+                "protocol": old_protocol,
+                "replay_missing_best_epoch": missing_best_epoch,
+                "placeholder_for_missing_best": missing_best_epoch}}
             torch.save(
                 migrated_progress, PHASE1_OUTPUT / "checkpoint_latest.pt")
             torch.save(migrated_best, PHASE1_OUTPUT / "checkpoint_best.pt")
@@ -255,10 +256,18 @@ if compatible:
         best_epoch = int(best_row["epoch"])
     else:
         best_epoch = int(payload["best_stall_detector"]["best_epoch"])
+    pending_missing_best = payload.get("replay_missing_best_epoch")
     matching_bests = [item for item in bests
                       if compatible_training_lineage(item["payload"], payload)
                       and int(item["payload"].get("epoch", -1)) == best_epoch]
-    if not matching_bests:
+    if pending_missing_best is not None:
+        selected_best = progress
+        print("Replaying with historical raw-best metric but missing weights:", {{
+            "missing_best_epoch": int(pending_missing_best),
+            "replay_epoch": int(payload["epoch"]),
+            "rule": "must observe a new strict raw validation best before fork",
+        }})
+    elif not matching_bests:
         earlier_bests = [item for item in bests
                          if compatible_training_lineage(
                              item["payload"], payload)

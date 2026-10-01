@@ -24,6 +24,8 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert '"minimum_additional_epochs_if_no_new_best"' in source
         assert "compatible_training_lineage" in source
         assert "is_post200_raw_best_snapshot" in source
+        assert '"replay_missing_best_epoch"' in source
+        assert "must observe a new strict raw validation best before fork" in source
         assert 'PHASE1_MAX_EPOCH = max(' in source
         assert "Cannot replay attached legacy run" in source
         assert "old_best_epoch" in source
@@ -83,3 +85,6 @@ def test_unified_runner_has_one_schedule_and_complete_resume_state():
     assert 'selection["improved"]' in source
     assert '"kind": "plateau_fork_checkpoint"' not in source
     assert 'checkpoint_validation_best_epoch{epoch:04d}.pt' in source
+    assert 'replay_missing_best_epoch = saved.get(' in source
+    assert 'selection["improved"]' in source
+    assert "raw validation stall reached but theta_P weights are" in source

@@ -113,6 +113,7 @@ def main():
     plateau_path = output / "plateau_checkpoint.pt"
     history, start_epoch, elapsed_before, peak_before = [], 0, 0.0, 0
     generator_state = None
+    replay_missing_best_epoch = None
     if latest.is_file():
         saved = torch.load(latest, map_location=device, weights_only=False)
         if saved["protocol"] != protocol:
@@ -127,12 +128,15 @@ def main():
         start_epoch = int(saved["epoch"])
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
+        replay_missing_best_epoch = saved.get("replay_missing_best_epoch")
+        if replay_missing_best_epoch is not None:
+            replay_missing_best_epoch = int(replay_missing_best_epoch)
         if not best_path.is_file() or not exact_best_path.is_file():
             raise RuntimeError("resume requires both validation-best checkpoints")
         saved_best = torch.load(
             best_path, map_location="cpu", weights_only=False)
         expected_best_epoch = int(detector.best_epoch)
-        if (detector.stall_armed and
+        if (detector.stall_armed and replay_missing_best_epoch is None and
                 int(saved_best["epoch"]) != expected_best_epoch):
             # checkpoint_latest is written before the best aliases. A crash in
             # that narrow gap is recoverable exactly when latest itself is the
@@ -162,6 +166,7 @@ def main():
             "evaluation_indices": evaluation_indices,
             "source_tuning_indices": tuning_indices, "history": history,
             "best_stall_detector": detector.state_dict(),
+            "replay_missing_best_epoch": replay_missing_best_epoch,
             "training_seconds": elapsed, "peak_gpu_memory": peak,
             "protocol": protocol,
         }
@@ -202,6 +207,11 @@ def main():
     if (detector.stall_armed and
             recovered_plan["has_100_post_best_epochs"] and
             not plateau_path.is_file()):
+        if replay_missing_best_epoch is not None:
+            raise RuntimeError(
+                "raw validation stall reached but theta_P weights are "
+                f"missing at epoch {replay_missing_best_epoch}; attach that "
+                "checkpoint or replay from an earlier full state")
         recovered = finalize_best_stall(
             best_path, plateau_path, detector, history, protocol,
             deploy_params)
@@ -260,6 +270,10 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
+        if not plateau_confirmed and selection["improved"]:
+            # A replay has now produced weights for a strict best that exceeds
+            # the historical metric whose checkpoint was unavailable.
+            replay_missing_best_epoch = None
         current = payload("unified_vanilla_progress", epoch, elapsed, peak)
         save(latest, current)
         if not plateau_confirmed and selection["improved"]:
@@ -283,6 +297,11 @@ def main():
         stall_ready = (not plateau_confirmed and detector.stall_armed and
                        stall_plan["has_100_post_best_epochs"])
         if stall_ready:
+            if replay_missing_best_epoch is not None:
+                raise RuntimeError(
+                    "raw validation stall reached but theta_P weights are "
+                    f"missing at epoch {replay_missing_best_epoch}; attach "
+                    "that checkpoint or replay from an earlier full state")
             best = finalize_best_stall(
                 best_path, plateau_path, detector, history, protocol,
                 deploy_params)
