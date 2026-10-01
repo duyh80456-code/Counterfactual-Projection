@@ -292,10 +292,14 @@ def main():
                     validation_best)
         atomic_json_save({"latest": row}, output / "progress.json")
         print(json.dumps({"unified_vanilla": row}, sort_keys=True), flush=True)
-        stall_plan = validation_stall_plan(
-            history, args.stall_patience, min_epoch=args.recipe_epochs)
-        stall_ready = (not plateau_confirmed and detector.stall_armed and
-                       stall_plan["has_100_post_best_epochs"])
+        # No post-recipe stall window exists before the detector is armed at
+        # epoch 200. In particular, do not ask validation_stall_plan for
+        # min_epoch=200 while a from-scratch run is still at epochs 1..199.
+        stall_ready = False
+        if not plateau_confirmed and detector.stall_armed:
+            stall_plan = validation_stall_plan(
+                history, args.stall_patience, min_epoch=args.recipe_epochs)
+            stall_ready = stall_plan["has_100_post_best_epochs"]
         if stall_ready:
             if replay_missing_best_epoch is not None:
                 raise RuntimeError(

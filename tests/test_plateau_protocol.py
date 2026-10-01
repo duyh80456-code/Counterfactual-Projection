@@ -144,6 +144,13 @@ def test_post_recipe_validation_best_ignores_better_pre_recipe_epoch():
     assert plan["has_100_post_best_epochs"] is True
 
 
+def test_post_recipe_plan_rejects_pre_recipe_history_until_armed():
+    history = [{"epoch": epoch, "validation_accuracy": 0.1 + epoch / 1000}
+               for epoch in range(0, 2)]
+    with pytest.raises(ValueError, match="requested search range"):
+        validation_stall_plan(history, patience=100, min_epoch=200)
+
+
 def test_armed_exact_best_resets_patience_on_any_strict_validation_gain():
     detector = BestCheckpointStallDetector(
         patience=3, min_gain=0.0, require_arm=True,

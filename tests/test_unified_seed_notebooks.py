@@ -84,6 +84,7 @@ def test_unified_runner_has_one_schedule_and_complete_resume_state():
     assert source.count('"learning_rates": training_lrs') == 1
     assert source.count('"next_learning_rates":') == 2
     assert "min_epoch=args.recipe_epochs" in source
+    assert "if not plateau_confirmed and detector.stall_armed:" in source
     assert '"history": history' in source
     assert 'selection["improved"]' in source
     assert '"kind": "plateau_fork_checkpoint"' not in source
