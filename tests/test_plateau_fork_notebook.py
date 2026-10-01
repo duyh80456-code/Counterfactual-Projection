@@ -25,7 +25,7 @@ def test_plateau_fork_notebook_runs_three_methods_and_reuses_matched_vanilla():
     assert '"--post-fork-epochs", "150"' in source
     assert '"--opt1-epochs", "70"' in source
     assert '"--max-opt2-epochs", "30"' in source
-    assert '"--retrigger-patience", "20"' in source
+    assert '"--retrigger-patience", "15"' in source
     assert '"--significant-improvement"' not in source
     assert '"--gamma-increase-opt2-epoch", "15"' in source
     assert '"--gamma-post-increase-multiplier", "2.0"' in source

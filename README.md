@@ -69,7 +69,7 @@ trajectory then continues for 50 more epochs, yielding a 150-epoch post-fork
 baseline without restarting. Theta_P is loaded into recurrent E-driven O,
 scaled Bypass 70/30 plus compact train3, and recurrent O-only; every completed
 comparator receives a 150-SGD-epoch post-fork budget. E-driven O and O-only
-roll back and retrigger after 20 epochs without a new strict validation best.
+roll back and retrigger after 15 epochs without a new strict validation best.
 The 2,000-sample trigger split is diagnostic only.
 
 All configuration, splits, schedules, GPU placement, checkpoint fields, and
@@ -115,7 +115,7 @@ The same workflow is also available as two explicit notebooks:
    checkpoint streams are retained for resuming and diagnosis.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
    launches supervised O-only, scaled matched-horizon Bypass, and E→O, each for
-   a 150-SGD-epoch budget. E→O and O-only run recurrent 20-epoch trials: if no
+   a 150-SGD-epoch budget. E→O and O-only run recurrent 15-epoch trials: if no
    new best appears, trainable state rolls back to the arm's best checkpoint,
    the stochastic stream remains advanced, and a fresh intervention starts.
    The matched Phase-1 window is Vanilla. All methods inherit the same model,

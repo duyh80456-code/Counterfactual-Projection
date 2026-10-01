@@ -32,7 +32,7 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert 'best_checkpoint = output / "checkpoint_best.pt"' in source
     assert '"plateau_fork_arm_best"' in source
     assert '"--post-fork-epochs", type=int, default=150' in source
-    assert '"--retrigger-patience", type=int, default=20' in source
+    assert '"--retrigger-patience", type=int, default=15' in source
     assert '"--opt1-epochs", type=int, default=70' in source
     assert '"--max-opt2-epochs", type=int, default=30' in source
     assert '"--gamma-increase-opt2-epoch", type=int, default=15' in source
