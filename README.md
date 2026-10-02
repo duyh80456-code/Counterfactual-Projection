@@ -158,6 +158,10 @@ expansion and local functional projection; DenseNet-121 is evaluated
 separately with its architecture-native block-boundary operator.
 The VGG16 E-driven O arm uses patience 25; its O-only arm performs one initial
 projection and does not roll back or retrigger.
+When a completed VGG16 seed-1 `plateau_checkpoint.pt` already exists, use
+[`notebooks/kaggle_vgg16_seed1_methods_from_plateau_t4x2.ipynb`](notebooks/kaggle_vgg16_seed1_methods_from_plateau_t4x2.ipynb)
+to skip Vanilla entirely and launch both projected arms directly from the
+verified byte-identical theta_P.
 
 For the exact-original-schedule plateau experiment from shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).

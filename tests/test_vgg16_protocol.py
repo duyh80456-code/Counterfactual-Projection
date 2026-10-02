@@ -81,3 +81,24 @@ def test_vgg16_is_supported_by_both_phase_runners():
     assert '"vgg16": build_cifar_gromo_vgg16' in shared
     assert '"vgg16": "CIFAR-VGG16-BN"' in shared
     assert "adapter_type = VggTinyAdapter" in selector
+
+
+def test_vgg16_seed1_method_only_notebook_skips_vanilla():
+    path = Path(
+        "notebooks/kaggle_vgg16_seed1_methods_from_plateau_t4x2.ipynb")
+    notebook = json.loads(path.read_text())
+    source = "\n".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"])
+    assert 'kind="plateau_fork_checkpoint"' in source
+    assert 'protocol.get("architecture") == "CIFAR-VGG16-BN"' in source
+    assert 'protocol.get("seed") == SEED' in source
+    assert 'payload.get("vanilla_baseline_complete") is True' in source
+    assert '"ours_e_driven_o": 25' in source
+    assert '"o_projection_only": 10' in source
+    assert '"o_projection_only": "single_initial_intervention"' in source
+    assert "experiments.run_unified_vanilla_to_stall" not in source
+    assert "No Phase-1 command is executed below" in source
+    for index, cell in enumerate(notebook["cells"]):
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]),
+                    f"vgg16-method-only-cell{index}", "exec")
