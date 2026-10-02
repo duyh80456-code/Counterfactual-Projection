@@ -47,7 +47,7 @@ def arguments():
     parser.add_argument("--post-fork-epochs", type=int, default=150)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
-        "--architecture", choices=("resnet18", "resnet34"),
+        "--architecture", choices=("resnet18", "resnet34", "vgg16"),
         default="resnet18")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)

@@ -21,6 +21,8 @@ def _module_path(model: nn.Module, target: nn.Module) -> str:
 
 def candidate_projection_block(model: nn.Module, candidate) -> str:
     logical_name = str(candidate.module_name)
+    if hasattr(model, "projection_parameter_modules"):
+        return logical_name
     if logical_name in dict(model.named_modules()):
         return logical_name
     resolver = getattr(model, "block", None)
@@ -37,6 +39,18 @@ def candidate_projection_parameter_names(
         return None
     if scope not in {"residual_path", "conv_only"}:
         raise ValueError(f"unknown projection scope {scope!r}")
+    custom_resolver = getattr(model, "projection_parameter_modules", None)
+    if custom_resolver is not None:
+        resolved = custom_resolver(str(candidate.module_name))
+        modules = list(resolved[:2] if scope == "conv_only" else resolved)
+        parameter_ids = {
+            id(parameter) for module in modules
+            for parameter in module.parameters(recurse=True)}
+        names = tuple(name for name, parameter in model.named_parameters()
+                      if id(parameter) in parameter_ids)
+        if not names:
+            raise RuntimeError("custom projection scope selected no parameters")
+        return names
     block_path = candidate_projection_block(model, candidate)
     block = dict(model.named_modules())[block_path]
     if hasattr(block, "first_layer") and hasattr(block, "second_layer"):

@@ -144,6 +144,15 @@ E-driven O and GPU1 runs recurrent O-only for 150 SGD epochs each; Bypass is
 not part of this experiment. Both projected arms retain the 10-epoch raw-best
 rollback controller, while E-driven O scans all 16 ResNet34 BasicBlocks.
 
+The same architecture-transfer protocol is also provided for native-Gromo
+CIFAR-VGG16-BN at
+[seed 0](notebooks/kaggle_vgg16_seed0_end_to_end_t4x2.ipynb),
+[seed 1](notebooks/kaggle_vgg16_seed1_end_to_end_t4x2.ipynb), and
+[seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). VGG16 is used
+instead of DenseNet-121 because its eight internal consecutive-convolution
+links admit the same temporary TINY expansion and local functional projection;
+DenseNet concatenation would require a different structural operator.
+
 For the exact-original-schedule plateau experiment from shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).
 It restores the exact model, optimizer, scheduler, SGD momentum, RNG, data

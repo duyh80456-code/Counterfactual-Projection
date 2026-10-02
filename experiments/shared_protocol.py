@@ -170,10 +170,24 @@ def build_cifar_gromo_resnet34(device):
     return model
 
 
+def build_cifar_gromo_vgg16(device):
+    """Build the native-Gromo CIFAR VGG16-BN used for architecture transfer."""
+    from probe.vgg_tiny_adapter import GromoVGG16
+
+    model = GromoVGG16(num_classes=100, device=device).to(device)
+    widths = [int(ref.module.hidden_neurons)
+              for ref in model.growing_blocks()]
+    expected = [64, 128, 256, 256, 512, 512, 512, 512]
+    if widths != expected:
+        raise RuntimeError(f"unexpected CIFAR-VGG16 link widths: {widths}")
+    return model
+
+
 def build_cifar_gromo_resnet(architecture: str, device):
     builders = {
         "resnet18": build_cifar_gromo_resnet18,
         "resnet34": build_cifar_gromo_resnet34,
+        "vgg16": build_cifar_gromo_vgg16,
     }
     try:
         builder = builders[architecture]
@@ -183,7 +197,11 @@ def build_cifar_gromo_resnet(architecture: str, device):
 
 
 def architecture_label(architecture: str) -> str:
-    labels = {"resnet18": "CIFAR-ResNet18", "resnet34": "CIFAR-ResNet34"}
+    labels = {
+        "resnet18": "CIFAR-ResNet18",
+        "resnet34": "CIFAR-ResNet34",
+        "vgg16": "CIFAR-VGG16-BN",
+    }
     try:
         return labels[architecture]
     except KeyError as error:

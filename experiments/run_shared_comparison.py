@@ -144,15 +144,21 @@ def structural_candidate_sites(model, site, candidate_sites=""):
 def propose_structural_candidates(model, statistics, *, rank, site,
                                   candidate_sites):
     """Run TINY at every requested site on one shared statistics batch set."""
-    from dual_growth.adapters import TinyAdapter
     from dual_growth.controller import GrowthBudget
+    from probe.vgg_tiny_adapter import GromoVGG16, VggTinyAdapter
+
+    if isinstance(model, GromoVGG16):
+        adapter_type = VggTinyAdapter
+    else:
+        from dual_growth.adapters import TinyAdapter
+        adapter_type = TinyAdapter
 
     sites = structural_candidate_sites(model, site, candidate_sites)
     if not sites:
         raise RuntimeError("structural-E candidate site set is empty")
     candidates = []
     for candidate_site in sites:
-        adapter = TinyAdapter(
+        adapter = adapter_type(
             quantum_params=10**9,
             max_statistics_batches=len(statistics))
         candidate = CounterfactualTinyProbe(rank, candidate_site).propose(

@@ -143,3 +143,39 @@ def test_full_cifar_gromo_resnet34_has_canonical_blocks_and_forward():
         logits = model(torch.randn(2, 3, 32, 32, device=device))
     assert logits.shape == (2, 100)
     assert torch.isfinite(logits).all()
+
+
+@pytest.mark.gromo_integration
+def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
+    _, GrowthBudget = _optional_imports()
+    from experiments.shared_protocol import build_cifar_gromo_vgg16
+    from methods import EProjection
+    from probe import CandidateExpansionProbe, CounterfactualTinyProbe
+    from probe.vgg_tiny_adapter import VggTinyAdapter
+    from projection import FunctionalProjector
+
+    device = torch.device("cuda:0")
+    model = build_cifar_gromo_vgg16(device).eval()
+    refs = model.growing_blocks()
+    assert len(refs) == 8
+    assert refs[0].name == "stages.0.links.0"
+    assert refs[-1].name == "stages.4.links.1"
+    inputs = torch.randn(2, 3, 32, 32, device=device)
+    targets = torch.tensor([3, 17], device=device)
+    with torch.no_grad():
+        logits = model(inputs)
+    assert logits.shape == (2, 100)
+    adapter = VggTinyAdapter(10**9, max_statistics_batches=1)
+    candidate = CounterfactualTinyProbe(1, refs[0].name).propose(
+        adapter, model, [(inputs, targets)], GrowthBudget(10**9),
+        sample_inputs=inputs)
+    signal = CandidateExpansionProbe()(
+        model, candidate=candidate, batch=(inputs, targets), gate=0.05)
+    assert signal.delta_logits.norm() > 0
+    step = EProjection(projector=FunctionalProjector(
+        damping=1e-3, max_iter=20, tolerance=1e-2,
+        preconditioner_probes=1)).discover_candidate(
+            model, candidate, (inputs, targets), gate=0.05)
+    assert step.projection.parameter_delta
+    assert all("stages.0" in name or "core.features.0" in name
+               for name in step.projection.parameter_delta)

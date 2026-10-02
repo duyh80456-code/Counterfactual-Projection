@@ -1,0 +1,71 @@
+"""Build seed 0/1/2 CIFAR-VGG16-BN Vanilla/O-only/E-to-O notebooks."""
+
+import copy
+import json
+from pathlib import Path
+
+
+TEMPLATE = Path("notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb")
+
+
+def cell_text(cell):
+    return "".join(cell["source"])
+
+
+base = json.loads(TEMPLATE.read_text())
+replacements = {
+    "# CIFAR-ResNet34 stall experiment — seed 1":
+        "# CIFAR-VGG16-BN stall experiment — seed 1",
+    "full-width Gromo CIFAR-ResNet34": "full-width Gromo CIFAR-VGG16-BN",
+    "all 16 ResNet34 BasicBlocks": "all 8 internal VGG16 conv links",
+    "/kaggle/working/resnet34_seed1_stall150_v1":
+        "/kaggle/working/vgg16_seed1_stall150_v1",
+    "cifar-resnet34-sgd-multistep-200-v1-post200-val-best":
+        "cifar-vgg16-bn-sgd-multistep-200-v1-post200-val-best",
+    '"architecture") == "CIFAR-ResNet34"':
+        '"architecture") == "CIFAR-VGG16-BN"',
+    'f"random_init_resnet34_seed_{SEED}"':
+        'f"random_init_vgg16_bn_seed_{SEED}"',
+    '"--architecture", "resnet34"': '"--architecture", "vgg16"',
+    '"architecture") != "CIFAR-ResNet34"':
+        '"architecture") != "CIFAR-VGG16-BN"',
+    '"architecture": "CIFAR-ResNet34"':
+        '"architecture": "CIFAR-VGG16-BN"',
+    "did not run CIFAR-ResNet34": "did not run CIFAR-VGG16-BN",
+    '"CIFAR-ResNet34"': '"CIFAR-VGG16-BN"',
+}
+for cell in base["cells"]:
+    text = cell_text(cell)
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    cell["source"] = text.splitlines(keepends=True)
+
+phase2 = cell_text(base["cells"][8])
+needle = '"--seed", "1", "--architecture", "vgg16",\n'
+if needle not in phase2:
+    raise RuntimeError("VGG notebook template lacks the Phase-2 architecture")
+phase2 = phase2.replace(
+    needle, needle + '        "--site", "stages.2.links.0",\n')
+base["cells"][8]["source"] = phase2.splitlines(keepends=True)
+
+for seed in (0, 1, 2):
+    notebook = copy.deepcopy(base)
+    substitutions = {
+        "seed 1": f"seed {seed}",
+        "seed1": f"seed{seed}",
+        "SEED = 1": f"SEED = {seed}",
+        '"--seed", "1"': f'"--seed", "{seed}"',
+    }
+    for cell in notebook["cells"]:
+        text = cell_text(cell)
+        for old, new in substitutions.items():
+            text = text.replace(old, new)
+        cell["source"] = text.splitlines(keepends=True)
+        if cell["cell_type"] == "code":
+            cell["execution_count"] = None
+            cell["outputs"] = []
+    destination = Path(
+        f"notebooks/kaggle_vgg16_seed{seed}_end_to_end_t4x2.ipynb")
+    destination.write_text(
+        json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
+    print(destination)

@@ -29,7 +29,7 @@ def arguments():
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument(
-        "--architecture", choices=("resnet18", "resnet34"),
+        "--architecture", choices=("resnet18", "resnet34", "vgg16"),
         default="resnet18")
     parser.add_argument("--max-epoch", type=int, default=800)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -86,6 +86,7 @@ def main():
     schedule_ids = {
         "resnet18": "cifar-resnet18-sgd-multistep-200-v5-post200-val-best",
         "resnet34": "cifar-resnet34-sgd-multistep-200-v1-post200-val-best",
+        "vgg16": "cifar-vgg16-bn-sgd-multistep-200-v1-post200-val-best",
     }
     protocol = {
         "phase": "unified_vanilla_from_initialization", "seed": args.seed,
@@ -93,9 +94,11 @@ def main():
         "input_size": 32, "learning_rate": args.lr,
         "batch_size": args.batch_size,
         "optimizer": f"SGD(momentum=0.9, weight_decay={args.weight_decay})",
-        "model_state_lineage": (
-            f"random_init_seed_{args.seed}" if args.architecture == "resnet18"
-            else f"random_init_resnet34_seed_{args.seed}"),
+        "model_state_lineage": {
+            "resnet18": f"random_init_seed_{args.seed}",
+            "resnet34": f"random_init_resnet34_seed_{args.seed}",
+            "vgg16": f"random_init_vgg16_bn_seed_{args.seed}",
+        }[args.architecture],
         "weight_decay": args.weight_decay,
         "schedule_id": schedule_ids[args.architecture],
         "schedule": (
