@@ -67,7 +67,7 @@ class CandidateExpansionProbe:
                 predicted_gain=float((baseline_loss - expanded_loss).item() / gate),
                 singular_values=(None if "tiny_eigenvalues" not in payload else
                                  torch.as_tensor(payload["tiny_eigenvalues"])),
-                source="tiny_gromo_structural",
+                source=str(payload.get("source", "tiny_gromo_structural")),
                 is_structural_expansion=True, probe_gate=gate,
                 observed_loss_gain=float((baseline_loss - expanded_loss).item()))
         finally:

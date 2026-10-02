@@ -90,8 +90,9 @@ def test_resnet34_seed_notebooks_differ_only_by_seed_and_output_path():
 def test_resnet34_runner_arguments_preserve_resnet18_defaults():
     phase1 = Path("experiments/run_unified_vanilla_to_stall.py").read_text()
     fork = Path("experiments/run_plateau_fork.py").read_text()
-    assert 'choices=("resnet18", "resnet34", "vgg16")' in phase1
-    assert 'choices=("resnet18", "resnet34", "vgg16")' in fork
+    choices = 'choices=("resnet18", "resnet34", "vgg16", "densenet121")'
+    assert choices in phase1
+    assert choices in fork
     assert 'default="resnet18"' in phase1
     assert 'default="resnet18"' in fork
     assert '"architecture": expected_architecture' in fork

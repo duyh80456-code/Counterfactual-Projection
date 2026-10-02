@@ -143,7 +143,15 @@ def structural_candidate_sites(model, site, candidate_sites=""):
 
 def propose_structural_candidates(model, statistics, *, rank, site,
                                   candidate_sites):
-    """Run TINY at every requested site on one shared statistics batch set."""
+    """Create architecture-native E candidates on one shared statistics set."""
+    from probe.densenet_auxiliary import (
+        CifarDenseNet121, propose_denseblock_candidates)
+
+    sites = structural_candidate_sites(model, site, candidate_sites)
+    if isinstance(model, CifarDenseNet121):
+        return propose_denseblock_candidates(
+            model, statistics, rank, sites=sites)
+
     from dual_growth.controller import GrowthBudget
     from probe.vgg_tiny_adapter import GromoVGG16, VggTinyAdapter
 
@@ -153,7 +161,6 @@ def propose_structural_candidates(model, statistics, *, rank, site,
         from dual_growth.adapters import TinyAdapter
         adapter_type = TinyAdapter
 
-    sites = structural_candidate_sites(model, site, candidate_sites)
     if not sites:
         raise RuntimeError("structural-E candidate site set is empty")
     candidates = []

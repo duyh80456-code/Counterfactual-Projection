@@ -42,7 +42,10 @@ def candidate_projection_parameter_names(
     custom_resolver = getattr(model, "projection_parameter_modules", None)
     if custom_resolver is not None:
         resolved = custom_resolver(str(candidate.module_name))
-        modules = list(resolved[:2] if scope == "conv_only" else resolved)
+        if isinstance(resolved, dict):
+            modules = list(resolved[scope])
+        else:
+            modules = list(resolved[:2] if scope == "conv_only" else resolved)
         parameter_ids = {
             id(parameter) for module in modules
             for parameter in module.parameters(recurse=True)}

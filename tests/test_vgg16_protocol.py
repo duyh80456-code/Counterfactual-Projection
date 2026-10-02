@@ -70,8 +70,9 @@ def test_vgg16_is_supported_by_both_phase_runners():
     phase2 = Path("experiments/run_plateau_fork.py").read_text()
     shared = Path("experiments/shared_protocol.py").read_text()
     selector = Path("experiments/run_shared_comparison.py").read_text()
-    assert 'choices=("resnet18", "resnet34", "vgg16")' in phase1
-    assert 'choices=("resnet18", "resnet34", "vgg16")' in phase2
+    choices = 'choices=("resnet18", "resnet34", "vgg16", "densenet121")'
+    assert choices in phase1
+    assert choices in phase2
     assert '"vgg16": build_cifar_gromo_vgg16' in shared
     assert '"vgg16": "CIFAR-VGG16-BN"' in shared
     assert "adapter_type = VggTinyAdapter" in selector

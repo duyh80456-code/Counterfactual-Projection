@@ -257,6 +257,24 @@ are anchored to the validation metrics measured directly at the shared fork:
 best-loss deltas are reported separately so transient improvements are not
 hidden by the final epoch.
 
+## DenseNet-121 architecture transfer
+
+The DenseNet experiment is isolated from the residual/VGG structural
+operators. Its four E sites are the four DenseBlock boundaries. A temporary
+rank-r branch reads the complete block representation and contributes only to
+the next transition (or to the classifier for the final block). Gate zero is
+therefore exactly function preserving. WHERE compares observed loss gain for
+all four boundary branches on shared batches; HOW projects only the winning
+direction into the selected DenseBlock plus its direct consumer. The temporary
+branch is then discarded, so the deployed network remains the original
+CIFAR-DenseNet121.
+
+Three matched notebooks are provided at
+`notebooks/kaggle_densenet121_seed{0,1,2}_end_to_end_t4x2.ipynb`. They run the
+same raw-validation-best/stall protocol as the existing architecture-transfer
+experiments and compare Vanilla, O-only, and E-driven O. No DenseNet-specific
+code path is selected by the ResNet18, ResNet34, or VGG16 notebooks.
+
 ## Reference implementation
 
 The local, ignored checkout at `third_party/One-Shot-TAS-CCIL` points to
