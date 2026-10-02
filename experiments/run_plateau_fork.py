@@ -23,8 +23,9 @@ from experiments.run_plateau_comparison import finite_projection, run_interventi
 from experiments.run_shared_comparison import (
     supervised_functional_descent_direction)
 from experiments.shared_protocol import (
-    atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
-    build_optimizer_scheduler, datasets_and_indices, evaluate,
+    architecture_label, atomic_json_save, atomic_torch_save,
+    build_cifar_gromo_resnet, build_optimizer_scheduler,
+    datasets_and_indices, evaluate,
     make_eval_loader, make_train_loader, restore_rng, rng_state,
     seed_everything, sha256_file, train_epoch)
 from methods.e_projection import (
@@ -45,6 +46,9 @@ def arguments():
     parser.add_argument("--output", required=True)
     parser.add_argument("--post-fork-epochs", type=int, default=150)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--architecture", choices=("resnet18", "resnet34"),
+        default="resnet18")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
@@ -185,7 +189,13 @@ def main():
             source_tuning != generated_tuning):
         raise RuntimeError("plateau checkpoint data split mismatch")
 
-    model = build_cifar_gromo_resnet18(device)
+    expected_architecture = architecture_label(args.architecture)
+    source_architecture = source.get("protocol", {}).get("architecture")
+    if source_architecture != expected_architecture:
+        raise RuntimeError(
+            "plateau checkpoint architecture mismatch: "
+            f"{source_architecture!r} != {expected_architecture!r}")
+    model = build_cifar_gromo_resnet(args.architecture, device)
     fork_deploy_params = sum(
         parameter.numel() for parameter in model.parameters())
     optimizer, _ = build_optimizer_scheduler(model, 0.1, args.weight_decay)
@@ -206,6 +216,7 @@ def main():
 
     protocol = {
         "phase": "plateau_fork_comparison", "method": args.method,
+        "architecture": expected_architecture,
         "fork_epoch": fork_epoch, "post_fork_epochs": args.post_fork_epochs,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
         "plateau_checkpoint_hash": fork_hash,

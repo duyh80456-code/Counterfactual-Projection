@@ -67,10 +67,12 @@ def test_unified_runner_has_one_schedule_and_complete_resume_state():
     source = Path("experiments/run_unified_vanilla_to_stall.py").read_text()
     assert "StandardMultiStepScheduler" in source
     assert '"scheduler_restart_count": 0' in source
-    assert ('"schedule_id": '
+    assert ('"resnet18": '
             '"cifar-resnet18-sgd-multistep-200-v5-post200-val-best"') in source
-    assert ('"stall_gate": "100 epochs after raw validation best at epoch '
-            '>=200"') in source
+    assert ('"resnet34": '
+            '"cifar-resnet34-sgd-multistep-200-v1-post200-val-best"') in source
+    assert 'f"{args.stall_patience} epochs after raw validation best at "' in source
+    assert 'f"epoch >={args.recipe_epochs}"' in source
     assert ('"theta_P_scope": "raw validation best at or after recipe '
             'epoch 200"') in source
     assert "optimizer.load_state_dict(saved[\"optimizer\"])" in source

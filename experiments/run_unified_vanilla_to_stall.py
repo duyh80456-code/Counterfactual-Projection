@@ -15,7 +15,8 @@ from experiments.plateau_protocol import (
 from experiments.run_vanilla_to_plateau import (
     extend_vanilla_control, finalize_best_stall)
 from experiments.shared_protocol import (
-    atomic_json_save, atomic_torch_save, build_cifar_gromo_resnet18,
+    architecture_label, atomic_json_save, atomic_torch_save,
+    build_cifar_gromo_resnet,
     datasets_and_indices, evaluate, index_sha256, make_eval_loader,
     make_train_loader, restore_rng, rng_state, seed_everything, sha256_file,
     train_epoch)
@@ -27,6 +28,9 @@ def arguments():
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument(
+        "--architecture", choices=("resnet18", "resnet34"),
+        default="resnet18")
     parser.add_argument("--max-epoch", type=int, default=800)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=2)
@@ -66,7 +70,7 @@ def main():
         raise ValueError("invalid trigger/evaluation split")
     trigger_indices = validation_indices[:args.trigger_samples]
     evaluation_indices = validation_indices[args.trigger_samples:]
-    model = build_cifar_gromo_resnet18(device)
+    model = build_cifar_gromo_resnet(args.architecture, device)
     deploy_params = sum(parameter.numel() for parameter in model.parameters())
     optimizer = torch.optim.SGD(
         model.parameters(), lr=args.lr, momentum=0.9,
@@ -78,15 +82,22 @@ def main():
     detector = BestCheckpointStallDetector(
         args.stall_patience, min_gain=0.0, require_arm=True,
         exact_best_patience=True)
+    architecture = architecture_label(args.architecture)
+    schedule_ids = {
+        "resnet18": "cifar-resnet18-sgd-multistep-200-v5-post200-val-best",
+        "resnet34": "cifar-resnet34-sgd-multistep-200-v1-post200-val-best",
+    }
     protocol = {
         "phase": "unified_vanilla_from_initialization", "seed": args.seed,
-        "dataset": "CIFAR-100", "architecture": "CIFAR-ResNet18",
+        "dataset": "CIFAR-100", "architecture": architecture,
         "input_size": 32, "learning_rate": args.lr,
         "batch_size": args.batch_size,
         "optimizer": f"SGD(momentum=0.9, weight_decay={args.weight_decay})",
-        "model_state_lineage": f"random_init_seed_{args.seed}",
+        "model_state_lineage": (
+            f"random_init_seed_{args.seed}" if args.architecture == "resnet18"
+            else f"random_init_resnet34_seed_{args.seed}"),
         "weight_decay": args.weight_decay,
-        "schedule_id": "cifar-resnet18-sgd-multistep-200-v5-post200-val-best",
+        "schedule_id": schedule_ids[args.architecture],
         "schedule": (
             f"base recipe: {args.recipe_epochs} epochs, milestones="
             f"{milestones}, gamma={args.lr_gamma}; metric-independent"),
@@ -96,7 +107,9 @@ def main():
         "selection_metric": "validation accuracy (3,000-sample split)",
         "evaluation_role": "model selection and reporting; official test unused",
         "stall_patience": args.stall_patience,
-        "stall_gate": "100 epochs after raw validation best at epoch >=200",
+        "stall_gate": (
+            f"{args.stall_patience} epochs after raw validation best at "
+            f"epoch >={args.recipe_epochs}"),
         "theta_P_scope": "raw validation best at or after recipe epoch 200",
         "validation_best_min_gain": 0.0,
         "post_fork_epochs": args.post_fork_epochs,
@@ -205,7 +218,7 @@ def main():
         history, args.stall_patience,
         min_epoch=args.recipe_epochs if scheduler.recipe_complete() else 0)
     if (detector.stall_armed and
-            recovered_plan["has_100_post_best_epochs"] and
+            recovered_plan["has_post_best_patience_epochs"] and
             not plateau_path.is_file()):
         if replay_missing_best_epoch is not None:
             raise RuntimeError(
@@ -299,7 +312,7 @@ def main():
         if not plateau_confirmed and detector.stall_armed:
             stall_plan = validation_stall_plan(
                 history, args.stall_patience, min_epoch=args.recipe_epochs)
-            stall_ready = stall_plan["has_100_post_best_epochs"]
+            stall_ready = stall_plan["has_post_best_patience_epochs"]
         if stall_ready:
             if replay_missing_best_epoch is not None:
                 raise RuntimeError(

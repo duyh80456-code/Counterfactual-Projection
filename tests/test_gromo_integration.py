@@ -124,3 +124,22 @@ def test_full_cifar_resnet_relaxed_bypass_embed_and_contract():
     assert project_relaxed_bypass_(model) == len(paths)
     with torch.no_grad():
         assert torch.equal(model(inputs), expected)
+
+
+@pytest.mark.gromo_integration
+def test_full_cifar_gromo_resnet34_has_canonical_blocks_and_forward():
+    _optional_imports()
+    from experiments.shared_protocol import build_cifar_gromo_resnet34
+
+    device = torch.device("cuda:0")
+    model = build_cifar_gromo_resnet34(device).eval()
+    refs = model.growing_blocks()
+    assert len(refs) == 16
+    assert [int(ref.module.hidden_neurons) for ref in refs] == (
+        [64] * 3 + [128] * 4 + [256] * 6 + [512] * 3)
+    assert refs[0].name == "stages.0.blocks.0"
+    assert refs[-1].name == "stages.3.blocks.2"
+    with torch.no_grad():
+        logits = model(torch.randn(2, 3, 32, 32, device=device))
+    assert logits.shape == (2, 100)
+    assert torch.isfinite(logits).all()

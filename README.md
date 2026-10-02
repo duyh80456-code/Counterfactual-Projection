@@ -131,6 +131,16 @@ The same workflow is also available as two explicit notebooks:
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 
+[`notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb`](notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb)
+is the architecture-transfer experiment. It trains a full-width Gromo
+CIFAR-ResNet34 from random initialization with the same metric-independent
+200-epoch base recipe, then requires 150 consecutive epochs without a new
+strict raw validation best before accepting theta_P. That exact 150-epoch
+trajectory is Vanilla. From the same theta_P hash, GPU0 runs recurrent
+E-driven O and GPU1 runs recurrent O-only for 150 SGD epochs each; Bypass is
+not part of this experiment. Both projected arms retain the 10-epoch raw-best
+rollback controller, while E-driven O scans all 16 ResNet34 BasicBlocks.
+
 For the exact-original-schedule plateau experiment from shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).
 It restores the exact model, optimizer, scheduler, SGD momentum, RNG, data

@@ -24,6 +24,7 @@ def validation_stall_plan(history: list[dict], patience: int = 100,
     best_epoch = int(best["epoch"])
     latest_epoch = epochs[-1]
     target_epoch = best_epoch + int(patience)
+    complete = latest_epoch >= target_epoch
     return {
         "validation_best_epoch": best_epoch,
         "validation_best_accuracy": float(best["validation_accuracy"]),
@@ -31,7 +32,9 @@ def validation_stall_plan(history: list[dict], patience: int = 100,
         "target_epoch": target_epoch,
         "minimum_additional_epochs_if_no_new_best":
             max(0, target_epoch - latest_epoch),
-        "has_100_post_best_epochs": latest_epoch >= target_epoch,
+        "has_post_best_patience_epochs": complete,
+        # Backward-compatible alias retained for existing saved notebooks.
+        "has_100_post_best_epochs": complete,
     }
 
 

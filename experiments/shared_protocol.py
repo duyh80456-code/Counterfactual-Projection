@@ -137,6 +137,59 @@ def build_cifar_gromo_resnet18(device):
     return model
 
 
+def build_cifar_gromo_resnet34(device):
+    """Build a full-width CIFAR ResNet-34 with the existing Gromo adapter API."""
+    from dual_growth.adapters import GromoResNet18
+    from gromo.containers.resnet import init_full_resnet_structure
+
+    class GromoResNet34(GromoResNet18):
+        architecture_id = "gromo_resnet34_hidden_width_v1"
+
+        def __init__(self):
+            # Reuse the adapter operations (growing_blocks, block replacement,
+            # transactional TINY state) while materializing the canonical
+            # ResNet-34 BasicBlock layout rather than ResNet-18's 2/2/2/2.
+            nn.Module.__init__(self)
+            self.start_width = 1.0
+            self.core = init_full_resnet_structure(
+                input_shape=(3, 32, 32), out_features=100,
+                reduction_factor=1.0,
+                number_of_blocks_per_stage=(3, 4, 6, 3),
+                inplanes=64, nb_stages=4, small_inputs=True,
+                skip_first_downsample=False, use_preactivation=False,
+                device=device)
+            self._extended_forward = False
+            self._parameter_migrations = []
+
+    model = GromoResNet34().to(device)
+    model.architecture_id = "cifar_gromo_resnet34_full_random_v1"
+    widths = [int(ref.module.hidden_neurons) for ref in model.growing_blocks()]
+    expected = [64] * 3 + [128] * 4 + [256] * 6 + [512] * 3
+    if widths != expected:
+        raise RuntimeError(f"unexpected full CIFAR-ResNet34 widths: {widths}")
+    return model
+
+
+def build_cifar_gromo_resnet(architecture: str, device):
+    builders = {
+        "resnet18": build_cifar_gromo_resnet18,
+        "resnet34": build_cifar_gromo_resnet34,
+    }
+    try:
+        builder = builders[architecture]
+    except KeyError as error:
+        raise ValueError(f"unsupported CIFAR Gromo architecture: {architecture}") from error
+    return builder(device)
+
+
+def architecture_label(architecture: str) -> str:
+    labels = {"resnet18": "CIFAR-ResNet18", "resnet34": "CIFAR-ResNet34"}
+    try:
+        return labels[architecture]
+    except KeyError as error:
+        raise ValueError(f"unsupported CIFAR Gromo architecture: {architecture}") from error
+
+
 def build_optimizer_scheduler(model, lr: float = 0.1,
                               weight_decay: float = 5e-4):
     optimizer = torch.optim.SGD(
