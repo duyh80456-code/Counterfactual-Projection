@@ -102,6 +102,7 @@ def test_densenet_notebooks_are_three_seed_matched_runs():
         assert '"o_projection_only": 10' in source
         assert ('"--retrigger-patience", str(retrigger_patience[name])' in
                 source)
+        assert '"o_projection_only": "single_initial_intervention"' in source
         assert "all 4 DenseBlock boundaries" in source
         assert 'GPU0: E-driven O; GPU1: O-only' in source
         assert 'launch(1, "bypass")' not in source

@@ -67,9 +67,11 @@ Theta_P is that raw validation-best checkpoint; any later strict best moves
 theta_P and restarts the 100-epoch target. The already observed Vanilla
 trajectory then continues for 50 more epochs, yielding a 150-epoch post-fork
 baseline without restarting. Theta_P is loaded into recurrent E-driven O,
-scaled Bypass 70/30 plus compact train3, and recurrent O-only; every completed
-comparator receives a 150-SGD-epoch post-fork budget. E-driven O and O-only
-roll back and retrigger after 10 epochs without a new strict validation best.
+scaled Bypass 70/30 plus compact train3, and single-intervention O-only; every
+completed comparator receives a 150-SGD-epoch post-fork budget. Only E-driven
+O rolls back and retriggers after its configured number of epochs without a
+new strict validation best. O-only applies one supervised projection at
+theta_P and then follows one uninterrupted SGD trajectory.
 The 2,000-sample trigger split is diagnostic only.
 
 All configuration, splits, schedules, GPU placement, checkpoint fields, and
@@ -115,9 +117,11 @@ The same workflow is also available as two explicit notebooks:
    checkpoint streams are retained for resuming and diagnosis.
 2. [`notebooks/kaggle_plateau_fork_t4x2.ipynb`](notebooks/kaggle_plateau_fork_t4x2.ipynb)
    launches supervised O-only, scaled matched-horizon Bypass, and E→O, each for
-   a 150-SGD-epoch budget. E→O and O-only run recurrent 10-epoch trials: if no
-   new best appears, trainable state rolls back to the arm's best checkpoint,
-   the stochastic stream remains advanced, and a fresh intervention starts.
+   a 150-SGD-epoch budget. E→O runs recurrent best-checkpoint trials: if no new
+   best appears within its patience, trainable state rolls back to the arm's
+   best checkpoint, the stochastic stream remains advanced, and a fresh
+   intervention starts. O-only performs one supervised projection at theta_P
+   and never rolls back or retriggers.
    The matched Phase-1 window is Vanilla. All methods inherit the same model,
    optimizer, scheduler, momentum,
    RNG, training order, and held-out split. Every trained method saves latest
@@ -140,18 +144,20 @@ CIFAR-ResNet34 from random initialization with the same metric-independent
 200-epoch base recipe, then requires 150 consecutive epochs without a new
 strict raw validation best before accepting theta_P. That exact 150-epoch
 trajectory is Vanilla. From the same theta_P hash, GPU0 runs recurrent
-E-driven O and GPU1 runs recurrent O-only for 150 SGD epochs each; Bypass is
-not part of this experiment. Both projected arms retain the 10-epoch raw-best
+E-driven O and GPU1 runs single-intervention O-only for 150 SGD epochs each;
+Bypass is not part of this experiment. Only E-driven O retains the raw-best
 rollback controller, while E-driven O scans all 16 ResNet34 BasicBlocks.
 
 The same architecture-transfer protocol is also provided for native-Gromo
 CIFAR-VGG16-BN at
 [seed 0](notebooks/kaggle_vgg16_seed0_end_to_end_t4x2.ipynb),
 [seed 1](notebooks/kaggle_vgg16_seed1_end_to_end_t4x2.ipynb), and
-[seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). VGG16 is used
-instead of DenseNet-121 because its eight internal consecutive-convolution
-links admit the same temporary TINY expansion and local functional projection;
-DenseNet concatenation would require a different structural operator.
+[seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). Its eight
+internal consecutive-convolution links use the native-Gromo temporary TINY
+expansion and local functional projection; DenseNet-121 is evaluated
+separately with its architecture-native block-boundary operator.
+The VGG16 E-driven O arm uses patience 25; its O-only arm performs one initial
+projection and does not roll back or retrigger.
 
 For the exact-original-schedule plateau experiment from shared theta-300,
 use [`notebooks/kaggle_plateau_eo_t4x2.ipynb`](notebooks/kaggle_plateau_eo_t4x2.ipynb).

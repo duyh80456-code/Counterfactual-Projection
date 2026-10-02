@@ -18,6 +18,7 @@ replacements = {
         "# CIFAR-DenseNet121 block-boundary experiment — seed 1",
     "full-width Gromo CIFAR-VGG16-BN": "CIFAR-DenseNet121",
     "all 8 internal VGG16 conv links": "all 4 DenseBlock boundaries",
+    "rollback with patience 25": "rollback with patience 10",
     "/kaggle/working/vgg16_seed1_stall150_v1":
         "/kaggle/working/densenet121_seed1_stall150_v1",
     "cifar-vgg16-bn-sgd-multistep-200-v1-post200-val-best":

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
+def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     source = Path("experiments/run_plateau_fork.py").read_text()
     assert 'METHODS = ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")' in source
     assert '"o_projection_only")' in source
@@ -11,11 +11,15 @@ def test_plateau_fork_has_recurrent_projected_arms_and_best_checkpoints():
     assert "scheduler.sync_optimizer_groups()" in source
     assert "train_indices = list(source[\"train_indices\"])" in source
     assert '"mode": "recurrent_best_rollback"' in source
+    assert '"mode": "single_initial_intervention"' in source
     assert '"patience": args.retrigger_patience' in source
     assert "run_intervention(" in source
     assert "run_o_only_intervention(" in source
     assert "supervised_functional_descent_direction" in source
     assert '"raw_validation_stall"' in source
+    assert 'args.method == "ours_e_driven_o" and' in source
+    assert ('args.method in {"ours_e_driven_o", "o_projection_only"} and' not
+            in source)
     assert "live_rng = rng_state()" in source
     assert "live_loader_state = train_loader.generator.get_state().clone()" in source
     assert 'best_state["model"]' in source

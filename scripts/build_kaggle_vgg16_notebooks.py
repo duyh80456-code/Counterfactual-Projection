@@ -18,6 +18,7 @@ replacements = {
         "# CIFAR-VGG16-BN stall experiment — seed 1",
     "full-width Gromo CIFAR-ResNet34": "full-width Gromo CIFAR-VGG16-BN",
     "all 16 ResNet34 BasicBlocks": "all 8 internal VGG16 conv links",
+    "rollback with patience 10": "rollback with patience 25",
     "/kaggle/working/resnet34_seed1_stall150_v1":
         "/kaggle/working/vgg16_seed1_stall150_v1",
     "cifar-resnet34-sgd-multistep-200-v1-post200-val-best":
@@ -68,14 +69,17 @@ commands = {
 if commands_needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the Phase-2 command map")
 phase2 = phase2.replace(commands_needle, commands_replacement)
-resume_needle = '''               and item["payload"].get("protocol", {}).get("architecture") ==
-                   "CIFAR-VGG16-BN"]
+resume_needle = '''               and (item["payload"].get("protocol", {}).get(
+                   "intervention_schedule") or {}).get("mode") ==
+                   expected_schedule_mode]
 '''
-resume_replacement = '''               and item["payload"].get("protocol", {}).get("architecture") ==
-                   "CIFAR-VGG16-BN"
-               and item["payload"].get("protocol", {}).get(
-                   "intervention_schedule", {}).get("patience") ==
-                   retrigger_patience[name]]
+resume_replacement = '''               and (item["payload"].get("protocol", {}).get(
+                   "intervention_schedule") or {}).get("mode") ==
+                   expected_schedule_mode
+               and (name != "ours_e_driven_o" or
+                    (item["payload"].get("protocol", {}).get(
+                        "intervention_schedule") or {}).get("patience") ==
+                    retrigger_patience[name])]
 '''
 if resume_needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the resume protocol filter")

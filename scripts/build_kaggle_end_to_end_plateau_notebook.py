@@ -20,6 +20,13 @@ def source(cell):
 
 phase1 = json.loads(Path("notebooks/kaggle_vanilla_to_plateau.ipynb").read_text())
 phase2 = json.loads(Path("notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
+legacy_phase2_commands = source(phase2["cells"][4]).replace(
+    '"--post-fork-epochs", "150"', '"--post-fork-epochs", "100"')
+legacy_phase2_summary = source(phase2["cells"][5]).replace(
+    'result["post_fork_epochs"] != 150',
+    'result["post_fork_epochs"] != 100').replace(
+        "did not complete 150 epochs", "did not complete 100 epochs").replace(
+            '"post_fork_epochs": 150', '"post_fork_epochs": 100')
 
 cells = [
     markdown("""# End-to-end meaningful-stall experiment — theta300 to method fork
@@ -97,8 +104,8 @@ OUTPUT = Path("/kaggle/working/plateau_end_to_end_three_methods_100ep_v4")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 """),
     # Reuse the already-tested Phase-2 command/queue and aggregation cells.
-    phase2["cells"][4],
-    phase2["cells"][5],
+    code(legacy_phase2_commands),
+    code(legacy_phase2_summary),
 ]
 
 # Avoid carrying outputs/execution counters from source notebooks.

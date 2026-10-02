@@ -34,8 +34,8 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert '"o_projection_only": 10' in source
         assert ('"--retrigger-patience", str(retrigger_patience[name])' in
                 source)
-        assert ('"intervention_schedule", {}).get("patience") ==' in
-                source)
+        assert '"o_projection_only": "single_initial_intervention"' in source
+        assert 'name != "ours_e_driven_o" or' in source
         assert 'GPU0: E-driven O; GPU1: O-only' in source
         assert 'launch(0, "ours_e_driven_o")' in source
         assert 'launch(1, "o_projection_only")' in source

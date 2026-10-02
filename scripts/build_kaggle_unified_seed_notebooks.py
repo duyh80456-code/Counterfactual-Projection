@@ -86,8 +86,9 @@ checkpoint at or after epoch 200.
 
 Phase 2 forks that run's raw validation-best checkpoint theta_P, including optimizer momentum,
 scheduler position, RNG, loader stream, and data indices. GPU0 runs recurrent
-E-driven O only. GPU1 runs scaled Bypass 70/30 and then launches
-a fresh recurrent O-only process. Each method consumes 150 SGD epochs and writes per-epoch history,
+E-driven O only. GPU1 runs scaled Bypass 70/30 and then launches a fresh
+single-intervention O-only process with no rollback. Each method consumes 150
+SGD epochs and writes per-epoch history,
 latest/best checkpoints, diagnostics, timing, memory, and final/best accuracy.
 Only `seed={seed}` differs from the other two generated notebooks.
 """),

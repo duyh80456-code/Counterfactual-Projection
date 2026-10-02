@@ -41,10 +41,11 @@ Vanilla comparison trajectory; Vanilla is not restarted.
 Phase 2 loads the byte-identical theta_P into two fresh processes:
 
 - GPU0: recurrent E-driven O, 150 SGD epochs;
-- GPU1: recurrent O-only, 150 SGD epochs.
+- GPU1: one O-only intervention followed by 150 uninterrupted SGD epochs.
 
-Both projected arms use raw validation-best rollback with patience 10. There is
-no Bypass arm in this experiment. E-driven O scans all 16 ResNet34 BasicBlocks,
+Only E-driven O uses raw validation-best rollback with patience 10. O-only
+never rolls back or retriggers. There is no Bypass arm in this experiment.
+E-driven O scans all 16 ResNet34 BasicBlocks,
 lets structural E-gain select WHERE, and projects only the winner. The official
 CIFAR-100 test set is never constructed.
 """)
@@ -152,11 +153,18 @@ arm_progress = [item for item in arm_checkpoints
 arm_bests = [item for item in arm_checkpoints
              if item["payload"]["kind"] == "plateau_fork_arm_best"]
 for name in method_names:
+    expected_schedule_mode = {
+        "ours_e_driven_o": "recurrent_best_rollback",
+        "o_projection_only": "single_initial_intervention",
+    }[name]
     matches = [item for item in [*arm_progress, *arm_bests]
                if item["payload"].get("theta_best_hash") == PLATEAU_HASH
                and item["payload"].get("protocol", {}).get("method") == name
                and item["payload"].get("protocol", {}).get("architecture") ==
-                   "CIFAR-ResNet34"]
+                   "CIFAR-ResNet34"
+               and (item["payload"].get("protocol", {}).get(
+                   "intervention_schedule") or {}).get("mode") ==
+                   expected_schedule_mode]
     if not matches:
         continue
     progress = max(

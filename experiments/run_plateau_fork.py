@@ -1,4 +1,4 @@
-"""Run recurrent projected methods or Bypass from a stalled Vanilla best."""
+"""Run projected controls or Bypass from a stalled Vanilla best."""
 
 from __future__ import annotations
 
@@ -235,8 +235,14 @@ def main():
              "sgd_epoch_budget": args.post_fork_epochs,
              "rollback_rng": False,
              "rollback_loader_stream": False}
-            if args.method in {"ours_e_driven_o", "o_projection_only"}
-            else None),
+            if args.method == "ours_e_driven_o" else
+            {"mode": "single_initial_intervention",
+             "patience": None,
+             "metric": None,
+             "sgd_epoch_budget": args.post_fork_epochs,
+             "rollback_rng": False,
+             "rollback_loader_stream": False}
+            if args.method == "o_projection_only" else None),
         "o_projection_site": (
             args.site if args.method == "o_projection_only" else None),
         "bypass_schedule": ({
@@ -514,17 +520,20 @@ def main():
             best_accuracy = float(validation["accuracy"])
             best_offset = offset + 1
         best_loss = min(best_loss, float(validation["loss"]))
-        if exact_improved:
+        if exact_improved and args.method == "ours_e_driven_o":
             exact_best_validation_accuracy = float(validation["accuracy"])
             stall_counter = 0
-        else:
+        elif args.method == "ours_e_driven_o":
             stall_counter += 1
+        elif exact_improved:
+            exact_best_validation_accuracy = float(validation["accuracy"])
+            stall_counter = 0
         if exact_improved:
             save_checkpoint(best_checkpoint, state_payload(
                 "plateau_fork_arm_best", offset + 1, elapsed, peak))
 
         retriggered = False
-        if (args.method in {"ours_e_driven_o", "o_projection_only"} and
+        if (args.method == "ours_e_driven_o" and
                 stall_counter >= args.retrigger_patience and
                 offset + 1 < args.post_fork_epochs):
             # Roll back trainable state but deliberately keep the consumed RNG
@@ -644,8 +653,12 @@ def main():
             float(item.get("intervention_seconds", 0.0))
             for item in interventions),
         "rollback_count": rollback_count,
-        "retrigger_patience": args.retrigger_patience,
-        "retrigger_metric": "strict raw validation best",
+        "retrigger_patience": (
+            args.retrigger_patience
+            if args.method == "ours_e_driven_o" else None),
+        "retrigger_metric": (
+            "strict raw validation best"
+            if args.method == "ours_e_driven_o" else None),
         "bypass_completed": bypass_completed,
         "bypass_comparison_eligible": (
             bypass_completed if args.method == "bypass" else None),

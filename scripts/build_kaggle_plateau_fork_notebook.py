@@ -25,9 +25,9 @@ the first 100 epochs confirm plateau and the final 50 continue the trajectory.
 
 - scaled matched-horizon Bypass (70 opt1 + up to 30 opt2; never force-project);
 - Ours: an initial all-eight-site structural E scan, E-gain WHERE selection,
-  winner-only O projection, then recurrent 10-epoch best-checkpoint trials.
-- O-only: supervised functional projection at the fixed residual-path site,
-  with the same recurrent rollback/retrigger schedule for a fair ablation.
+  winner-only O projection, then recurrent best-checkpoint trials.
+- O-only: one supervised functional projection at the fixed residual-path
+  site, followed by uninterrupted SGD with no rollback or retrigger.
 
 GPU0 is reserved for E-driven O only. GPU1 runs Bypass and then fresh O-only.
 Every method process reloads the same theta_best checkpoint. The
@@ -151,9 +151,17 @@ arm_progress = [item for item in arm_checkpoints
 arm_bests = [item for item in arm_checkpoints
              if item["payload"]["kind"] == "plateau_fork_arm_best"]
 for name in ("bypass", "ours_e_driven_o", "o_projection_only"):
+    expected_schedule_mode = {
+        "bypass": None,
+        "ours_e_driven_o": "recurrent_best_rollback",
+        "o_projection_only": "single_initial_intervention",
+    }[name]
     matches = [item for item in [*arm_progress, *arm_bests]
                if item["payload"].get("theta_best_hash") == PLATEAU_HASH
-               and item["payload"].get("protocol", {}).get("method") == name]
+               and item["payload"].get("protocol", {}).get("method") == name
+               and (item["payload"].get("protocol", {}).get(
+                   "intervention_schedule") or {}).get("mode") ==
+                   expected_schedule_mode]
     if not matches:
         continue
     progress = max(
