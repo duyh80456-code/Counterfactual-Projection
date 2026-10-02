@@ -40,6 +40,9 @@ def test_resnet34_notebooks_run_only_three_matched_arms():
         source = _resnet34_notebook_source(seed)
         assert f"SEED = {seed}" in source
         assert f"/kaggle/working/resnet34_seed{seed}_stall150_v1" in source
+        assert "def load_checkout_module" in source
+        assert '"experiments/kaggle_checkpoint_discovery.py"' in source
+        assert "from experiments.kaggle_checkpoint_discovery" not in source
         assert '"--architecture", "resnet34"' in source
         assert '"--stall-patience", "150"' in source
         assert '"--post-fork-epochs", "150"' in source

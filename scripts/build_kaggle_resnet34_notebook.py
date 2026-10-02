@@ -54,6 +54,45 @@ replace(
     'RUN_ROOT = Path("/kaggle/working/unified_seed1_end_to_end_v5")',
     'RUN_ROOT = Path("/kaggle/working/resnet34_seed1_stall150_v1")')
 
+# Load the two notebook-side helpers directly from the checkout. This remains
+# reliable even when Kaggle executes cells out of order after an interrupted
+# session or retains a stale top-level ``experiments`` module in sys.modules.
+replace(
+    cells[3],
+    '''if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from experiments.kaggle_checkpoint_discovery import discover_checkpoints
+from experiments.plateau_protocol import BestCheckpointStallDetector
+''',
+    '''import importlib.util
+
+def load_checkout_module(name, relative_path):
+    path = REPO / relative_path
+    if not path.is_file():
+        raise RuntimeError(
+            f"Repository helper is missing: {path}. Run the clone/bootstrap "
+            "cells above before this cell.")
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load repository helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+checkpoint_discovery = load_checkout_module(
+    "_counterfactual_kaggle_checkpoint_discovery",
+    "experiments/kaggle_checkpoint_discovery.py")
+plateau_protocol = load_checkout_module(
+    "_counterfactual_plateau_protocol", "experiments/plateau_protocol.py")
+discover_checkpoints = checkpoint_discovery.discover_checkpoints
+BestCheckpointStallDetector = plateau_protocol.BestCheckpointStallDetector
+''')
+
 # Phase-1 input discovery accepts only the new ResNet34 state lineage. Legacy
 # ResNet18 checkpoints are deliberately not migrated across architectures.
 replace(
