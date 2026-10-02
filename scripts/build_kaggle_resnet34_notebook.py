@@ -1,11 +1,11 @@
-"""Build the seed-1 CIFAR-ResNet34 Vanilla/O-only/E-to-O Kaggle run."""
+"""Build seed 0/1/2 CIFAR-ResNet34 Vanilla/O-only/E-to-O Kaggle runs."""
 
+import copy
 import json
 from pathlib import Path
 
 
 TEMPLATE = Path("notebooks/kaggle_unified_seed1_end_to_end_t4x2.ipynb")
-DESTINATION = Path("notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb")
 
 
 def source(cell):
@@ -239,5 +239,23 @@ for cell in cells:
         cell["execution_count"] = None
         cell["outputs"] = []
 
-DESTINATION.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n")
-print(DESTINATION)
+for seed in (0, 1, 2):
+    seeded = copy.deepcopy(notebook)
+    substitutions = {
+        "CIFAR-ResNet34 stall experiment — seed 1":
+            f"CIFAR-ResNet34 stall experiment — seed {seed}",
+        "/kaggle/working/resnet34_seed1_stall150_v1":
+            f"/kaggle/working/resnet34_seed{seed}_stall150_v1",
+        "SEED = 1": f"SEED = {seed}",
+        '"--seed", "1"': f'"--seed", "{seed}"',
+    }
+    for cell in seeded["cells"]:
+        text = source(cell)
+        for old, new in substitutions.items():
+            text = text.replace(old, new)
+        cell["source"] = text.splitlines(keepends=True)
+    destination = Path(
+        f"notebooks/kaggle_resnet34_seed{seed}_end_to_end_t4x2.ipynb")
+    destination.write_text(
+        json.dumps(seeded, indent=1, ensure_ascii=False) + "\n")
+    print(destination)

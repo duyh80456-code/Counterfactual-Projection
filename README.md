@@ -131,8 +131,11 @@ The same workflow is also available as two explicit notebooks:
    An uncontracted Bypass run
    is retained diagnostically but not presented as a completed comparator.
 
-[`notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb`](notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb)
-is the architecture-transfer experiment. It trains a full-width Gromo
+The architecture-transfer experiment is provided for
+[seed 0](notebooks/kaggle_resnet34_seed0_end_to_end_t4x2.ipynb),
+[seed 1](notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb), and
+[seed 2](notebooks/kaggle_resnet34_seed2_end_to_end_t4x2.ipynb).
+Each notebook trains a full-width Gromo
 CIFAR-ResNet34 from random initialization with the same metric-independent
 200-epoch base recipe, then requires 150 consecutive epochs without a new
 strict raw validation best before accepting theta_P. That exact 150-epoch

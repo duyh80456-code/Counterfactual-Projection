@@ -27,21 +27,41 @@ def test_validation_stall_plan_supports_exact_150_epoch_patience():
     assert ready["has_post_best_patience_epochs"] is True
 
 
-def test_resnet34_notebook_runs_only_three_matched_arms():
+def _resnet34_notebook_source(seed):
     notebook = json.loads(Path(
-        "notebooks/kaggle_resnet34_seed1_end_to_end_t4x2.ipynb").read_text())
-    source = "\n".join("".join(cell["source"])
-                       for cell in notebook["cells"])
-    assert '"--architecture", "resnet34"' in source
-    assert '"--stall-patience", "150"' in source
-    assert '"--post-fork-epochs", "150"' in source
-    assert '"--retrigger-patience", "10"' in source
-    assert '"matched_validation_best_to_150_epoch_window"' in source
-    assert 'GPU0: E-driven O; GPU1: O-only' in source
-    assert 'launch(0, "ours_e_driven_o")' in source
-    assert 'launch(1, "o_projection_only")' in source
-    assert 'launch(1, "bypass")' not in source
-    assert 'for name in ("vanilla", "ours_e_driven_o", "o_projection_only")' in source
+        f"notebooks/kaggle_resnet34_seed{seed}_end_to_end_t4x2.ipynb"
+    ).read_text())
+    return "\n".join("".join(cell["source"])
+                      for cell in notebook["cells"])
+
+
+def test_resnet34_notebooks_run_only_three_matched_arms():
+    for seed in (0, 1, 2):
+        source = _resnet34_notebook_source(seed)
+        assert f"SEED = {seed}" in source
+        assert f"/kaggle/working/resnet34_seed{seed}_stall150_v1" in source
+        assert '"--architecture", "resnet34"' in source
+        assert '"--stall-patience", "150"' in source
+        assert '"--post-fork-epochs", "150"' in source
+        assert '"--retrigger-patience", "10"' in source
+        assert '"matched_validation_best_to_150_epoch_window"' in source
+        assert 'GPU0: E-driven O; GPU1: O-only' in source
+        assert 'launch(0, "ours_e_driven_o")' in source
+        assert 'launch(1, "o_projection_only")' in source
+        assert 'launch(1, "bypass")' not in source
+        assert 'for name in ("vanilla", "ours_e_driven_o", "o_projection_only")' in source
+
+
+def test_resnet34_seed_notebooks_differ_only_by_seed_and_output_path():
+    normalized = []
+    for seed in (0, 1, 2):
+        source = _resnet34_notebook_source(seed)
+        source = source.replace(f"seed {seed}", "seed SEED")
+        source = source.replace(f"seed{seed}", "seedSEED")
+        source = source.replace(f"SEED = {seed}", "SEED = SEED")
+        source = source.replace(f'"--seed", "{seed}"', '"--seed", "SEED"')
+        normalized.append(source)
+    assert normalized[0] == normalized[1] == normalized[2]
 
 
 def test_resnet34_runner_arguments_preserve_resnet18_defaults():
