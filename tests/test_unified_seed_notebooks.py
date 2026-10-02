@@ -17,6 +17,9 @@ def test_three_notebooks_differ_only_by_declared_seed_and_output_name():
         assert f"SEED = {seed}" in source
         assert f'"--seed", "{seed}"' in source
         assert f"unified_seed{seed}_end_to_end_v5" in source
+        assert 'os.walk("/kaggle/input", followlinks=True)' in source
+        assert 'required_cifar_files = {"train", "test", "meta"}' in source
+        assert 'rglob("cifar-100-python")' not in source
         assert "experiments.run_unified_vanilla_to_stall" in source
         assert '"--stall-patience", "100"' in source
         assert '"unified_vanilla_progress"' in source

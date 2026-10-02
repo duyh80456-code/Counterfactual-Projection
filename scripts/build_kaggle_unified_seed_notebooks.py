@@ -21,6 +21,42 @@ def text(cell):
 phase2 = json.loads(Path(
     "notebooks/kaggle_plateau_fork_t4x2.ipynb").read_text())
 
+_old_cifar_discovery = '''cifar_dirs = sorted({path.parent.resolve()
+                     for path in Path("/kaggle/input").rglob("cifar-100-python")})
+if not cifar_dirs: raise FileNotFoundError("Attach CIFAR-100")
+DATA_ROOT = cifar_dirs[0]
+'''
+_robust_cifar_discovery = '''required_cifar_files = {"train", "test", "meta"}
+cifar_dirs = []
+for directory, _, filenames in os.walk("/kaggle/input", followlinks=True):
+    path = Path(directory)
+    if (path.name == "cifar-100-python" and
+            required_cifar_files.issubset(filenames)):
+        cifar_dirs.append(path.parent)
+cifar_dirs = sorted(set(cifar_dirs), key=str)
+if not cifar_dirs:
+    visible = []
+    for directory, dirnames, filenames in os.walk(
+            "/kaggle/input", followlinks=True):
+        visible.append({
+            "directory": directory,
+            "directories": sorted(dirnames)[:10],
+            "files": sorted(filenames)[:10],
+        })
+        if len(visible) == 20:
+            break
+    raise FileNotFoundError(
+        "Attach CIFAR-100 containing cifar-100-python/{train,test,meta}. "
+        f"Visible input inventory: {visible}")
+DATA_ROOT = cifar_dirs[0]
+print("CIFAR-100 root:", DATA_ROOT)
+'''
+phase2_setup = text(phase2["cells"][2])
+if _old_cifar_discovery not in phase2_setup:
+    raise RuntimeError("Phase-2 template has an unknown CIFAR discovery block")
+phase2_setup = phase2_setup.replace(
+    _old_cifar_discovery, _robust_cifar_discovery)
+
 
 def build(seed):
     run_root = f"/kaggle/working/unified_seed{seed}_end_to_end_v5"
@@ -56,7 +92,7 @@ latest/best checkpoints, diagnostics, timing, memory, and final/best accuracy.
 Only `seed={seed}` differs from the other two generated notebooks.
 """),
         code(bootstrap),
-        phase2["cells"][2],
+        code(phase2_setup),
         code(f"""if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from experiments.kaggle_checkpoint_discovery import discover_checkpoints

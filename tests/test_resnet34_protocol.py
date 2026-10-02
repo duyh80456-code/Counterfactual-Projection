@@ -35,11 +35,31 @@ def _resnet34_notebook_source(seed):
                       for cell in notebook["cells"])
 
 
+def test_resnet34_reuses_resnet18_kaggle_bootstrap_verbatim():
+    for seed in (0, 1, 2):
+        resnet18 = json.loads(Path(
+            f"notebooks/kaggle_unified_seed{seed}_end_to_end_t4x2.ipynb"
+        ).read_text())
+        resnet34 = json.loads(Path(
+            f"notebooks/kaggle_resnet34_seed{seed}_end_to_end_t4x2.ipynb"
+        ).read_text())
+        resnet18_clone = "".join(resnet18["cells"][1]["source"]).replace(
+            f"unified_seed{seed}_end_to_end_v5", "ARCH_OUTPUT")
+        resnet34_clone = "".join(resnet34["cells"][1]["source"]).replace(
+            f"resnet34_seed{seed}_stall150_v1", "ARCH_OUTPUT")
+        assert resnet34_clone == resnet18_clone
+        assert ("".join(resnet34["cells"][2]["source"]) ==
+                "".join(resnet18["cells"][2]["source"]))
+
+
 def test_resnet34_notebooks_run_only_three_matched_arms():
     for seed in (0, 1, 2):
         source = _resnet34_notebook_source(seed)
         assert f"SEED = {seed}" in source
         assert f"/kaggle/working/resnet34_seed{seed}_stall150_v1" in source
+        assert 'os.walk("/kaggle/input", followlinks=True)' in source
+        assert 'required_cifar_files = {"train", "test", "meta"}' in source
+        assert 'rglob("cifar-100-python")' not in source
         assert "def load_checkout_module" in source
         assert '"experiments/kaggle_checkpoint_discovery.py"' in source
         assert "from experiments.kaggle_checkpoint_discovery" not in source
