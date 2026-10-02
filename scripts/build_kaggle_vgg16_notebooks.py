@@ -46,6 +46,40 @@ if needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the Phase-2 architecture")
 phase2 = phase2.replace(
     needle, needle + '        "--site", "stages.2.links.0",\n')
+phase2 = phase2.replace(
+    '        "--retrigger-patience", "10",\n', "")
+commands_needle = '''method_names = ("ours_e_driven_o", "o_projection_only")
+commands = {
+    name: [sys.executable, "-m", "experiments.run_plateau_fork",
+           "--method", name] + base_args(OUTPUT / name)
+    for name in method_names}
+'''
+commands_replacement = '''method_names = ("ours_e_driven_o", "o_projection_only")
+retrigger_patience = {
+    "ours_e_driven_o": 25,
+    "o_projection_only": 10,
+}
+commands = {
+    name: [sys.executable, "-m", "experiments.run_plateau_fork",
+           "--method", name] + base_args(OUTPUT / name) + [
+               "--retrigger-patience", str(retrigger_patience[name])]
+    for name in method_names}
+'''
+if commands_needle not in phase2:
+    raise RuntimeError("VGG notebook template lacks the Phase-2 command map")
+phase2 = phase2.replace(commands_needle, commands_replacement)
+resume_needle = '''               and item["payload"].get("protocol", {}).get("architecture") ==
+                   "CIFAR-VGG16-BN"]
+'''
+resume_replacement = '''               and item["payload"].get("protocol", {}).get("architecture") ==
+                   "CIFAR-VGG16-BN"
+               and item["payload"].get("protocol", {}).get(
+                   "intervention_schedule", {}).get("patience") ==
+                   retrigger_patience[name]]
+'''
+if resume_needle not in phase2:
+    raise RuntimeError("VGG notebook template lacks the resume protocol filter")
+phase2 = phase2.replace(resume_needle, resume_replacement)
 base["cells"][8]["source"] = phase2.splitlines(keepends=True)
 
 for seed in (0, 1, 2):

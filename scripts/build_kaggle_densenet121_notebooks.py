@@ -38,6 +38,8 @@ for cell in base["cells"]:
     text = cell_text(cell)
     for old, new in replacements.items():
         text = text.replace(old, new)
+    text = text.replace(
+        '"ours_e_driven_o": 25,', '"ours_e_driven_o": 10,')
     cell["source"] = text.splitlines(keepends=True)
 
 for seed in (0, 1, 2):

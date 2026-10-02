@@ -30,7 +30,12 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert '"--site", "stages.2.links.0"' in source
         assert '"--stall-patience", "150"' in source
         assert '"--post-fork-epochs", "150"' in source
-        assert '"--retrigger-patience", "10"' in source
+        assert '"ours_e_driven_o": 25' in source
+        assert '"o_projection_only": 10' in source
+        assert ('"--retrigger-patience", str(retrigger_patience[name])' in
+                source)
+        assert ('"intervention_schedule", {}).get("patience") ==' in
+                source)
         assert 'GPU0: E-driven O; GPU1: O-only' in source
         assert 'launch(0, "ours_e_driven_o")' in source
         assert 'launch(1, "o_projection_only")' in source
