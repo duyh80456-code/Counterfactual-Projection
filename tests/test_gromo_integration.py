@@ -334,11 +334,14 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
                     score = (model(inputs) * probe).sum()
                 autograd_direction = torch.autograd.grad(score, gate)[0]
                 epsilon = 1e-4
+                gate_value = float(gate.detach())
                 with torch.no_grad():
-                    with candidate.virtual_direction(epsilon):
+                    with candidate.virtual_direction(gate_value):
+                        finite_base = model(inputs).clone()
+                    with candidate.virtual_direction(gate_value + epsilon):
                         finite_logits = model(inputs).clone()
                 finite_direction = (
-                    ((finite_logits - base) / epsilon) * probe).sum()
+                    ((finite_logits - finite_base) / epsilon) * probe).sum()
                 assert torch.isfinite(autograd_direction), ref.name
                 assert torch.isfinite(finite_direction), ref.name
                 assert torch.allclose(
