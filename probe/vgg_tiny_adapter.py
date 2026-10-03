@@ -415,17 +415,24 @@ class VggTinyAdapter:
             if source_conv.bias is not None:
                 offset.copy_(source_conv.bias.detach())
 
-        outgoing = nn.Conv2d(
-            source_conv.in_channels, rank, source_conv.kernel_size,
-            stride=source_conv.stride, padding=source_conv.padding,
-            dilation=source_conv.dilation,
-            bias=source_conv.bias is not None, device=device, dtype=dtype)
-        with torch.no_grad():
-            outgoing.weight.copy_(
-                source_conv.weight.detach()[channel_indices] *
-                scale[channel_indices, None, None, None])
-            if outgoing.bias is not None:
-                outgoing.bias.copy_(offset[channel_indices])
+        # Conv2d's default reset_parameters draws random values even though we
+        # immediately replace them with copied source filters. Keep this
+        # temporary initialization from advancing the training RNG streams.
+        rng_devices = ([device.index if device.index is not None
+                        else torch.cuda.current_device()]
+                       if device.type == "cuda" else [])
+        with torch.random.fork_rng(devices=rng_devices):
+            outgoing = nn.Conv2d(
+                source_conv.in_channels, rank, source_conv.kernel_size,
+                stride=source_conv.stride, padding=source_conv.padding,
+                dilation=source_conv.dilation,
+                bias=source_conv.bias is not None, device=device, dtype=dtype)
+            with torch.no_grad():
+                outgoing.weight.copy_(
+                    source_conv.weight.detach()[channel_indices] *
+                    scale[channel_indices, None, None, None])
+                if outgoing.bias is not None:
+                    outgoing.bias.copy_(offset[channel_indices])
 
         # The features used by the least-squares fit must be exactly the
         # features deployed by GrowingModule's extension path (BN identity,
@@ -481,12 +488,14 @@ class VggTinyAdapter:
         fit_residual_before = gradient_norm_squared
         fit_residual_after = (gradient_norm_squared + 2.0 * fit_inner +
                               fit_quadratic).clamp_min(0.0)
-        incoming = nn.Conv2d(
-            rank, target_conv.out_channels, target_kernel,
-            stride=target_stride, padding=target_padding,
-            dilation=target_dilation, bias=False, device=device, dtype=dtype)
-        with torch.no_grad():
-            incoming.weight.copy_(incoming_weight.to(dtype).reshape_as(incoming.weight))
+        with torch.random.fork_rng(devices=rng_devices):
+            incoming = nn.Conv2d(
+                rank, target_conv.out_channels, target_kernel,
+                stride=target_stride, padding=target_padding,
+                dilation=target_dilation, bias=False, device=device, dtype=dtype)
+            with torch.no_grad():
+                incoming.weight.copy_(
+                    incoming_weight.to(dtype).reshape_as(incoming.weight))
         candidate_outgoing = outgoing
         candidate_incoming = incoming
         if not all(torch.isfinite(parameter).all() for parameter in
