@@ -56,7 +56,12 @@ class CandidateExpansionProbe:
             raw_delta = expanded - baseline
             delta = raw_delta / gate
             if not torch.isfinite(delta).all() or float(delta.norm()) == 0:
-                raise RuntimeError("TINY/Gromo candidate produced zero/nonfinite delta-f")
+                payload = getattr(candidate, "payload", {})
+                source = payload.get("source", "unknown")
+                raise RuntimeError(
+                    "TINY/Gromo candidate produced zero/nonfinite delta-f: "
+                    f"site={candidate.module_name}, source={source}, "
+                    f"gate={gate}, delta_norm={float(delta.norm())}")
             payload = getattr(candidate, "payload", {})
             A_E, B_E = payload.get("A_E"), payload.get("B_E")
             return ProbeSignal(

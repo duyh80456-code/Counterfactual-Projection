@@ -229,8 +229,12 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
             with candidate.virtual_direction(0.0):
                 zero_gate = model(inputs)
         assert torch.equal(base, zero_gate), f"E(0) != O at {ref.name}"
-        signal = CandidateExpansionProbe()(
-            model, candidate=candidate, batch=(inputs, targets), gate=0.05)
+        try:
+            signal = CandidateExpansionProbe()(
+                model, candidate=candidate, batch=(inputs, targets), gate=0.05)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"VGG functional probe failed at site {ref.name}: {exc}") from exc
         assert torch.isfinite(signal.delta_logits).all()
         assert signal.delta_logits.norm() > 0
 
