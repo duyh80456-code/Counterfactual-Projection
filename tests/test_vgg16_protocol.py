@@ -30,6 +30,24 @@ def test_vgg16_exposes_twelve_native_and_pool_bridge_conv_links():
     assert "model.core.compute_optimal_updates" in source
 
 
+def test_vgg_pool_bridge_channel_ranking_is_batch_partition_invariant():
+    from probe.vgg_tiny_adapter import VggTinyAdapter
+
+    generator = torch.Generator().manual_seed(107)
+    pooled = torch.randn(8, 3, 6, 6, generator=generator)
+    gradients = torch.randn(8, 4, 4, 4, generator=generator)
+    options = dict(kernel_size=3, dilation=1, padding=0, stride=1)
+
+    scores_4x2 = VggTinyAdapter._pool_bridge_channel_scores(
+        [pooled[i:i + 2] for i in range(0, 8, 2)],
+        [gradients[i:i + 2] for i in range(0, 8, 2)], **options)
+    scores_2x4 = VggTinyAdapter._pool_bridge_channel_scores(
+        [pooled[i:i + 4] for i in range(0, 8, 4)],
+        [gradients[i:i + 4] for i in range(0, 8, 4)], **options)
+
+    assert torch.allclose(scores_4x2, scores_2x4, rtol=1e-12, atol=1e-10)
+
+
 def test_vgg16_notebooks_are_three_seed_matched_runs():
     normalized = []
     for seed in (0, 1, 2):

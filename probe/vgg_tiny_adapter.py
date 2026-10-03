@@ -190,6 +190,32 @@ class VggTinyAdapter:
         return outgoing, incoming
 
     @staticmethod
+    def _pool_bridge_channel_scores(pooled_batches, target_gradients, *,
+                                    kernel_size, dilation, padding, stride):
+        """Score source channels using aggregate, partition-invariant statistics."""
+        if len(pooled_batches) != len(target_gradients) or not pooled_batches:
+            raise ValueError("bridge score inputs must contain matching nonempty batches")
+        channels = pooled_batches[0].shape[1]
+        channel_cross = None
+        for pooled, target_gradient in zip(pooled_batches, target_gradients):
+            if pooled.shape[1] != channels:
+                raise ValueError("bridge source channel count changed between batches")
+            gradient = target_gradient.flatten(start_dim=-2).to(torch.float64)
+            for channel in range(channels):
+                patches = F.unfold(
+                    pooled[:, channel:channel + 1], kernel_size=kernel_size,
+                    dilation=dilation, padding=padding, stride=stride
+                ).to(torch.float64)
+                cross = torch.einsum("nkl,nol->ko", patches, gradient)
+                if channel_cross is None:
+                    channel_cross = torch.zeros(
+                        channels, *cross.shape, device=pooled.device,
+                        dtype=torch.float64)
+                channel_cross[channel] += cross
+        assert channel_cross is not None
+        return channel_cross.square().sum(dim=(1, 2))
+
+    @staticmethod
     @contextmanager
     def _virtual(model, pair, outgoing, incoming, gate):
         old = (pair.first_layer.extended_output_layer,
@@ -379,21 +405,14 @@ class VggTinyAdapter:
                            if hasattr(module, "running_mean") and
                            hasattr(module, "running_var") and
                            hasattr(module, "eps")), None)
-        channel_scores = torch.zeros(source_conv.out_channels, device=device,
-                                     dtype=torch.float64)
         target_kernel = target_conv.kernel_size
         target_stride = target_conv.stride
         target_padding = target_conv.padding
         target_dilation = target_conv.dilation
-        for pooled, target_gradient in zip(source_activations, target_gradients):
-            gradient = target_gradient.flatten(start_dim=-2).to(torch.float64)
-            for channel in range(source_conv.out_channels):
-                patches = F.unfold(
-                    pooled[:, channel:channel + 1], kernel_size=target_kernel,
-                    dilation=target_dilation, padding=target_padding,
-                    stride=target_stride).to(torch.float64)
-                cross = torch.einsum("nkl,nol->ko", patches, gradient)
-                channel_scores[channel] += cross.square().sum()
+        channel_scores = self._pool_bridge_channel_scores(
+            source_activations, target_gradients,
+            kernel_size=target_kernel, dilation=target_dilation,
+            padding=target_padding, stride=target_stride)
         if not torch.isfinite(channel_scores).all() or not bool(channel_scores.max() > 0):
             raise RuntimeError("VGG bridge statistics produced no finite signal")
         channel_indices = torch.argsort(channel_scores, descending=True)[:rank]
