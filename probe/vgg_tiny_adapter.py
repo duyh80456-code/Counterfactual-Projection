@@ -271,6 +271,7 @@ class VggTinyAdapter:
             int(first.in_channels) * first.kernel_size[0] * first.kernel_size[1] +
             int(second.out_channels) * second.kernel_size[0] * second.kernel_size[1])
         payload = {
+            "source": "native_gromo_tiny",
             "requested_rank": int(self.scheduled_rank),
             "effective_rank": rank,
             "tiny_eigenvalues": values[:rank].detach().cpu().tolist(),

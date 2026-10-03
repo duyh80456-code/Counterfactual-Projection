@@ -154,6 +154,7 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
     from probe.vgg_tiny_adapter import VggTinyAdapter
     from projection import FunctionalProjector
 
+    torch.manual_seed(31415)
     device = torch.device("cuda:0")
     model = build_cifar_gromo_vgg16(device).eval()
     refs = model.growing_blocks()
@@ -163,8 +164,11 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
         "stages.0.boundary_to_1", "stages.1.boundary_to_2",
         "stages.2.boundary_to_3", "stages.3.boundary_to_4"]
     assert refs[-1].name == "stages.4.links.1"
-    inputs = torch.randn(2, 3, 32, 32, device=device)
-    targets = torch.tensor([3, 17], device=device)
+    # A 2-image probe can leave a rank-1 deep ReLU feature inactive for the
+    # entire batch, making a valid TINY candidate appear to have zero delta-f.
+    # Match the actual experiment's larger functional batches instead.
+    inputs = torch.randn(16, 3, 32, 32, device=device)
+    targets = torch.arange(16, device=device, dtype=torch.long) % 100
     with torch.no_grad():
         logits = model(inputs)
     assert logits.shape == (2, 100)
