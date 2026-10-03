@@ -11,6 +11,8 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert "scheduler.sync_optimizer_groups()" in source
     assert "train_indices = list(source[\"train_indices\"])" in source
     assert '"mode": "recurrent_best_rollback"' in source
+    assert 'choices=("all_functional_gain",)' in source
+    assert '"site_selection_mode": args.site_selection_mode' in source
     assert '"mode": "single_initial_intervention"' in source
     assert '"patience": args.retrigger_patience' in source
     assert "run_intervention(" in source

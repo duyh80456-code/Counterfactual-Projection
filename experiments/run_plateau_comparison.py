@@ -104,19 +104,28 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
     started = time.perf_counter()
     candidates = propose_structural_candidates(
         model, statistics, rank=args.rank, site="auto", candidate_sites="")
+    if str(getattr(model, "architecture_id", "")).startswith(
+            "cifar_gromo_vgg16") and len(candidates) != 12:
+        raise RuntimeError(
+            "VGG WHERE must compare all 12 candidates; got "
+            f"{len(candidates)}")
     rows = []
     for candidate in candidates:
         gains = []
+        delta_norms = []
         tiny_score = float(candidate.proposal_score)
         for batch in where_batches:
             signal = CandidateExpansionProbe()(
                 model, candidate=candidate, batch=batch,
                 gate=args.probe_epsilon)
             gains.append(float(signal.observed_loss_gain))
+            delta_norms.append(float(signal.delta_logits.norm()))
         rows.append({
             "candidate": candidate, "site": str(candidate.module_name),
             "tiny_score": tiny_score, "e_gains": gains,
+            "delta_f_norms": delta_norms,
             "mean_e_gain": sum(gains) / len(gains),
+            "mean_delta_f_norm": sum(delta_norms) / len(delta_norms),
         })
     ranked = sorted(rows, key=lambda row: row["mean_e_gain"], reverse=True)
     for rank, row in enumerate(ranked, start=1):
@@ -130,9 +139,12 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
                if len(ranked) > 1 else None)
     synchronize(device)
     diagnostics = {
+        "site_selection_mode": "all_sites_observed_functional_loss_gain",
+        "selection_candidate_count": len(candidates),
         "where_selector": "mean_observed_structural_E_gain",
         "selected_site": selected["site"],
         "selected_e_gain": selected["mean_e_gain"],
+        "selected_functional_delta_norm": selected["mean_delta_f_norm"],
         "top1_top2_e_gain_gap": top_gap,
         "where_batch_winners": batch_winners,
         "where_stability": (Counter(batch_winners)[selected["site"]] /
@@ -141,7 +153,19 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
             row["site"]: {
                 "rank": row["rank"], "mean_e_gain": row["mean_e_gain"],
                 "per_batch_e_gain": row["e_gains"],
+                "mean_functional_delta_norm": row["mean_delta_f_norm"],
+                "per_batch_functional_delta_norm": row["delta_f_norms"],
                 "tiny_score": row["tiny_score"],
+            } for row in ranked
+        },
+        "site_scores": {row["site"]: row["mean_e_gain"] for row in ranked},
+        "site_functional_evaluations": {
+            row["site"]: {
+                "mean_observed_functional_loss_gain": row["mean_e_gain"],
+                "per_batch_observed_functional_loss_gain": row["e_gains"],
+                "mean_functional_delta_norm": row["mean_delta_f_norm"],
+                "per_batch_functional_delta_norm": row["delta_f_norms"],
+                "rank": row["rank"],
             } for row in ranked
         },
         "where_seconds": time.perf_counter() - started,

@@ -392,7 +392,10 @@ def test_where_uses_mean_e_gain_not_tiny_score(monkeypatch):
         def __call__(self, _model, *, candidate, batch, gate):
             index = int(batch[0].item())
             return SimpleNamespace(
-                observed_loss_gain=gains[candidate.module_name][index])
+                observed_loss_gain=gains[candidate.module_name][index],
+                delta_logits=torch.tensor([
+                    float(index + 1) if candidate.module_name == "high_gain"
+                    else 0.1]))
 
     monkeypatch.setattr(runner, "CandidateExpansionProbe", FakeProbe)
     batches = [(torch.tensor([index]), torch.tensor([0]))
@@ -403,6 +406,14 @@ def test_where_uses_mean_e_gain_not_tiny_score(monkeypatch):
     assert selected.module_name == "high_gain"
     assert diagnostics["site_evaluations"]["high_gain"]["rank"] == 1
     assert diagnostics["where_stability"] == 1.0
+    assert diagnostics["site_selection_mode"] == (
+        "all_sites_observed_functional_loss_gain")
+    assert diagnostics["selection_candidate_count"] == 2
+    assert diagnostics["site_scores"]["high_gain"] == pytest.approx(0.09)
+    assert diagnostics["site_functional_evaluations"]["high_gain"][
+        "mean_functional_delta_norm"] > 0
+    assert len(diagnostics["site_functional_evaluations"]["high_gain"][
+        "per_batch_functional_delta_norm"]) == 3
 
 
 def test_plateau_runner_uses_shared_theta300_and_e_only_selects_where():

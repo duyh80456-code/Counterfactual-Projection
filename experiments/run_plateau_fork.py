@@ -54,6 +54,9 @@ def arguments():
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--site", default="stages.2.blocks.0")
+    parser.add_argument(
+        "--site-selection-mode", choices=("all_functional_gain",),
+        default="all_functional_gain")
     parser.add_argument("--rank", type=int, default=4)
     parser.add_argument("--probe-epsilon", type=float, default=0.05)
     parser.add_argument("--statistics-samples", type=int, default=256)
@@ -232,6 +235,7 @@ def main():
             {"mode": "recurrent_best_rollback",
              "patience": args.retrigger_patience,
              "metric": "strict raw validation best",
+             "site_selection_mode": args.site_selection_mode,
              "sgd_epoch_budget": args.post_fork_epochs,
              "rollback_rng": False,
              "rollback_loader_stream": False}
@@ -399,6 +403,9 @@ def main():
         intervention["intervention_seconds"] = (
             time.perf_counter() - intervention_started)
         interventions.append(dict(intervention))
+        if args.method == "ours_e_driven_o":
+            print(json.dumps({"e_driven_o_intervention": intervention},
+                             sort_keys=True), flush=True)
         post_path = output / f"checkpoint_post_intervention_{probe_index:03d}.pt"
         save_checkpoint(post_path, state_payload(
             "plateau_post_intervention", post_offset,
