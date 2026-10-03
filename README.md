@@ -169,8 +169,12 @@ sites using the same observed CE loss gain, selection batch, and gate; per-site
 loss gain and `||delta_f_E||` are retained in the intervention history.
 DenseNet-121 is evaluated separately with its architecture-native
 block-boundary operator.
-The VGG16 E-driven O arm uses patience 25; its O-only arm performs one initial
-projection and does not roll back or retrigger.
+The VGG16 sensitivity configuration uses patience 15, line-search scales
+`{0.025, 0.05, 0.1, 0.2}`, and 64 projection samples. Both projected arms
+preserve the optimizer, scheduler, and LR inherited from theta_P; no LR is
+changed after intervention. O-only still performs one initial projection and
+does not roll back or retrigger. Its outputs use a separate `v2` directory and
+reject old arm checkpoints with mismatched intervention settings.
 When a completed VGG16 seed-1 `plateau_checkpoint.pt` already exists, use
 [`notebooks/kaggle_vgg16_seed1_methods_from_plateau_t4x2.ipynb`](notebooks/kaggle_vgg16_seed1_methods_from_plateau_t4x2.ipynb)
 to skip Vanilla entirely and launch both projected arms directly from the

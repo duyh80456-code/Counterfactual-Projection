@@ -27,8 +27,8 @@ def code(text):
 template = json.loads(SOURCE.read_text())
 bootstrap = copy.deepcopy(template["cells"][1])
 bootstrap_text = source(bootstrap).replace(
-    '/kaggle/working/vgg16_seed1_stall150_v1',
-    '/kaggle/working/vgg16_seed1_methods_from_plateau_v1')
+    '/kaggle/working/vgg16_seed1_stall150_v3',
+    '/kaggle/working/vgg16_seed1_methods_from_plateau_v3')
 bootstrap["source"] = bootstrap_text.splitlines(keepends=True)
 bootstrap["execution_count"] = None
 bootstrap["outputs"] = []
@@ -120,8 +120,13 @@ Attach CIFAR-100 and the prior output containing the completed VGG16 seed-1
 the full checkpoint state and SHA-256, then starts both methods from the same
 byte-identical theta_P:
 
-- GPU0: recurrent E-driven O, patience 25, 150 SGD epochs;
+- GPU0: recurrent E-driven O, patience 15, 150 SGD epochs;
 - GPU1: one O-only projection at theta_P, then 150 uninterrupted SGD epochs.
+
+This is a VGG hyperparameter-sensitivity run: line-search scales
+`{0.025, 0.05, 0.1, 0.2}` and 64 projection samples. Both projected arms
+preserve the optimizer, scheduler, and LR inherited from theta_P; no LR is
+changed after intervention.
 
 Old recurrent O-only checkpoints are rejected. The official CIFAR-100 test set
 is never constructed.

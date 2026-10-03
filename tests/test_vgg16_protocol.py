@@ -53,7 +53,7 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
     for seed in (0, 1, 2):
         notebook, source = notebook_source(seed)
         assert f"SEED = {seed}" in source
-        assert f"vgg16_seed{seed}_stall150_v1" in source
+        assert f"vgg16_seed{seed}_stall150_v3" in source
         assert '"--architecture", "vgg16"' in source
         assert '"--site", "auto"' in source
         assert '"--o-only-site", "stages.2.links.0"' in source
@@ -61,7 +61,9 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)" in source
         assert '"--stall-patience", "150"' in source
         assert '"--post-fork-epochs", "150"' in source
-        assert '"ours_e_driven_o": 25' in source
+        assert '"ours_e_driven_o": 15' in source
+        assert '"--projection-samples", "64"' in source
+        assert '"--line-search-scales", "0.025,0.05,0.1,0.2"' in source
         assert '"o_projection_only": 10' in source
         assert ('"--retrigger-patience", str(retrigger_patience[name])' in
                 source)
@@ -93,7 +95,7 @@ def test_vgg16_reuses_the_verified_resnet_kaggle_bootstrap():
             f"notebooks/kaggle_resnet34_seed{seed}_end_to_end_t4x2.ipynb"
         ).read_text())
         vgg_clone = "".join(vgg["cells"][1]["source"]).replace(
-            f"vgg16_seed{seed}_stall150_v1", "ARCH_OUTPUT")
+            f"vgg16_seed{seed}_stall150_v3", "ARCH_OUTPUT")
         resnet_clone = "".join(resnet["cells"][1]["source"]).replace(
             f"resnet34_seed{seed}_stall150_v1", "ARCH_OUTPUT")
         assert vgg_clone == resnet_clone
@@ -115,6 +117,14 @@ def test_vgg16_is_supported_by_both_phase_runners():
     assert "def select_functional_gain_candidate(" in selector
     assert '"observed_functional_loss_gain"' in selector
     assert '"functional_delta_norm"' in selector
+
+
+def test_vgg_plateau_runner_keeps_inherited_optimizer_lr():
+    runner = Path("experiments/run_plateau_fork.py").read_text()
+    assert '"intervention_config"' in runner
+    assert '"optimizer_state_preserved": True' in runner
+    assert '"scheduler_state_preserved": True' in runner
+    assert 'group["lr"] = args.post_intervention_lr' not in runner
 
 
 def test_vgg_where_uses_shared_observed_functional_gain(monkeypatch):
@@ -161,7 +171,9 @@ def test_vgg16_seed1_method_only_notebook_skips_vanilla():
     assert 'protocol.get("architecture") == "CIFAR-VGG16-BN"' in source
     assert 'protocol.get("seed") == SEED' in source
     assert 'payload.get("vanilla_baseline_complete") is True' in source
-    assert '"ours_e_driven_o": 25' in source
+    assert '"ours_e_driven_o": 15' in source
+    assert '"--projection-samples", "64"' in source
+    assert '"--line-search-scales", "0.025,0.05,0.1,0.2"' in source
     assert '"o_projection_only": 10' in source
     assert '"o_projection_only": "single_initial_intervention"' in source
     assert '"--site", "auto"' in source

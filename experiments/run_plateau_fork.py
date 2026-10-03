@@ -268,6 +268,12 @@ def main():
                 args.gamma_post_increase_multiplier,
         } if args.method == "bypass" else None),
     }
+    if args.architecture == "vgg16":
+        protocol["intervention_config"] = {
+            "projection_samples": args.projection_samples,
+            "line_search_scales": [
+                float(value) for value in args.line_search_scales.split(",")],
+        }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"

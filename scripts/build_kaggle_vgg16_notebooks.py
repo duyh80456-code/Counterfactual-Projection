@@ -19,9 +19,9 @@ replacements = {
     "full-width Gromo CIFAR-ResNet34": "full-width Gromo CIFAR-VGG16-BN",
     "all 16 ResNet34 BasicBlocks":
         "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)",
-    "rollback with patience 10": "rollback with patience 25",
+    "rollback with patience 10": "rollback with patience 15",
     "/kaggle/working/resnet34_seed1_stall150_v1":
-        "/kaggle/working/vgg16_seed1_stall150_v1",
+        "/kaggle/working/vgg16_seed1_stall150_v3",
     "cifar-resnet34-sgd-multistep-200-v1-post200-val-best":
         "cifar-vgg16-bn-sgd-multistep-200-v1-post200-val-best",
     '"architecture") == "CIFAR-ResNet34"':
@@ -51,6 +51,10 @@ phase2 = phase2.replace(
     '        "--o-only-site", "stages.2.links.0",\n'
     '        "--site-selection-mode", "all_functional_gain",\n')
 phase2 = phase2.replace(
+    '        "--line-search-scales", "0.0125,0.025,0.05"]',
+    '        "--line-search-scales", "0.025,0.05,0.1,0.2",\n'
+    '        "--projection-samples", "64"]')
+phase2 = phase2.replace(
     '        "--retrigger-patience", "10",\n', "")
 commands_needle = '''method_names = ("ours_e_driven_o", "o_projection_only")
 commands = {
@@ -60,7 +64,7 @@ commands = {
 '''
 commands_replacement = '''method_names = ("ours_e_driven_o", "o_projection_only")
 retrigger_patience = {
-    "ours_e_driven_o": 25,
+    "ours_e_driven_o": 15,
     "o_projection_only": 10,
 }
 commands = {
@@ -82,7 +86,11 @@ resume_replacement = '''               and (item["payload"].get("protocol", {}).
                and (name != "ours_e_driven_o" or
                     (item["payload"].get("protocol", {}).get(
                         "intervention_schedule") or {}).get("patience") ==
-                    retrigger_patience[name])]
+                    retrigger_patience[name])
+               and item["payload"].get("protocol", {}).get(
+                   "intervention_config") == {
+                       "projection_samples": 64,
+                       "line_search_scales": [0.025, 0.05, 0.1, 0.2]}]
 '''
 if resume_needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the resume protocol filter")

@@ -127,7 +127,7 @@ def test_densenet_reuses_verified_kaggle_plumbing_without_touching_vgg():
         dense_bootstrap = "".join(dense["cells"][1]["source"]).replace(
             f"densenet121_seed{seed}_stall150_v1", "ARCH_OUTPUT")
         vgg_bootstrap = "".join(vgg["cells"][1]["source"]).replace(
-            f"vgg16_seed{seed}_stall150_v1", "ARCH_OUTPUT")
+            f"vgg16_seed{seed}_stall150_v3", "ARCH_OUTPUT")
         assert dense_bootstrap == vgg_bootstrap
         assert ("".join(dense["cells"][2]["source"]) ==
                 "".join(vgg["cells"][2]["source"]))
