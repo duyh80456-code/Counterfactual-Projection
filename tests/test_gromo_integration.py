@@ -171,7 +171,7 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
     targets = torch.arange(16, device=device, dtype=torch.long) % 100
     with torch.no_grad():
         logits = model(inputs)
-    assert logits.shape == (2, 100)
+    assert logits.shape == (16, 100)
     adapter = VggTinyAdapter(10**9, max_statistics_batches=1)
     projector = FunctionalProjector(
         damping=1e-3, max_iter=20, tolerance=1e-2,
