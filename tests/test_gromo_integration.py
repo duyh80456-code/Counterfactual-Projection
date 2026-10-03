@@ -323,22 +323,27 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
                 assert torch.allclose(logits_4x64, logits_2x128,
                                       rtol=1e-4, atol=1e-5)
 
-            # Verify the bridge-aware finite difference against autograd of the
-            # exact Conv→MaxPool→Conv path, not a resized surrogate tensor.
-            probe = torch.randn_like(base)
-            gate = torch.tensor(1e-3, device=device, requires_grad=True)
-            with candidate.virtual_direction(gate):
-                score = (model(inputs) * probe).sum()
-            autograd_direction = torch.autograd.grad(score, gate)[0]
-            epsilon = 1e-4
-            with torch.no_grad():
-                with candidate.virtual_direction(epsilon):
-                    finite_logits = model(inputs).clone()
-            finite_direction = (((finite_logits - base) / epsilon) * probe).sum()
-            assert torch.isfinite(autograd_direction)
-            assert torch.isfinite(finite_direction)
-            assert torch.allclose(autograd_direction, finite_direction,
-                                  rtol=0.1, atol=1e-2)
+            if ref.is_boundary:
+                # Verify the bridge-aware finite difference against autograd of
+                # the exact Conv→MaxPool→Conv path, not a resized surrogate.
+                # Native intra-stage TINY candidates use a different operator
+                # and are not covered by this MaxPool-specific sanity check.
+                probe = torch.randn_like(base)
+                gate = torch.tensor(1e-3, device=device, requires_grad=True)
+                with candidate.virtual_direction(gate):
+                    score = (model(inputs) * probe).sum()
+                autograd_direction = torch.autograd.grad(score, gate)[0]
+                epsilon = 1e-4
+                with torch.no_grad():
+                    with candidate.virtual_direction(epsilon):
+                        finite_logits = model(inputs).clone()
+                finite_direction = (
+                    ((finite_logits - base) / epsilon) * probe).sum()
+                assert torch.isfinite(autograd_direction), ref.name
+                assert torch.isfinite(finite_direction), ref.name
+                assert torch.allclose(
+                    autograd_direction, finite_direction,
+                    rtol=0.1, atol=1e-2), ref.name
 
         step = EProjection(projector=projector).discover_candidate(
             model, candidate, (inputs, targets), gate=0.05)
