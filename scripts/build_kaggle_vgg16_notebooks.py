@@ -17,7 +17,8 @@ replacements = {
     "# CIFAR-ResNet34 stall experiment — seed 1":
         "# CIFAR-VGG16-BN stall experiment — seed 1",
     "full-width Gromo CIFAR-ResNet34": "full-width Gromo CIFAR-VGG16-BN",
-    "all 16 ResNet34 BasicBlocks": "all 8 internal VGG16 conv links",
+    "all 16 ResNet34 BasicBlocks":
+        "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)",
     "rollback with patience 10": "rollback with patience 25",
     "/kaggle/working/resnet34_seed1_stall150_v1":
         "/kaggle/working/vgg16_seed1_stall150_v1",

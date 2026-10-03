@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -16,14 +17,17 @@ class VGGPairRef:
     link: int
     name: str
     module: object
+    is_boundary: bool = False
 
 
 class VGGConvPair:
-    """Two consecutive native Gromo convolutions sharing a hidden channel."""
+    """A VGG conv link, optionally separated by its native MaxPool bridge."""
 
-    def __init__(self, first_layer, second_layer):
+    def __init__(self, first_layer, second_layer, bridge=None):
         self.first_layer = first_layer
         self.second_layer = second_layer
+        self.bridge = bridge
+        self.is_boundary = bridge is not None
 
     @property
     def hidden_neurons(self) -> int:
@@ -41,9 +45,9 @@ class VGGConvPair:
 
 
 class GromoVGG16(nn.Module):
-    """CIFAR VGG16-BN exposing its eight internal conv links to TINY."""
+    """CIFAR VGG16-BN exposing all twelve adjacent conv interfaces."""
 
-    architecture_id = "cifar_gromo_vgg16_bn_full_random_v1"
+    architecture_id = "cifar_gromo_vgg16_bn_full_random_v2_bridge_tiny"
 
     def __init__(self, num_classes=100, device="cpu", expansion_capacity=64):
         super().__init__()
@@ -53,13 +57,16 @@ class GromoVGG16(nn.Module):
                   (512, 512, 512), (512, 512, 512))
         cfg = []
         target_cfg = []
+        total_convolutions = sum(map(len, widths))
+        convolution_index = 0
         for stage in widths:
             cfg.extend(stage)
             cfg.append("M")
-            target_cfg.extend(
-                width + int(expansion_capacity)
-                if index < len(stage) - 1 else width
-                for index, width in enumerate(stage))
+            for width in stage:
+                target_cfg.append(
+                    width + int(expansion_capacity)
+                    if convolution_index < total_convolutions - 1 else width)
+                convolution_index += 1
             target_cfg.append("M")
         self.core = VGG(
             cfg=cfg, target_cfg=target_cfg, in_features=3,
@@ -76,6 +83,43 @@ class GromoVGG16(nn.Module):
                     stage_index, link_index,
                     f"stages.{stage_index}.links.{link_index}",
                     VGGConvPair(first, second)))
+            if stage_index < len(self.core.stage_blocks) - 1:
+                source = layers[-1]
+                consumer = self.core.stage_blocks[stage_index + 1].growing_modules[0]
+                bridge_index = 2 * stage_index + 1
+                bridge = self.core.features[bridge_index]
+                if not isinstance(bridge, nn.MaxPool2d):
+                    raise RuntimeError("expected native MaxPool at VGG stage boundary")
+                consumer.previous_module = source
+                source.next_module = consumer
+                consumer._allow_growing = True
+                consumer.target_in_neurons = int(source.target_in_neurons)
+                refs.append(VGGPairRef(
+                    stage_index, len(layers) - 1,
+                    f"stages.{stage_index}.boundary_to_{stage_index + 1}",
+                    VGGConvPair(source, consumer, bridge=bridge),
+                    is_boundary=True))
+
+        # The native container omits each stage's first conv from its growable
+        # list. Register the four boundary consumers in architectural order so
+        # each object-identity lookup remains unambiguous.
+        convolution_targets = [ref.module.second_layer for ref in refs]
+        classifier_targets = [layer for layer in self.core._growable_layers
+                              if all(layer is not target
+                                     for target in convolution_targets)]
+        self.core._growable_layers = convolution_targets + classifier_targets
+        target_ids = [id(layer) for layer in convolution_targets]
+        if len(target_ids) != 12 or len(set(target_ids)) != 12:
+            raise RuntimeError("VGG conv-link targets must be twelve unique modules")
+        if any(sum(layer is target for layer in self.core._growable_layers) != 1
+               for target in convolution_targets):
+            raise RuntimeError("VGG conv-link target registration is not unique")
+        for stage_index in range(1, len(self.core.stage_blocks)):
+            self.core.stage_blocks[stage_index].growable_layers.insert(
+                0, self.core.stage_blocks[stage_index].growing_modules[0])
+        self.core.set_growing_layers(scheduling_method="all")
+        if len(refs) != 12:
+            raise RuntimeError(f"expected 12 VGG conv links, got {len(refs)}")
         self._pair_refs = refs
 
     def _apply(self, fn):
@@ -128,6 +172,10 @@ class VggTinyAdapter:
     def _delete_updates(model):
         for ref in model.growing_blocks():
             ref.module.delete_update()
+        if hasattr(model.core, "currently_updated_layer_index"):
+            model.core.currently_updated_layer_index = None
+        if hasattr(model.core, "layer_to_grow_index"):
+            model.core.layer_to_grow_index = -1
 
     @staticmethod
     def _slice_extension(pair, rank):
@@ -189,6 +237,9 @@ class VggTinyAdapter:
         rank = min(int(pair.missing_neurons()), int(self.scheduled_rank or 0))
         if rank < 1:
             return []
+        if pair.is_boundary:
+            return [self._propose_pool_bridge(
+                model, ref, statistics_loader, rank)]
         indices = [index for index, layer in enumerate(
             model.core._growable_layers) if layer is pair.second_layer]
         if len(indices) != 1:
@@ -233,3 +284,187 @@ class VggTinyAdapter:
                 model, pair, outgoing, incoming, gate))
         self._delete_updates(model)
         return [candidate]
+
+    def _propose_pool_bridge(self, model, ref, statistics_loader, rank):
+        """Build a closed-form, operator-aware candidate across actual MaxPool.
+
+        Gromo's native pair solver assumes adjacent layers share a spatial grid.
+        For a pool bridge, gather source activations and destination pre-activation
+        gradients from the ordinary O forward/backward, pass source channels
+        through the actual pool, rank channels by gradient correlation, then fit
+        the destination extension with a damped least-squares solve. No auxiliary
+        branch is trained and no global optimizer/RNG state is consumed.
+        """
+        from dual_growth.growth.candidate import GrowthCandidate
+
+        pair = ref.module
+        source, target = pair.first_layer, pair.second_layer
+        device, dtype = source.weight.device, source.weight.dtype
+        source_conv, target_conv = source.layer, target.layer
+        if pair.bridge is None:
+            raise RuntimeError("pool-bridge candidate is missing its MaxPool")
+        batches = []
+        limit = self.max_statistics_batches or 2
+        modes = {module: module.training for module in model.modules()}
+        gradients = {parameter: (None if parameter.grad is None
+                                 else parameter.grad.detach().clone())
+                     for parameter in model.parameters()}
+        source_activations = []
+        target_gradients = []
+        capture = {}
+
+        def capture_source(_module, _inputs, output):
+            capture["source"] = output
+
+        def capture_target(_module, _inputs, output):
+            output.retain_grad()
+            capture["target"] = output
+
+        handles = [source.register_forward_hook(capture_source),
+                   target_conv.register_forward_hook(capture_target)]
+        try:
+            model.eval()
+            for batch in statistics_loader:
+                inputs, labels = (value.to(device, non_blocking=True)
+                                  for value in batch[:2])
+                model.zero_grad(set_to_none=True)
+                capture.clear()
+                logits = model(inputs)
+                loss = nn.functional.cross_entropy(logits.float(), labels)
+                loss.backward()
+                if "source" not in capture or "target" not in capture:
+                    raise RuntimeError("could not capture VGG bridge statistics")
+                target_gradient = capture["target"].grad
+                if target_gradient is None:
+                    raise RuntimeError("destination pre-activation gradient is missing")
+                # Invoke the exact MaxPool module used by core.extended_forward.
+                # No resize or substitute pooling operator is used.
+                pooled = pair.bridge(capture["source"].detach())
+                if tuple(pooled.shape[-2:]) != tuple(target_gradient.shape[-2:]):
+                    raise RuntimeError(
+                        "MaxPool output and destination gradient spatial sizes differ")
+                source_activations.append(pooled.detach())
+                target_gradients.append(target_gradient.detach())
+                batches.append((inputs.shape[0],))
+                if len(batches) >= limit:
+                    break
+            if not batches:
+                raise RuntimeError("VGG bridge-aware statistics loader is empty")
+        finally:
+            for handle in handles:
+                handle.remove()
+            model.zero_grad(set_to_none=True)
+            for parameter, gradient in gradients.items():
+                parameter.grad = gradient
+            for module, training in modes.items():
+                module.training = training
+
+        # Use each existing post-BN/ReLU feature as a deterministic auxiliary
+        # source direction. GrowingBatchNorm passes extension channels through
+        # unchanged, so fold its affine transform into the copied conv filters.
+        source_norm = next((module for module in source.post_layer_function.modules()
+                           if hasattr(module, "running_mean") and
+                           hasattr(module, "running_var") and
+                           hasattr(module, "eps")), None)
+        channel_scores = torch.zeros(source_conv.out_channels, device=device,
+                                     dtype=torch.float64)
+        target_kernel = target_conv.kernel_size
+        target_stride = target_conv.stride
+        target_padding = target_conv.padding
+        target_dilation = target_conv.dilation
+        for pooled, target_gradient in zip(source_activations, target_gradients):
+            gradient = target_gradient.flatten(start_dim=-2).to(torch.float64)
+            for channel in range(source_conv.out_channels):
+                patches = F.unfold(
+                    pooled[:, channel:channel + 1], kernel_size=target_kernel,
+                    dilation=target_dilation, padding=target_padding,
+                    stride=target_stride).to(torch.float64)
+                cross = torch.einsum("nkl,nol->ko", patches, gradient)
+                channel_scores[channel] += cross.square().sum()
+        if not torch.isfinite(channel_scores).all() or not bool(channel_scores.max() > 0):
+            raise RuntimeError("VGG bridge statistics produced no finite signal")
+        channel_indices = torch.argsort(channel_scores, descending=True)[:rank]
+        scale = torch.ones(source_conv.out_channels, device=device, dtype=dtype)
+        offset = torch.zeros_like(scale)
+        if source_norm is not None:
+            if source_norm.weight is not None:
+                scale *= source_norm.weight.detach()
+            if source_norm.running_var is not None:
+                scale /= torch.sqrt(source_norm.running_var.detach() + source_norm.eps)
+            if source_norm.running_mean is not None:
+                offset -= source_norm.running_mean.detach()
+            if source_conv.bias is not None:
+                offset += source_conv.bias.detach()
+            if source_norm.bias is not None:
+                offset = offset * scale + source_norm.bias.detach()
+            else:
+                offset *= scale
+        else:
+            if source_conv.bias is not None:
+                offset.copy_(source_conv.bias.detach())
+
+        outgoing = nn.Conv2d(
+            source_conv.in_channels, rank, source_conv.kernel_size,
+            stride=source_conv.stride, padding=source_conv.padding,
+            dilation=source_conv.dilation,
+            bias=source_conv.bias is not None, device=device, dtype=dtype)
+        with torch.no_grad():
+            outgoing.weight.copy_(
+                source_conv.weight.detach()[channel_indices] *
+                scale[channel_indices, None, None, None])
+            if outgoing.bias is not None:
+                outgoing.bias.copy_(offset[channel_indices])
+
+        gram = None
+        cross = None
+        for pooled, target_gradient in zip(source_activations, target_gradients):
+            features = pooled.index_select(1, channel_indices.to(pooled.device))
+            unfolded = F.unfold(
+                features, kernel_size=target_kernel, dilation=target_dilation,
+                padding=target_padding, stride=target_stride).to(torch.float64)
+            gradient = target_gradient.flatten(start_dim=-2).to(torch.float64)
+            gram_update = torch.einsum("nkl,nml->km", unfolded, unfolded)
+            cross_update = torch.einsum("nkl,nol->ko", unfolded, gradient)
+            gram = gram_update if gram is None else gram + gram_update
+            cross = cross_update if cross is None else cross + cross_update
+        assert gram is not None and cross is not None
+        damping = max(float(torch.trace(gram).item()) / max(gram.shape[0], 1), 1.0) * 1e-6
+        system = gram + damping * torch.eye(gram.shape[0],
+                                             device=device, dtype=torch.float64)
+        incoming_weight = -torch.linalg.solve(system, cross).T
+        incoming = nn.Conv2d(
+            rank, target_conv.out_channels, target_kernel,
+            stride=target_stride, padding=target_padding,
+            dilation=target_dilation, bias=False, device=device, dtype=dtype)
+        with torch.no_grad():
+            incoming.weight.copy_(incoming_weight.to(dtype).reshape_as(incoming.weight))
+        candidate_outgoing = outgoing
+        candidate_incoming = incoming
+        if not all(torch.isfinite(parameter).all() for parameter in
+                   (*candidate_outgoing.parameters(), *candidate_incoming.parameters())):
+            raise RuntimeError("non-finite VGG MaxPool-bridge candidate")
+        parameter_cost = rank * (
+            source_conv.in_channels * source_conv.kernel_size[0] * source_conv.kernel_size[1]
+            + target_conv.out_channels * target_conv.kernel_size[0] * target_conv.kernel_size[1])
+        payload = {
+            "source": "vgg_pool_bridge_closed_form_autograd",
+            "effective_rank": rank,
+            "requested_rank": int(self.scheduled_rank),
+            "bridge": "actual_maxpool_forward_and_backward_statistics",
+            "bridge_statistics_finite": True,
+            "solver": "damped_pool_aware_least_squares",
+            "statistics_batches": len(batches),
+            "selected_source_channels": channel_indices.detach().cpu().tolist(),
+            "channel_scores": channel_scores.detach().cpu().tolist(),
+            "statistics_gram_trace": float(torch.trace(gram).item()),
+            "statistics_cross_norm": float(cross.norm().item()),
+            "statistics_damping": damping,
+            "history": {"module": ref.name, "rank": rank,
+                        "architecture_id": model.architecture_id,
+                        "operator_aware": True},
+        }
+        return GrowthCandidate(
+            "expressive", ref.name, parameter_cost, parameter_cost, 0.0,
+            float(cross.square().sum().item()), payload,
+            _virtual=lambda gate: self._virtual(
+                model, pair, candidate_outgoing, candidate_incoming, gate))

@@ -152,9 +152,15 @@ The same architecture-transfer protocol is also provided for native-Gromo
 CIFAR-VGG16-BN at
 [seed 0](notebooks/kaggle_vgg16_seed0_end_to_end_t4x2.ipynb),
 [seed 1](notebooks/kaggle_vgg16_seed1_end_to_end_t4x2.ipynb), and
-[seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). Its eight
-internal consecutive-convolution links use the native-Gromo temporary TINY
-expansion and local functional projection; DenseNet-121 is evaluated
+[seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). The VGG adapter
+exposes all twelve adjacent-convolution interfaces: eight intra-stage links
+use native Gromo TINY, while four interfaces crossing MaxPool use a
+bridge-aware closed-form solver. It gathers source activations and downstream
+gradients through the actual MaxPool operator, selects source channels by
+gradient correlation, and fits the incoming extension with damped least
+squares; it does not train the auxiliary branch with Adam. Thus these four
+sites are operator-aware structural candidates, not native Gromo TINY. All
+twelve use the same local functional projection; DenseNet-121 is evaluated
 separately with its architecture-native block-boundary operator.
 The VGG16 E-driven O arm uses patience 25; its O-only arm performs one initial
 projection and does not roll back or retrigger.

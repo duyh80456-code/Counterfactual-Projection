@@ -10,12 +10,18 @@ def notebook_source(seed):
         "".join(cell.get("source", [])) for cell in notebook["cells"])
 
 
-def test_vgg16_uses_native_gromo_container_and_eight_conv_links():
+def test_vgg16_exposes_twelve_native_and_pool_bridge_conv_links():
     source = Path("probe/vgg_tiny_adapter.py").read_text()
     assert "from gromo.containers.vgg import VGG" in source
     assert "class GromoVGG16" in source
     assert "class VggTinyAdapter" in source
     assert 'f"stages.{stage_index}.links.{link_index}"' in source
+    assert 'f"stages.{stage_index}.boundary_to_{stage_index + 1}"' in source
+    assert '"vgg_pool_bridge_closed_form_autograd"' in source
+    assert '"actual_maxpool_forward_and_backward_statistics"' in source
+    assert '"damped_pool_aware_least_squares"' in source
+    assert "optimizer.step()" not in source[source.index("def _propose_pool_bridge"):]
+    assert "len(refs) != 12" in source
     assert "pair.second_layer" in source
     assert "model.core.compute_optimal_updates" in source
 
@@ -28,6 +34,7 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert f"vgg16_seed{seed}_stall150_v1" in source
         assert '"--architecture", "vgg16"' in source
         assert '"--site", "stages.2.links.0"' in source
+        assert "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)" in source
         assert '"--stall-patience", "150"' in source
         assert '"--post-fork-epochs", "150"' in source
         assert '"ours_e_driven_o": 25' in source

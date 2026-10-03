@@ -157,8 +157,11 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
     device = torch.device("cuda:0")
     model = build_cifar_gromo_vgg16(device).eval()
     refs = model.growing_blocks()
-    assert len(refs) == 8
+    assert len(refs) == 12
     assert refs[0].name == "stages.0.links.0"
+    assert [ref.name for ref in refs if ref.is_boundary] == [
+        "stages.0.boundary_to_1", "stages.1.boundary_to_2",
+        "stages.2.boundary_to_3", "stages.3.boundary_to_4"]
     assert refs[-1].name == "stages.4.links.1"
     inputs = torch.randn(2, 3, 32, 32, device=device)
     targets = torch.tensor([3, 17], device=device)
@@ -166,16 +169,123 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
         logits = model(inputs)
     assert logits.shape == (2, 100)
     adapter = VggTinyAdapter(10**9, max_statistics_batches=1)
-    candidate = CounterfactualTinyProbe(1, refs[0].name).propose(
-        adapter, model, [(inputs, targets)], GrowthBudget(10**9),
-        sample_inputs=inputs)
-    signal = CandidateExpansionProbe()(
-        model, candidate=candidate, batch=(inputs, targets), gate=0.05)
-    assert signal.delta_logits.norm() > 0
-    step = EProjection(projector=FunctionalProjector(
+    projector = FunctionalProjector(
         damping=1e-3, max_iter=20, tolerance=1e-2,
-        preconditioner_probes=1)).discover_candidate(
+        preconditioner_probes=1)
+    for ref in refs:
+        pair = ref.module
+        before_state = {name: value.detach().clone()
+                        for name, value in model.state_dict().items()}
+        before_targets = [layer.target_in_neurons
+                          for layer in model.core._growable_layers]
+        before_index = model.core.layer_to_grow_index
+        before_rng = torch.random.get_rng_state().clone()
+        before_cuda_rng = torch.cuda.get_rng_state(device).clone()
+        before_virtual_state = (
+            pair.first_layer.extended_output_layer,
+            pair.second_layer.extended_input_layer,
+            pair.first_layer.output_extension_scaling.detach().clone(),
+            pair.second_layer.input_extension_scaling.detach().clone(),
+            pair.second_layer.optimal_delta_scaling.detach().clone(),
+            model._extended_forward)
+        candidate = CounterfactualTinyProbe(1, ref.name).propose(
+            adapter, model, [(inputs, targets)], GrowthBudget(10**9),
+            sample_inputs=inputs)
+        assert all(torch.equal(value, before_state[name])
+                   for name, value in model.state_dict().items())
+        assert [layer.target_in_neurons
+                for layer in model.core._growable_layers] == before_targets
+        assert model.core.layer_to_grow_index == before_index
+        if ref.is_boundary:
+            assert torch.equal(torch.random.get_rng_state(), before_rng)
+            assert torch.equal(torch.cuda.get_rng_state(device), before_cuda_rng)
+        assert pair.first_layer.extended_output_layer is before_virtual_state[0]
+        assert pair.second_layer.extended_input_layer is before_virtual_state[1]
+        assert torch.equal(pair.first_layer.output_extension_scaling,
+                           before_virtual_state[2])
+        assert torch.equal(pair.second_layer.input_extension_scaling,
+                           before_virtual_state[3])
+        assert torch.equal(pair.second_layer.optimal_delta_scaling,
+                           before_virtual_state[4])
+        assert model._extended_forward is before_virtual_state[5]
+        assert candidate.payload["effective_rank"] == 1
+        if ref.is_boundary:
+            assert candidate.payload["bridge_statistics_finite"] is True
+            assert candidate.payload["bridge"] == (
+                "actual_maxpool_forward_and_backward_statistics")
+            assert candidate.payload["solver"] == (
+                "damped_pool_aware_least_squares")
+        else:
+            assert all(torch.isfinite(torch.tensor(value))
+                       for value in candidate.payload["tiny_eigenvalues"])
+
+        with torch.no_grad():
+            base = model(inputs).clone()
+            with candidate.virtual_direction(0.0):
+                zero_gate = model(inputs)
+        assert torch.equal(base, zero_gate), f"E(0) != O at {ref.name}"
+        signal = CandidateExpansionProbe()(
+            model, candidate=candidate, batch=(inputs, targets), gate=0.05)
+        assert torch.isfinite(signal.delta_logits).all()
+        assert signal.delta_logits.norm() > 0
+
+        if ref.is_boundary:
+            # Observe the auxiliary tensor at the actual pool and at the
+            # consumer extension input; shape alone is not enough.
+            pool_branch = []
+            consumer_branch = []
+
+            def pool_hook(_module, module_inputs, output):
+                if module_inputs[0].shape[1] == candidate.payload["effective_rank"]:
+                    pool_branch.append((module_inputs[0].detach().clone(),
+                                        output.detach().clone()))
+
+            bridge_handle = pair.bridge.register_forward_hook(pool_hook)
+            with candidate.virtual_direction(0.05):
+                extension_input = pair.second_layer.extended_input_layer
+                assert extension_input is not None
+                input_handle = extension_input.register_forward_pre_hook(
+                    lambda _module, args: consumer_branch.append(
+                        args[0].detach().clone()))
+                with torch.no_grad():
+                    model(inputs)
+                input_handle.remove()
+            bridge_handle.remove()
+            assert len(pool_branch) == 1
+            before_pool, after_pool = pool_branch[0]
+            assert before_pool.shape[1] == candidate.payload["effective_rank"]
+            assert after_pool.shape[1] == candidate.payload["effective_rank"]
+            assert after_pool.shape[-2] * 2 == before_pool.shape[-2]
+            assert after_pool.shape[-1] * 2 == before_pool.shape[-1]
+            assert len(consumer_branch) == 1
+            assert torch.equal(after_pool, consumer_branch[0])
+
+            # Verify the bridge-aware finite difference against autograd of the
+            # exact Conv→MaxPool→Conv path, not a resized surrogate tensor.
+            probe = torch.randn_like(base)
+            gate = torch.tensor(1e-3, device=device, requires_grad=True)
+            with candidate.virtual_direction(gate):
+                score = (model(inputs) * probe).sum()
+            autograd_direction = torch.autograd.grad(score, gate)[0]
+            epsilon = 1e-4
+            with torch.no_grad():
+                with candidate.virtual_direction(epsilon):
+                    finite_logits = model(inputs).clone()
+            finite_direction = (((finite_logits - base) / epsilon) * probe).sum()
+            assert torch.isfinite(autograd_direction)
+            assert torch.isfinite(finite_direction)
+            assert torch.allclose(autograd_direction, finite_direction,
+                                  rtol=0.1, atol=1e-2)
+
+        step = EProjection(projector=projector).discover_candidate(
             model, candidate, (inputs, targets), gate=0.05)
-    assert step.projection.parameter_delta
-    assert all("stages.0" in name or "core.features.0" in name
-               for name in step.projection.parameter_delta)
+        assert step.projection.parameter_delta
+        assert torch.isfinite(step.projection.fitted_delta).all()
+        allowed = {id(parameter)
+                   for module in model.projection_parameter_modules(ref.name)
+                   for parameter in module.parameters()}
+        named_ids = {id(parameter): name
+                     for name, parameter in model.named_parameters()}
+        allowed_names = {named_ids[parameter_id] for parameter_id in allowed
+                         if parameter_id in named_ids}
+        assert set(step.projection.parameter_delta).issubset(allowed_names)

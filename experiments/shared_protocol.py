@@ -177,7 +177,8 @@ def build_cifar_gromo_vgg16(device):
     model = GromoVGG16(num_classes=100, device=device).to(device)
     widths = [int(ref.module.hidden_neurons)
               for ref in model.growing_blocks()]
-    expected = [64, 128, 256, 256, 512, 512, 512, 512]
+    expected = [64, 64, 128, 128, 256, 256, 256,
+                512, 512, 512, 512, 512]
     if widths != expected:
         raise RuntimeError(f"unexpected CIFAR-VGG16 link widths: {widths}")
     return model
