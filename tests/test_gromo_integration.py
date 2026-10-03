@@ -212,9 +212,14 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
         if ref.is_boundary:
             assert candidate.payload["bridge_statistics_finite"] is True
             assert candidate.payload["bridge"] == (
-                "actual_maxpool_forward_and_backward_statistics")
+                "actual_maxpool_forward_with_destination_gradient")
             assert candidate.payload["solver"] == (
                 "damped_pool_aware_least_squares")
+            assert candidate.payload["novel_source_feature_direction"] is False
+            assert candidate.payload["statistics_samples"] == len(targets)
+            assert candidate.payload["deployed_fit_feature_relative_error"] < 1e-4
+            assert (candidate.payload["least_squares_residual_after"] <=
+                    candidate.payload["least_squares_residual_before"] * (1 + 1e-8))
         else:
             assert all(torch.isfinite(torch.tensor(value))
                        for value in candidate.payload["tiny_eigenvalues"])
@@ -259,6 +264,56 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
             assert after_pool.shape[-1] * 2 == before_pool.shape[-1]
             assert len(consumer_branch) == 1
             assert torch.equal(after_pool, consumer_branch[0])
+
+            # Repartition identical samples into separate minibatches. Sum-CE
+            # sufficient statistics should yield the same boundary proposal.
+            split_adapter = VggTinyAdapter(10**9, max_statistics_batches=2)
+            split_candidate = CounterfactualTinyProbe(1, ref.name).propose(
+                split_adapter, model,
+                [(inputs[i:i + 1], targets[i:i + 1])
+                 for i in range(len(targets))],
+                GrowthBudget(10**9), sample_inputs=inputs)
+            with torch.no_grad():
+                with candidate.virtual_direction(0.05):
+                    candidate_logits = model(inputs).clone()
+                with split_candidate.virtual_direction(0.05):
+                    split_logits = model(inputs).clone()
+            assert split_candidate.payload["statistics_samples"] == len(targets)
+            assert torch.allclose(candidate_logits, split_logits,
+                                  rtol=1e-4, atol=1e-5)
+            assert (candidate.payload["selected_source_channels"] ==
+                    split_candidate.payload["selected_source_channels"])
+
+            if ref.name == "stages.0.boundary_to_1":
+                # Requested scale/fairness check at the actual statistics
+                # budget: identical 256 examples partitioned as 4x64 vs 2x128.
+                partition_inputs = torch.randn(256, 3, 32, 32, device=device)
+                partition_targets = torch.randint(0, 100, (256,), device=device)
+                batches_64 = [
+                    (partition_inputs[i:i + 64], partition_targets[i:i + 64])
+                    for i in range(0, 256, 64)]
+                batches_128 = [
+                    (partition_inputs[i:i + 128], partition_targets[i:i + 128])
+                    for i in range(0, 256, 128)]
+                candidate_4x64 = CounterfactualTinyProbe(1, ref.name).propose(
+                    VggTinyAdapter(10**9, max_statistics_batches=4), model,
+                    batches_64, GrowthBudget(10**9),
+                    sample_inputs=partition_inputs[:2])
+                candidate_2x128 = CounterfactualTinyProbe(1, ref.name).propose(
+                    VggTinyAdapter(10**9, max_statistics_batches=2), model,
+                    batches_128, GrowthBudget(10**9),
+                    sample_inputs=partition_inputs[:2])
+                assert candidate_4x64.payload["statistics_samples"] == 256
+                assert candidate_2x128.payload["statistics_samples"] == 256
+                assert (candidate_4x64.payload["selected_source_channels"] ==
+                        candidate_2x128.payload["selected_source_channels"])
+                with torch.no_grad():
+                    with candidate_4x64.virtual_direction(0.05):
+                        logits_4x64 = model(inputs).clone()
+                    with candidate_2x128.virtual_direction(0.05):
+                        logits_2x128 = model(inputs).clone()
+                assert torch.allclose(logits_4x64, logits_2x128,
+                                      rtol=1e-4, atol=1e-5)
 
             # Verify the bridge-aware finite difference against autograd of the
             # exact Conv→MaxPool→Conv path, not a resized surrogate tensor.

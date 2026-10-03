@@ -47,7 +47,8 @@ needle = '"--seed", "1", "--architecture", "vgg16",\n'
 if needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the Phase-2 architecture")
 phase2 = phase2.replace(
-    needle, needle + '        "--site", "stages.2.links.0",\n')
+    needle, needle + '        "--site", "auto",\n'
+    '        "--site-selection-mode", "all_functional_gain",\n')
 phase2 = phase2.replace(
     '        "--retrigger-patience", "10",\n', "")
 commands_needle = '''method_names = ("ours_e_driven_o", "o_projection_only")

@@ -310,17 +310,23 @@ class VggTinyAdapter:
                                  else parameter.grad.detach().clone())
                      for parameter in model.parameters()}
         source_activations = []
+        source_outputs = []
+        source_inputs = []
         target_gradients = []
         capture = {}
 
         def capture_source(_module, _inputs, output):
             capture["source"] = output
 
+        def capture_source_input(_module, inputs):
+            capture["source_input"] = inputs[0]
+
         def capture_target(_module, _inputs, output):
             output.retain_grad()
             capture["target"] = output
 
         handles = [source.register_forward_hook(capture_source),
+                   source.register_forward_pre_hook(capture_source_input),
                    target_conv.register_forward_hook(capture_target)]
         try:
             model.eval()
@@ -330,9 +336,13 @@ class VggTinyAdapter:
                 model.zero_grad(set_to_none=True)
                 capture.clear()
                 logits = model(inputs)
-                loss = nn.functional.cross_entropy(logits.float(), labels)
+                # Match native Gromo TINY's summed CE convention. Summed
+                # sufficient statistics are invariant to how the same samples
+                # are partitioned into minibatches.
+                loss = F.cross_entropy(logits.float(), labels, reduction="sum")
                 loss.backward()
-                if "source" not in capture or "target" not in capture:
+                if ("source" not in capture or "source_input" not in capture or
+                        "target" not in capture):
                     raise RuntimeError("could not capture VGG bridge statistics")
                 target_gradient = capture["target"].grad
                 if target_gradient is None:
@@ -344,6 +354,8 @@ class VggTinyAdapter:
                     raise RuntimeError(
                         "MaxPool output and destination gradient spatial sizes differ")
                 source_activations.append(pooled.detach())
+                source_outputs.append(capture["source"].detach())
+                source_inputs.append(capture["source_input"].detach())
                 target_gradients.append(target_gradient.detach())
                 batches.append((inputs.shape[0],))
                 if len(batches) >= limit:
@@ -415,14 +427,45 @@ class VggTinyAdapter:
             if outgoing.bias is not None:
                 outgoing.bias.copy_(offset[channel_indices])
 
+        # The features used by the least-squares fit must be exactly the
+        # features deployed by GrowingModule's extension path (BN identity,
+        # stateless ReLU, then the actual MaxPool). Keep this as a runtime
+        # diagnostic so a future change to Gromo's post-layer semantics cannot
+        # silently make the fitted X differ from deployed X.
+        deployed_features = []
+        reference_features = []
+        with torch.no_grad():
+            for source_input, source_output in zip(source_inputs, source_outputs):
+                extension_pre_activation = outgoing(source_input)
+                extension_activation = F.relu(extension_pre_activation)
+                deployed_features.append(pair.bridge(extension_activation))
+                reference_features.append(
+                    pair.bridge(source_output.index_select(
+                        1, channel_indices.to(source_output.device))))
+        feature_error_sq = sum(
+            (actual.double() - expected.double()).square().sum()
+            for actual, expected in zip(deployed_features, reference_features))
+        feature_reference_sq = sum(
+            expected.double().square().sum() for expected in reference_features)
+        feature_relative_error = float(
+            torch.sqrt(feature_error_sq / feature_reference_sq.clamp_min(1e-30)).item())
+        if not torch.isfinite(torch.tensor(feature_relative_error)):
+            raise RuntimeError("non-finite deployed-vs-fit bridge feature error")
+        if feature_relative_error > 1e-4:
+            raise RuntimeError(
+                "deployed boundary extension does not match least-squares features: "
+                f"relative_error={feature_relative_error:.3e}")
+
         gram = None
         cross = None
+        gradient_norm_squared = torch.zeros((), device=device, dtype=torch.float64)
         for pooled, target_gradient in zip(source_activations, target_gradients):
             features = pooled.index_select(1, channel_indices.to(pooled.device))
             unfolded = F.unfold(
                 features, kernel_size=target_kernel, dilation=target_dilation,
                 padding=target_padding, stride=target_stride).to(torch.float64)
             gradient = target_gradient.flatten(start_dim=-2).to(torch.float64)
+            gradient_norm_squared += gradient.square().sum()
             gram_update = torch.einsum("nkl,nml->km", unfolded, unfolded)
             cross_update = torch.einsum("nkl,nol->ko", unfolded, gradient)
             gram = gram_update if gram is None else gram + gram_update
@@ -432,6 +475,12 @@ class VggTinyAdapter:
         system = gram + damping * torch.eye(gram.shape[0],
                                              device=device, dtype=torch.float64)
         incoming_weight = -torch.linalg.solve(system, cross).T
+        fit_inner = (incoming_weight * cross.T).sum()
+        fit_quadratic = torch.einsum(
+            "ok,km,om->", incoming_weight, gram, incoming_weight)
+        fit_residual_before = gradient_norm_squared
+        fit_residual_after = (gradient_norm_squared + 2.0 * fit_inner +
+                              fit_quadratic).clamp_min(0.0)
         incoming = nn.Conv2d(
             rank, target_conv.out_channels, target_kernel,
             stride=target_stride, padding=target_padding,
@@ -450,15 +499,21 @@ class VggTinyAdapter:
             "source": "vgg_pool_bridge_closed_form_autograd",
             "effective_rank": rank,
             "requested_rank": int(self.scheduled_rank),
-            "bridge": "actual_maxpool_forward_and_backward_statistics",
+            "bridge": "actual_maxpool_forward_with_destination_gradient",
             "bridge_statistics_finite": True,
             "solver": "damped_pool_aware_least_squares",
+            "source_feature_basis": "copied_existing_post_activation_channels",
+            "novel_source_feature_direction": False,
             "statistics_batches": len(batches),
+            "statistics_samples": sum(batch[0] for batch in batches),
             "selected_source_channels": channel_indices.detach().cpu().tolist(),
             "channel_scores": channel_scores.detach().cpu().tolist(),
             "statistics_gram_trace": float(torch.trace(gram).item()),
             "statistics_cross_norm": float(cross.norm().item()),
             "statistics_damping": damping,
+            "deployed_fit_feature_relative_error": feature_relative_error,
+            "least_squares_residual_before": float(fit_residual_before.item()),
+            "least_squares_residual_after": float(fit_residual_after.item()),
             "history": {"module": ref.name, "rank": rank,
                         "architecture_id": model.architecture_id,
                         "operator_aware": True},

@@ -77,7 +77,7 @@ def arguments():
     parser.add_argument(
         "--site-selection-mode",
         choices=("all_projected_utility", "fast_topk_projectability",
-                 "tiny_score_argmax"),
+                 "tiny_score_argmax", "all_functional_gain"),
         default="all_projected_utility")
     parser.add_argument("--selection-top-k", type=int, default=3)
     parser.add_argument("--selection-samples", type=int, default=16)
@@ -198,6 +198,68 @@ def select_structural_candidate(model, statistics, *, rank, site,
         "site_selection_seconds": time.perf_counter() - started,
         "when_gate_passed": True,
         "when_gate_reason": "not_used_by_raw_tiny_ablation",
+    }
+    return selected, selection
+
+
+def select_functional_gain_candidate(
+        model, statistics, selection_batch, *, rank, candidate_sites,
+        device, gate):
+    """Select among all sites by observed loss gain at one shared E gate.
+
+    Candidate construction may be architecture-specific, but WHERE uses the
+    same held-out-from-statistics batch, loss, finite gate, and metric for every
+    candidate. Only the winner is passed to the full O projection afterward.
+    """
+    synchronize(device)
+    started = time.perf_counter()
+    candidates = propose_structural_candidates(
+        model, statistics, rank=rank, site="auto",
+        candidate_sites=candidate_sites)
+    if not candidates:
+        raise RuntimeError("functional-gain selector produced no candidates")
+    probe = CandidateExpansionProbe()
+    evaluations = {}
+    ranked = []
+    for candidate in candidates:
+        signal = probe(model, candidate=candidate, batch=selection_batch,
+                       gate=gate)
+        gain = float(signal.observed_loss_gain)
+        delta_norm = float(signal.delta_logits.norm())
+        evaluation = {
+            "observed_functional_loss_gain": gain,
+            "functional_delta_norm": delta_norm,
+            "gate": float(gate),
+            "source": str(signal.source),
+        }
+        payload = getattr(candidate, "payload", {})
+        for key in ("solver", "source_feature_basis",
+                    "novel_source_feature_direction",
+                    "deployed_fit_feature_relative_error",
+                    "least_squares_residual_before",
+                    "least_squares_residual_after"):
+            if key in payload:
+                evaluation[key] = payload[key]
+        evaluations[str(candidate.module_name)] = evaluation
+        ranked.append((gain, candidate, delta_norm))
+    gain, selected, delta_norm = max(ranked, key=lambda item: item[0])
+    synchronize(device)
+    selection = {
+        "site_selection_mode": "all_sites_observed_functional_loss_gain",
+        "selected_site": str(selected.module_name),
+        "site_scores": {
+            name: item["observed_functional_loss_gain"]
+            for name, item in evaluations.items()},
+        "site_functional_evaluations": evaluations,
+        "selected_site_score": float(gain),
+        "selected_functional_delta_norm": delta_norm,
+        "selection_gate": float(gate),
+        "selection_candidate_count": len(candidates),
+        "when_gate_passed": gain > 0.0,
+        "when_gate_reason": (
+            "positive_observed_functional_loss_gain" if gain > 0.0
+            else "no_candidate_reduced_selection_batch_loss"),
+        "site_selection_seconds": time.perf_counter() - started,
     }
     return selected, selection
 
@@ -459,6 +521,8 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                 "fast_topk_projectability":
                     "tiny_topk_projectability_utility",
                 "tiny_score_argmax": "tiny_score_argmax",
+                "all_functional_gain":
+                    "all_sites_observed_functional_loss_gain",
             }[args.site_selection_mode]))
         all_sites_main = selection_mode == "all_sites_projected_utility"
         arm_protocol["functional_projection"] = {
@@ -557,6 +621,12 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                     min_projectability=(
                         None if main_all_sites else
                         args.selection_min_projectability))
+            elif (args.site == "auto" and
+                  args.site_selection_mode == "all_functional_gain"):
+                candidate, site_selection = select_functional_gain_candidate(
+                    model, statistics, selection_batch, rank=args.rank,
+                    candidate_sites=args.candidate_sites, device=device,
+                    gate=args.probe_epsilon)
             else:
                 candidate, site_selection = select_structural_candidate(
                     model, statistics, rank=args.rank, site=args.site,
@@ -769,6 +839,13 @@ def run_arm(args, device, model, optimizer, scheduler, train_set, eval_set,
                     "selected_site": row["diagnostics"]["selected_site"],
                     "selected_site_score":
                         row["diagnostics"]["selected_site_score"],
+                    "selected_functional_delta_norm":
+                        row["diagnostics"].get(
+                            "selected_functional_delta_norm"),
+                    "selection_gate": row["diagnostics"].get(
+                        "selection_gate"),
+                    "selection_candidate_count": row["diagnostics"].get(
+                        "selection_candidate_count"),
                     "site_scores": row["diagnostics"]["site_scores"],
                     "site_selection_seconds":
                         row["diagnostics"]["site_selection_seconds"],

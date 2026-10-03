@@ -155,13 +155,20 @@ CIFAR-VGG16-BN at
 [seed 2](notebooks/kaggle_vgg16_seed2_end_to_end_t4x2.ipynb). The VGG adapter
 exposes all twelve adjacent-convolution interfaces: eight intra-stage links
 use native Gromo TINY, while four interfaces crossing MaxPool use a
-bridge-aware closed-form solver. It gathers source activations and downstream
-gradients through the actual MaxPool operator, selects source channels by
-gradient correlation, and fits the incoming extension with damped least
-squares; it does not train the auxiliary branch with Adam. Thus these four
-sites are operator-aware structural candidates, not native Gromo TINY. All
-twelve use the same local functional projection; DenseNet-121 is evaluated
-separately with its architecture-native block-boundary operator.
+bridge-aware closed-form solver. It gathers source activations passed through
+the actual MaxPool and destination pre-activation gradients from full-model
+backprop, selects source channels by gradient correlation, and fits the
+incoming extension with damped least squares; it does not train the auxiliary
+branch with Adam. Boundary statistics use summed cross-entropy, matching
+native Gromo TINY and making sufficient statistics invariant to minibatch
+partitioning. These four sites are operator-aware candidates, not native Gromo
+TINY. Their source bases copy selected existing post-activation channels, so
+they do not claim to discover novel source features in the R18-TINY sense. All
+twelve use the same local functional projection. VGG WHERE scans all twelve
+sites using the same observed CE loss gain, selection batch, and gate; per-site
+loss gain and `||delta_f_E||` are retained in the intervention history.
+DenseNet-121 is evaluated separately with its architecture-native
+block-boundary operator.
 The VGG16 E-driven O arm uses patience 25; its O-only arm performs one initial
 projection and does not roll back or retrigger.
 When a completed VGG16 seed-1 `plateau_checkpoint.pt` already exists, use

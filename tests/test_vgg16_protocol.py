@@ -1,5 +1,8 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import torch
 
 
 def notebook_source(seed):
@@ -18,8 +21,9 @@ def test_vgg16_exposes_twelve_native_and_pool_bridge_conv_links():
     assert 'f"stages.{stage_index}.links.{link_index}"' in source
     assert 'f"stages.{stage_index}.boundary_to_{stage_index + 1}"' in source
     assert '"vgg_pool_bridge_closed_form_autograd"' in source
-    assert '"actual_maxpool_forward_and_backward_statistics"' in source
+    assert '"actual_maxpool_forward_with_destination_gradient"' in source
     assert '"damped_pool_aware_least_squares"' in source
+    assert 'reduction="sum"' in source
     assert "optimizer.step()" not in source[source.index("def _propose_pool_bridge"):]
     assert "len(refs) != 12" in source
     assert "pair.second_layer" in source
@@ -33,7 +37,8 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert f"SEED = {seed}" in source
         assert f"vgg16_seed{seed}_stall150_v1" in source
         assert '"--architecture", "vgg16"' in source
-        assert '"--site", "stages.2.links.0"' in source
+        assert '"--site", "auto"' in source
+        assert '"--site-selection-mode", "all_functional_gain"' in source
         assert "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)" in source
         assert '"--stall-patience", "150"' in source
         assert '"--post-fork-epochs", "150"' in source
@@ -88,6 +93,43 @@ def test_vgg16_is_supported_by_both_phase_runners():
     assert '"vgg16": build_cifar_gromo_vgg16' in shared
     assert '"vgg16": "CIFAR-VGG16-BN"' in shared
     assert "adapter_type = VggTinyAdapter" in selector
+    assert "def select_functional_gain_candidate(" in selector
+    assert '"observed_functional_loss_gain"' in selector
+    assert '"functional_delta_norm"' in selector
+
+
+def test_vgg_where_uses_shared_observed_functional_gain(monkeypatch):
+    from experiments import run_shared_comparison as runner
+
+    candidates = [
+        SimpleNamespace(module_name="native", proposal_score=100.0, payload={}),
+        SimpleNamespace(module_name="boundary", proposal_score=0.01, payload={
+            "solver": "damped_pool_aware_least_squares"}),
+    ]
+
+    class FakeProbe:
+        def __call__(self, _model, *, candidate, batch, gate):
+            assert batch == "same-selection-batch"
+            assert gate == 0.05
+            gain = 0.02 if candidate.module_name == "native" else 0.2
+            magnitude = 3.0 if candidate.module_name == "native" else 7.0
+            return SimpleNamespace(
+                observed_loss_gain=gain,
+                delta_logits=torch.full((1, 2), magnitude),
+                source="fake")
+
+    monkeypatch.setattr(runner, "propose_structural_candidates",
+                        lambda *_args, **_kwargs: candidates)
+    monkeypatch.setattr(runner, "CandidateExpansionProbe", FakeProbe)
+    selected, diagnostics = runner.select_functional_gain_candidate(
+        model=object(), statistics=[], selection_batch="same-selection-batch",
+        rank=1, candidate_sites="", device=torch.device("cpu"), gate=0.05)
+
+    assert selected.module_name == "boundary"
+    assert diagnostics["site_scores"] == {"native": 0.02, "boundary": 0.2}
+    assert diagnostics["selected_site_score"] == 0.2
+    assert diagnostics["selected_functional_delta_norm"] > 0
+    assert diagnostics["selection_candidate_count"] == 2
 
 
 def test_vgg16_seed1_method_only_notebook_skips_vanilla():
