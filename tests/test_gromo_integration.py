@@ -328,20 +328,34 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
                 # the exact Conv→MaxPool→Conv path, not a resized surrogate.
                 # Native intra-stage TINY candidates use a different operator
                 # and are not covered by this MaxPool-specific sanity check.
-                probe = torch.randn_like(base)
+                target_preactivation = {}
+
+                def capture_target_preactivation(_module, inputs):
+                    target_preactivation["value"] = inputs[0]
+
+                handle = pair.second_layer.post_layer_function.register_forward_pre_hook(
+                    capture_target_preactivation)
                 gate = torch.tensor(1e-3, device=device, requires_grad=True)
-                with candidate.virtual_direction(gate):
-                    score = (model(inputs) * probe).sum()
-                autograd_direction = torch.autograd.grad(score, gate)[0]
-                epsilon = 1e-4
-                gate_value = float(gate.detach())
-                with torch.no_grad():
-                    with candidate.virtual_direction(gate_value):
-                        finite_base = model(inputs).clone()
-                    with candidate.virtual_direction(gate_value + epsilon):
-                        finite_logits = model(inputs).clone()
-                finite_direction = (
-                    ((finite_logits - finite_base) / epsilon) * probe).sum()
+                try:
+                    with candidate.virtual_direction(gate):
+                        model(inputs)
+                        preactivation = target_preactivation["value"]
+                        probe = torch.randn_like(preactivation)
+                        score = (preactivation * probe).sum()
+                    autograd_direction = torch.autograd.grad(score, gate)[0]
+                    epsilon = 1e-4
+                    gate_value = float(gate.detach())
+                    with torch.no_grad():
+                        with candidate.virtual_direction(gate_value):
+                            model(inputs)
+                            finite_base = target_preactivation["value"].clone()
+                        with candidate.virtual_direction(gate_value + epsilon):
+                            model(inputs)
+                            finite_target = target_preactivation["value"].clone()
+                    finite_direction = (
+                        ((finite_target - finite_base) / epsilon) * probe).sum()
+                finally:
+                    handle.remove()
                 assert torch.isfinite(autograd_direction), ref.name
                 assert torch.isfinite(finite_direction), ref.name
                 assert torch.allclose(
