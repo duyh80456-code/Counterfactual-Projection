@@ -275,11 +275,11 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
 
             # Repartition identical samples into separate minibatches. Sum-CE
             # sufficient statistics should yield the same boundary proposal.
-            split_adapter = VggTinyAdapter(10**9, max_statistics_batches=2)
+            split_adapter = VggTinyAdapter(10**9, max_statistics_batches=4)
             split_candidate = CounterfactualTinyProbe(1, ref.name).propose(
                 split_adapter, model,
-                [(inputs[i:i + 1], targets[i:i + 1])
-                 for i in range(len(targets))],
+                [(inputs[i:i + 4], targets[i:i + 4])
+                 for i in range(0, len(targets), 4)],
                 GrowthBudget(10**9), sample_inputs=inputs)
             with torch.no_grad():
                 with candidate.virtual_direction(0.05):
