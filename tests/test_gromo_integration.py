@@ -343,7 +343,11 @@ def test_full_cifar_gromo_vgg16_tiny_candidate_and_projection():
                         probe = torch.randn_like(preactivation)
                         score = (preactivation * probe).sum()
                     autograd_direction = torch.autograd.grad(score, gate)[0]
-                    epsilon = 1e-4
+                    # The captured destination pre-activation is affine in
+                    # this gate (all nonlinearities are upstream or after the
+                    # hook). A larger secant avoids FP32 cancellation when
+                    # subtracting two nearly identical full-resolution maps.
+                    epsilon = 5e-2
                     gate_value = float(gate.detach())
                     with torch.no_grad():
                         with candidate.virtual_direction(gate_value):
