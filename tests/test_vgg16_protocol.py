@@ -37,9 +37,8 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert f"SEED = {seed}" in source
         assert f"vgg16_seed{seed}_stall150_v1" in source
         assert '"--architecture", "vgg16"' in source
-        # O-only needs a concrete projection scope. E-driven O's own
-        # plateau selector scans all 12 VGG sites independently of this flag.
-        assert '"--site", "stages.2.links.0"' in source
+        assert '"--site", "auto"' in source
+        assert '"--o-only-site", "stages.2.links.0"' in source
         assert '"--site-selection-mode", "all_functional_gain"' in source
         assert "all 12 adjacent VGG16 conv interfaces (8 native + 4 operator-aware MaxPool-bridge)" in source
         assert '"--stall-patience", "150"' in source

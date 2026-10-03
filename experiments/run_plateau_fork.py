@@ -55,6 +55,9 @@ def arguments():
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--site", default="stages.2.blocks.0")
     parser.add_argument(
+        "--o-only-site", default="",
+        help="projection site for O-only; defaults to --site for compatibility")
+    parser.add_argument(
         "--site-selection-mode", choices=("all_functional_gain",),
         default="all_functional_gain")
     parser.add_argument("--rank", type=int, default=4)
@@ -86,6 +89,7 @@ def save_checkpoint(path, payload):
 def run_o_only_intervention(model, optimizer, eval_set, train_indices,
                             args, device, probe_index=0):
     """One supervised projection-only control at theta_P."""
+    o_only_site = args.o_only_site or args.site
     generator = torch.Generator().manual_seed(
         911_731 + args.seed * 10_000 + int(probe_index) * 1_009)
     order = torch.randperm(len(train_indices), generator=generator).tolist()
@@ -101,7 +105,7 @@ def run_o_only_intervention(model, optimizer, eval_set, train_indices,
 
     projection_batch = one_batch(selected[:args.projection_samples])
     gate_batch = one_batch(selected[args.projection_samples:])
-    marker = SimpleNamespace(module_name=args.site)
+    marker = SimpleNamespace(module_name=o_only_site)
     block = candidate_projection_block(model, marker)
     parameter_names = candidate_projection_parameter_names(
         model, marker, "residual_path")
@@ -138,7 +142,7 @@ def run_o_only_intervention(model, optimizer, eval_set, train_indices,
     return {
         "source": "supervised_projection_only_control",
         "functional_target": "one_hot_minus_softmax",
-        "uses_structural_E": False, "selected_site": args.site,
+        "uses_structural_E": False, "selected_site": o_only_site,
         "correction_applied": applied,
         "selected_scale": best_scale if applied else None,
         "line_search_gains": gains,
@@ -156,6 +160,10 @@ def run_o_only_intervention(model, optimizer, eval_set, train_indices,
 
 def main():
     args = arguments()
+    if (args.method == "ours_e_driven_o" and
+            args.architecture == "vgg16" and args.site != "auto"):
+        raise ValueError(
+            "VGG E-driven O requires --site auto to scan all 12 sites")
     if not torch.cuda.is_available():
         raise RuntimeError("one visible CUDA GPU is required")
     if args.post_fork_epochs < 1:
@@ -248,7 +256,8 @@ def main():
              "rollback_loader_stream": False}
             if args.method == "o_projection_only" else None),
         "o_projection_site": (
-            args.site if args.method == "o_projection_only" else None),
+            (args.o_only_site or args.site)
+            if args.method == "o_projection_only" else None),
         "bypass_schedule": ({
             "opt1_epochs": args.opt1_epochs,
             "max_opt2_epochs": args.max_opt2_epochs,

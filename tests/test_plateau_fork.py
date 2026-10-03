@@ -12,6 +12,8 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert "train_indices = list(source[\"train_indices\"])" in source
     assert '"mode": "recurrent_best_rollback"' in source
     assert 'choices=("all_functional_gain",)' in source
+    assert 'parser.add_argument(\n        "--o-only-site"' in source
+    assert "o_only_site = args.o_only_site or args.site" in source
     assert '"site_selection_mode": args.site_selection_mode' in source
     assert '"mode": "single_initial_intervention"' in source
     assert '"patience": args.retrigger_patience' in source
