@@ -113,7 +113,7 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
     for candidate in candidates:
         gains = []
         delta_norms = []
-        tiny_score = float(candidate.proposal_score)
+        proposal_score = float(candidate.proposal_score)
         for batch in where_batches:
             signal = CandidateExpansionProbe()(
                 model, candidate=candidate, batch=batch,
@@ -122,7 +122,7 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
             delta_norms.append(float(signal.delta_logits.norm()))
         rows.append({
             "candidate": candidate, "site": str(candidate.module_name),
-            "tiny_score": tiny_score, "e_gains": gains,
+            "proposal_score": proposal_score, "e_gains": gains,
             "delta_f_norms": delta_norms,
             "mean_e_gain": sum(gains) / len(gains),
             "mean_delta_f_norm": sum(delta_norms) / len(delta_norms),
@@ -155,7 +155,7 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
                 "per_batch_e_gain": row["e_gains"],
                 "mean_functional_delta_norm": row["mean_delta_f_norm"],
                 "per_batch_functional_delta_norm": row["delta_f_norms"],
-                "tiny_score": row["tiny_score"],
+                "proposal_score": row["proposal_score"],
             } for row in ranked
         },
         "site_scores": {row["site"]: row["mean_e_gain"] for row in ranked},

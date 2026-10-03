@@ -146,6 +146,9 @@ def test_vgg16_seed1_method_only_notebook_skips_vanilla():
     assert '"ours_e_driven_o": 25' in source
     assert '"o_projection_only": 10' in source
     assert '"o_projection_only": "single_initial_intervention"' in source
+    assert '"--site", "auto"' in source
+    assert '"--o-only-site", "stages.2.links.0"' in source
+    assert '"--site-selection-mode", "all_functional_gain"' in source
     assert "experiments.run_unified_vanilla_to_stall" not in source
     assert "No Phase-1 command is executed below" in source
     for index, cell in enumerate(notebook["cells"]):
