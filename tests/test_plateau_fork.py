@@ -51,14 +51,19 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert '"evaluation_indices": evaluation_indices' in source
     assert '"theta_best_hash": fork_hash' in source
     assert '"opt1_epochs": opt1_done if args.method == "bypass" else None' in source
-    assert 'validation["accuracy"] > exact_best_validation_accuracy' in source
+    assert 'validation["accuracy"] > report_best_accuracy' in source
+    assert 'validation["loss"] < controller_anchor_loss' in source
+    assert '"controller_anchor_rule": "accuracy, then lower loss on exact accuracy tie"' in source
+    assert '"report_stall_counter": report_stall_counter' in source
+    assert '"controller_stall_counter": controller_stall_counter' in source
     assert 'significant_improved = (' not in source
-    assert 'row["raw_validation_best_improved"] = exact_improved' in source
+    assert 'row["raw_validation_best_improved"] = report_improved' in source
+    assert 'row["controller_anchor_reason"] = controller_anchor_reason' in source
     assert 'scheduler.step(trigger["accuracy"])' not in source
     assert 'phase = "incomplete"' in source
     assert '"budget_exhausted_before_contraction"' in source
     assert '"compact_best_validation_accuracy"' in source
     assert "max(compact_rows," in source
     assert '"post_fork_epoch": 0' not in source
-    assert 'validation["accuracy"] > best_accuracy' in source
+    assert 'validation["accuracy"] > controller_anchor_accuracy' in source
     assert "epochs_since_best" not in source

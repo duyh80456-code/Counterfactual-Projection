@@ -63,7 +63,7 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert '"--post-fork-epochs", "150"' in source
         assert '"ours_e_driven_o": 15' in source
         assert '"--projection-samples", "64"' in source
-        assert '"--line-search-scales", "0.025,0.05,0.1,0.2"' in source
+        assert '"--line-search-scales", "0.025,0.05,0.1,0.2,0.4"' in source
         assert '"o_projection_only": 10' in source
         assert ('"--retrigger-patience", str(retrigger_patience[name])' in
                 source)
@@ -173,7 +173,7 @@ def test_vgg16_seed1_method_only_notebook_skips_vanilla():
     assert 'payload.get("vanilla_baseline_complete") is True' in source
     assert '"ours_e_driven_o": 15' in source
     assert '"--projection-samples", "64"' in source
-    assert '"--line-search-scales", "0.025,0.05,0.1,0.2"' in source
+    assert '"--line-search-scales", "0.025,0.05,0.1,0.2,0.4"' in source
     assert '"o_projection_only": 10' in source
     assert '"o_projection_only": "single_initial_intervention"' in source
     assert '"--site", "auto"' in source
