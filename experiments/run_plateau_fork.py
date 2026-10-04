@@ -227,6 +227,7 @@ def main():
     fork_evaluation = evaluate(model, evaluation_loader, device)
 
     protocol = {
+        "protocol_version": 2,
         "phase": "plateau_fork_comparison", "method": args.method,
         "architecture": expected_architecture,
         "fork_epoch": fork_epoch, "post_fork_epochs": args.post_fork_epochs,
@@ -234,6 +235,8 @@ def main():
         "plateau_checkpoint_hash": fork_hash,
         "theta_best_hash": fork_hash,
         "selection_metric": "validation accuracy (3,000-sample split)",
+        "report_best_rule": "strict validation accuracy increase",
+        "controller_anchor_rule": "accuracy, then lower loss on exact accuracy tie",
         "evaluation_role": "model selection and reporting (3,000 samples)",
         "optimizer_state_preserved": True,
         "scheduler_state_preserved": True,
@@ -242,7 +245,7 @@ def main():
         "intervention_schedule": (
             {"mode": "recurrent_best_rollback",
              "patience": args.retrigger_patience,
-             "metric": "strict raw validation best",
+             "metric": "validation accuracy, then lower loss on exact tie",
              "site_selection_mode": args.site_selection_mode,
              "sgd_epoch_budget": args.post_fork_epochs,
              "rollback_rng": False,
@@ -319,14 +322,17 @@ def main():
     intervention = None
     interventions = []
     rollback_count = 0
-    stall_counter = 0
+    report_stall_counter = 0
+    controller_stall_counter = 0
     start_offset = 0
     elapsed_before = 0.0
     peak_before = 0
-    best_accuracy = None
-    best_loss = None
-    best_offset = None
-    exact_best_validation_accuracy = None
+    report_best_accuracy = None
+    report_best_offset = None
+    controller_anchor_accuracy = None
+    controller_anchor_loss = None
+    controller_anchor_offset = None
+    controller_anchor_reason = None
     if saved is not None:
         model.load_state_dict(saved["model"], strict=True)
         optimizer.load_state_dict(saved["optimizer"])
@@ -339,7 +345,9 @@ def main():
         interventions = list(saved.get(
             "interventions", [intervention] if intervention else []))
         rollback_count = int(saved.get("rollback_count", 0))
-        stall_counter = int(saved.get("stall_counter", 0))
+        report_stall_counter = int(saved.get("report_stall_counter", 0))
+        controller_stall_counter = int(saved.get(
+            "controller_stall_counter", saved.get("stall_counter", 0)))
         start_offset = int(saved["post_fork_epoch"])
         phase = saved["phase"]
         opt1_done = int(saved.get("opt1_epochs", 0))
@@ -355,11 +363,17 @@ def main():
         peak_train_params = int(saved.get("peak_train_params", peak_train_params))
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
-        best_accuracy = float(saved["best_validation_accuracy"])
-        best_loss = float(saved["best_validation_loss"])
-        best_offset = int(saved["best_post_fork_epoch"])
-        exact_best_validation_accuracy = float(
-            saved["exact_best_validation_accuracy"])
+        report_best_accuracy = float(saved.get(
+            "report_best_accuracy", saved["best_validation_accuracy"]))
+        report_best_offset = int(saved.get(
+            "report_best_epoch", saved["best_post_fork_epoch"]))
+        controller_anchor_accuracy = float(saved.get(
+            "controller_anchor_accuracy", saved["best_validation_accuracy"]))
+        controller_anchor_loss = float(saved.get(
+            "controller_anchor_loss", saved["best_validation_loss"]))
+        controller_anchor_offset = int(saved.get(
+            "controller_anchor_epoch", saved["best_post_fork_epoch"]))
+        controller_anchor_reason = saved.get("controller_anchor_reason")
 
     def state_payload(kind, post_offset, training_seconds, peak_memory):
         return {
@@ -376,7 +390,8 @@ def main():
             "history": history, "intervention": intervention,
             "interventions": interventions,
             "rollback_count": rollback_count,
-            "stall_counter": stall_counter,
+            "report_stall_counter": report_stall_counter,
+            "controller_stall_counter": controller_stall_counter,
             "post_fork_epoch": post_offset, "phase": phase,
             "opt1_epochs": opt1_done, "opt2_epochs": opt2_done,
             "train3_epochs": train3_done, "opt2_steps": opt2_steps,
@@ -389,10 +404,15 @@ def main():
             "peak_train_params": peak_train_params,
             "training_seconds": training_seconds,
             "peak_gpu_memory": peak_memory,
-            "best_validation_accuracy": best_accuracy,
-            "best_validation_loss": best_loss,
-            "best_post_fork_epoch": best_offset,
-            "exact_best_validation_accuracy": exact_best_validation_accuracy,
+            "best_validation_accuracy": report_best_accuracy,
+            "best_validation_loss": controller_anchor_loss,
+            "best_post_fork_epoch": report_best_offset,
+            "report_best_accuracy": report_best_accuracy,
+            "report_best_epoch": report_best_offset,
+            "controller_anchor_accuracy": controller_anchor_accuracy,
+            "controller_anchor_loss": controller_anchor_loss,
+            "controller_anchor_epoch": controller_anchor_offset,
+            "controller_anchor_reason": controller_anchor_reason,
             "protocol": protocol,
         }
 
@@ -426,30 +446,39 @@ def main():
             "plateau_post_intervention", post_offset,
             elapsed_before, peak_before))
 
-    # The pre-intervention theta_P is a valid global best. Save it first so a
-    # harmful intervention can roll back to the actual fork rather than to its
-    # perturbed state.
+    # The pre-intervention theta_P is the initial controller anchor. Save it
+    # first so rollback can restore the unperturbed fork if needed.
     if saved is None:
-        best_accuracy = float(fork_evaluation["accuracy"])
-        best_loss = float(fork_evaluation["loss"])
-        best_offset = 0
-        exact_best_validation_accuracy = float(fork_evaluation["accuracy"])
+        report_best_accuracy = float(fork_evaluation["accuracy"])
+        report_best_offset = fork_epoch
+        controller_anchor_accuracy = float(fork_evaluation["accuracy"])
+        controller_anchor_loss = float(fork_evaluation["loss"])
+        controller_anchor_offset = fork_epoch
+        controller_anchor_reason = "fork_state"
         save_checkpoint(best_checkpoint, state_payload(
             "plateau_fork_arm_best", 0, 0.0, 0))
         if args.method in {"ours_e_driven_o", "o_projection_only"}:
             perform_intervention(0, 0, "initial_theta_P")
             immediate_trigger = evaluate(model, trigger_loader, device)
             immediate = evaluate(model, evaluation_loader, device)
-            if immediate["accuracy"] > best_accuracy:
-                best_accuracy = float(immediate["accuracy"])
-                best_offset = 0
-            best_loss = min(best_loss, float(immediate["loss"]))
-            immediate_exact = (
-                immediate["accuracy"] > exact_best_validation_accuracy)
-            if immediate_exact:
-                exact_best_validation_accuracy = float(immediate["accuracy"])
-                stall_counter = 0
-            if immediate_exact:
+            if immediate["accuracy"] > report_best_accuracy:
+                report_best_accuracy = float(immediate["accuracy"])
+                report_best_offset = fork_epoch
+                report_stall_counter = 0
+            anchor_improved = (
+                immediate["accuracy"] > controller_anchor_accuracy or
+                (immediate["accuracy"] == controller_anchor_accuracy and
+                 immediate["loss"] < controller_anchor_loss))
+            if anchor_improved:
+                initial_anchor_reason = (
+                    "accuracy_increase"
+                    if immediate["accuracy"] > controller_anchor_accuracy
+                    else "same_accuracy_lower_loss")
+                controller_anchor_accuracy = float(immediate["accuracy"])
+                controller_anchor_loss = float(immediate["loss"])
+                controller_anchor_offset = fork_epoch
+                controller_anchor_reason = initial_anchor_reason
+                controller_stall_counter = 0
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", 0, 0.0, 0))
 
@@ -535,30 +564,39 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
-        report_improved = validation["accuracy"] > best_accuracy
-        exact_improved = (
-            validation["accuracy"] > exact_best_validation_accuracy)
-        if validation["accuracy"] > best_accuracy:
-            best_accuracy = float(validation["accuracy"])
-            best_offset = offset + 1
-        best_loss = min(best_loss, float(validation["loss"]))
-        if exact_improved and args.method == "ours_e_driven_o":
-            exact_best_validation_accuracy = float(validation["accuracy"])
-            stall_counter = 0
+        report_improved = validation["accuracy"] > report_best_accuracy
+        anchor_reason = None
+        anchor_improved = (
+            validation["accuracy"] > controller_anchor_accuracy or
+            (validation["accuracy"] == controller_anchor_accuracy and
+             validation["loss"] < controller_anchor_loss))
+        if report_improved:
+            report_best_accuracy = float(validation["accuracy"])
+            report_best_offset = epoch
+        report_stall_counter = (0 if report_improved else
+                                report_stall_counter + 1)
+        if anchor_improved:
+            anchor_reason = (
+                "accuracy_increase"
+                if validation["accuracy"] > controller_anchor_accuracy else
+                "same_accuracy_lower_loss")
+            controller_anchor_accuracy = float(validation["accuracy"])
+            controller_anchor_loss = float(validation["loss"])
+            controller_anchor_offset = epoch
+            controller_anchor_reason = anchor_reason
+            controller_stall_counter = 0
         elif args.method == "ours_e_driven_o":
-            stall_counter += 1
-        elif exact_improved:
-            exact_best_validation_accuracy = float(validation["accuracy"])
-            stall_counter = 0
-        if exact_improved:
+            controller_stall_counter += 1
+        if anchor_improved:
             save_checkpoint(best_checkpoint, state_payload(
                 "plateau_fork_arm_best", offset + 1, elapsed, peak))
 
         retriggered = False
         if (args.method == "ours_e_driven_o" and
-                stall_counter >= args.retrigger_patience and
+                controller_stall_counter >= args.retrigger_patience and
                 offset + 1 < args.post_fork_epochs):
-            # Roll back trainable state but deliberately keep the consumed RNG
+            # Roll back model/optimizer/scheduler to the controller anchor but
+            # deliberately keep the consumed RNG
             # and loader streams. Restoring them would replay the same E probe
             # and the same ten SGD epochs forever.
             live_rng = rng_state()
@@ -571,31 +609,61 @@ def main():
             restore_rng(live_rng)
             train_loader.generator.set_state(live_loader_state.cpu())
             rollback_count += 1
-            stall_counter = 0
+            controller_stall_counter = 0
             perform_intervention(
                 len(interventions), offset + 1,
                 "raw_validation_stall")
             immediate_trigger = evaluate(model, trigger_loader, device)
             immediate = evaluate(model, evaluation_loader, device)
-            if immediate["accuracy"] > best_accuracy:
-                best_accuracy = float(immediate["accuracy"])
-                best_offset = offset + 1
-            best_loss = min(best_loss, float(immediate["loss"]))
-            immediate_exact = (
-                immediate["accuracy"] > exact_best_validation_accuracy)
-            if immediate_exact:
-                exact_best_validation_accuracy = float(immediate["accuracy"])
-                stall_counter = 0
-            if immediate_exact:
+            immediate_report_improved = (
+                immediate["accuracy"] > report_best_accuracy)
+            if immediate_report_improved:
+                report_best_accuracy = float(immediate["accuracy"])
+                report_best_offset = epoch
+                report_stall_counter = 0
+            immediate_anchor_improved = (
+                immediate["accuracy"] > controller_anchor_accuracy or
+                (immediate["accuracy"] == controller_anchor_accuracy and
+                 immediate["loss"] < controller_anchor_loss))
+            if immediate_anchor_improved:
+                immediate_anchor_reason = (
+                    "post_intervention_accuracy_increase"
+                    if immediate["accuracy"] > controller_anchor_accuracy
+                    else "post_intervention_same_accuracy_lower_loss")
+                controller_anchor_accuracy = float(immediate["accuracy"])
+                controller_anchor_loss = float(immediate["loss"])
+                controller_anchor_offset = epoch
+                controller_anchor_reason = immediate_anchor_reason
+                controller_stall_counter = 0
                 save_checkpoint(best_checkpoint, state_payload(
                     "plateau_fork_arm_best", offset + 1, elapsed, peak))
+            anchor_improved = anchor_improved or immediate_anchor_improved
+            anchor_reason = ("post_intervention_anchor_improved"
+                             if immediate_anchor_improved else anchor_reason)
+            report_improved = report_improved or immediate_report_improved
             retriggered = True
         row["report_best_improved"] = report_improved
-        row["exact_best_improved"] = exact_improved
-        row["raw_validation_best_improved"] = exact_improved
-        row["stall_counter"] = stall_counter
+        row["controller_anchor_improved"] = anchor_improved
+        row["controller_anchor_reason"] = controller_anchor_reason
+        row["controller_anchor_update_reason"] = anchor_reason
+        row["report_best_accuracy"] = report_best_accuracy
+        row["report_best_epoch"] = report_best_offset
+        row["controller_anchor_accuracy"] = controller_anchor_accuracy
+        row["controller_anchor_loss"] = controller_anchor_loss
+        row["controller_anchor_epoch"] = controller_anchor_offset
+        row["report_stall_counter"] = report_stall_counter
+        row["controller_stall_counter"] = controller_stall_counter
+        # Compatibility aliases for existing analysis notebooks.
+        row["exact_best_improved"] = report_improved
+        row["raw_validation_best_improved"] = report_improved
+        row["stall_counter"] = controller_stall_counter
         row["rollback_triggered"] = retriggered
         row["intervention_count"] = len(interventions)
+        if anchor_improved:
+            # Refresh the anchor after the completed row has been annotated,
+            # so crash recovery preserves the exact event log as well.
+            save_checkpoint(best_checkpoint, state_payload(
+                "plateau_fork_arm_best", offset + 1, elapsed, peak))
         save_checkpoint(latest, state_payload(
             "plateau_fork_arm_progress", offset + 1, elapsed, peak))
         print(json.dumps({args.method: row}, sort_keys=True), flush=True)
@@ -620,13 +688,13 @@ def main():
     reported_best_accuracy = (
         (float(compact_best_row["validation_accuracy"])
          if compact_best_row is not None else None)
-        if args.method == "bypass" else best_accuracy)
+        if args.method == "bypass" else report_best_accuracy)
     reported_best_loss = (
-        compact_best_loss if args.method == "bypass" else best_loss)
+        compact_best_loss if args.method == "bypass" else controller_anchor_loss)
     reported_best_offset = (
         (int(compact_best_row["post_fork_epoch"])
          if compact_best_row is not None else None)
-        if args.method == "bypass" else best_offset)
+        if args.method == "bypass" else report_best_offset)
     result = {
         "method": args.method, "fork_epoch": fork_epoch,
         "stall_detected_epoch": source.get("stall_detected_epoch"),
@@ -635,7 +703,15 @@ def main():
         "theta_best_hash": fork_hash,
         "fork_trigger_accuracy": fork_trigger["accuracy"],
         "fork_trigger_loss": fork_trigger["loss"],
-        "exact_best_validation_accuracy": exact_best_validation_accuracy,
+        "exact_best_validation_accuracy": report_best_accuracy,
+        "report_best_accuracy": reported_best_accuracy,
+        "report_best_epoch": reported_best_offset,
+        "controller_anchor_accuracy": controller_anchor_accuracy,
+        "controller_anchor_loss": controller_anchor_loss,
+        "controller_anchor_epoch": controller_anchor_offset,
+        "controller_anchor_reason": controller_anchor_reason,
+        "report_stall_counter": report_stall_counter,
+        "controller_stall_counter": controller_stall_counter,
         "fork_validation_accuracy": fork_evaluation["accuracy"],
         "fork_validation_loss": fork_evaluation["loss"],
         "final_validation_accuracy": last["validation_accuracy"],
@@ -652,7 +728,10 @@ def main():
         "best_validation_accuracy_delta": (
             reported_best_accuracy - fork_evaluation["accuracy"]
             if reported_best_accuracy is not None else None),
-        "epochs_to_best": reported_best_offset,
+        "epochs_to_best": (
+            reported_best_offset if args.method == "bypass" else
+            (reported_best_offset - fork_epoch
+             if reported_best_offset is not None else None)),
         "training_seconds": elapsed_before + time.perf_counter() - started,
         "peak_gpu_memory": max(
             peak_before, int(torch.cuda.max_memory_allocated(device))),
@@ -679,7 +758,7 @@ def main():
             args.retrigger_patience
             if args.method == "ours_e_driven_o" else None),
         "retrigger_metric": (
-            "strict raw validation best"
+            "validation accuracy, then lower loss on exact tie"
             if args.method == "ours_e_driven_o" else None),
         "bypass_completed": bypass_completed,
         "bypass_comparison_eligible": (

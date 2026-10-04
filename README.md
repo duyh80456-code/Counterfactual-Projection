@@ -169,8 +169,11 @@ sites using the same observed CE loss gain, selection batch, and gate; per-site
 loss gain and `||delta_f_E||` are retained in the intervention history.
 DenseNet-121 is evaluated separately with its architecture-native
 block-boundary operator.
-The VGG16 sensitivity configuration uses patience 15, line-search scales
-`{0.025, 0.05, 0.1, 0.2}`, and 64 projection samples. Both projected arms
+The VGG16 sensitivity configuration uses controller-anchor patience 15,
+line-search scales `{0.025, 0.05, 0.1, 0.2, 0.4}`, and 64 projection
+samples. Reporting tracks strict accuracy best, while recurrent controller
+rollback tracks accuracy and then lower loss on an exact accuracy tie. Anchor
+checkpoints include model, optimizer, scheduler, RNG, and loader state. Both projected arms
 preserve the optimizer, scheduler, and LR inherited from theta_P; no LR is
 changed after intervention. O-only still performs one initial projection and
 does not roll back or retrigger. Its outputs use a separate `v2` directory and
