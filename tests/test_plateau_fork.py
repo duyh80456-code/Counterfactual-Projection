@@ -1,18 +1,44 @@
 from pathlib import Path
 
+import pytest
+
 from experiments.run_plateau_fork import (
     next_controller_stall_counter, validation_state_updates)
 
 
-def test_same_accuracy_lower_loss_moves_controller_anchor_only():
+@pytest.mark.parametrize(
+    ("accuracy", "loss", "expected_report", "expected_anchor", "reason",
+     "expected_stall"),
+    [
+        (0.76, 1.5, True, True, "accuracy_increase", 0),
+        (0.75, 1.39115, False, True, "same_accuracy_lower_loss", 0),
+        (0.75, 1.6, False, False, None, 6),
+        (0.74, 1.0, False, False, None, 6),
+    ],
+    ids=("higher-accuracy", "same-accuracy-lower-loss",
+         "same-accuracy-higher-loss", "lower-accuracy"))
+def test_report_anchor_and_stall_updates_cover_all_four_cases(
+        accuracy, loss, expected_report, expected_anchor, reason,
+        expected_stall):
+    report_improved, anchor_improved, anchor_reason = validation_state_updates(
+        accuracy=accuracy, loss=loss,
+        report_best_accuracy=0.75,
+        anchor_accuracy=0.75, anchor_loss=1.41308)
+
+    assert report_improved is expected_report
+    assert anchor_improved is expected_anchor
+    assert anchor_reason == reason
+    assert next_controller_stall_counter(5, anchor_improved) == expected_stall
+
+
+def test_epoch_302_tie_resets_stall_without_changing_report_best():
     report_improved, anchor_improved, reason = validation_state_updates(
         accuracy=73.1333, loss=1.39115,
         report_best_accuracy=73.1333,
         anchor_accuracy=73.1333, anchor_loss=1.41308)
 
-    assert report_improved is False
-    assert anchor_improved is True
-    assert reason == "same_accuracy_lower_loss"
+    assert (report_improved, anchor_improved, reason) == (
+        False, True, "same_accuracy_lower_loss")
     assert next_controller_stall_counter(14, anchor_improved) == 0
 
 
