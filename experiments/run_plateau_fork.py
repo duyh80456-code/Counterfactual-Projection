@@ -227,7 +227,7 @@ def main():
     fork_evaluation = evaluate(model, evaluation_loader, device)
 
     protocol = {
-        "protocol_version": 2,
+        "protocol_version": 3,
         "phase": "plateau_fork_comparison", "method": args.method,
         "architecture": expected_architecture,
         "fork_epoch": fork_epoch, "post_fork_epochs": args.post_fork_epochs,
@@ -328,6 +328,7 @@ def main():
     elapsed_before = 0.0
     peak_before = 0
     report_best_accuracy = None
+    report_best_loss = None
     report_best_offset = None
     controller_anchor_accuracy = None
     controller_anchor_loss = None
@@ -346,8 +347,8 @@ def main():
             "interventions", [intervention] if intervention else []))
         rollback_count = int(saved.get("rollback_count", 0))
         report_stall_counter = int(saved.get("report_stall_counter", 0))
-        controller_stall_counter = int(saved.get(
-            "controller_stall_counter", saved.get("stall_counter", 0)))
+        controller_stall_counter = int(
+            saved.get("controller_stall_counter", 0))
         start_offset = int(saved["post_fork_epoch"])
         phase = saved["phase"]
         opt1_done = int(saved.get("opt1_epochs", 0))
@@ -365,6 +366,7 @@ def main():
         peak_before = int(saved.get("peak_gpu_memory", 0))
         report_best_accuracy = float(saved.get(
             "report_best_accuracy", saved["best_validation_accuracy"]))
+        report_best_loss = float(saved["report_best_loss"])
         report_best_offset = int(saved.get(
             "report_best_epoch", saved["best_post_fork_epoch"]))
         controller_anchor_accuracy = float(saved.get(
@@ -404,10 +406,12 @@ def main():
             "peak_train_params": peak_train_params,
             "training_seconds": training_seconds,
             "peak_gpu_memory": peak_memory,
+            # Legacy field names remain a consistent report-best pair.
             "best_validation_accuracy": report_best_accuracy,
-            "best_validation_loss": controller_anchor_loss,
-            "best_post_fork_epoch": report_best_offset,
+            "best_validation_loss": report_best_loss,
+            "best_post_fork_epoch": report_best_offset - fork_epoch,
             "report_best_accuracy": report_best_accuracy,
+            "report_best_loss": report_best_loss,
             "report_best_epoch": report_best_offset,
             "controller_anchor_accuracy": controller_anchor_accuracy,
             "controller_anchor_loss": controller_anchor_loss,
@@ -450,6 +454,7 @@ def main():
     # first so rollback can restore the unperturbed fork if needed.
     if saved is None:
         report_best_accuracy = float(fork_evaluation["accuracy"])
+        report_best_loss = float(fork_evaluation["loss"])
         report_best_offset = fork_epoch
         controller_anchor_accuracy = float(fork_evaluation["accuracy"])
         controller_anchor_loss = float(fork_evaluation["loss"])
@@ -463,6 +468,7 @@ def main():
             immediate = evaluate(model, evaluation_loader, device)
             if immediate["accuracy"] > report_best_accuracy:
                 report_best_accuracy = float(immediate["accuracy"])
+                report_best_loss = float(immediate["loss"])
                 report_best_offset = fork_epoch
                 report_stall_counter = 0
             anchor_improved = (
@@ -572,6 +578,7 @@ def main():
              validation["loss"] < controller_anchor_loss))
         if report_improved:
             report_best_accuracy = float(validation["accuracy"])
+            report_best_loss = float(validation["loss"])
             report_best_offset = epoch
         report_stall_counter = (0 if report_improved else
                                 report_stall_counter + 1)
@@ -585,7 +592,7 @@ def main():
             controller_anchor_offset = epoch
             controller_anchor_reason = anchor_reason
             controller_stall_counter = 0
-        elif args.method == "ours_e_driven_o":
+        else:
             controller_stall_counter += 1
         if anchor_improved:
             save_checkpoint(best_checkpoint, state_payload(
@@ -619,6 +626,7 @@ def main():
                 immediate["accuracy"] > report_best_accuracy)
             if immediate_report_improved:
                 report_best_accuracy = float(immediate["accuracy"])
+                report_best_loss = float(immediate["loss"])
                 report_best_offset = epoch
                 report_stall_counter = 0
             immediate_anchor_improved = (
@@ -647,16 +655,13 @@ def main():
         row["controller_anchor_reason"] = controller_anchor_reason
         row["controller_anchor_update_reason"] = anchor_reason
         row["report_best_accuracy"] = report_best_accuracy
+        row["report_best_loss"] = report_best_loss
         row["report_best_epoch"] = report_best_offset
         row["controller_anchor_accuracy"] = controller_anchor_accuracy
         row["controller_anchor_loss"] = controller_anchor_loss
         row["controller_anchor_epoch"] = controller_anchor_offset
         row["report_stall_counter"] = report_stall_counter
         row["controller_stall_counter"] = controller_stall_counter
-        # Compatibility aliases for existing analysis notebooks.
-        row["exact_best_improved"] = report_improved
-        row["raw_validation_best_improved"] = report_improved
-        row["stall_counter"] = controller_stall_counter
         row["rollback_triggered"] = retriggered
         row["intervention_count"] = len(interventions)
         if anchor_improved:
@@ -683,14 +688,15 @@ def main():
             key=lambda row: float(row["validation_accuracy"]))
         if args.method == "bypass" and compact_rows else None)
     compact_best_loss = (
-        min(float(row["validation_loss"]) for row in compact_rows)
-        if args.method == "bypass" and compact_rows else None)
+        (float(compact_best_row["validation_loss"])
+         if compact_best_row is not None else None)
+        if args.method == "bypass" else report_best_loss)
     reported_best_accuracy = (
         (float(compact_best_row["validation_accuracy"])
          if compact_best_row is not None else None)
         if args.method == "bypass" else report_best_accuracy)
     reported_best_loss = (
-        compact_best_loss if args.method == "bypass" else controller_anchor_loss)
+        compact_best_loss if args.method == "bypass" else report_best_loss)
     reported_best_offset = (
         (int(compact_best_row["post_fork_epoch"])
          if compact_best_row is not None else None)
@@ -703,8 +709,8 @@ def main():
         "theta_best_hash": fork_hash,
         "fork_trigger_accuracy": fork_trigger["accuracy"],
         "fork_trigger_loss": fork_trigger["loss"],
-        "exact_best_validation_accuracy": report_best_accuracy,
         "report_best_accuracy": reported_best_accuracy,
+        "report_best_loss": reported_best_loss,
         "report_best_epoch": reported_best_offset,
         "controller_anchor_accuracy": controller_anchor_accuracy,
         "controller_anchor_loss": controller_anchor_loss,

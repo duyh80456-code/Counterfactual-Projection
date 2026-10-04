@@ -88,7 +88,7 @@ resume_replacement = '''               and (item["payload"].get("protocol", {}).
                         "intervention_schedule") or {}).get("patience") ==
                     retrigger_patience[name])
                and item["payload"].get("protocol", {}).get(
-                   "protocol_version") == 2
+                   "protocol_version") == 3
                and item["payload"].get("protocol", {}).get(
                    "intervention_config") == {
                        "projection_samples": 64,

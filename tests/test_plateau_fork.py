@@ -56,9 +56,13 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert '"controller_anchor_rule": "accuracy, then lower loss on exact accuracy tie"' in source
     assert '"report_stall_counter": report_stall_counter' in source
     assert '"controller_stall_counter": controller_stall_counter' in source
+    assert '"report_best_loss": report_best_loss' in source
+    assert '"best_validation_loss": report_best_loss' in source
+    assert 'else:\n            controller_stall_counter += 1' in source
     assert 'significant_improved = (' not in source
-    assert 'row["raw_validation_best_improved"] = report_improved' in source
     assert 'row["controller_anchor_reason"] = controller_anchor_reason' in source
+    assert 'row["exact_best_improved"]' not in source
+    assert 'row["stall_counter"]' not in source
     assert 'scheduler.step(trigger["accuracy"])' not in source
     assert 'phase = "incomplete"' in source
     assert '"budget_exhausted_before_contraction"' in source
