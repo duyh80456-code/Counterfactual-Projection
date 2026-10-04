@@ -65,6 +65,8 @@ def test_vgg16_notebooks_are_three_seed_matched_runs():
         assert '"--projection-samples", "64"' in source
         assert '"--line-search-scales", "0.025,0.05,0.1,0.2,0.4"' in source
         assert '"protocol_version") == 3' in source
+        assert '"projection_samples": 64' in source
+        assert '"line_search_scales": [0.025, 0.05, 0.1, 0.2, 0.4]' in source
         assert '"o_projection_only": 10' in source
         assert ('"--retrigger-patience", str(retrigger_patience[name])' in
                 source)

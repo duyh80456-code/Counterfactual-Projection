@@ -1,5 +1,29 @@
 from pathlib import Path
 
+from experiments.run_plateau_fork import (
+    next_controller_stall_counter, validation_state_updates)
+
+
+def test_same_accuracy_lower_loss_moves_controller_anchor_only():
+    report_improved, anchor_improved, reason = validation_state_updates(
+        accuracy=73.1333, loss=1.39115,
+        report_best_accuracy=73.1333,
+        anchor_accuracy=73.1333, anchor_loss=1.41308)
+
+    assert report_improved is False
+    assert anchor_improved is True
+    assert reason == "same_accuracy_lower_loss"
+    assert next_controller_stall_counter(14, anchor_improved) == 0
+
+
+def test_fifteen_epochs_without_anchor_improvement_reaches_retrigger():
+    counter = 0
+    for _ in range(15):
+        counter = next_controller_stall_counter(counter, anchor_improved=False)
+
+    assert counter == 15
+    assert counter >= 15
+
 
 def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     source = Path("experiments/run_plateau_fork.py").read_text()
@@ -27,6 +51,10 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert "live_rng = rng_state()" in source
     assert "live_loader_state = train_loader.generator.get_state().clone()" in source
     assert 'best_state["model"]' in source
+    assert 'optimizer.load_state_dict(best_state["optimizer"])' in source
+    assert 'scheduler.load_state_dict(best_state["scheduler"])' in source
+    assert 'restore_rng(live_rng)' in source
+    assert 'train_loader.generator.set_state(live_loader_state.cpu())' in source
     assert "perform_intervention(" in source
     assert '"intervention_count"' in source
     assert '"rollback_count"' in source
@@ -51,14 +79,14 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert '"evaluation_indices": evaluation_indices' in source
     assert '"theta_best_hash": fork_hash' in source
     assert '"opt1_epochs": opt1_done if args.method == "bypass" else None' in source
-    assert 'validation["accuracy"] > report_best_accuracy' in source
-    assert 'validation["loss"] < controller_anchor_loss' in source
+    assert 'validation_state_updates(' in source
+    assert 'loss < anchor_loss' in source
     assert '"controller_anchor_rule": "accuracy, then lower loss on exact accuracy tie"' in source
     assert '"report_stall_counter": report_stall_counter' in source
     assert '"controller_stall_counter": controller_stall_counter' in source
     assert '"report_best_loss": report_best_loss' in source
     assert '"best_validation_loss": report_best_loss' in source
-    assert 'else:\n            controller_stall_counter += 1' in source
+    assert 'controller_stall_counter = next_controller_stall_counter(' in source
     assert 'significant_improved = (' not in source
     assert 'row["controller_anchor_reason"] = controller_anchor_reason' in source
     assert 'row["exact_best_improved"]' not in source
@@ -69,5 +97,5 @@ def test_plateau_fork_has_recurrent_e_and_single_shot_o_control():
     assert '"compact_best_validation_accuracy"' in source
     assert "max(compact_rows," in source
     assert '"post_fork_epoch": 0' not in source
-    assert 'validation["accuracy"] > controller_anchor_accuracy' in source
+    assert 'accuracy > anchor_accuracy' in source
     assert "epochs_since_best" not in source

@@ -86,6 +86,24 @@ def save_checkpoint(path, payload):
     atomic_torch_save({"format_version": 1, **payload}, path)
 
 
+def validation_state_updates(accuracy, loss, report_best_accuracy,
+                             anchor_accuracy, anchor_loss):
+    """Compare one validation state against reporting and controller bests."""
+    report_improved = accuracy > report_best_accuracy
+    anchor_improved = (
+        accuracy > anchor_accuracy or
+        (accuracy == anchor_accuracy and loss < anchor_loss))
+    reason = None
+    if anchor_improved:
+        reason = ("accuracy_increase" if accuracy > anchor_accuracy else
+                  "same_accuracy_lower_loss")
+    return report_improved, anchor_improved, reason
+
+
+def next_controller_stall_counter(counter, anchor_improved):
+    return 0 if anchor_improved else counter + 1
+
+
 def run_o_only_intervention(model, optimizer, eval_set, train_indices,
                             args, device, probe_index=0):
     """One supervised projection-only control at theta_P."""
@@ -364,18 +382,13 @@ def main():
         peak_train_params = int(saved.get("peak_train_params", peak_train_params))
         elapsed_before = float(saved.get("training_seconds", 0.0))
         peak_before = int(saved.get("peak_gpu_memory", 0))
-        report_best_accuracy = float(saved.get(
-            "report_best_accuracy", saved["best_validation_accuracy"]))
+        report_best_accuracy = float(saved["report_best_accuracy"])
         report_best_loss = float(saved["report_best_loss"])
-        report_best_offset = int(saved.get(
-            "report_best_epoch", saved["best_post_fork_epoch"]))
-        controller_anchor_accuracy = float(saved.get(
-            "controller_anchor_accuracy", saved["best_validation_accuracy"]))
-        controller_anchor_loss = float(saved.get(
-            "controller_anchor_loss", saved["best_validation_loss"]))
-        controller_anchor_offset = int(saved.get(
-            "controller_anchor_epoch", saved["best_post_fork_epoch"]))
-        controller_anchor_reason = saved.get("controller_anchor_reason")
+        report_best_offset = int(saved["report_best_epoch"])
+        controller_anchor_accuracy = float(saved["controller_anchor_accuracy"])
+        controller_anchor_loss = float(saved["controller_anchor_loss"])
+        controller_anchor_offset = int(saved["controller_anchor_epoch"])
+        controller_anchor_reason = saved["controller_anchor_reason"]
 
     def state_payload(kind, post_offset, training_seconds, peak_memory):
         return {
@@ -570,12 +583,11 @@ def main():
         history.append(row)
         elapsed = elapsed_before + time.perf_counter() - started
         peak = max(peak_before, int(torch.cuda.max_memory_allocated(device)))
-        report_improved = validation["accuracy"] > report_best_accuracy
-        anchor_reason = None
-        anchor_improved = (
-            validation["accuracy"] > controller_anchor_accuracy or
-            (validation["accuracy"] == controller_anchor_accuracy and
-             validation["loss"] < controller_anchor_loss))
+        (report_improved, anchor_improved,
+         anchor_reason) = validation_state_updates(
+             validation["accuracy"], validation["loss"],
+             report_best_accuracy, controller_anchor_accuracy,
+             controller_anchor_loss)
         if report_improved:
             report_best_accuracy = float(validation["accuracy"])
             report_best_loss = float(validation["loss"])
@@ -583,17 +595,12 @@ def main():
         report_stall_counter = (0 if report_improved else
                                 report_stall_counter + 1)
         if anchor_improved:
-            anchor_reason = (
-                "accuracy_increase"
-                if validation["accuracy"] > controller_anchor_accuracy else
-                "same_accuracy_lower_loss")
             controller_anchor_accuracy = float(validation["accuracy"])
             controller_anchor_loss = float(validation["loss"])
             controller_anchor_offset = epoch
             controller_anchor_reason = anchor_reason
-            controller_stall_counter = 0
-        else:
-            controller_stall_counter += 1
+        controller_stall_counter = next_controller_stall_counter(
+            controller_stall_counter, anchor_improved)
         if anchor_improved:
             save_checkpoint(best_checkpoint, state_payload(
                 "plateau_fork_arm_best", offset + 1, elapsed, peak))
