@@ -124,7 +124,7 @@ byte-identical theta_P:
 - GPU1: one O-only projection at theta_P, then 150 uninterrupted SGD epochs.
 
 This is a VGG hyperparameter-sensitivity run: line-search scales
-`{0.025, 0.05, 0.1, 0.2, 0.4}` and 64 projection samples. Reporting tracks
+`{0.025, 0.05, 0.1, 0.2}` and 64 projection samples. Reporting tracks
 strict accuracy best; recurrent search anchors on accuracy then lower loss.
 The full anchor checkpoint includes model, optimizer, scheduler, RNG, and
 loader state. Both projected arms

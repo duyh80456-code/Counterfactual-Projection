@@ -52,7 +52,7 @@ phase2 = phase2.replace(
     '        "--site-selection-mode", "all_functional_gain",\n')
 phase2 = phase2.replace(
     '        "--line-search-scales", "0.0125,0.025,0.05"]',
-    '        "--line-search-scales", "0.025,0.05,0.1,0.2,0.4",\n'
+    '        "--line-search-scales", "0.025,0.05,0.1,0.2",\n'
     '        "--projection-samples", "64"]')
 phase2 = phase2.replace(
     '        "--retrigger-patience", "10",\n', "")
@@ -92,7 +92,7 @@ resume_replacement = '''               and (item["payload"].get("protocol", {}).
                and item["payload"].get("protocol", {}).get(
                    "intervention_config") == {
                        "projection_samples": 64,
-                       "line_search_scales": [0.025, 0.05, 0.1, 0.2, 0.4]}]
+                       "line_search_scales": [0.025, 0.05, 0.1, 0.2]}]
 '''
 if resume_needle not in phase2:
     raise RuntimeError("VGG notebook template lacks the resume protocol filter")
