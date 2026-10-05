@@ -133,6 +133,7 @@ def persistent_growth_gain(checkpoint, site, horizon, *, data_root,
         growth = train_arm(context, grown=True)
     result = {"site": site, "horizon": horizon, "architecture": architecture,
               "seed": source.get("protocol", {}).get("seed"),
+              "diagnostic_seed": seed,
               "checkpoint_hash": context.checkpoint_hash,
               "candidate_rank": rank, "extension_scale": scale,
               "scale_selection": "WHERE bounded CE line search: grid then golden-section refinement",
@@ -161,11 +162,14 @@ def main():
     parser.add_argument("--sites", nargs="+", help="otherwise top-3 and bottom-2 WHERE sites")
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--bottom", type=int, default=2)
+    parser.add_argument("--resume-completed", action="store_true",
+                        help="reuse completed per-site results with matching fork/config")
     args = parser.parse_args()
     if args.top < 0 or args.bottom < 0:
         parser.error("site counts must be nonnegative")
     context = load_context(args.checkpoint, args.data_root, args.reference_root,
                            args.architecture, args.device)
+    checkpoint_hash = context.checkpoint_hash
     batches, _ = select_batches(context, seed=args.seed)
     ranked = []
     if not args.sites:
@@ -184,6 +188,18 @@ def main():
         torch.cuda.empty_cache()
     records = []
     for site in sites:
+        prior = args.output / site / "result.json"
+        if args.resume_completed and prior.is_file():
+            saved = json.loads(prior.read_text())
+            expected = {"checkpoint_hash": checkpoint_hash,
+                        "site": site, "horizon": args.horizon,
+                        "candidate_rank": args.rank,
+                        "diagnostic_seed": args.seed,
+                        "architecture": args.architecture}
+            if all(saved.get(key) == value for key, value in expected.items()):
+                records.append(saved)
+                print(f"Reusing completed growth comparison: {site}", flush=True)
+                continue
         records.append(persistent_growth_gain(args.checkpoint, site, args.horizon,
             data_root=args.data_root, reference_root=args.reference_root,
             architecture=args.architecture, device=args.device, rank=args.rank,

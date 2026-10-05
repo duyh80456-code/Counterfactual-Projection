@@ -400,3 +400,15 @@ Spearman within each seed/horizon, compares true/random residuals, and aggregate
 seed estimates without pooling sites across seeds. A positive correlation would
 be evidence for the capacity hypothesis under this short-horizon diagnostic;
 absence of correlation leaves residual as a projection diagnostic only.
+
+For Kaggle Run All, import
+[`notebooks/kaggle_projection_capacity_diagnostics_t4x2.ipynb`](notebooks/kaggle_projection_capacity_diagnostics_t4x2.ipynb).
+Attach CIFAR-100, original Phase-1 fork outputs and optional E-to-O JSON outputs.
+Enable Internet, GPU and the `github_token` Secret used by the existing notebooks.
+The default run filter is VGG16 seed 1 and ResNet18/ResNet34 seeds 1, 2, 3.
+It runs whichever matching forks are attached, prints their inventory, and saves
+an archive containing phase A/B results and within/across-seed summaries.
+For another session, reattach the full diagnostic notebook output: exact matching
+fork/config/code manifests allow completed runs and sites to be reused. Incomplete
+site trials restart from theta_P. Seven forks at the defaults cost about 1,400
+SGD epochs and may exceed a single Kaggle session.

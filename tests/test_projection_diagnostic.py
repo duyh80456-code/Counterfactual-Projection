@@ -214,3 +214,38 @@ def test_capacity_summary_joins_fork_and_keeps_seed_correlations_separate(tmp_pa
     residual = correlations[correlations.x == "r_E_heldout"].set_index("seed")
     assert residual.loc[0, "rho"] == pytest.approx(1)
     assert residual.loc[1, "rho"] == pytest.approx(-1)
+
+
+def test_kaggle_diagnostic_notebook_compiles_and_discovers_requested_runs(tmp_path, monkeypatch):
+    from pathlib import Path
+    import experiments.kaggle_checkpoint_discovery as discovery
+    notebook = json.loads(Path(
+        "notebooks/kaggle_projection_capacity_diagnostics_t4x2.ipynb").read_text())
+    for index, cell in enumerate(notebook["cells"]):
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]), f"diagnostics-cell-{index}", "exec")
+    forks = []
+    required = {"model", "optimizer", "scheduler", "rng",
+                "train_loader_generator_state", "train_indices", "trigger_indices",
+                "evaluation_indices", "source_tuning_indices", "epoch"}
+    requested = {(architecture, seed) for architecture in ("resnet18", "resnet34")
+                 for seed in (1, 2, 3)} | {("vgg16", 1)}
+    labels = {"resnet18": "CIFAR-ResNet18", "resnet34": "CIFAR-ResNet34",
+              "vgg16": "CIFAR-VGG16-BN"}
+    for architecture, seed in sorted(requested | {("vgg16", 0)}):
+        payload = dict.fromkeys(required)
+        payload.update(epoch=243, protocol={"architecture": labels[architecture], "seed": seed})
+        forks.append({"path": f"{architecture}-{seed}.pt", "payload": payload,
+                      "sha256": f"{architecture}-{seed}"})
+    monkeypatch.setattr(discovery, "discover_checkpoints",
+                        lambda *_args, **_kwargs: (forks + [forks[0]], []))
+    cell = next("".join(cell["source"]) for cell in notebook["cells"]
+                if cell["cell_type"] == "code" and
+                "# Discover original forks" in "".join(cell["source"]))
+    import sys
+    env = {"sys": sys, "json": json, "REPO": Path.cwd(),
+           "RUN_ROOT": tmp_path, "RUN_FILTER": requested,
+           "TOP_SITES": 3, "BOTTOM_SITES": 2, "HORIZON": 20}
+    exec(cell, env)
+    assert {(run["architecture"], run["seed"]) for run in env["RUNS"]} == requested
+    assert len(env["RUNS"]) == 7
