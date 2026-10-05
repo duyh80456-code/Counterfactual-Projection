@@ -13,9 +13,10 @@ dependencies = ["torch>=2.1"]
 [project.optional-dependencies]
 vision = ["torchvision>=0.16"]
 test = ["pytest>=7"]
+diagnostics = ["pandas>=1.5", "matplotlib>=3.6", "numpy>=1.23"]
 
 [tool.setuptools.packages.find]
-include = ["probe*", "projection*", "methods*", "training*", "baselines*"]
+include = ["probe*", "projection*", "methods*", "training*", "baselines*", "diagnostics*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

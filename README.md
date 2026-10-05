@@ -312,3 +312,91 @@ The local, ignored checkout at `third_party/One-Shot-TAS-CCIL` points to
 reused at the interface level are transactional virtual directions, explicit
 RepOpt gradient handlers, and invariant-focused tests. No Gromo source is
 copied into this project.
+
+### CPU projection diagnostics (phase A)
+
+Install the `diagnostics` extra, then analyze E-to-O result files:
+
+```bash
+python scripts/analyze_projection_diagnostic.py /path/to/run_outputs \
+  --patterns '**/result.json' --output /path/to/analysis --bootstrap 2000
+```
+
+For JSON history or JSONL console records, supply matching `--patterns`.
+The script prints the observed intervention keys and configured field mapping
+before extracting metrics. Optional `--config config.json` overrides fields
+and missing run metadata; for example:
+
+```json
+{
+  "mapping": {
+    "r_heldout": ["heldout_relative_residual"],
+    "cos_heldout": ["heldout_cosine_alignment"],
+    "realized_gain": ["actual_loss_improvement"]
+  },
+  "metadata_overrides": {
+    "resnet18_seed0/ours_e_driven_o/result.json": {
+      "backbone": "R18", "seed": 0, "method": "ours_e_driven_o"
+    }
+  }
+}
+```
+
+Outputs include intervention/site/backbone CSVs, selected-site frequency and
+residual/cosine histograms, Spearman estimates with percentile bootstrap
+intervals (by backbone and by backbone/seed, for all and applied trials), and
+an inventory/mapping JSON. Missing diagnostics remain missing. Residuals refer
+only to the selected site; WHERE scores for other sites are not residuals.
+`realized_gain` is the immediate gate-batch loss reduction, not accuracy gain
+or persistent-growth gain. Current E-to-O logs evaluate `heldout_*` on the gate
+batch also used to select scale, so this analysis does not establish independent
+held-out performance or capacity need. Correlations are descriptive, especially
+with small samples; the event bootstrap does not remove dependence among repeated
+interventions in a run. Independent site probes, random-direction controls and
+persistent-growth labels require phase B and model/GPU access.
+
+### Independent site and persistent-growth diagnostics (phase B)
+
+These runners require the original `plateau_checkpoint.pt`, CIFAR-100, the
+reference repository exposing `dual_growth`, and Gromo. Invoke them from the
+repository checkout:
+
+```bash
+python -m diagnostics.site_projection_probe plateau_checkpoint.pt \
+  --data-root /path/to/cifar --reference-root /path/to/reference \
+  --architecture vgg16 --device cuda:0 --output site_probes.json
+
+python -m diagnostics.persistent_growth_probe plateau_checkpoint.pt \
+  --data-root /path/to/cifar --reference-root /path/to/reference \
+  --architecture vgg16 --device cuda:0 --horizon 20 --output growth_labels
+
+python -m diagnostics.summarize_capacity \
+  --projection site_probes.json --growth growth_labels/summary.json \
+  --output capacity_analysis
+```
+
+Repeat for R18/R34/VGG forks and all seeds. Site projection measures every
+proposed site; statistics, WHERE, fit (64), and independent held-out (256)
+samples have disjoint indices. The random control fits an independent Gaussian
+logit direction, matched to the true direction norm on each batch. Its held-out
+noise is independent of fit noise; this baseline measures transfer to unstructured
+noise and does not model a structured random expansion.
+
+Growth defaults to top-3 and bottom-2 sites ranked on WHERE, or accepts explicit
+`--sites`. Each site's Vanilla and growth arms start from the same fork weights,
+optimizer momentum, scheduler, RNG and loader state. The inherited LR is used.
+The extension remains registered and active throughout the horizon; its parameters
+join the existing SGD group. Output scale uses the candidate's Gromo scaling
+convention and is chosen by bounded CE line search (grid followed by local
+refinement), not an analytic or unconstrained native Gromo optimum. This diagnostic
+retains the transaction for training rather than materializing a compact widened
+architecture. Growth checkpoints include active extension tensors and require the
+recorded candidate/site/scale to reconstruct that architecture before loading.
+
+`PG_gain` compares best validation accuracy (including epoch zero); loss at that
+same best state, minimum loss, final loss and parameter counts are also recorded.
+The capacity summary joins by fork hash, backbone, seed and site, reports
+Spearman within each seed/horizon, compares true/random residuals, and aggregates
+seed estimates without pooling sites across seeds. A positive correlation would
+be evidence for the capacity hypothesis under this short-horizon diagnostic;
+absence of correlation leaves residual as a projection diagnostic only.
