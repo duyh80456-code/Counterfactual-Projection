@@ -249,3 +249,110 @@ def test_kaggle_diagnostic_notebook_compiles_and_discovers_requested_runs(tmp_pa
     exec(cell, env)
     assert {(run["architecture"], run["seed"]) for run in env["RUNS"]} == requested
     assert len(env["RUNS"]) == 7
+
+
+def test_log_cpu_provenance_boundary_horizons_and_run_separation(tmp_path):
+    from scripts.analyze_projection_diagnostic import summarize_cosine_groups, run_correlations
+    for name, sign in (("unlabelled_a", 1), ("unlabelled_b", -1)):
+        folder = tmp_path / name
+        folder.mkdir()
+        interventions, history = [], []
+        for index, epoch in enumerate((100, 120, 140, 160)):
+            interventions.append({"epoch": epoch, "probe_index": index,
+                "selected_site": "stages.3.boundary_to_4" if index < 2 else "stages.3.conv_0",
+                "heldout_cosine_alignment": .2 * (index + 1),
+                "heldout_relative_residual": .9 - .1 * index,
+                "actual_cosine_alignment": .1 * (index + 1),
+                "actual_relative_residual": .8,
+                "actual_loss_improvement": sign * (index + 1),
+                "cg_selected_attempt": 1,
+                "cg_attempts": [{"functional_cosine_alignment": -1},
+                                {"functional_cosine_alignment": .95,
+                                 "functional_relative_residual": .05}],
+                "correction_applied": True})
+            history += [{"epoch": epoch + h, "validation_accuracy": 70 + sign * index + h / 100}
+                        for h in (0, 1, 5, 15)]
+        (folder / "result.json").write_text(json.dumps({
+            "method": "ours_e_driven_o", "theta_best_hash": "same-fork",
+            "interventions": interventions, "history": history}))
+    df = load_interventions(tmp_path, ["**/result.json"], metadata_rules=[
+        {"pattern": "unlabelled_*/result.json", "metadata": {"backbone": "VGG", "seed": 1}}])
+    assert set(df.backbone) == {"VGG"}
+    assert df.run_id.nunique() == 2  # same fork must not merge independent runs
+    assert set(df.r_fit) == {.05}
+    assert set(df.cos_fit_source) == {"selected_cg_attempt.functional_cosine_alignment"}
+    assert df.is_boundary.sum() == 4
+    row = df.iloc[0]
+    assert row.acc_after_5 == pytest.approx(70.05)
+    assert row.acc_gain_15 == pytest.approx(.15)
+    stats = summarize_cosine_groups(df)
+    boundary = stats[(stats.run_id == "unlabelled_a") & (stats.scope == "is_boundary")
+                     & (stats.group == "True")].iloc[0]
+    assert boundary.cos_heldout_q25 == pytest.approx(.25)
+    assert boundary.cos_heldout_median == pytest.approx(.3)
+    assert boundary.cos_heldout_q75 == pytest.approx(.35)
+    correlations = run_correlations(df, bootstrap=10)
+    selected = correlations[(correlations.x == "cos_heldout") &
+                            (correlations.y == "realized_gain") &
+                            (correlations.subset == "all")]
+    assert dict(zip(selected.run_id, selected.rho)) == pytest.approx({"unlabelled_a": 1, "unlabelled_b": -1})
+    endpoints = correlations[(correlations.x == "cos_heldout") &
+                             (correlations.y == "acc_after_15") &
+                             (correlations.subset == "all")]
+    assert set(endpoints.n) == {4}
+    write_outputs(df, tmp_path / "analysis", bootstrap=10)
+    for filename in ("metric_sources.csv", "cosine_by_site_boundary.csv", "run_spearman.csv",
+                     "backbone_quartiles.csv", "unknown_metadata.csv"):
+        assert (tmp_path / "analysis" / filename).is_file()
+
+
+def test_log_horizons_missing_conflicting_and_intervening_events(tmp_path):
+    events = [{"epoch": epoch, "selected_site": "boundary_to_4",
+               "correction_applied": True, "heldout_cosine_alignment": .8}
+              for epoch in (100, 105)]
+    history = [{"epoch": 100, "validation_accuracy": 70},
+               {"epoch": 101, "validation_accuracy": 71},
+               {"epoch": 101, "validation_accuracy": 72},
+               {"epoch": 105, "validation_accuracy": 73},
+               {"epoch": 115, "validation_accuracy": 74}]
+    (tmp_path / "result.json").write_text(json.dumps({"method": "ours_e_driven_o",
+        "interventions": events, "history": history}))
+    df = load_interventions(tmp_path, ["*.json"])
+    first = df.iloc[0]
+    assert first.acc_1_status == "conflicting_history"
+    assert pd.isna(first.acc_after_1)
+    assert first.acc_5_status == "another_intervention_in_window"
+    assert first.acc_15_status == "another_intervention_in_window"
+    assert df.iloc[1].acc_1_status == "missing_epoch"
+    assert set(df.backbone) == {"unknown"}
+    assert df.is_boundary.isna().all()
+
+
+def test_log_history_mapping_and_config_labels(tmp_path):
+    (tmp_path / "result.json").write_text(json.dumps({
+        "config": {"architecture": "resnet34", "seed": 3, "method": "ours_e_driven_o"},
+        "interventions": [{"epoch": 200, "selected_site": "layer3", "correction_applied": False}],
+        "history": [{"step": 200, "metrics": {"acc": .7}},
+                    {"step": 201, "metrics": {"acc": .72}}]}))
+    df = load_interventions(tmp_path, ["*.json"], history_mapping={
+        "epoch": "step", "accuracy": "metrics.acc"})
+    assert df.iloc[0].backbone == "R34"
+    assert df.iloc[0].seed == 3
+    assert df.iloc[0].acc_gain_1 == pytest.approx(.02)
+
+
+def test_cpu_logs_follow_kaggle_symlinks_and_keep_glob_depth(tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "result.json").write_text(json.dumps({
+        "method": "ours_e_driven_o", "backbone": "unknown", "seed": 1,
+        "interventions": [{"selected_site": "boundary_to_4", "correction_applied": False}]}))
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    (inputs / "mounted-vgg").symlink_to(actual, target_is_directory=True)
+    df = load_interventions(inputs, ["**/result.json"], metadata_rules=[
+        {"pattern": "mounted-vgg/**", "metadata": {"backbone": "VGG"}}])
+    assert len(df) == 1
+    assert df.iloc[0].backbone == "VGG"
+    assert df.iloc[0].is_boundary
+    assert load_interventions(inputs, ["*.json"]).empty

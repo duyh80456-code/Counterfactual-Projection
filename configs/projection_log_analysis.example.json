@@ -1,0 +1,21 @@
+{
+  "mapping": {
+    "r_heldout": ["heldout_relative_residual"],
+    "cos_heldout": ["heldout_cosine_alignment"],
+    "r_fit": ["selected_cg_attempt.functional_relative_residual", "relative_residual"],
+    "cos_fit": ["selected_cg_attempt.functional_cosine_alignment", "cosine_alignment"],
+    "r_actual": ["actual_relative_residual", "actual_heldout_relative_residual"],
+    "actual_cosine": ["actual_cosine_alignment", "actual_heldout_cosine_alignment"],
+    "realized_gain": ["actual_loss_improvement"]
+  },
+  "history_mapping": {
+    "epoch": ["epoch"],
+    "accuracy": ["validation_accuracy"]
+  },
+  "metadata_rules": [
+    {"pattern": "your-vgg-seed1-output/**", "metadata": {"backbone": "VGG", "seed": 1}},
+    {"pattern": "your-r18-seed1-output/**", "metadata": {"backbone": "R18", "seed": 1}},
+    {"pattern": "your-r34-seed1-output/**", "metadata": {"backbone": "R34", "seed": 1}}
+  ],
+  "metadata_overrides": {}
+}

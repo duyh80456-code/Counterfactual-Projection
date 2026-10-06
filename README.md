@@ -417,3 +417,41 @@ For another session, reattach the full diagnostic notebook output: exact matchin
 fork/config/code manifests allow completed runs and sites to be reused. Incomplete
 site trials restart from theta_P. Seven forks at the defaults cost about 1,400
 SGD epochs and may exceed a single Kaggle session.
+
+### CPU-only follow-up on existing logs
+
+No model, checkpoint, CIFAR data or GPU is needed for this command:
+
+```bash
+python scripts/analyze_projection_diagnostic.py /kaggle/input \
+  --patterns '**/result.json' '**/history.json' '**/history.jsonl' \
+  --config configs/projection_log_analysis.example.json \
+  --horizons 1 5 15 --output /kaggle/working/projection_log_analysis
+```
+
+Edit the example configuration's directory patterns to match attached runs.
+Directory rules fill missing/unknown labels; JSON run/config metadata wins over
+rules, and exact `metadata_overrides` (paths relative to the input root) wins
+over both. Set `run_id` explicitly when JSON/history for one run live in separate
+directories. Otherwise the containing directory identifies the run. A shared
+fork hash does not merge distinct runs. Unresolved labels appear in
+`unknown_metadata.csv`.
+
+The script prints the available keys, configured mapping and resolved sources.
+`metric_sources.csv` separates functional fit, held-out linear projection and
+actual update metrics. Fit metrics can come from the **selected** CG attempt's
+functional residual/cosine; CG solver residual is never treated as functional r.
+`cosine_by_site_boundary.csv` reports counts and Q25/median/Q75 for each run/site
+and for VGG boundary/non-boundary groups (`boundary_to_N` site names).
+`run_spearman.csv` reports per-run correlations for fit/held-out/actual cosine
+against immediate `realized_gain`, exact accuracy at +1/+5/+15 epochs, and its
+change from the logged intervention-epoch accuracy. Each row includes paired
+quartiles, sample count and a bootstrap interval when estimable.
+
+Missing epochs are not interpolated; conflicting history entries are rejected.
+Windows with another logged intervention are excluded from horizon correlations
+and marked in `interventions.csv`. Accuracy units remain those of the input;
+the baseline's timing may be before or after the update. These observations are
+descriptive and are not a matched Vanilla comparison or persistent-growth label.
+`spearman.csv` retains the earlier pooled descriptive analysis; use
+`run_spearman.csv` for the follow-up within each run.
