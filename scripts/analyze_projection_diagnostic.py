@@ -103,6 +103,7 @@ def _backbone(value):
         "R18": ("resnet18", "resnet-18", "r18"),
         "R34": ("resnet34", "resnet-34", "r34"),
         "VGG": ("vgg",),
+        "DeiT": ("deit",),
     }.items():
         if any(alias in value for alias in aliases):
             return canonical

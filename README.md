@@ -463,3 +463,85 @@ the baseline's timing may be before or after the update. These observations are
 descriptive and are not a matched Vanilla comparison or persistent-growth label.
 `spearman.csv` retains the earlier pooled descriptive analysis; use
 `run_spearman.csv` for the follow-up within each run.
+
+## DeiT-Tiny-CIFAR: first one-shot architecture experiment
+
+Import [`notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb`](notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb)
+on Kaggle. Attach **CIFAR-100**, enable Internet, a CUDA GPU and `github_token`,
+then Run All. No pretrained model or CNN plateau checkpoint is used. Optional
+prior expanded DeiT output files allow epoch resume; different matching forks
+are rejected rather than selected by filename. This notebook uses one GPU
+sequentially and may require multiple sessions for the baseline.
+
+The local backbone keeps [official DeiT-Tiny geometry](https://github.com/facebookresearch/deit/blob/main/models.py):
+embed192, depth12, heads3, MLP ratio4, QKV biases and LayerNorm eps1e-6. The CIFAR
+adaptation changes image size to32 and patch size to4: 64 patch tokens plus CLS,
+no distillation/pretraining/Dropout/DropPath. Attention uses explicit matmul and
+softmax so the existing torch.func JVP/VJP projector does not require fused
+attention forward derivatives. This is a random-init CIFAR adaptation, not the
+full official ImageNet training recipe.
+
+- **E:** exactly twelve homogeneous sites, `blocks.0.mlp` through `blocks.11.mlp`.
+  Temporary Gromo LinearGrowingModule wrappers collect real GELU MLP activations
+  and downstream gradients and invoke the existing native covariance/TINY
+  solve. Its sufficient statistics flatten tokens and normalize by image count,
+  following pinned Gromo's Linear implementation. No random branch training,
+  attention expansion, boundary expansion or auxiliary optimizer is used.
+  Requested rank8 is fixed; Gromo's thresholds can reduce effective rank, which
+  is logged separately. At gate0 the candidate returns the unchanged base output.
+- **WHERE/WHAT:** reuse the CNN raw mean E-gain selector, with three shared
+  32-image WHERE batches and epsilon=.05. Delta norms and gain/norm are
+  diagnostics only. Statistics256, projection64, gate32 are disjoint deterministic
+  subsets of the training pool; their actual indices are stored in the record.
+- **HOW:** reuse FunctionalProjector's dual solve with CG200, damping retries
+  `[.001,.01,.1,1,10]`, and scales `[.025,.05,.1,.2]`. Only the selected original
+  MLP's fc1/fc2 weight/bias enter the projection. The native TINY optimal existing
+  weight update is used only in proposal statistics, never committed directly.
+  Only tensors with a nonzero applied delta have Adam moments zeroed, including
+  AMSGrad's max moment if present; Adam step counters, other state, LR and the
+  scheduler are retained. The logged held-out gate batch also selects scale and
+  is not an independent generalization audit.
+- **Fork arms:** Vanilla, fixed-last-MLP supervised O-only (`one_hot-softmax`)
+  and one-shot E-to-O all start from the same SHA-verified strict-best theta_P.
+  Each restores model/optimizer/scheduler/RNG/loader state, applies at most one
+  correction and trains ordinary AdamW for K epochs. There is no rollback or
+  retrigger. Epoch0 after-correction checkpoints ensure resume does not reapply
+  the intervention; all candidate tensors/hooks disappear before saving.
+
+The configurable **initial baseline recipe** is AdamW LR5e-4, WD.05, betas
+(.9,.999), with no decay on biases/normalization/CLS/position embeddings; 5 warmup
+epochs then a fixed global cosine through epoch400 with minimum LR ratio.01.
+Batch128, seed1, strict-best patience20 armed from epoch100, max baseline epoch300,
+K30. The CIFAR split remains 5000 held out (2000 trigger reserved, 3000
+selection/reporting) plus128 tuning excluded from training. No official test set
+is loaded. These defaults are declared experiment choices, not tuned results;
+no plateau within the cap produces a status report and no fork.
+
+Standalone commands after installing pinned Gromo (Python >=3.10):
+
+```bash
+python -m experiments.train_deit_plateau --data-root /path/to/cifar \
+  --output runs/deit/vanilla --seed 1
+python -m experiments.run_deit_fork --data-root /path/to/cifar \
+  --plateau-checkpoint runs/deit/vanilla/plateau_checkpoint.pt \
+  --plateau-checkpoint-hash YOUR_SHA256 --method ours_e_driven_o \
+  --output runs/deit/ours_e_driven_o --horizon 30
+```
+
+Run the fork command for `vanilla_continue` and `o_projection_only` with the same
+checkpoint/hash/horizon. `--resume` accepts each arm's `checkpoint_latest.pt`;
+recipe, backbone, protocol, fork, method and CP configuration must match. Baseline
+resume additionally needs its matching `checkpoint_best.pt` in the output folder.
+
+Logs include validation before and immediately after correction, the first five
+ordinary AdamW epochs, all site gains/norms, WHERE winners/stability, projection
+fit/gate/actual metrics, CG attempts/damping and Adam reset tensor names. Strict
+report accuracy and loss refer to the same observed state. The CPU log analyzer
+recognizes the new `DeiT` backbone label.
+
+The required small-model native TINY tests cover function preservation, equivalence
+to explicit MLP widening, finite-difference stability, exact site scope, no
+auxiliary persistence, selected-site/batch replay, Adam moments, and bitwise
+main-loop resume. The Kaggle notebook gates training on them. They do not
+establish full-width CUDA runtime, convergence or historical-best escape;
+those require the actual CIFAR experiment.

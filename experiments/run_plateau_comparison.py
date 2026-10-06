@@ -154,6 +154,7 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
                 "rank": row["rank"], "mean_e_gain": row["mean_e_gain"],
                 "per_batch_e_gain": row["e_gains"],
                 "mean_functional_delta_norm": row["mean_delta_f_norm"],
+                "gain_per_functional_delta_norm": row["mean_e_gain"] / (row["mean_delta_f_norm"] + 1e-12),
                 "per_batch_functional_delta_norm": row["delta_f_norms"],
                 "proposal_score": row["proposal_score"],
             } for row in ranked
@@ -164,6 +165,7 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
                 "mean_observed_functional_loss_gain": row["mean_e_gain"],
                 "per_batch_observed_functional_loss_gain": row["e_gains"],
                 "mean_functional_delta_norm": row["mean_delta_f_norm"],
+                "gain_per_functional_delta_norm": row["mean_e_gain"] / (row["mean_delta_f_norm"] + 1e-12),
                 "per_batch_functional_delta_norm": row["delta_f_norms"],
                 "rank": row["rank"],
             } for row in ranked

@@ -16,7 +16,7 @@ test = ["pytest>=7"]
 diagnostics = ["pandas>=1.5", "matplotlib>=3.6", "numpy>=1.23"]
 
 [tool.setuptools.packages.find]
-include = ["probe*", "projection*", "methods*", "training*", "baselines*", "diagnostics*"]
+include = ["probe*", "projection*", "methods*", "training*", "baselines*", "diagnostics*", "models*", "adapters*", "experiments*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

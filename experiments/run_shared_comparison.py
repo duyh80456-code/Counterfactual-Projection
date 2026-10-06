@@ -148,6 +148,12 @@ def propose_structural_candidates(model, statistics, *, rank, site,
         CifarDenseNet121, propose_denseblock_candidates)
 
     sites = structural_candidate_sites(model, site, candidate_sites)
+    from models.deit_tiny_cifar import DeiTTinyCifar
+    if isinstance(model, DeiTTinyCifar):
+        from adapters.deit_mlp_growth import DeitMLPGrowthAdapter
+        adapter = DeitMLPGrowthAdapter()
+        return [adapter.propose_auxiliary_growth(
+            model=model, site=name, batches=statistics, rank=rank) for name in sites]
     if isinstance(model, CifarDenseNet121):
         return propose_denseblock_candidates(
             model, statistics, rank, sites=sites)
