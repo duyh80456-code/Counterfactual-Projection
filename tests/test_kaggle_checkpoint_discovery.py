@@ -125,3 +125,56 @@ def test_incomplete_checkpoint_member_is_not_offered_for_loading(tmp_path):
     assert matches == []
     assert rejected[0]["complete_checkpoints_recovered"] == 0
     assert not list((tmp_path / "output").rglob("*.pt"))
+
+
+def test_archive_candidates_are_filtered_before_next_extraction(tmp_path, monkeypatch):
+    import experiments.kaggle_checkpoint_discovery as discovery
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    fork = tmp_path / "fork.pt"
+    arm = tmp_path / "arm.pt"
+    torch.save(payload(), fork)
+    torch.save({"kind": "training_arm", "tensor": torch.ones(1000)}, arm)
+    with tarfile.open(input_root / "runs.tar.gz", "w:gz") as archive:
+        for index in range(10):
+            archive.add(arm, arcname=f"arm{index}.pt")
+        archive.add(fork, arcname="fork.pt")
+        archive.add(fork, arcname="duplicate-fork.pt")
+    output = tmp_path / "output"
+    original_check = discovery._check_space
+
+    def check(directory, size):
+        assert len(list(output.rglob("*.pt"))) <= 1
+        original_check(directory, size)
+
+    monkeypatch.setattr(discovery, "_check_space", check)
+    matches, rejected = discover_checkpoints(
+        input_root, output, kind="plateau_fork_checkpoint")
+    assert len(matches) == 1
+    assert len(list(output.rglob("*.pt"))) == 1
+    assert sum(item.get("kind") == "training_arm" for item in rejected) == 10
+    assert not list(output.rglob("*.tmp"))
+
+
+def test_repacking_discards_unwanted_state_and_preserves_input(tmp_path):
+    source = tmp_path / "source.pt"
+    torch.save({"kind": "training_arm"}, source)
+    input_root = tmp_path / "input"
+    with zipfile.ZipFile(source) as archive:
+        archive.extractall(input_root)
+    matches, _ = discover_checkpoints(
+        input_root, tmp_path / "output", kind="plateau_fork_checkpoint")
+    assert matches == []
+    assert not list((tmp_path / "output").rglob("*.pt"))
+    assert list(input_root.rglob("data.pkl"))
+
+
+def test_disk_reserve_fails_before_writing_checkpoint(tmp_path, monkeypatch):
+    import pytest
+    import experiments.kaggle_checkpoint_discovery as discovery
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(discovery.shutil, "disk_usage", lambda _: usage(100, 99, 1))
+    with pytest.raises(RuntimeError, match="only 1 bytes free"):
+        discovery._check_space(tmp_path, 1000)
+    assert not list(tmp_path.iterdir())

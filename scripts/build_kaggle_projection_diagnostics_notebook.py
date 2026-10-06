@@ -74,7 +74,7 @@ if str(REPO) not in sys.path:
 from experiments.kaggle_checkpoint_discovery import discover_checkpoints
 
 candidates, rejected = discover_checkpoints(
-    "/kaggle/input", RUN_ROOT / "discovery", kind="plateau_fork_checkpoint")
+    "/kaggle/input", RUN_ROOT.parent / (RUN_ROOT.name + "_checkpoint_cache"), kind="plateau_fork_checkpoint")
 architectures = {
     "CIFAR-ResNet18": "resnet18", "CIFAR-ResNet34": "resnet34",
     "CIFAR-VGG16-BN": "vgg16",
@@ -103,7 +103,7 @@ for item in candidates:
                  "fork_epoch": int(payload["epoch"])})
 RUNS.sort(key=lambda run: (run["architecture"], run["seed"], run["sha256"]))
 print("Rejected checkpoint candidates:", rejected)
-print("Discovered diagnostic runs:", json.dumps(RUNS, indent=2))
+print("Discovered diagnostic runs:", json.dumps(RUNS, indent=2, default=str))
 if not RUNS:
     raise FileNotFoundError("Attach original plateau_checkpoint.pt forks with architecture/seed metadata")
 print("Estimated SGD epochs:", len(RUNS) * 2 * (TOP_SITES + BOTTOM_SITES) * HORIZON)

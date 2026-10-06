@@ -235,7 +235,7 @@ def test_kaggle_diagnostic_notebook_compiles_and_discovers_requested_runs(tmp_pa
     for architecture, seed in sorted(requested | {("vgg16", 0)}):
         payload = dict.fromkeys(required)
         payload.update(epoch=243, protocol={"architecture": labels[architecture], "seed": seed})
-        forks.append({"path": f"{architecture}-{seed}.pt", "payload": payload,
+        forks.append({"path": Path(f"{architecture}-{seed}.pt"), "payload": payload,
                       "sha256": f"{architecture}-{seed}"})
     monkeypatch.setattr(discovery, "discover_checkpoints",
                         lambda *_args, **_kwargs: (forks + [forks[0]], []))

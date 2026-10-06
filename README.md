@@ -408,6 +408,11 @@ Enable Internet, GPU and the `github_token` Secret used by the existing notebook
 The default run filter is VGG16 seed 1 and ResNet18/ResNet34 seeds 1, 2, 3.
 It runs whichever matching forks are attached, prints their inventory, and saves
 an archive containing phase A/B results and within/across-seed summaries.
+Discovery processes archived checkpoints one at a time, discards unwanted or
+duplicate states, and reserves 256 MiB of free disk before materializing each
+checkpoint. Its checkpoint cache is outside the results folder and is excluded
+from the downloadable results archive. After updating this notebook, start a
+fresh Kaggle session to avoid retaining caches produced by older versions.
 For another session, reattach the full diagnostic notebook output: exact matching
 fork/config/code manifests allow completed runs and sites to be reused. Incomplete
 site trials restart from theta_P. Seven forks at the defaults cost about 1,400
