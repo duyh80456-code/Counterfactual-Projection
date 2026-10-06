@@ -420,6 +420,14 @@ SGD epochs and may exceed a single Kaggle session.
 
 ### CPU-only follow-up on existing logs
 
+For Kaggle Run All, import
+[`notebooks/kaggle_projection_log_analysis_cpu.ipynb`](notebooks/kaggle_projection_log_analysis_cpu.ipynb).
+Select Accelerator **None**, enable Internet and `github_token`, and attach
+previous E-to-O outputs exposing JSON/history files. No checkpoint or CIFAR
+input is needed. Edit its CONFIG cell to label unknown runs and rerun the
+analysis cells. Logs stored only inside archives must first be exposed as JSON
+input files. This notebook runs phase A only.
+
 No model, checkpoint, CIFAR data or GPU is needed for this command:
 
 ```bash
