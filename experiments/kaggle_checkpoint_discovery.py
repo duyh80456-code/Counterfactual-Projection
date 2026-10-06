@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 
 import torch
@@ -30,8 +32,8 @@ def _repack_archive(root: Path, target: Path) -> Path:
     return target
 
 
-def _extract_checkpoint_members(archive_path: Path, target_root: Path
-                                ) -> list[Path]:
+def _extract_checkpoint_members(archive_path: Path, target_root: Path, *,
+                                rejected: list[dict] | None = None) -> list[Path]:
     """Materialize .pt members from a notebook-output zip/tar archive."""
     target_root.mkdir(parents=True, exist_ok=True)
     extracted = []
@@ -44,21 +46,31 @@ def _extract_checkpoint_members(archive_path: Path, target_root: Path
                     target = target_root / f"zip_{index}_{Path(name).name}"
                     target.write_bytes(archive.read(name))
                     extracted.append(target)
-        elif tarfile.is_tarfile(archive_path):
-            with tarfile.open(archive_path) as archive:
-                members = [member for member in archive.getmembers()
-                           if member.isfile() and
-                           member.name.lower().endswith(".pt")]
-                for index, member in enumerate(members):
+        else:
+            # Stream tar members instead of scanning the whole archive first.
+            # Complete checkpoints before a truncated tail remain usable.
+            with tarfile.open(archive_path, mode="r|*") as archive:
+                for index, member in enumerate(archive):
+                    if not member.isfile() or not member.name.lower().endswith(".pt"):
+                        continue
                     stream = archive.extractfile(member)
                     if stream is None:
                         continue
                     target = (
                         target_root / f"tar_{index}_{Path(member.name).name}")
-                    target.write_bytes(stream.read())
+                    temporary = target.with_suffix(".pt.tmp")
+                    with stream, temporary.open("wb") as destination:
+                        shutil.copyfileobj(stream, destination)
+                    if temporary.stat().st_size != member.size:
+                        raise EOFError(f"Incomplete checkpoint member: {member.name}")
+                    temporary.replace(target)
                     extracted.append(target)
-    except (OSError, tarfile.TarError, zipfile.BadZipFile):
-        return []
+    except (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, zlib.error) as error:
+        if rejected is not None:
+            rejected.append({"path": str(archive_path),
+                             "reason": type(error).__name__,
+                             "detail": str(error),
+                             "complete_checkpoints_recovered": len(extracted)})
     return extracted
 
 
@@ -99,13 +111,13 @@ def discover_checkpoints(input_root: str | Path, output: str | Path,
     for index, root in enumerate(archive_roots):
         target = output / "repacked_input" / f"torch_archive_{index}.pt"
         candidates.append((_repack_archive(root, target), str(root)))
+    matches, rejected = [], []
     for index, archive_path in enumerate(sorted(set(container_archives))):
         extracted = _extract_checkpoint_members(
             archive_path, output / "repacked_input" /
-            f"container_archive_{index}")
+            f"container_archive_{index}", rejected=rejected)
         candidates.extend((path, str(archive_path)) for path in extracted)
 
-    matches, rejected = [], []
     seen_paths = set()
     for path, source in candidates:
         resolved = path.resolve()
