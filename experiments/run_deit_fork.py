@@ -11,7 +11,8 @@ import torch
 from adapters.deit_cp_adapter import CPConfig, one_shot_intervention
 from experiments.deit_protocol import (checked_source, load_training_context,
     materialize_probe_batches, save_state, evaluate_without_rng, historical_best)
-from experiments.shared_protocol import atomic_json_save, seed_everything, sha256_file, train_epoch
+from experiments.deit_e_rollback import EAccuracyRollback, rollback_protocol
+from experiments.shared_protocol import atomic_json_save, atomic_torch_save, seed_everything, sha256_file, train_epoch
 
 METHODS = ("vanilla_continue", "o_projection_only", "ours_e_driven_o")
 
@@ -26,6 +27,8 @@ def main():
     parser.add_argument("--post-fork-epochs", "--horizon", dest="post_fork_epochs", type=int, default=150)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--algorithm-patience", type=int, default=10,
+                        help="E-only epochs without strict accuracy improvement before rollback; no retrigger")
     parser.add_argument("--vanilla-reference", type=Path,
                         help="Phase 1 observed Vanilla window; defaults beside the fork checkpoint")
     for name, default in asdict(CPConfig()).items():
@@ -38,6 +41,8 @@ def main():
                       scales=tuple(float(value) for value in args.scales.split(",")))
     if args.post_fork_epochs < 1:
         parser.error("post-fork epochs must be positive")
+    if args.algorithm_patience < 1:
+        parser.error("algorithm patience must be positive")
     fork_hash = sha256_file(args.plateau_checkpoint)
     if fork_hash != args.plateau_checkpoint_hash:
         raise ValueError("DeiT fork SHA256 mismatch")
@@ -47,6 +52,8 @@ def main():
         raise ValueError("fork + horizon exceeds the declared global scheduler budget")
     identity = {"fork_hash": fork_hash, "method": args.method,
                 "post_fork_epochs": args.post_fork_epochs, "cp_config": json.loads(json.dumps(asdict(config)))}
+    if args.method == "ours_e_driven_o":
+        identity["e_controller"] = rollback_protocol(args.algorithm_patience)
     if args.method == "vanilla_continue":
         from experiments.deit_vanilla_reference import export_reused_vanilla_arm, TRAJECTORY_SOURCE
         identity["trajectory_source"] = TRAJECTORY_SOURCE
@@ -88,6 +95,23 @@ def main():
     best_accuracy = float(saved["report_best_accuracy"]) if saved else float("-inf")
     best_loss = float(saved["report_best_loss"]) if saved else float("inf")
     best_epoch = int(saved["report_best_epoch"]) if saved else int(fork["epoch"])
+    controller = None
+    if args.method == "ours_e_driven_o":
+        controller = (EAccuracyRollback.from_state(saved["e_controller"], args.algorithm_patience, start)
+                      if saved else EAccuracyRollback(model, optimizer, scheduler, loader, before,
+                                                     int(fork["epoch"]), args.algorithm_patience))
+
+    def save_anchor():
+        if controller is None:
+            return
+        atomic_torch_save({**controller.anchor, "kind": "deit_e_controller_best",
+            "protocol": fork["protocol"], "run_identity": identity, "method": args.method,
+            "train_indices": train_ids, "evaluation_indices": val_ids,
+            "source_tuning_indices": tuning_ids, "trigger_indices": trigger_ids,
+            **{key: value for key, value in controller.metrics().items()
+               if key.startswith("controller_anchor_")}}, args.output / "checkpoint_best.pt")
+
+    save_anchor()  # Before the jump, theta_P is the fallback anchor; resumes are self-contained.
 
     def save(epoch, completed):
         save_state(args.output / "checkpoint_latest.pt", model=model, optimizer=optimizer,
@@ -99,6 +123,11 @@ def main():
             validation_before=before, validation_immediately_after_projection=immediate,
             historical_best_accuracy=historical_accuracy, historical_best_loss=historical_loss,
             historical_best_epoch=historical_epoch,
+            **({"e_controller": controller.state_dict(), **controller.metrics(),
+                "model_state_epoch": history[-1].get("model_state_epoch", epoch),
+                "state_validation_accuracy": history[-1].get("state_validation_accuracy", history[-1]["validation_accuracy"]),
+                "state_validation_loss": history[-1].get("state_validation_loss", history[-1]["validation_loss"])}
+               if controller else {}),
             report_best_accuracy=best_accuracy, report_best_loss=best_loss, report_best_epoch=best_epoch)
 
     if saved is None:
@@ -115,6 +144,11 @@ def main():
                         "validation_accuracy": immediate["accuracy"],
                         "validation_loss": immediate["loss"],
                         "metric_timing": "after_initial_projection_before_SGD"})
+        if controller:
+            history[-1].update(controller.observe(model, optimizer, scheduler, loader, immediate,
+                int(fork["epoch"]), 0, count_stall=False))
+            if history[-1]["controller_anchor_improved"]:
+                save_anchor()
         save(int(fork["epoch"]), 0)  # Resume does not reapply the one-shot jump.
     for offset in range(start + 1, args.post_fork_epochs + 1):
         epoch = int(fork["epoch"]) + offset
@@ -130,6 +164,10 @@ def main():
                 row for row in history if 1 <= row["post_fork_epoch"] <= 5]
         if validation["accuracy"] > best_accuracy:
             best_accuracy, best_loss, best_epoch = validation["accuracy"], validation["loss"], epoch
+        if controller:
+            history[-1].update(controller.observe(model, optimizer, scheduler, loader, validation, epoch, offset))
+            if history[-1]["controller_anchor_improved"]:
+                save_anchor()
         save(epoch, offset)
         print(json.dumps(history[-1]), flush=True)
     first_five = [row for row in history if 1 <= row["post_fork_epoch"] <= 5]
@@ -145,11 +183,17 @@ def main():
         "delta_vs_historical_best": best_accuracy - historical_accuracy,
         "scientific_escape": best_accuracy > historical_accuracy,
         "report_best_scope": "epochs1_to_K_epoch0_reported_separately",
-        "final_validation_accuracy": history[-1]["validation_accuracy"],
-        "final_validation_loss": history[-1]["validation_loss"],
+        "final_validation_accuracy": history[-1].get("state_validation_accuracy", history[-1]["validation_accuracy"]),
+        "final_validation_loss": history[-1].get("state_validation_loss", history[-1]["validation_loss"]),
+        "last_observed_validation_accuracy": history[-1]["validation_accuracy"],
+        "last_observed_validation_loss": history[-1]["validation_loss"],
         "post_fork_epochs": args.post_fork_epochs,
         "horizon": args.post_fork_epochs, "run_identity": identity,
-        "controller": "one_shot_no_rollback_no_retrigger"}, args.output / "result.json")
+        "controller": "one_shot_E_accuracy_stall_rollback_no_retrigger" if controller else "one_shot_no_rollback_no_retrigger",
+        "validation_role": "post_fork_reporting_and_E_rollback_selection" if controller else "post_fork_reporting",
+        **({"algorithm_patience": args.algorithm_patience, "controller_protocol": controller.protocol,
+            **controller.metrics(), "rollback_events": controller.rollback_events,
+            "final_model_state_epoch": history[-1]["model_state_epoch"]} if controller else {})}, args.output / "result.json")
 
 
 if __name__ == "__main__":

@@ -512,8 +512,8 @@ full official ImageNet training recipe.
   Vanilla reuses the uninterrupted K-epoch plateau-confirmation window already
   observed in Phase 1, including its original metrics and full terminal state.
   Only O-only and E-to-O restore model/optimizer/scheduler/RNG/loader state, apply
-  one correction and train new AdamW arms for K epochs. There is no rollback or
-  retrigger. Epoch0 after-correction checkpoints ensure resume does not reapply
+  one correction and train new AdamW arms for K epochs. O-only has no rollback;
+  E-to-O uses the rollback controller below. Neither arm retriggers E. Epoch0 after-correction checkpoints ensure resume does not reapply
   the intervention; all candidate tensors/hooks disappear before saving.
 
 The configurable **initial baseline recipe** is AdamW LR5e-4, WD.05, betas
@@ -526,7 +526,8 @@ excluded from training. Accuracy ties, even with lower loss, do not move theta_P
 After plateau detection, the full historical-best checkpoint is loaded to export
 theta_P; the detection-epoch checkpoint is never the fork. All arms use the same
 SHA256-verified starting point and compare the same fixed K-epoch window. Validation never selects site, scale
-or damping and there is no arm rollback or early stopping.
+or damping. E-to-O does use validation for its rollback decisions; both arms
+still run the full K epochs without early stopping.
 `report_best_accuracy/loss/epoch` describe epochs 1 through K of each arm; epoch0
 validation immediately after projection is reported separately. `scientific_escape`
 is strict post-fork best accuracy > `historical_best_accuracy`, and
@@ -542,8 +543,21 @@ and a hash binding it to theta_P. Its CPU export writes Vanilla `result.json` an
 `additional_training_epochs=0`. Vanilla escape is false by construction for this
 plateau window. A missing reference or mismatched fork/window raises an error;
 Vanilla is never retrained as a fallback. Reuse requires the post-fork horizon to
-equal stall patience. There is no `algorithm_patience` because interventions
-are one-shot and arm training has no rollback/retrigger. `--horizon` remains an
+equal stall patience. `algorithm_patience=10` applies only to E-to-O: the anchor starts at theta_P
+before projection and updates on higher accuracy or an exact accuracy tie with
+lower loss. The accuracy stall resets only on strictly higher accuracy; a
+lower-loss tie updates the full anchor but still counts as one epoch without
+accuracy improvement. After 10 such epochs, restore model, AdamW and scheduler
+from the anchor, reset the accuracy stall to zero, and continue with the current
+RNG and loader stream. No new E query/projection occurs. Scheduler/optimizer state
+(including LR and Adam step) return to the anchor; the elapsed K-epoch horizon
+is never rewound. `checkpoint_best.pt` stores the E anchor; latest checkpoints
+also embed it and the counter/events for standalone resume. Scientific reporting
+remains strict accuracy only. History logs validation before rollback separately
+from the actual post-controller state metrics used for final-checkpoint reporting.
+The E controller configuration is part of its resume identity, so old E arms
+without rollback cannot silently resume this algorithm. Phase 1, O-only and the
+observed Vanilla reference remain compatible with the same protocol-v4 forks. `--horizon` remains an
 alias for `--post-fork-epochs`.
 
 Standalone commands after installing pinned Gromo (Python >=3.10):

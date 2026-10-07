@@ -155,7 +155,7 @@ def test_notebook_exports_vanilla_and_launches_only_two_training_arms(tmp_path):
     calls = []
     namespace = {"invoke": lambda module, args: calls.append((module, args)),
                  "OUTPUT": tmp_path, "FORK": tmp_path / "fork.pt", "FORK_HASH": "shared-fork",
-                 "VANILLA_REFERENCE": tmp_path / "reference.pt", "POST_FORK_EPOCHS": 150,
+                 "VANILLA_REFERENCE": tmp_path / "reference.pt", "POST_FORK_EPOCHS": 150, "ALGORITHM_PATIENCE": 10,
                  "CP": CPConfig(), "DATA_ROOT": "cifar", "states": [],
                  "flags": lambda _config: [], "asdict": asdict, "json": json}
     exec(compile(cell, "kaggle-arm-orchestration", "exec"), namespace)
@@ -169,3 +169,5 @@ def test_notebook_exports_vanilla_and_launches_only_two_training_arms(tmp_path):
         assert args[args.index("--plateau-checkpoint-hash") + 1] == "shared-fork"
         assert args[args.index("--post-fork-epochs") + 1] == 150
     assert all("--data-root" in args for _, args in calls[1:])
+    assert "--algorithm-patience" not in calls[1][1]
+    assert calls[2][1][calls[2][1].index("--algorithm-patience") + 1] == 10

@@ -196,7 +196,7 @@ def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches
             assert torch.equal(value, uninterrupted["optimizer"]["state"][key][name])
 
 
-def test_notebook_cells_compile_and_no_recurrent_controller():
+def test_notebook_cells_compile_and_no_retrigger():
     notebook = json.loads(Path("notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb").read_text())
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":

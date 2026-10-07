@@ -34,7 +34,7 @@ ENV["REQUIRE_DEIT_INTEGRATION"] = "1"
 subprocess.run([sys.executable, "-m", "pytest", "-q",
     "tests/test_deit_function_preserving.py", "tests/test_deit_sites.py",
     "tests/test_deit_projection.py", "tests/test_deit_no_aux_persistence.py",
-    "tests/test_deit_protocol.py", "tests/test_deit_vanilla_reference.py"], cwd=REPO, env=ENV, check=True)
+    "tests/test_deit_protocol.py", "tests/test_deit_vanilla_reference.py", "tests/test_deit_e_rollback.py"], cwd=REPO, env=ENV, check=True)
 import torch
 if not torch.cuda.is_available():
     raise RuntimeError("Enable a CUDA GPU; this notebook trains DeiT")
@@ -52,7 +52,9 @@ MLP hidden768; no distillation, pretrained weights, dropout or DropPath.
 TINY uses rank8 requested at all 12 MLP sites, with effective rank logged.
 WHERE selects raw mean observed E gain. HOW only changes fc1/fc2 at that site.
 Vanilla reuses the observed Phase 1 plateau window; only O-only and E-to-O
-train new 150-epoch arms. No recurrent controller, rollback or persistent extension is enabled.
+train new 150-epoch arms. E-to-O rolls back after 10 epochs without strict
+accuracy improvement to its accuracy/loss best; it never queries E again. O-only
+has no rollback. No persistent extension is enabled.
 
 AdamW recipe is a declared initial recipe, not the original ImageNet DeiT
 recipe: LR=5e-4, WD=.05, 5 warmup epochs, fixed global cosine to epoch400,
@@ -75,6 +77,7 @@ from adapters.deit_cp_adapter import CPConfig
 SEED = 1
 STALL_PATIENCE = 150
 POST_FORK_EPOCHS = 150
+ALGORITHM_PATIENCE = 10  # E-only rollback; ties with lower loss update anchor, not accuracy stall
 RECIPE = DeitRecipe(seed=SEED, stall_patience=STALL_PATIENCE)
 CP = CPConfig()  # rank8, epsilon .05, projection64, CG200, scales through .2
 if POST_FORK_EPOCHS != STALL_PATIENCE:
@@ -177,6 +180,7 @@ if not VANILLA_REFERENCE.exists():
         create_vanilla_reference(FORK, terminals[0]["path"], VANILLA_REFERENCE)
 print("Observed Vanilla reference:", VANILLA_REFERENCE)
 '''), code('''# Export Vanilla on CPU, then train only the two intervention arms.
+from experiments.deit_e_rollback import rollback_protocol
 invoke("experiments.run_deit_fork", ["--plateau-checkpoint", FORK,
     "--plateau-checkpoint-hash", FORK_HASH, "--method", "vanilla_continue",
     "--vanilla-reference", VANILLA_REFERENCE, "--output", OUTPUT / "vanilla_continue",
@@ -186,6 +190,8 @@ for method in ("o_projection_only", "ours_e_driven_o"):
     destination.mkdir(parents=True, exist_ok=True)
     identity = {"fork_hash": FORK_HASH, "method": method, "post_fork_epochs": POST_FORK_EPOCHS,
                 "cp_config": json.loads(json.dumps(asdict(CP)))}
+    if method == "ours_e_driven_o":
+        identity["e_controller"] = rollback_protocol(ALGORITHM_PATIENCE)
     resumable = [item for item in states if item["payload"]["kind"] == "deit_fork_arm_latest"
                  and item["payload"].get("run_identity") == identity]
     if resumable and not (destination / "checkpoint_latest.pt").exists():
@@ -197,6 +203,8 @@ for method in ("o_projection_only", "ours_e_driven_o"):
     command = ["--data-root", DATA_ROOT, "--plateau-checkpoint", FORK,
                "--plateau-checkpoint-hash", FORK_HASH, "--method", method,
                "--output", destination, "--post-fork-epochs", POST_FORK_EPOCHS, *flags(asdict(CP))]
+    if method == "ours_e_driven_o":
+        command += ["--algorithm-patience", ALGORITHM_PATIENCE]
     if (destination / "checkpoint_latest.pt").exists():
         command += ["--resume", destination / "checkpoint_latest.pt"]
     invoke("experiments.run_deit_fork", command)
@@ -219,6 +227,8 @@ for result in results:
         "final_accuracy": result["final_validation_accuracy"],
         "scientific_escape": result["scientific_escape"],
         "trajectory_source": result.get("trajectory_source", "new_intervention_arm"),
+        "rollback_count": result.get("rollback_count", 0),
+        "controller_anchor_epoch": result.get("controller_anchor_epoch"),
         "additional_training_epochs": result.get("additional_training_epochs", result["post_fork_epochs"])}, indent=2))
 archive = shutil.make_archive(str(OUTPUT), "gztar", root_dir=OUTPUT)
 print("Download:", archive)
