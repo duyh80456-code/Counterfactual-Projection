@@ -14,7 +14,7 @@ from experiments.shared_protocol import (atomic_torch_save, datasets_and_indices
     evaluate, make_train_loader, make_eval_loader, rng_state, restore_rng)
 
 ARCHITECTURE = "CIFAR-DeiT-Tiny-Patch4"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class DeitRecipe:
         if not (self.batch_size > 0 and self.workers >= 0 and self.learning_rate > 0 and
                 self.weight_decay >= 0 and 0 <= self.warmup_epochs < self.schedule_epochs and
                 0 <= self.min_lr_ratio <= 1 and self.validation_samples > 0 and
-                0 <= self.trigger_samples < self.validation_samples and
+                0 < self.trigger_samples < self.validation_samples and
                 self.tuning_samples >= 0 and self.patience > 0 and
                 self.schedule_epochs >= self.max_epoch >= self.min_plateau_epoch >= 1):
             raise ValueError("invalid DeiT baseline recipe")
@@ -72,8 +72,9 @@ def protocol(recipe, model):
             "model_config": getattr(model, "config", model), "pretrained": False, "distilled": False,
             "drop_rate": 0., "drop_path_rate": 0.,
             "optimizer": "AdamW", "scheduler": "warmup_then_cosine_fixed_global_schedule",
-            "theta_P_rule": "last strict validation accuracy best after no-new-best patience",
-            "selection_metric": "validation accuracy on evaluation split; trigger split reserved",
+            "theta_P_rule": "last strict trigger accuracy best after no-new-best trigger patience",
+            "selection_metric": "trigger split accuracy only",
+            "report_validation_role": "report_only_no_training_or_selection_decisions",
             "official_test_used": False}
 
 

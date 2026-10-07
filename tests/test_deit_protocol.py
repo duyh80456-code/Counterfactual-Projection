@@ -21,7 +21,7 @@ def test_checkpoint_recipe_flags_and_architecture_guard(tmp_path):
     path = tmp_path / "fork.pt"
     torch.save(payload, path)
     assert checked_source(path, {"deit_plateau_fork"})[1] == recipe
-    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0),
+    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0), ("protocol_version", 1),
                        ("drop_path_rate", .1), ("pretrained", True)):
         wrong = copy.deepcopy(payload)
         wrong["protocol"][key] = value
@@ -165,6 +165,23 @@ def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches
         assert resumed["history"][0]["metric_timing"] == "before_SGD_no_projection"
     assert result["validation_before"] is not None
     assert result["validation_immediately_after_projection"] is not None
+    # Arbitrary report values must not change the jump, horizon or training trajectory.
+    monkeypatch.setattr(runner, "evaluate_without_rng", lambda *_args:
+                        {"accuracy": .999, "loss": 100.})
+    alternate_args = list(args)
+    alternate_output = tmp_path / "alternate_reports"
+    alternate_args[alternate_args.index("--output") + 1] = str(alternate_output)
+    monkeypatch.setattr(sys, "argv", alternate_args)
+    runner.main()
+    alternate = torch.load(alternate_output / "checkpoint_latest.pt", weights_only=False)
+    assert len(calls) == 2 * expected
+    assert alternate["completed_epochs"] == 2
+    assert alternate["scheduler"] == uninterrupted["scheduler"]
+    assert all(torch.equal(value, uninterrupted["model"][key])
+               for key, value in alternate["model"].items())
+    for key, state in alternate["optimizer"]["state"].items():
+        for name, value in state.items():
+            assert torch.equal(value, uninterrupted["optimizer"]["state"][key][name])
 
 
 def test_notebook_cells_compile_and_no_recurrent_controller():
@@ -177,9 +194,9 @@ def test_notebook_cells_compile_and_no_recurrent_controller():
     assert "retrigger_patience" not in text
 
 
-def test_vanilla_plateau_exports_strict_best_state_and_matching_loss(deit_small, tmp_path, monkeypatch):
-    # Canonical backbone and real AdamW updates; validation values are scripted
-    # to isolate plateau selection (tie with lower loss must retain report best).
+@pytest.mark.parametrize("report_keeps_improving", [False, True])
+def test_vanilla_plateau_exports_strict_best_state_and_matching_loss(deit_small, tmp_path, monkeypatch, report_keeps_improving):
+    # Report improvement must not postpone the trigger plateau or change theta_P.
     import experiments.deit_protocol as shared
     import experiments.train_deit_plateau as runner
     images = torch.randn(6, 3, 32, 32)
@@ -187,9 +204,19 @@ def test_vanilla_plateau_exports_strict_best_state_and_matching_loss(deit_small,
     dataset = TensorDataset(images, labels)
     monkeypatch.setattr(shared, "datasets_and_indices", lambda *_args:
         (dataset, dataset, [0, 1], [2, 3, 4, 5], []))
-    measurements = iter([{"accuracy": .1, "loss": 5.}, {"accuracy": .2, "loss": 4.},
-                         {"accuracy": .2, "loss": 3.9}, {"accuracy": .1, "loss": 3.8}])
-    monkeypatch.setattr(runner, "evaluate_without_rng", lambda *_args: next(measurements))
+    reports = [{"accuracy": .1, "loss": 5.}, {"accuracy": .2, "loss": 4.},
+               {"accuracy": .3 if report_keeps_improving else .2, "loss": 3.9},
+               {"accuracy": .4 if report_keeps_improving else .1, "loss": 3.8}]
+    triggers = [{"accuracy": .1, "loss": 5.}, {"accuracy": .2, "loss": 4.},
+                {"accuracy": .2, "loss": 3.9}, {"accuracy": .1, "loss": 3.8}]
+    measurements = iter([value for pair in zip(reports, triggers) for value in pair])
+    calls = []
+    def scripted_evaluation(_model, loader, _device):
+        expected_ids = [4, 5] if len(calls) % 2 == 0 else [2, 3]
+        assert list(loader.dataset.indices) == expected_ids
+        calls.append(expected_ids)
+        return next(measurements)
+    monkeypatch.setattr(runner, "evaluate_without_rng", scripted_evaluation)
     output = tmp_path / "vanilla"
     arguments = ["train_deit_plateau", "--data-root", "unused", "--output", str(output),
         "--device", "cpu", "--workers", "0", "--batch-size", "2",
@@ -205,6 +232,11 @@ def test_vanilla_plateau_exports_strict_best_state_and_matching_loss(deit_small,
     assert fork["stall_detected_epoch"] == 3
     assert fork["report_best_accuracy"] == .2
     assert fork["report_best_loss"] == 4.
+    assert fork["trigger_best_epoch"] == 1
+    assert latest["report_best_epoch"] == (3 if report_keeps_improving else 1)
+    summary = json.loads((output / "result.json").read_text())
+    assert summary["fork_epoch"] == 1 and summary["stall_detected_epoch"] == 3
+    assert summary["report_best_epoch"] == (3 if report_keeps_improving else 1)
     assert fork["history"][-1]["validation_loss"] == 4.  # paired report loss
     assert all(torch.equal(value, best["model"][key]) for key, value in fork["model"].items())
     assert fork["scheduler"]["last_epoch"] == 1

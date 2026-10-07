@@ -56,8 +56,9 @@ No recurrent controller, rollback or persistent extension is enabled.
 AdamW recipe is a declared initial recipe, not the original ImageNet DeiT
 recipe: LR=5e-4, WD=.05, 5 warmup epochs, fixed global cosine to epoch400,
 minimum LR ratio .01. Patience20, plateau armed from epoch100, max epoch300.
-Validation uses the same CIFAR split recipe as CNN runs (2000 trigger reserved,
-3000 selection/reporting). K=30. Change these in the next config cell if needed;
+Validation uses the same CIFAR split recipe as CNN runs (2000 trigger for fork
+selection and plateau detection, 3000 report-only). K=30. Protocol v2 rejects
+old evaluation-selected forks. Change these in the next config cell if needed;
 resume requires the identical recipe and intervention configuration.
 
 Optional: reattach this notebook's prior **expanded output files** to reuse a
@@ -126,7 +127,7 @@ if not FORK.exists():
             raise RuntimeError("Ambiguous Vanilla resume states")
         selected = latest[0]
         bests = [item for item in states if item["payload"]["kind"] == "deit_vanilla_best" and
-                 item["payload"]["epoch"] == selected["payload"]["report_best_epoch"]]
+                 item["payload"]["epoch"] == selected["payload"]["trigger_best_epoch"]]
         if len(bests) != 1:
             raise RuntimeError("Reattach both Vanilla latest and its matching best checkpoint")
         shutil.copy2(selected["path"], PHASE1 / "checkpoint_latest.pt")
