@@ -25,7 +25,7 @@ def test_checkpoint_recipe_flags_and_architecture_guard(tmp_path):
     path = tmp_path / "fork.pt"
     torch.save(payload, path)
     assert checked_source(path, {"deit_plateau_fork"})[1] == recipe
-    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0), ("protocol_version", 1), ("protocol_version", 2), ("protocol_version", 3),
+    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0), ("protocol_version", 1), ("protocol_version", 2), ("protocol_version", 3), ("protocol_version", 4),
                        ("drop_path_rate", .1), ("pretrained", True)):
         wrong = copy.deepcopy(payload)
         wrong["protocol"][key] = value

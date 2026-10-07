@@ -15,19 +15,19 @@ def create_vanilla_reference(fork_path, terminal_path, output_path):
     fork, recipe = checked_source(fork_path, {"deit_plateau_fork"})
     terminal, terminal_recipe = checked_source(terminal_path, {"deit_vanilla_latest"})
     accuracy, loss, epoch = historical_best(fork)
-    horizon = recipe.stall_patience
+    horizon = recipe.reference_epochs or recipe.stall_patience
     if (terminal_recipe != recipe or terminal["protocol"] != fork["protocol"] or
             not terminal.get("plateau_detected") or terminal["epoch"] != epoch + horizon or
             terminal.get("historical_best_epoch") != epoch or
             terminal.get("historical_best_accuracy") != accuracy or
             terminal.get("historical_best_loss") != loss or
             terminal["history"][:len(fork["history"])] != fork["history"] or
-            terminal["history"][len(fork["history"]):] != fork.get("stall_history")):
+            terminal["history"][len(fork["history"]):] != fork.get("vanilla_history", fork.get("stall_history"))):
         raise ValueError("Phase 1 terminal checkpoint does not match the selected fork trajectory")
     for key in ("train_indices", "evaluation_indices", "source_tuning_indices", "trigger_indices"):
         if terminal[key] != fork[key]:
             raise ValueError("Phase 1 terminal checkpoint and fork data splits differ")
-    rows = fork["stall_history"]
+    rows = fork.get("vanilla_history", fork["stall_history"])
     if len(rows) != horizon or [row["epoch"] for row in rows] != list(range(epoch + 1, epoch + horizon + 1)):
         raise ValueError("Phase 1 plateau window is not a complete contiguous horizon")
     before = {"accuracy": accuracy, "loss": loss}
@@ -55,13 +55,13 @@ def export_reused_vanilla_arm(fork, reference, output, identity):
     accuracy, loss, epoch = historical_best(fork)
     horizon = identity["post_fork_epochs"]
     history = reference["history"]
-    expected_rows = [{**row, "post_fork_epoch": row["epoch"] - epoch} for row in fork["stall_history"]]
+    expected_rows = [{**row, "post_fork_epoch": row["epoch"] - epoch} for row in fork.get("vanilla_history", fork["stall_history"])]
     if (reference.get("vanilla_reference_version") != REFERENCE_VERSION or
             reference.get("trajectory_source") != TRAJECTORY_SOURCE or
             reference.get("theta_best_hash") != identity["fork_hash"] or
             reference["protocol"] != fork["protocol"] or
             reference.get("method") != "vanilla_continue" or reference.get("interventions") != [] or
-            reference.get("completed_epochs") != horizon or horizon != fork["protocol"]["recipe"]["stall_patience"] or
+            reference.get("completed_epochs") != horizon or horizon != (fork["protocol"]["recipe"].get("reference_epochs") or fork["protocol"]["recipe"]["stall_patience"]) or
             reference["epoch"] != epoch + horizon or len(history) != horizon + 1 or
             history[1:] != expected_rows or
             not history or history[0]["epoch"] != epoch or history[0].get("post_fork_epoch") != 0 or
@@ -77,8 +77,8 @@ def export_reused_vanilla_arm(fork, reference, output, identity):
             reference["validation_immediately_after_projection"] != before):
         raise ValueError("Vanilla reference initial metric does not match historical best")
     best = max(history[1:], key=lambda row: row["validation_accuracy"])
-    if best["validation_accuracy"] > accuracy:
-        raise ValueError("Vanilla plateau window exceeds its declared historical best")
+    if any(row["validation_accuracy"] > accuracy for row in history[1:1 + fork["protocol"]["recipe"]["stall_patience"]]):
+        raise ValueError("Vanilla confirmation window exceeds its declared historical best")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     metrics = {"report_best_accuracy": best["validation_accuracy"],
@@ -92,7 +92,7 @@ def export_reused_vanilla_arm(fork, reference, output, identity):
         "validation_before": before, "validation_immediately_after_projection": dict(before),
         "validation_1_to_5_epochs_after": history[1:6], "interventions": [], "history": history,
         **metrics, "delta_vs_historical_best": metrics["report_best_accuracy"] - accuracy,
-        "scientific_escape": False, "report_best_scope": "epochs1_to_K_epoch0_reported_separately",
+        "scientific_escape": metrics["report_best_accuracy"] > accuracy, "report_best_scope": "epochs1_to_K_epoch0_reported_separately",
         "final_validation_accuracy": history[-1]["validation_accuracy"],
         "final_validation_loss": history[-1]["validation_loss"],
         "post_fork_epochs": horizon, "horizon": horizon, "run_identity": identity,

@@ -14,7 +14,7 @@ from experiments.shared_protocol import (atomic_torch_save, datasets_and_indices
     evaluate, make_train_loader, make_eval_loader, rng_state, restore_rng)
 
 ARCHITECTURE = "CIFAR-DeiT-Tiny-Patch4"
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class DeitRecipe:
     tuning_samples: int = 128
     stall_patience: int = 150
     max_epoch: int = 300
+    stall_start_epoch: int = 0
+    reference_epochs: int = 0  # 0 preserves the original patience-sized reference
 
     def validate(self):
         if not (self.batch_size > 0 and self.workers >= 0 and self.learning_rate > 0 and
@@ -39,7 +41,10 @@ class DeitRecipe:
                 0 <= self.min_lr_ratio <= 1 and self.validation_samples > 0 and
                 0 < self.trigger_samples < self.validation_samples and
                 self.tuning_samples >= 0 and self.stall_patience > 0 and
-                self.schedule_epochs >= self.max_epoch >= self.stall_patience):
+                self.stall_start_epoch >= 0 and self.reference_epochs >= 0 and
+                (self.reference_epochs == 0 or self.reference_epochs >= self.stall_patience) and
+                self.max_epoch >= self.stall_start_epoch + (self.reference_epochs or self.stall_patience) and
+                (self.stall_start_epoch == 0 or self.stall_start_epoch >= self.schedule_epochs)):
             raise ValueError("invalid DeiT baseline recipe")
 
 
@@ -73,6 +78,8 @@ def protocol(recipe, model):
             "optimizer": "AdamW", "scheduler": "warmup_then_cosine_fixed_global_schedule",
             "theta_P_rule": "historical strict evaluation accuracy best after no-new-best patience",
             "selection_metric": "evaluation split accuracy",
+            "best_eligible_from_epoch": recipe.stall_start_epoch,
+            "historical_best_scope": "all_history" if recipe.stall_start_epoch == 0 else "recipe_complete_eligible_epochs",
             "evaluation_samples": recipe.validation_samples - recipe.trigger_samples,
             "report_validation_role": "historical_best_and_plateau_selection_then_fixed_horizon_reporting",
             "unused_trigger_split_role": "reserved_excluded_from_training_and_selection",
@@ -102,12 +109,14 @@ def historical_best(source):
     epoch = int(source["historical_best_epoch"])
     loss = float(source["historical_best_loss"])
     history = source["history"]
+    eligible_start = source.get("protocol", {}).get("recipe", {}).get("stall_start_epoch", 0)
+    eligible = [row for row in history if row["epoch"] >= eligible_start]
     if (not history or epoch != source["epoch"] or
             history[-1]["epoch"] != epoch or
             history[-1]["validation_accuracy"] != accuracy or
             history[-1]["validation_loss"] != loss or
-            max(row["validation_accuracy"] for row in history) != accuracy or
-            any(row["validation_accuracy"] >= accuracy for row in history[:-1]) or
+            not eligible or max(row["validation_accuracy"] for row in eligible) != accuracy or
+            any(row["validation_accuracy"] >= accuracy for row in eligible[:-1]) or
             any(row["validation_accuracy"] > accuracy for row in source.get("stall_history", []))):
         raise ValueError("theta_P is not the historical validation-best checkpoint")
     return accuracy, loss, epoch
@@ -130,6 +139,9 @@ def load_training_context(data_root, recipe, device, source=None):
                 ("source_tuning_indices", tuning_ids))):
             raise ValueError("DeiT checkpoint data split mismatch")
     model = DeiTTinyCifar().to(device)
+    if source is not None and source.get("persistent_growth"):
+        from adapters.deit_persistent_growth import restore_growth_geometry
+        restore_growth_geometry(model, source["model"])
     optimizer, scheduler = build_optimizer_scheduler(model, recipe)
     if source is not None:
         model.load_state_dict(source["model"], strict=True)
@@ -165,7 +177,7 @@ def save_state(path, *, model, optimizer, scheduler, loader, epoch, history,
         **extra}, Path(path))
 
 
-def materialize_probe_batches(evaluation, train_ids, recipe, config, device):
+def materialize_probe_batches(evaluation, train_ids, recipe, config, device, *, include_opt=False):
     indices = probe_indices(train_ids, recipe.seed, config)
 
     def load(ids, batch_size):
@@ -173,7 +185,10 @@ def materialize_probe_batches(evaluation, train_ids, recipe, config, device):
             shuffle=False, num_workers=0, generator=torch.Generator().manual_seed(recipe.seed))
         return [tuple(value.to(device) for value in batch) for batch in loader]
 
-    return {"statistics": load(indices["statistics"], recipe.batch_size),
+    batches = {"statistics": load(indices["statistics"], recipe.batch_size),
             "where_batches": [load(ids, len(ids))[0] for ids in indices["where"]],
             "projection_batch": load(indices["projection"], len(indices["projection"]))[0],
-            "gate_batch": load(indices["gate"], len(indices["gate"]))[0]}, indices
+            "gate_batch": load(indices["gate"], len(indices["gate"]))[0]}
+    if include_opt:
+        batches.update({key: load(indices[key], len(indices[key]))[0] for key in ("opt_fit", "opt_val")})
+    return batches, indices

@@ -99,7 +99,7 @@ def intervention_batches(eval_set, train_indices, args, probe_index, device):
             one_batch(projection_indices), one_batch(gate_indices))
 
 
-def select_by_expansion_gain(model, statistics, where_batches, args, device):
+def select_by_expansion_gain(model, statistics, where_batches, args, device, *, normalized=False):
     synchronize(device)
     started = time.perf_counter()
     candidates = propose_structural_candidates(
@@ -130,18 +130,23 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
     ranked = sorted(rows, key=lambda row: row["mean_e_gain"], reverse=True)
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
-    selected = ranked[0]
+    normalized_ranked = sorted(rows, key=lambda row: row["mean_e_gain"] / (row["mean_delta_f_norm"] + 1e-8), reverse=True)
+    for rank, row in enumerate(normalized_ranked, start=1):
+        row["rank_normalized"] = rank
+    selected = normalized_ranked[0] if normalized else ranked[0]
     batch_winners = []
     for batch_index in range(len(where_batches)):
         batch_winners.append(max(
-            rows, key=lambda row: row["e_gains"][batch_index])["site"])
+            rows, key=lambda row: (row["e_gains"][batch_index] /
+                (row["delta_f_norms"][batch_index] + 1e-8) if normalized else
+                row["e_gains"][batch_index]))["site"])
     top_gap = (ranked[0]["mean_e_gain"] - ranked[1]["mean_e_gain"]
                if len(ranked) > 1 else None)
     synchronize(device)
     diagnostics = {
         "site_selection_mode": "all_sites_observed_functional_loss_gain",
         "selection_candidate_count": len(candidates),
-        "where_selector": "mean_observed_structural_E_gain",
+        "where_selector": "mean_gain_over_mean_delta_norm" if normalized else "mean_observed_structural_E_gain",
         "selected_site": selected["site"],
         "selected_e_gain": selected["mean_e_gain"],
         "selected_functional_delta_norm": selected["mean_delta_f_norm"],
@@ -152,6 +157,9 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device):
         "site_evaluations": {
             row["site"]: {
                 "rank": row["rank"], "mean_e_gain": row["mean_e_gain"],
+                "rank_raw": row["rank"], "rank_normalized": row["rank_normalized"],
+                "where_score_raw": row["mean_e_gain"],
+                "where_score_normalized": row["mean_e_gain"] / (row["mean_delta_f_norm"] + 1e-8),
                 "per_batch_e_gain": row["e_gains"],
                 "mean_functional_delta_norm": row["mean_delta_f_norm"],
                 "gain_per_functional_delta_norm": row["mean_e_gain"] / (row["mean_delta_f_norm"] + 1e-12),

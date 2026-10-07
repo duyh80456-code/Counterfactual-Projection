@@ -49,7 +49,9 @@ def main():
                 selected_best["report_best_loss"] != best_loss):
             raise ValueError("resume latest and best checkpoints do not match")
     start_epoch = int(source["epoch"]) if source else 0
-    detected = False
+    detected = bool(source and source.get("plateau_detected"))
+    detected_epoch = source.get("stall_detected_epoch", source["epoch"] if detected else None) if source else None
+    reference_epochs = recipe.reference_epochs or recipe.stall_patience
 
     def save(path, epoch, kind, **extra):
         save_state(path, model=model, optimizer=optimizer, scheduler=scheduler, loader=loader,
@@ -69,8 +71,7 @@ def main():
                         "validation_loss": initial["loss"]})
         save(best_path, 0, "deit_vanilla_best")
     for epoch in range(start_epoch + 1, recipe.max_epoch + 1):
-        if source and source.get("plateau_detected"):
-            detected = True
+        if detected and start_epoch >= best_epoch + reference_epochs:
             break
         train = train_epoch(model, loader, optimizer, device)
         validation = evaluate_without_rng(model, eval_loader, device)
@@ -80,28 +81,33 @@ def main():
                         "validation_accuracy": validation["accuracy"],
                         "validation_loss": validation["loss"],
                         "learning_rates": [group["lr"] for group in optimizer.param_groups]})
-        if validation["accuracy"] > best_accuracy:
+        if not detected and (epoch == recipe.stall_start_epoch or validation["accuracy"] > best_accuracy):
             best_accuracy, best_epoch = validation["accuracy"], epoch
             best_loss = validation["loss"]
             save(best_path, epoch, "deit_vanilla_best")
-        detected = epoch - best_epoch >= recipe.stall_patience
+        if not detected and best_epoch >= recipe.stall_start_epoch and epoch - best_epoch >= recipe.stall_patience:
+            detected = True
+            detected_epoch = epoch
         save(args.output / "checkpoint_latest.pt", epoch, "deit_vanilla_latest",
-             plateau_detected=detected)
+             plateau_detected=detected, stall_detected_epoch=detected_epoch,
+             vanilla_reference_complete=detected and epoch >= best_epoch + reference_epochs)
         print(json.dumps(history[-1]), flush=True)
-        if detected:
+        if detected and epoch >= best_epoch + reference_epochs:
             break
     if source and source.get("plateau_detected"):
         detected = True
-    if not detected:
+    if not detected or history[-1]["epoch"] < best_epoch + reference_epochs:
         atomic_json_save({"protocol": declared, "history": history,
-                          "status": "plateau_not_detected"}, args.output / "result.json")
-        raise RuntimeError("No plateau within max_epoch; no theta_P exported")
+                          "status": "plateau_detected_vanilla_incomplete" if detected else "plateau_not_detected"},
+                         args.output / "result.json")
+        raise RuntimeError("No complete plateau/Vanilla reference within max_epoch; no theta_P exported")
     best, selected_recipe = checked_source(best_path, {"deit_vanilla_best"})
     if (selected_recipe != recipe or best["epoch"] != best_epoch or
             best["report_best_accuracy"] != best_accuracy or best["report_best_loss"] != best_loss):
         raise ValueError("saved best does not match historical validation-best state")
-    best.update(kind="deit_plateau_fork", stall_detected_epoch=history[-1]["epoch"],
-                stall_history=[row for row in history if row["epoch"] > best_epoch])
+    best.update(kind="deit_plateau_fork", stall_detected_epoch=detected_epoch,
+                stall_history=[row for row in history if best_epoch < row["epoch"] <= detected_epoch],
+                vanilla_history=[row for row in history if row["epoch"] > best_epoch])
     from experiments.shared_protocol import atomic_torch_save
     atomic_torch_save(best, args.output / "plateau_checkpoint.pt")
     from experiments.deit_vanilla_reference import create_vanilla_reference
@@ -112,7 +118,7 @@ def main():
                       "report_best_loss": best_loss, "report_best_epoch": best_epoch,
                       "historical_best_accuracy": best_accuracy, "historical_best_loss": best_loss,
                       "historical_best_epoch": best_epoch,
-                      "stall_detected_epoch": history[-1]["epoch"], "status": "plateau_detected"},
+                      "stall_detected_epoch": detected_epoch, "status": "plateau_detected"},
                      args.output / "result.json")
 
 

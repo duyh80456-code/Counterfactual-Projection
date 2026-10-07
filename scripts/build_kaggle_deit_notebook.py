@@ -61,7 +61,7 @@ recipe: LR=5e-4, WD=.05, 5 warmup epochs, fixed global cosine to epoch400,
 minimum LR ratio .01. STALL_PATIENCE=150, no minimum-epoch gate, max epoch300.
 Validation uses the same CIFAR split recipe as CNN runs (2000 reserved and unused,
 3000 validation for historical-best fork and plateau selection). POST_FORK_EPOCHS=150.
-Protocol v4 rejects older forks. Change these in the next config cell if needed;
+Protocol v5 rejects older forks. Change these in the next config cell if needed;
 resume requires the identical recipe and intervention configuration.
 
 Optional: reattach this notebook's prior **expanded output files** to reuse a
@@ -82,7 +82,7 @@ RECIPE = DeitRecipe(seed=SEED, stall_patience=STALL_PATIENCE)
 CP = CPConfig()  # rank8, epsilon .05, projection64, CG200, scales through .2
 if POST_FORK_EPOCHS != STALL_PATIENCE:
     raise ValueError("Vanilla reuse requires the same Phase 1 stall and Phase 2 horizon")
-OUTPUT = Path(f"/kaggle/working/deit_tiny_seed{SEED}_one_shot_v4")
+OUTPUT = Path(f"/kaggle/working/deit_tiny_seed{SEED}_one_shot_v5")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 # Override DATA_ROOT manually if more than one CIFAR dataset is attached.
 roots = set()

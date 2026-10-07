@@ -31,11 +31,13 @@ class CPConfig:
     cg_preconditioner_probes: int = 8
     scales: tuple = (.025, .05, .1, .2)
     o_only_site: str = "blocks.11.mlp"
+    opt_fit_samples: int = 64
+    opt_val_samples: int = 64
 
     def __post_init__(self):
         if (any(value < 1 for value in (self.rank, self.statistics_samples,
                 self.where_batches, self.where_samples, self.projection_samples,
-                self.gate_samples, self.cg_iterations)) or
+                self.gate_samples, self.cg_iterations, self.opt_fit_samples, self.opt_val_samples)) or
                 not 0 < self.probe_epsilon <= 1 or self.damping <= 0 or
                 self.cg_relative_tolerance <= 0 or self.cg_preconditioner_probes < 0 or
                 not self.scales or any(not 0 < value <= .2 for value in self.scales)):
@@ -46,6 +48,7 @@ def probe_indices(train_indices, seed, config, probe_index=0):
     """Same deterministic batch recipe as the CNN intervention protocol."""
     sizes = [config.statistics_samples] + [config.where_samples] * config.where_batches
     sizes += [config.projection_samples, config.gate_samples]
+    sizes += [config.opt_fit_samples, config.opt_val_samples]
     if any(size < 1 for size in sizes) or len(train_indices) < sum(sizes):
         raise ValueError("positive probe sizes and enough training samples required")
     generator = torch.Generator().manual_seed(911_731 + seed * 10_000 + probe_index)
@@ -55,8 +58,9 @@ def probe_indices(train_indices, seed, config, probe_index=0):
     for size in sizes:
         batches.append(selected[cursor:cursor + size])
         cursor += size
-    return {"statistics": batches[0], "where": batches[1:-2],
-            "projection": batches[-2], "gate": batches[-1]}
+    return {"statistics": batches[0], "where": batches[1:-4],
+            "projection": batches[-4], "gate": batches[-3],
+            "opt_fit": batches[-2], "opt_val": batches[-1]}
 
 
 def reset_adam_moments(optimizer, model, parameter_delta, *, parameter_before=None):

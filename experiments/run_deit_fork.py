@@ -14,7 +14,9 @@ from experiments.deit_protocol import (checked_source, load_training_context,
 from experiments.deit_e_rollback import EAccuracyRollback, rollback_protocol
 from experiments.shared_protocol import atomic_json_save, atomic_torch_save, seed_everything, sha256_file, train_epoch
 
-METHODS = ("vanilla_continue", "o_projection_only", "ours_e_driven_o")
+from adapters.deit_ablation import ABLATION_METHODS
+
+METHODS = ("vanilla_continue", "o_projection_only", "ours_e_driven_o") + ABLATION_METHODS
 
 
 def main():
@@ -27,6 +29,9 @@ def main():
     parser.add_argument("--post-fork-epochs", "--horizon", dest="post_fork_epochs", type=int, default=150)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--ablation-suite", action="store_true")
+    parser.add_argument("--raw-reference", type=Path)
+    parser.add_argument("--opt-inner-steps", type=int, default=5)
     parser.add_argument("--algorithm-patience", type=int, default=10,
                         help="E-only epochs without strict accuracy improvement before rollback; no retrigger")
     parser.add_argument("--vanilla-reference", type=Path,
@@ -48,7 +53,10 @@ def main():
         raise ValueError("DeiT fork SHA256 mismatch")
     fork, recipe = checked_source(args.plateau_checkpoint, {"deit_plateau_fork"})
     historical_accuracy, historical_loss, historical_epoch = historical_best(fork)
-    if int(fork["epoch"]) + args.post_fork_epochs > recipe.schedule_epochs:
+    if args.ablation_suite or args.method in ABLATION_METHODS:
+        from experiments.deit_ablation_runner import run_arm
+        return run_arm(args, config, fork, recipe, fork_hash)
+    if int(fork["epoch"]) + args.post_fork_epochs > recipe.schedule_epochs and recipe.stall_start_epoch == 0:
         raise ValueError("fork + horizon exceeds the declared global scheduler budget")
     identity = {"fork_hash": fork_hash, "method": args.method,
                 "post_fork_epochs": args.post_fork_epochs, "cp_config": json.loads(json.dumps(asdict(config)))}

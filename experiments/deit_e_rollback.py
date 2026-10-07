@@ -9,11 +9,11 @@ import torch
 from experiments.shared_protocol import rng_state
 
 
-def rollback_protocol(algorithm_patience=10):
+def rollback_protocol(algorithm_patience=10, *, stall_on_anchor=False):
     if algorithm_patience < 1:
         raise ValueError("algorithm patience must be positive")
     return {"version": 1, "algorithm_patience": algorithm_patience,
-            "stall_metric": "strict_validation_accuracy",
+            "stall_metric": "accuracy_then_lower_loss_on_exact_tie" if stall_on_anchor else "strict_validation_accuracy",
             "anchor_metric": "accuracy_then_lower_loss_on_exact_tie",
             "restore": ["model", "optimizer", "scheduler"],
             "preserve": ["current_rng", "current_loader_stream"], "retrigger": False}
@@ -32,8 +32,8 @@ def _cpu_copy(value):
 
 
 class EAccuracyRollback:
-    def __init__(self, model, optimizer, scheduler, loader, validation, epoch, algorithm_patience=10):
-        self.protocol = rollback_protocol(algorithm_patience)
+    def __init__(self, model, optimizer, scheduler, loader, validation, epoch, algorithm_patience=10, *, stall_on_anchor=False):
+        self.protocol = rollback_protocol(algorithm_patience, stall_on_anchor=stall_on_anchor)
         self.accuracy_stall_counter = 0
         self.rollback_events = []
         self.anchor = self._capture(model, optimizer, scheduler, loader, validation, epoch, 0, "fork_initial")
@@ -50,8 +50,8 @@ class EAccuracyRollback:
                 "validation": {"accuracy": accuracy, "loss": loss}, "reason": reason}
 
     @classmethod
-    def from_state(cls, state, algorithm_patience, completed_epochs):
-        expected = rollback_protocol(algorithm_patience)
+    def from_state(cls, state, algorithm_patience, completed_epochs, *, stall_on_anchor=False):
+        expected = rollback_protocol(algorithm_patience, stall_on_anchor=stall_on_anchor)
         anchor = state["anchor"]
         counter = int(state["accuracy_stall_counter"])
         if (state["protocol"] != expected or not 0 <= counter < algorithm_patience or
@@ -90,7 +90,8 @@ class EAccuracyRollback:
         if anchor_improved:
             self.anchor = self._capture(model, optimizer, scheduler, loader, validation, epoch, offset, reason)
         if count_stall:
-            self.accuracy_stall_counter = 0 if accuracy_improved else self.accuracy_stall_counter + 1
+            reset = anchor_improved if self.protocol["stall_metric"] != "strict_validation_accuracy" else accuracy_improved
+            self.accuracy_stall_counter = 0 if reset else self.accuracy_stall_counter + 1
         stalled = self.accuracy_stall_counter
         rollback = stalled >= self.protocol["algorithm_patience"]
         if rollback:

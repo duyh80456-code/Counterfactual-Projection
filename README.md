@@ -531,7 +531,7 @@ still run the full K epochs without early stopping.
 `report_best_accuracy/loss/epoch` describe epochs 1 through K of each arm; epoch0
 validation immediately after projection is reported separately. `scientific_escape`
 is strict post-fork best accuracy > `historical_best_accuracy`, and
-`delta_vs_historical_best` may be negative. DeiT protocol v4 rejects older forks. No official test set
+`delta_vs_historical_best` may be negative. DeiT protocol v5 rejects older forks. No official test set
 is loaded. These defaults are declared experiment choices, not tuned results;
 no plateau within the cap produces a status report and no fork. Phase 1 stall
 and Phase 2 horizon are distinct: best at epoch23 and 150 epochs without a
@@ -557,7 +557,7 @@ remains strict accuracy only. History logs validation before rollback separately
 from the actual post-controller state metrics used for final-checkpoint reporting.
 The E controller configuration is part of its resume identity, so old E arms
 without rollback cannot silently resume this algorithm. Phase 1, O-only and the
-observed Vanilla reference remain compatible with the same protocol-v4 forks. `--horizon` remains an
+observed Vanilla reference remain compatible with the same protocol-v5 forks. `--horizon` remains an
 alias for `--post-fork-epochs`.
 
 Standalone commands after installing pinned Gromo (Python >=3.10):
@@ -581,7 +581,7 @@ When reattaching a completed Phase 1 fork on Kaggle, include `vanilla_reference.
 or the full Phase 1 `checkpoint_latest.pt`. The latter regenerates the reference
 on CPU after verifying the prefix, contiguous plateau window, split, recipe and
 historical best. A fork alone is insufficient to recover the terminal state.
-Existing matching protocol-v4 Phase 1 checkpoints can be reused without retraining.
+Matching protocol-v5 Phase 1 checkpoints can be reused without retraining. Protocol-v4 checkpoints are rejected by the updated runner.
 
 Logs include validation before and immediately after correction, the first five
 ordinary AdamW epochs, all site gains/norms, WHERE winners/stability, projection
@@ -595,3 +595,97 @@ auxiliary persistence, selected-site/batch replay, Adam moments, and bitwise
 main-loop resume. The Kaggle notebook gates training on them. They do not
 establish full-width CUDA runtime, convergence or historical-best escape;
 those require the actual CIFAR experiment.
+
+### DeiT algorithm ablations A0–A6 (protocol v5)
+
+Run [`notebooks/kaggle_deit_tiny_seed1_all_arms.ipynb`](notebooks/kaggle_deit_tiny_seed1_all_arms.ipynb)
+on Kaggle with CIFAR-100, Internet, CUDA, and the `github_token` Secret. No fork
+checkpoint is needed for a fresh run. Optional expanded outputs from the exact
+same v5 recipe support Phase 1 and per-arm resume; attach the raw reference as
+well as arm checkpoints. Old v4 forks are rejected. This notebook is separate
+from the three-arm one-shot notebook.
+
+The shared experimental budgets match the current ResNet18 unified notebook:
+batch64, requested rank4, projection32, WHERE3x32, statistics256, gate32, CG200,
+scales `{.0125,.025,.05}`, algorithm patience10, and post-fork horizon150.
+DeiT retains AdamW (explicit LR5e-4, WD.05 with bias/norm/token/position excluded),
+five warmup epochs and a 300-epoch cosine recipe, then LR floor5e-6. This is a
+starting CIFAR recipe, not a tuned ImageNet recipe or an accuracy guarantee.
+The default baseline cap is epoch800 and can be increased with a new declared
+recipe. No intervention runs if a complete plateau/control window is unavailable.
+
+Like Res18, plateau selection is armed only after the training recipe completes.
+At epoch300 the eligible strict validation-best tracker is initialized; earlier
+bests remain in history but are not eligible forks. After100 epochs without
+beating the eligible best, freeze that fork and continue the same Vanilla
+trajectory another50 epochs. Export all150 observed epochs and their actual
+terminal state as A0; never rerun Vanilla. The extra50 can beat the selected
+fork, so A0's escape is calculated rather than assumed false. All arms restore
+the same model/optimizer/scheduler/RNG/data-stream checkpoint. Official test data
+is not used. The 2000 reserved validation samples are not selection metrics;
+the 3000 evaluation samples select plateau/rollback and report results.
+
+| Arm | Intervention |
+| --- | --- |
+| A0 `vanilla_continue` | Reuse the observed150-epoch Vanilla continuation |
+| A1 `o_projection_only` | Supervised projection at the fixed last MLP |
+| A2 `e_driven_o_raw` | Native TINY E direction; raw mean-gain WHERE |
+| A3 `e_driven_o_normalized` | Mean gain / (mean delta-logit norm +1e-8) WHERE |
+| A4a `random_control_parameter` | Gaussian deltas, matching each of A2's four tensor norms and A2's applied scale |
+| A4b `random_control_logit` | Gaussian logit target matching A2's norm; same projector, its own gate line search |
+| A5 `persistent_growth` | Commit the same native width proposal; gate gamma grid `{0,.025,.05,.1,.2}` |
+| A6 `opt_e` | Fixed native A/a; B-only mean-CE Gauss–Newton with new disjoint opt_fit/opt_val |
+
+A4/A5/A6 use A2's raw-selected site. A3 selects its own site, and A1 remains
+fixed-site: A2 vs A1 therefore changes both site and direction. Raw and
+normalized WHERE scores/ranks are recorded for every method arm, and A0 carries the same table explicitly as offline-only diagnostics. A4a skips if A2 has no
+applied scale. A4b has its own scale search: it tests the projector+gate pipeline,
+not fixed-step direction quality. It has no meaningful independent held-out
+random field; its gate random-target alignment is explicitly a null diagnostic.
+
+A2/A3/A4/A5/successful-A6 have the same anchor rollback: a higher accuracy or an
+exact accuracy tie with lower loss updates the full anchor and resets stall.
+Ten failures restore model/AdamW/scheduler and keep the consumed RNG/data stream.
+There is one intervention only, no recurrent E query; this ablation differs from
+Res18's recurrent E arm. A0/A1 have no rollback; a failed A6 trains like Vanilla
+without rollback. Comparisons to A0/A1 include the controller effect.
+
+A5 is a capacity comparator, **not a guaranteed upper bound**. It concatenates
+native A/a and gamma*B inside the MLP. Parameter growth is `rank*(2*dim+1)`:
+1540 for effective rank4 at dim192, or3080 for rank8. Effective rank is logged.
+Adam moments in old slices and the tensor step counter are preserved, new
+moment slices start at zero, optimizer parameter-group references are replaced,
+and the scheduler is unchanged. Resume reconstructs the widened shape before
+loading model and optimizer. The fallback rollback anchor has the widened
+zero-output geometry, not the original narrower tensor shapes.
+
+A6 adds disjoint64-sample opt_fit/opt_val partitions **after** all old probe
+partitions, preserving their indices. It starts B=0, holds A/a fixed, and uses
+matrix-free JVP/VJP softmax Gauss–Newton with at most5 inner steps. Damping
+multipliers `{.001,.01,.1,1,10}` multiply a seeded Hutchinson mean-diagonal
+estimate (floor1e-8); CG uses at most80 iterations, tolerance1e-4; backtracking
+uses `{1,.5,.25}` and opt_val improvement tolerance1e-6. The projection grid is
+`{.1,.25,.5,1}`, deliberately different from A2, and is part of resume identity.
+Predicted gain uses the undamped mean-CE quadratic model at the accepted step.
+No accepted step means `opt_e_failed`, no jump and no rollback. opt_val is an
+internal selection set, not an unbiased held-out diagnostic. The gate batch
+also selects scales, so its loss gains do not demonstrate generalization.
+
+The runner writes `suite_protocol.json`, `raw_intervention_reference.pt`,
+`arm_status.json`, `summary.json`, and full per-arm latest/anchor checkpoints,
+history, immediate validation, and epochs1–5 validation. Arms run in separate
+sequential processes; Opt-E is last. Failure of one arm does not skip later
+arms, and the notebook archives resumable state even on an error.
+
+```bash
+python -m experiments.run_deit_all_arms \
+  --data-root /path/to/cifar-parent --output /path/to/output --seed 1
+```
+
+Tests in `tests/test_deit_ablation.py` and
+`tests/test_deit_ablation_integration.py` cover normalized selection, disjoint
+partitions, random norms/scope, zero-gate equivalence, moment migration, widened
+resume, GN symmetry/PSD/toy descent/no auxiliary residue, epoch302 lower-loss
+anchor rollback, all seven method main loops and bitwise checkpoint resume,
+recipe-complete plateau, and a longer reused Vanilla window. These CPU tests
+use small models and native Gromo; full-width CUDA cost/accuracy is not measured.
