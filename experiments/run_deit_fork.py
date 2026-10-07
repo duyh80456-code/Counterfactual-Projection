@@ -10,7 +10,7 @@ import torch
 
 from adapters.deit_cp_adapter import CPConfig, one_shot_intervention
 from experiments.deit_protocol import (checked_source, load_training_context,
-    materialize_probe_batches, save_state, evaluate_without_rng)
+    materialize_probe_batches, save_state, evaluate_without_rng, historical_best)
 from experiments.shared_protocol import atomic_json_save, seed_everything, sha256_file, train_epoch
 
 METHODS = ("vanilla_continue", "o_projection_only", "ours_e_driven_o")
@@ -40,6 +40,7 @@ def main():
     if fork_hash != args.plateau_checkpoint_hash:
         raise ValueError("DeiT fork SHA256 mismatch")
     fork, recipe = checked_source(args.plateau_checkpoint, {"deit_plateau_fork"})
+    historical_accuracy, historical_loss, historical_epoch = historical_best(fork)
     if int(fork["epoch"]) + args.horizon > recipe.schedule_epochs:
         raise ValueError("fork + horizon exceeds the declared global scheduler budget")
     identity = {"fork_hash": fork_hash, "method": args.method,
@@ -65,8 +66,8 @@ def main():
     before = saved["validation_before"] if saved else evaluate_without_rng(model, eval_loader, device)
     immediate = saved["validation_immediately_after_projection"] if saved else None
     start = int(saved["completed_epochs"]) if saved else 0
-    best_accuracy = float(saved["report_best_accuracy"]) if saved else before["accuracy"]
-    best_loss = float(saved["report_best_loss"]) if saved else before["loss"]
+    best_accuracy = float(saved["report_best_accuracy"]) if saved else float("-inf")
+    best_loss = float(saved["report_best_loss"]) if saved else float("inf")
     best_epoch = int(saved["report_best_epoch"]) if saved else int(fork["epoch"])
 
     def save(epoch, completed):
@@ -77,6 +78,8 @@ def main():
             run_protocol=fork["protocol"], kind="deit_fork_arm_latest", run_identity=identity,
             method=args.method, completed_epochs=completed, interventions=interventions,
             validation_before=before, validation_immediately_after_projection=immediate,
+            historical_best_accuracy=historical_accuracy, historical_best_loss=historical_loss,
+            historical_best_epoch=historical_epoch,
             report_best_accuracy=best_accuracy, report_best_loss=best_loss, report_best_epoch=best_epoch)
 
     if saved is None:
@@ -92,8 +95,6 @@ def main():
             print(json.dumps({"intervention": record}), flush=True)
         else:
             immediate = dict(before)
-        if immediate["accuracy"] > best_accuracy:
-            best_accuracy, best_loss = immediate["accuracy"], immediate["loss"]
         history.append({"epoch": int(fork["epoch"]), "post_fork_epoch": 0,
                         "validation_accuracy": immediate["accuracy"],
                         "validation_loss": immediate["loss"],
@@ -120,11 +121,15 @@ def main():
     atomic_json_save({"method": args.method, "protocol": fork["protocol"],
         "run_id": str(args.output.resolve()), "theta_best_hash": fork_hash,
         "fork_epoch": int(fork["epoch"]), "fork_validation_accuracy": before["accuracy"],
+        "historical_best_accuracy": historical_accuracy, "historical_best_loss": historical_loss,
+        "historical_best_epoch": historical_epoch,
         "validation_before": before, "validation_immediately_after_projection": immediate,
         "validation_1_to_5_epochs_after": first_five, "interventions": interventions,
         "history": history, "report_best_accuracy": best_accuracy,
         "report_best_loss": best_loss, "report_best_epoch": best_epoch,
-        "scientific_escape": best_accuracy > before["accuracy"],
+        "delta_vs_historical_best": best_accuracy - historical_accuracy,
+        "scientific_escape": best_accuracy > historical_accuracy,
+        "report_best_scope": "epochs1_to_K_epoch0_reported_separately",
         "final_validation_accuracy": history[-1]["validation_accuracy"],
         "final_validation_loss": history[-1]["validation_loss"],
         "horizon": args.horizon, "run_identity": identity,

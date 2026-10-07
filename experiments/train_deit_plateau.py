@@ -1,4 +1,4 @@
-"""Train Vanilla to trigger-split plateau; export trigger-best fork and report metrics."""
+"""Train Vanilla to validation plateau; export its historical-best checkpoint."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ import torch
 
 from experiments.deit_protocol import (DeitRecipe, checked_source, load_training_context,
     protocol, save_state, evaluate_without_rng)
-from experiments.shared_protocol import atomic_json_save, seed_everything, train_epoch, make_eval_loader
+from experiments.shared_protocol import atomic_json_save, seed_everything, train_epoch
 
 
 def main():
@@ -33,24 +33,20 @@ def main():
     device = torch.device(args.device)
     args.output.mkdir(parents=True, exist_ok=True)
     context = load_training_context(args.data_root, recipe, device, source)
-    model, optimizer, scheduler, loader, eval_loader, eval_set, train_ids, val_ids, tuning_ids, trigger_ids = context
-    trigger_loader = make_eval_loader(eval_set, trigger_ids, recipe.batch_size, recipe.workers)
+    model, optimizer, scheduler, loader, eval_loader, _, train_ids, val_ids, tuning_ids, trigger_ids = context
     declared = protocol(recipe, model)
     history = list(source["history"]) if source else []
     best_accuracy = source["report_best_accuracy"] if source else -1.
     best_loss = source["report_best_loss"] if source else float("inf")
     best_epoch = source["report_best_epoch"] if source else 0
-    trigger_best_accuracy = source["trigger_best_accuracy"] if source else -1.
-    trigger_best_loss = source["trigger_best_loss"] if source else float("inf")
-    trigger_best_epoch = source["trigger_best_epoch"] if source else 0
     best_path = args.output / "checkpoint_best.pt"
     if source and not best_path.is_file():
         raise FileNotFoundError("Resume also requires checkpoint_best.pt in the output directory")
     if source:
         selected_best, selected_recipe = checked_source(best_path, {"deit_vanilla_best"})
-        if (selected_recipe != recipe or selected_best["epoch"] != trigger_best_epoch or
-                selected_best["trigger_best_accuracy"] != trigger_best_accuracy or
-                selected_best["trigger_best_loss"] != trigger_best_loss):
+        if (selected_recipe != recipe or selected_best["epoch"] != best_epoch or
+                selected_best["report_best_accuracy"] != best_accuracy or
+                selected_best["report_best_loss"] != best_loss):
             raise ValueError("resume latest and best checkpoints do not match")
     start_epoch = int(source["epoch"]) if source else 0
     detected = False
@@ -61,18 +57,16 @@ def main():
             source_tuning_indices=tuning_ids, run_protocol=declared, kind=kind,
             trigger_indices=trigger_ids,
             report_best_accuracy=best_accuracy, report_best_loss=best_loss,
-            report_best_epoch=best_epoch, trigger_best_accuracy=trigger_best_accuracy,
-            trigger_best_loss=trigger_best_loss, trigger_best_epoch=trigger_best_epoch, **extra)
+            report_best_epoch=best_epoch, historical_best_accuracy=best_accuracy,
+            historical_best_loss=best_loss, historical_best_epoch=best_epoch,
+            epochs_since_best=epoch - best_epoch, **extra)
 
     if source is None:
         initial = evaluate_without_rng(model, eval_loader, device)
-        trigger = evaluate_without_rng(model, trigger_loader, device)
         best_accuracy = initial["accuracy"]
         best_loss = initial["loss"]
-        trigger_best_accuracy, trigger_best_loss = trigger["accuracy"], trigger["loss"]
         history.append({"epoch": 0, "validation_accuracy": initial["accuracy"],
-                        "validation_loss": initial["loss"], "trigger_accuracy": trigger["accuracy"],
-                        "trigger_loss": trigger["loss"]})
+                        "validation_loss": initial["loss"]})
         save(best_path, 0, "deit_vanilla_best")
     for epoch in range(start_epoch + 1, recipe.max_epoch + 1):
         if source and source.get("plateau_detected"):
@@ -80,22 +74,17 @@ def main():
             break
         train = train_epoch(model, loader, optimizer, device)
         validation = evaluate_without_rng(model, eval_loader, device)
-        trigger = evaluate_without_rng(model, trigger_loader, device)
         scheduler.step()
         history.append({"epoch": epoch, "train_loss": train["loss"],
                         "train_accuracy": train["accuracy"],
                         "validation_accuracy": validation["accuracy"],
                         "validation_loss": validation["loss"],
-                        "trigger_accuracy": trigger["accuracy"], "trigger_loss": trigger["loss"],
                         "learning_rates": [group["lr"] for group in optimizer.param_groups]})
         if validation["accuracy"] > best_accuracy:
             best_accuracy, best_epoch = validation["accuracy"], epoch
             best_loss = validation["loss"]
-        if trigger["accuracy"] > trigger_best_accuracy:
-            trigger_best_accuracy, trigger_best_epoch = trigger["accuracy"], epoch
-            trigger_best_loss = trigger["loss"]
             save(best_path, epoch, "deit_vanilla_best")
-        detected = epoch >= recipe.min_plateau_epoch and epoch - trigger_best_epoch >= recipe.patience
+        detected = epoch >= recipe.min_plateau_epoch and epoch - best_epoch >= recipe.patience
         save(args.output / "checkpoint_latest.pt", epoch, "deit_vanilla_latest",
              plateau_detected=detected)
         print(json.dumps(history[-1]), flush=True)
@@ -108,18 +97,18 @@ def main():
                           "status": "plateau_not_detected"}, args.output / "result.json")
         raise RuntimeError("No plateau within max_epoch; no theta_P exported")
     best, selected_recipe = checked_source(best_path, {"deit_vanilla_best"})
-    if (selected_recipe != recipe or best["epoch"] != trigger_best_epoch or
-            best["trigger_best_accuracy"] != trigger_best_accuracy or best["trigger_best_loss"] != trigger_best_loss):
-        raise ValueError("saved best does not match strict trigger-best state")
+    if (selected_recipe != recipe or best["epoch"] != best_epoch or
+            best["report_best_accuracy"] != best_accuracy or best["report_best_loss"] != best_loss):
+        raise ValueError("saved best does not match historical validation-best state")
     best.update(kind="deit_plateau_fork", stall_detected_epoch=history[-1]["epoch"],
-                stall_history=[row for row in history if row["epoch"] > trigger_best_epoch])
+                stall_history=[row for row in history if row["epoch"] > best_epoch])
     from experiments.shared_protocol import atomic_torch_save
     atomic_torch_save(best, args.output / "plateau_checkpoint.pt")
     atomic_json_save({"protocol": declared, "history": history,
-                      "fork_epoch": trigger_best_epoch, "report_best_accuracy": best_accuracy,
+                      "fork_epoch": best_epoch, "report_best_accuracy": best_accuracy,
                       "report_best_loss": best_loss, "report_best_epoch": best_epoch,
-                      "trigger_best_accuracy": trigger_best_accuracy, "trigger_best_loss": trigger_best_loss,
-                      "trigger_best_epoch": trigger_best_epoch,
+                      "historical_best_accuracy": best_accuracy, "historical_best_loss": best_loss,
+                      "historical_best_epoch": best_epoch,
                       "stall_detected_epoch": history[-1]["epoch"], "status": "plateau_detected"},
                      args.output / "result.json")
 

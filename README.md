@@ -505,10 +505,10 @@ full official ImageNet training recipe.
   `evaluation_role=gate_batch_used_for_scale_selection`. No independent held-out
   diagnostic batch is used. `actual_loss_improvement` is gate loss reduction
   after selecting scale on that same batch, so it may be optimistic. Use the
-  report-only validation immediately after projection and at epochs 1–5 to
+  validation immediately after projection and at epochs 1–5 to
   assess generalization; do not interpret gate metrics as that evidence.
 - **Fork arms:** Vanilla, fixed-last-MLP supervised O-only (`one_hot-softmax`)
-  and one-shot E-to-O all start from the same SHA-verified strict trigger-best theta_P.
+  and one-shot E-to-O all start from the same SHA-verified historical validation-best theta_P.
   Each restores model/optimizer/scheduler/RNG/loader state, applies at most one
   correction and trains ordinary AdamW for K epochs. There is no rollback or
   retrigger. Epoch0 after-correction checkpoints ensure resume does not reapply
@@ -517,13 +517,18 @@ full official ImageNet training recipe.
 The configurable **initial baseline recipe** is AdamW LR5e-4, WD.05, betas
 (.9,.999), with no decay on biases/normalization/CLS/position embeddings; 5 warmup
 epochs then a fixed global cosine through epoch400 with minimum LR ratio.01.
-Batch128, seed1, strict trigger-best patience20 armed from epoch100, max baseline epoch300,
-K30. The CIFAR split remains 5000 held out (2000 trigger for fork selection and
-plateau stopping, 3000 report-only) plus128 tuning excluded from training.
-Report-only validation never selects a site, scale, damping, fork, rollback,
-or stopping epoch. It only records metrics, including strict report best;
-all fork arms run the fixed K epochs. DeiT protocol v2 rejects v1 checkpoints
-whose forks were selected on the report split. No official test set
+Batch128, seed1, strict validation-best patience20 armed from epoch100, max baseline epoch300,
+K30. The CIFAR split remains 5000 held out (2000 reserved and unused, 3000
+validation for historical-best checkpoint and plateau selection) plus128 tuning
+excluded from training. Accuracy ties, even with lower loss, do not move theta_P.
+After plateau detection, the full historical-best checkpoint is loaded to export
+theta_P; the detection-epoch checkpoint is never the fork. All arms use the same
+SHA256-verified fork and run fixed K epochs. Validation never selects site, scale
+or damping and there is no arm rollback or early stopping.
+`report_best_accuracy/loss/epoch` describe epochs 1 through K of each arm; epoch0
+validation immediately after projection is reported separately. `scientific_escape`
+is strict post-fork best accuracy > `historical_best_accuracy`, and
+`delta_vs_historical_best` may be negative. DeiT protocol v3 rejects older forks. No official test set
 is loaded. These defaults are declared experiment choices, not tuned results;
 no plateau within the cap produces a status report and no fork.
 

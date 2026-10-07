@@ -14,7 +14,7 @@ from experiments.shared_protocol import (atomic_torch_save, datasets_and_indices
     evaluate, make_train_loader, make_eval_loader, rng_state, restore_rng)
 
 ARCHITECTURE = "CIFAR-DeiT-Tiny-Patch4"
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -72,9 +72,11 @@ def protocol(recipe, model):
             "model_config": getattr(model, "config", model), "pretrained": False, "distilled": False,
             "drop_rate": 0., "drop_path_rate": 0.,
             "optimizer": "AdamW", "scheduler": "warmup_then_cosine_fixed_global_schedule",
-            "theta_P_rule": "last strict trigger accuracy best after no-new-best trigger patience",
-            "selection_metric": "trigger split accuracy only",
-            "report_validation_role": "report_only_no_training_or_selection_decisions",
+            "theta_P_rule": "historical strict evaluation accuracy best after no-new-best patience",
+            "selection_metric": "evaluation split accuracy",
+            "evaluation_samples": recipe.validation_samples - recipe.trigger_samples,
+            "report_validation_role": "historical_best_and_plateau_selection_then_fixed_horizon_reporting",
+            "unused_trigger_split_role": "reserved_excluded_from_training_and_selection",
             "official_test_used": False}
 
 
@@ -90,7 +92,26 @@ def checked_source(path, kinds):
         raise ValueError("incompatible DeiT recipe or architecture flags")
     if declared["model_config"] != canonical_model_config():
         raise ValueError("training requires canonical DeiT-Tiny CIFAR geometry")
+    if source["kind"] == "deit_plateau_fork":
+        historical_best(source)
     return source, recipe
+
+
+def historical_best(source):
+    """Require theta_P to be the selected historical validation-best state."""
+    accuracy = float(source["historical_best_accuracy"])
+    epoch = int(source["historical_best_epoch"])
+    loss = float(source["historical_best_loss"])
+    history = source["history"]
+    if (not history or epoch != source["epoch"] or
+            history[-1]["epoch"] != epoch or
+            history[-1]["validation_accuracy"] != accuracy or
+            history[-1]["validation_loss"] != loss or
+            max(row["validation_accuracy"] for row in history) != accuracy or
+            any(row["validation_accuracy"] >= accuracy for row in history[:-1]) or
+            any(row["validation_accuracy"] > accuracy for row in source.get("stall_history", []))):
+        raise ValueError("theta_P is not the historical validation-best checkpoint")
+    return accuracy, loss, epoch
 
 
 def canonical_model_config():
