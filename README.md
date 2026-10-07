@@ -517,8 +517,8 @@ full official ImageNet training recipe.
 The configurable **initial baseline recipe** is AdamW LR5e-4, WD.05, betas
 (.9,.999), with no decay on biases/normalization/CLS/position embeddings; 5 warmup
 epochs then a fixed global cosine through epoch400 with minimum LR ratio.01.
-Batch128, seed1, strict validation-best patience20 armed from epoch100, max baseline epoch300,
-K30. The CIFAR split remains 5000 held out (2000 reserved and unused, 3000
+Batch128, seed1, `stall_patience=150` with no minimum-epoch gate, max baseline epoch300,
+`post_fork_epochs=150`. The CIFAR split remains 5000 held out (2000 reserved and unused, 3000
 validation for historical-best checkpoint and plateau selection) plus128 tuning
 excluded from training. Accuracy ties, even with lower loss, do not move theta_P.
 After plateau detection, the full historical-best checkpoint is loaded to export
@@ -528,9 +528,14 @@ or damping and there is no arm rollback or early stopping.
 `report_best_accuracy/loss/epoch` describe epochs 1 through K of each arm; epoch0
 validation immediately after projection is reported separately. `scientific_escape`
 is strict post-fork best accuracy > `historical_best_accuracy`, and
-`delta_vs_historical_best` may be negative. DeiT protocol v3 rejects older forks. No official test set
+`delta_vs_historical_best` may be negative. DeiT protocol v4 rejects older forks. No official test set
 is loaded. These defaults are declared experiment choices, not tuned results;
-no plateau within the cap produces a status report and no fork.
+no plateau within the cap produces a status report and no fork. Phase 1 stall
+and Phase 2 horizon are distinct: best at epoch23 and 150 epochs without a
+strict improvement confirm plateau at epoch173; all three arms reload epoch23
+and each train 150 epochs. There is no `algorithm_patience` because interventions
+are one-shot and arm training has no rollback/retrigger. `--horizon` remains an
+alias for `--post-fork-epochs`.
 
 Standalone commands after installing pinned Gromo (Python >=3.10):
 
@@ -540,7 +545,7 @@ python -m experiments.train_deit_plateau --data-root /path/to/cifar \
 python -m experiments.run_deit_fork --data-root /path/to/cifar \
   --plateau-checkpoint runs/deit/vanilla/plateau_checkpoint.pt \
   --plateau-checkpoint-hash YOUR_SHA256 --method ours_e_driven_o \
-  --output runs/deit/ours_e_driven_o --horizon 30
+  --output runs/deit/ours_e_driven_o --post-fork-epochs 150
 ```
 
 Run the fork command for `vanilla_continue` and `o_projection_only` with the same

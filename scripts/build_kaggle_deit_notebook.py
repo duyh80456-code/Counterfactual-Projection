@@ -55,10 +55,10 @@ No recurrent controller, rollback or persistent extension is enabled.
 
 AdamW recipe is a declared initial recipe, not the original ImageNet DeiT
 recipe: LR=5e-4, WD=.05, 5 warmup epochs, fixed global cosine to epoch400,
-minimum LR ratio .01. Patience20, plateau armed from epoch100, max epoch300.
+minimum LR ratio .01. STALL_PATIENCE=150, no minimum-epoch gate, max epoch300.
 Validation uses the same CIFAR split recipe as CNN runs (2000 reserved and unused,
-3000 validation for historical-best fork and plateau selection). K=30.
-Protocol v3 rejects older forks. Change these in the next config cell if needed;
+3000 validation for historical-best fork and plateau selection). POST_FORK_EPOCHS=150.
+Protocol v4 rejects older forks. Change these in the next config cell if needed;
 resume requires the identical recipe and intervention configuration.
 
 Optional: reattach this notebook's prior **expanded output files** to reuse a
@@ -70,10 +70,11 @@ from experiments.deit_protocol import DeitRecipe
 from adapters.deit_cp_adapter import CPConfig
 
 SEED = 1
-K = 30
-RECIPE = DeitRecipe(seed=SEED)
+STALL_PATIENCE = 150
+POST_FORK_EPOCHS = 150
+RECIPE = DeitRecipe(seed=SEED, stall_patience=STALL_PATIENCE)
 CP = CPConfig()  # rank8, epsilon .05, projection64, CG200, scales through .2
-OUTPUT = Path(f"/kaggle/working/deit_tiny_seed{SEED}_one_shot_v1")
+OUTPUT = Path(f"/kaggle/working/deit_tiny_seed{SEED}_one_shot_v4")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 # Override DATA_ROOT manually if more than one CIFAR dataset is attached.
 roots = set()
@@ -144,7 +145,7 @@ print("Selected theta_P:", FORK, FORK_HASH)
 for method in ("vanilla_continue", "o_projection_only", "ours_e_driven_o"):
     destination = OUTPUT / method
     destination.mkdir(parents=True, exist_ok=True)
-    identity = {"fork_hash": FORK_HASH, "method": method, "horizon": K,
+    identity = {"fork_hash": FORK_HASH, "method": method, "post_fork_epochs": POST_FORK_EPOCHS,
                 "cp_config": json.loads(json.dumps(asdict(CP)))}
     resumable = [item for item in states if item["payload"]["kind"] == "deit_fork_arm_latest"
                  and item["payload"].get("run_identity") == identity]
@@ -156,7 +157,7 @@ for method in ("vanilla_continue", "o_projection_only", "ours_e_driven_o"):
         shutil.copy2(selected[0]["path"], destination / "checkpoint_latest.pt")
     command = ["--data-root", DATA_ROOT, "--plateau-checkpoint", FORK,
                "--plateau-checkpoint-hash", FORK_HASH, "--method", method,
-               "--output", destination, "--horizon", K, *flags(asdict(CP))]
+               "--output", destination, "--post-fork-epochs", POST_FORK_EPOCHS, *flags(asdict(CP))]
     if (destination / "checkpoint_latest.pt").exists():
         command += ["--resume", destination / "checkpoint_latest.pt"]
     invoke("experiments.run_deit_fork", command)
@@ -168,6 +169,7 @@ assert len({result["historical_best_accuracy"] for result in results}) == 1
 for result in results:
     print(json.dumps({"method": result["method"],
         "fork_epoch": result["fork_epoch"],
+        "post_fork_epochs": result["post_fork_epochs"],
         "historical_best_accuracy": result["historical_best_accuracy"],
         "delta_vs_historical_best": result["delta_vs_historical_best"],
         "before": result["validation_before"],

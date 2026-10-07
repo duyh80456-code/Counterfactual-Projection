@@ -25,7 +25,7 @@ def test_checkpoint_recipe_flags_and_architecture_guard(tmp_path):
     path = tmp_path / "fork.pt"
     torch.save(payload, path)
     assert checked_source(path, {"deit_plateau_fork"})[1] == recipe
-    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0), ("protocol_version", 1), ("protocol_version", 2),
+    for key, value in (("architecture", "CIFAR-ResNet18"), ("protocol_version", 0), ("protocol_version", 1), ("protocol_version", 2), ("protocol_version", 3),
                        ("drop_path_rate", .1), ("pretrained", True)):
         wrong = copy.deepcopy(payload)
         wrong["protocol"][key] = value
@@ -206,7 +206,8 @@ def test_notebook_cells_compile_and_no_recurrent_controller():
     assert "retrigger_patience" not in text
 
 
-def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, deit_batches, tmp_path, monkeypatch):
+@pytest.mark.parametrize("post_fork_epochs", [2, 150])
+def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, deit_batches, tmp_path, monkeypatch, post_fork_epochs):
     import experiments.run_deit_fork as runner
     dataset = TensorDataset(*deit_batches[0])
     recipe = replace(DeitRecipe(), workers=0, batch_size=8)
@@ -238,12 +239,16 @@ def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, d
                              ("ours_e_driven_o", .51967)):
         # Baseline immediate metric is deliberately wrong for escape comparison.
         values = iter([{"accuracy": .512, "loss": 3.}] * (1 if method == "vanilla_continue" else 2)
-                      + [{"accuracy": accuracy, "loss": 2.9}, {"accuracy": accuracy - .001, "loss": 2.8}])
+                      + [{"accuracy": accuracy, "loss": 2.9}]
+                      + [{"accuracy": accuracy - .001, "loss": 2.8}] * (post_fork_epochs - 1))
         monkeypatch.setattr(runner, "evaluate_without_rng", lambda *_args: next(values))
         output = tmp_path / method
-        monkeypatch.setattr(sys, "argv", ["run_deit_fork", "--data-root", "unused",
+        args = ["run_deit_fork", "--data-root", "unused",
             "--plateau-checkpoint", str(path), "--plateau-checkpoint-hash", fork_hash,
-            "--method", method, "--output", str(output), "--horizon", "2", "--device", "cpu"])
+            "--method", method, "--output", str(output), "--device", "cpu"]
+        if post_fork_epochs != 150:  # Exercise the 150-epoch CLI default without overrides.
+            args += ["--post-fork-epochs", str(post_fork_epochs)]
+        monkeypatch.setattr(sys, "argv", args)
         runner.main()
         result = json.loads((output / "result.json").read_text())
         assert result["theta_best_hash"] == fork_hash and result["fork_epoch"] == 23
@@ -251,6 +256,9 @@ def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, d
         assert result["report_best_accuracy"] == accuracy
         assert result["delta_vs_historical_best"] == pytest.approx(accuracy - .528)
         assert result["scientific_escape"] is False
+        assert result["post_fork_epochs"] == post_fork_epochs
+        assert len(result["history"]) == post_fork_epochs + 1
+        assert result["history"][-1]["post_fork_epoch"] == post_fork_epochs
     assert len(starts) == 3
     assert all(torch.equal(value, fork["model"][name]) for start in starts for name, value in start.items())
 
@@ -264,16 +272,29 @@ def test_reject_detection_epoch_fork_even_if_metrics_are_relabelled():
         historical_best(fork)
 
 
-@pytest.mark.parametrize("offset", [0, 22])
-def test_vanilla_plateau_exports_historical_best_not_detection_state(tmp_path, monkeypatch, offset):
+def test_stall_recipe_defaults_and_no_minimum_epoch_gate():
+    from dataclasses import asdict
+    recipe = DeitRecipe()
+    assert recipe.stall_patience == 150
+    assert "min_plateau_epoch" not in asdict(recipe)
+    assert "patience" not in asdict(recipe)
+    assert "algorithm_patience" not in asdict(recipe)
+    with pytest.raises(ValueError):
+        replace(recipe, stall_patience=0).validate()
+    with pytest.raises(ValueError):
+        replace(recipe, max_epoch=149).validate()
+
+
+@pytest.mark.parametrize("offset,stall_patience", [(0, 2), (22, 2), (22, 150)])
+def test_vanilla_plateau_exports_historical_best_not_detection_state(tmp_path, monkeypatch, offset, stall_patience):
     import experiments.deit_protocol as shared
     import experiments.train_deit_plateau as runner
     dataset = TensorDataset(torch.randn(6, 3, 32, 32), torch.arange(6))
     monkeypatch.setattr(shared, "datasets_and_indices", lambda *_args:
         (dataset, dataset, [0, 1], [2, 3, 4, 5], []))
     recipe = DeitRecipe(workers=0, batch_size=2, validation_samples=4, trigger_samples=2,
-                        tuning_samples=0, min_plateau_epoch=1, patience=2,
-                        max_epoch=offset + 3, schedule_epochs=40, warmup_epochs=1)
+                        tuning_samples=0, stall_patience=stall_patience,
+                        max_epoch=offset + 1 + stall_patience, schedule_epochs=400, warmup_epochs=1)
     output = tmp_path / "vanilla"
     output.mkdir()
     # Start at epoch22 for the reported regression: epoch23=.528, epoch25=.512.
@@ -293,8 +314,22 @@ def test_vanilla_plateau_exports_historical_best_not_detection_state(tmp_path, m
         save_state(output / "checkpoint_best.pt", kind="deit_vanilla_best", **common)
         save_state(output / "checkpoint_latest.pt", kind="deit_vanilla_latest", plateau_detected=False, **common)
         resume_args = ["--resume", str(output / "checkpoint_latest.pt")]
-    measurements = [{"accuracy": .528, "loss": 4.}, {"accuracy": .528, "loss": 3.9},
-                    {"accuracy": .512, "loss": 3.8}]
+    measurements = ([{"accuracy": .528, "loss": 4.}, {"accuracy": .528, "loss": 3.9}]
+                    + [{"accuracy": .512, "loss": 3.8}] * (stall_patience - 1))
+    if stall_patience == 150:
+        trained = []
+        def fast_train(model, _loader, optimizer, _device):
+            optimizer.step()
+            with torch.no_grad():
+                model.head.bias[0].add_(.001)
+            trained.append(True)
+            return {"loss": 1., "accuracy": .1}
+        monkeypatch.setattr(runner, "train_epoch", fast_train)
+        original_save = runner.save_state
+        def save_selected(path, **kwargs):
+            if path.name == "checkpoint_best.pt" or kwargs["epoch"] == recipe.max_epoch:
+                original_save(path, **kwargs)
+        monkeypatch.setattr(runner, "save_state", save_selected)
     if not offset:
         measurements.insert(0, {"accuracy": .52, "loss": 5.})
     values = iter(measurements)
@@ -312,13 +347,16 @@ def test_vanilla_plateau_exports_historical_best_not_detection_state(tmp_path, m
     best = torch.load(output / "checkpoint_best.pt", weights_only=False)
     latest = torch.load(output / "checkpoint_latest.pt", weights_only=False)
     assert fork["epoch"] == offset + 1
-    assert fork["stall_detected_epoch"] == offset + 3
+    assert fork["stall_detected_epoch"] == offset + 1 + stall_patience
     assert historical_best(fork) == (.528, 4., offset + 1)
-    assert latest["epochs_since_best"] == 2
+    assert latest["epochs_since_best"] == stall_patience
+    if stall_patience == 150:
+        assert len(trained) == 151
+        assert fork["epoch"] == 23 and fork["stall_detected_epoch"] == 173
     assert not any("trigger_accuracy" in row for row in latest["history"])
     assert all(torch.equal(value, best["model"][key]) for key, value in fork["model"].items())
     assert fork["scheduler"]["last_epoch"] == offset + 1
-    assert latest["scheduler"]["last_epoch"] == offset + 3
+    assert latest["scheduler"]["last_epoch"] == offset + 1 + stall_patience
     assert any(not torch.equal(value, latest["model"][key]) for key, value in fork["model"].items())
     summary = json.loads((output / "result.json").read_text())
     assert summary["fork_epoch"] == offset + 1 and summary["historical_best_accuracy"] == .528

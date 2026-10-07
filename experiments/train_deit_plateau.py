@@ -84,7 +84,7 @@ def main():
             best_accuracy, best_epoch = validation["accuracy"], epoch
             best_loss = validation["loss"]
             save(best_path, epoch, "deit_vanilla_best")
-        detected = epoch >= recipe.min_plateau_epoch and epoch - best_epoch >= recipe.patience
+        detected = epoch - best_epoch >= recipe.stall_patience
         save(args.output / "checkpoint_latest.pt", epoch, "deit_vanilla_latest",
              plateau_detected=detected)
         print(json.dumps(history[-1]), flush=True)

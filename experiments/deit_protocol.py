@@ -14,7 +14,7 @@ from experiments.shared_protocol import (atomic_torch_save, datasets_and_indices
     evaluate, make_train_loader, make_eval_loader, rng_state, restore_rng)
 
 ARCHITECTURE = "CIFAR-DeiT-Tiny-Patch4"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -30,8 +30,7 @@ class DeitRecipe:
     validation_samples: int = 5000
     trigger_samples: int = 2000
     tuning_samples: int = 128
-    min_plateau_epoch: int = 100
-    patience: int = 20
+    stall_patience: int = 150
     max_epoch: int = 300
 
     def validate(self):
@@ -39,8 +38,8 @@ class DeitRecipe:
                 self.weight_decay >= 0 and 0 <= self.warmup_epochs < self.schedule_epochs and
                 0 <= self.min_lr_ratio <= 1 and self.validation_samples > 0 and
                 0 < self.trigger_samples < self.validation_samples and
-                self.tuning_samples >= 0 and self.patience > 0 and
-                self.schedule_epochs >= self.max_epoch >= self.min_plateau_epoch >= 1):
+                self.tuning_samples >= 0 and self.stall_patience > 0 and
+                self.schedule_epochs >= self.max_epoch >= self.stall_patience):
             raise ValueError("invalid DeiT baseline recipe")
 
 

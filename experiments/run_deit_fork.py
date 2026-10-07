@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--plateau-checkpoint-hash", required=True)
     parser.add_argument("--method", choices=METHODS, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--horizon", type=int, default=30)
+    parser.add_argument("--post-fork-epochs", "--horizon", dest="post_fork_epochs", type=int, default=150)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--resume", type=Path)
     for name, default in asdict(CPConfig()).items():
@@ -34,24 +34,24 @@ def main():
     args = parser.parse_args()
     config = CPConfig(**{name: getattr(args, name) for name in asdict(CPConfig()) if name != "scales"},
                       scales=tuple(float(value) for value in args.scales.split(",")))
-    if args.horizon < 1:
-        parser.error("horizon must be positive")
+    if args.post_fork_epochs < 1:
+        parser.error("post-fork epochs must be positive")
     fork_hash = sha256_file(args.plateau_checkpoint)
     if fork_hash != args.plateau_checkpoint_hash:
         raise ValueError("DeiT fork SHA256 mismatch")
     fork, recipe = checked_source(args.plateau_checkpoint, {"deit_plateau_fork"})
     historical_accuracy, historical_loss, historical_epoch = historical_best(fork)
-    if int(fork["epoch"]) + args.horizon > recipe.schedule_epochs:
+    if int(fork["epoch"]) + args.post_fork_epochs > recipe.schedule_epochs:
         raise ValueError("fork + horizon exceeds the declared global scheduler budget")
     identity = {"fork_hash": fork_hash, "method": args.method,
-                "horizon": args.horizon, "cp_config": json.loads(json.dumps(asdict(config)))}
+                "post_fork_epochs": args.post_fork_epochs, "cp_config": json.loads(json.dumps(asdict(config)))}
     saved = None
     if args.resume:
         saved, _ = checked_source(args.resume, {"deit_fork_arm_latest"})
         if saved.get("run_identity") != identity or saved["protocol"] != fork["protocol"]:
             raise ValueError("DeiT resume fork/method/recipe/CP config mismatch")
         completed = int(saved["completed_epochs"])
-        if (not 0 <= completed <= args.horizon or saved["epoch"] != fork["epoch"] + completed or
+        if (not 0 <= completed <= args.post_fork_epochs or saved["epoch"] != fork["epoch"] + completed or
                 len(saved["interventions"]) != (0 if args.method == "vanilla_continue" else 1) or
                 len(saved["history"]) != completed + 1 or
                 saved["validation_immediately_after_projection"] is None):
@@ -101,7 +101,7 @@ def main():
                         "metric_timing": ("before_SGD_no_projection" if args.method == "vanilla_continue"
                                           else "after_initial_projection_before_SGD")})
         save(int(fork["epoch"]), 0)  # Resume does not reapply the one-shot jump.
-    for offset in range(start + 1, args.horizon + 1):
+    for offset in range(start + 1, args.post_fork_epochs + 1):
         epoch = int(fork["epoch"]) + offset
         train = train_epoch(model, loader, optimizer, device)
         validation = evaluate_without_rng(model, eval_loader, device)
@@ -132,7 +132,8 @@ def main():
         "report_best_scope": "epochs1_to_K_epoch0_reported_separately",
         "final_validation_accuracy": history[-1]["validation_accuracy"],
         "final_validation_loss": history[-1]["validation_loss"],
-        "horizon": args.horizon, "run_identity": identity,
+        "post_fork_epochs": args.post_fork_epochs,
+        "horizon": args.post_fork_epochs, "run_identity": identity,
         "controller": "one_shot_no_rollback_no_retrigger"}, args.output / "result.json")
 
 
