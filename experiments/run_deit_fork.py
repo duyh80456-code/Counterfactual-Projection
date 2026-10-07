@@ -97,7 +97,8 @@ def main():
         history.append({"epoch": int(fork["epoch"]), "post_fork_epoch": 0,
                         "validation_accuracy": immediate["accuracy"],
                         "validation_loss": immediate["loss"],
-                        "metric_timing": "after_initial_projection_before_SGD"})
+                        "metric_timing": ("before_SGD_no_projection" if args.method == "vanilla_continue"
+                                          else "after_initial_projection_before_SGD")})
         save(int(fork["epoch"]), 0)  # Resume does not reapply the one-shot jump.
     for offset in range(start + 1, args.horizon + 1):
         epoch = int(fork["epoch"]) + offset

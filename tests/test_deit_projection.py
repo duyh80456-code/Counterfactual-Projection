@@ -32,8 +32,16 @@ def test_adam_moments_reset_only_changed_tensors(deit_small, deit_batches):
     before = copy.deepcopy(optimizer.state_dict())
     target = "blocks.0.mlp.fc1.weight"
     zero = "blocks.0.mlp.fc1.bias"
-    reset = reset_adam_moments(optimizer, deit_small, {
-        target: torch.ones_like(parameters[target]), zero: torch.zeros_like(parameters[zero])})
+    rounded = "blocks.0.mlp.fc2.weight"
+    delta = {target: torch.ones_like(parameters[target]), zero: torch.zeros_like(parameters[zero]),
+             rounded: torch.full_like(parameters[rounded], 1e-100)}
+    parameter_before = {name: parameters[name].detach().clone() for name in delta}
+    with torch.no_grad():
+        for name, value in delta.items():
+            parameters[name].add_(value)
+    assert torch.any(delta[rounded] != 0)
+    assert torch.equal(parameters[rounded], parameter_before[rounded])
+    reset = reset_adam_moments(optimizer, deit_small, delta, parameter_before=parameter_before)
     assert reset == [target]
     for index, (name, parameter) in enumerate(parameters.items()):
         state = optimizer.state[parameter]

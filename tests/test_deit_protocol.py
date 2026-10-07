@@ -72,7 +72,8 @@ def _tiny_context(model_config, dataset, recipe, device, source):
     return model, optimizer, scheduler, loader, eval_loader, dataset, list(range(len(dataset))), [0, 1], [], []
 
 
-def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches, tmp_path, monkeypatch):
+@pytest.mark.parametrize("method", ["ours_e_driven_o", "o_projection_only", "vanilla_continue"])
+def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches, tmp_path, monkeypatch, method):
     import experiments.run_deit_fork as runner
     batch = deit_batches[0]
     dataset = TensorDataset(*batch)
@@ -101,7 +102,7 @@ def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches
     monkeypatch.setattr(runner, "materialize_probe_batches", lambda *_args: ({}, {}))
     output = tmp_path / "arm"
     args = ["run_deit_fork", "--data-root", "unused", "--plateau-checkpoint", str(source_path),
-        "--plateau-checkpoint-hash", sha256_file(source_path), "--method", "ours_e_driven_o",
+        "--plateau-checkpoint-hash", sha256_file(source_path), "--method", method,
         "--output", str(output), "--horizon", "2", "--device", "cpu"]
     original_save = runner.save_state
     midpoint = tmp_path / "midpoint.pt"
@@ -113,12 +114,13 @@ def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches
     monkeypatch.setattr(sys, "argv", args)
     runner.main()
     uninterrupted = torch.load(output / "checkpoint_latest.pt", weights_only=False)
-    assert len(calls) == 1
+    expected = 0 if method == "vanilla_continue" else 1
+    assert len(calls) == expected
     monkeypatch.setattr(sys, "argv", args + ["--resume", str(midpoint)])
     runner.main()
     resumed = torch.load(output / "checkpoint_latest.pt", weights_only=False)
-    assert len(calls) == 1
-    assert len(resumed["interventions"]) == 1
+    assert len(calls) == expected
+    assert len(resumed["interventions"]) == expected
     assert resumed["scheduler"] == uninterrupted["scheduler"]
     assert resumed["history"] == uninterrupted["history"]
     assert all(torch.equal(value, uninterrupted["model"][key]) for key, value in resumed["model"].items())
@@ -127,7 +129,11 @@ def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches
             assert torch.equal(value, uninterrupted["optimizer"]["state"][key][name])
     result = json.loads((output / "result.json").read_text())
     assert len(result["validation_1_to_5_epochs_after"]) == 2
-    assert len(result["interventions"][0]["validation_1_to_5_epochs_after"]) == 2
+    if expected:
+        assert len(result["interventions"][0]["validation_1_to_5_epochs_after"]) == 2
+    else:
+        assert result["validation_immediately_after_projection"] == result["validation_before"]
+        assert resumed["history"][0]["metric_timing"] == "before_SGD_no_projection"
     assert result["validation_before"] is not None
     assert result["validation_immediately_after_projection"] is not None
 

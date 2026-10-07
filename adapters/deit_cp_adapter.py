@@ -59,10 +59,13 @@ def probe_indices(train_indices, seed, config, probe_index=0):
             "projection": batches[-2], "gate": batches[-1]}
 
 
-def reset_adam_moments(optimizer, model, parameter_delta):
+def reset_adam_moments(optimizer, model, parameter_delta, *, parameter_before=None):
+    """Clear moments for changed tensors; snapshots account for rounding on apply."""
     parameters = dict(model.named_parameters())
     reset = []
     for name, delta in parameter_delta.items():
+        if parameter_before is not None and torch.equal(parameters[name], parameter_before[name]):
+            continue
         if not bool(torch.any(delta != 0)):
             continue
         state = optimizer.state.get(parameters[name], {})
@@ -117,10 +120,14 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
         loss_before = batch_loss(model, gate_batch)
         baseline = eval_logits(model, gate_batch[0])
         applied = finite_projection(projection) and gains[str(scale)] > 0
-        actual, resets = {}, []
+        actual, resets, changed = {}, [], []
         if applied:
+            parameters = dict(model.named_parameters())
+            before = {name: parameters[name].detach().clone() for name in projection.parameter_delta}
             projection.apply_(model, scale)
-            resets = reset_adam_moments(optimizer, model, projection.parameter_delta)
+            changed = [name for name in before if not torch.equal(parameters[name], before[name])]
+            resets = reset_adam_moments(optimizer, model, projection.parameter_delta,
+                                       parameter_before=before)
             actual = actual_update_metrics(model, gate_batch[0], baseline, gate_target, scale)
         loss_after = batch_loss(model, gate_batch)
         return {**selection, "selected_site": site,
@@ -128,6 +135,7 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
                 "source": "native_gromo_linear_tiny" if method == "ours_e_driven_o" else "supervised_projection_only_control",
                 "correction_applied": applied,
                 "projection_parameter_names": list(names),
+                "projection_changed_parameters": changed,
                 "selected_scale": scale if applied else None,
                 "line_search_gains": gains,
                 "parameter_delta_norm": float(parameter_delta_norm(projection.parameter_delta)),
