@@ -4,6 +4,10 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, replace
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from collections import deque
+import threading
 from pathlib import Path
 import subprocess
 import sys
@@ -34,12 +38,124 @@ def run_jobs(commands, manifest_path, *, runner=subprocess.run):
     return statuses
 
 
+
+def gpu_slots(spec, device):
+    if torch.device(device).type != 'cuda':
+        return []
+    count = torch.cuda.device_count()
+    slots = list(range(min(2, count))) if spec == 'auto' else [int(value) for value in spec.split(',')]
+    if not slots or len(set(slots)) != len(slots) or any(slot < 0 or slot >= count for slot in slots):
+        raise ValueError('GPU devices must be distinct visible CUDA indices; auto needs at least one GPU')
+    return slots
+
+
+def child_environment(slot, parent_env):
+    env = dict(parent_env)
+    if slot is None:
+        env['CUDA_VISIBLE_DEVICES'] = ''  # A0 reference export is CPU-only.
+    else:
+        visible = parent_env.get('CUDA_VISIBLE_DEVICES')
+        tokens = [value.strip() for value in visible.split(',')] if visible else None
+        env['CUDA_VISIBLE_DEVICES'] = tokens[slot] if tokens is not None else str(slot)
+    env['PYTHONUNBUFFERED'] = '1'
+    return env
+
+
+def command_on_device(command, slot):
+    command = list(command)
+    device = 'cpu' if slot is None else 'cuda:0'  # One visible physical GPU in each child.
+    if '--device' in command:
+        command[command.index('--device') + 1] = device
+    else:
+        command += ['--device', device]
+    return command
+
+
+def run_jobs_parallel(commands, manifest_path, slots, *, runner=None, parent_env=None):
+    """One isolated process per GPU, refill free slots; CPU A0 first, Opt-E last."""
+    if not slots or len(slots) != len(set(slots)):
+        raise ValueError('parallel scheduler needs distinct GPU slots')
+    env = dict(os.environ if parent_env is None else parent_env)
+    statuses, print_lock = {}, threading.Lock()
+    output = Path(manifest_path).parent
+    def launch(method, command, slot):
+        child_env = child_environment(slot, env)
+        command = command_on_device(command, slot)
+        if runner is not None:
+            runner(command, check=True, env=child_env)
+            return
+        process = subprocess.Popen(command, env=child_env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        label = 'CPU' if slot is None else f'GPU{slot}'
+        try:
+            for line in process.stdout:
+                with print_lock:
+                    print(f'[{label} {method}] {line.rstrip()}', flush=True)
+            code = process.wait()
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+        if code:
+            raise subprocess.CalledProcessError(code, command)
+    def record(method, status, slot, error=None):
+        statuses[method] = {'status': status, 'gpu_slot': slot,
+            'child_device': 'cpu' if slot is None else 'cuda:0'}
+        if error is not None:
+            statuses[method]['error'] = repr(error)
+        with print_lock:
+            emit_event('deit_arm_start' if status == 'running' else 'deit_arm_status',
+                       {'method': method, **statuses[method]}, output)
+        atomic_json_save(statuses, manifest_path)
+    # CPU export does not consume a GPU worker and never retrains Vanilla.
+    if 'vanilla_continue' in commands:
+        method = 'vanilla_continue'
+        record(method, 'running', None)
+        try:
+            launch(method, commands[method], None)
+            record(method, 'completed', None)
+        except Exception as error:
+            record(method, 'failed', None, error)
+    regular = deque((method, command) for method, command in commands.items()
+                    if method not in ('vanilla_continue', 'opt_e'))
+    with ThreadPoolExecutor(max_workers=len(slots)) as executor:
+        active, free = {}, deque(slots)
+        while regular or active:
+            while regular and free:
+                slot = free.popleft()
+                method, command = regular.popleft()
+                record(method, 'running', slot)
+                active[executor.submit(launch, method, command, slot)] = (method, slot)
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            for future in sorted(done, key=lambda future: active[future][1]):
+                method, slot = active.pop(future)
+                try:
+                    future.result()
+                    record(method, 'completed', slot)
+                except Exception as error:
+                    record(method, 'failed', slot, error)
+                free.append(slot)
+        # Barrier: Opt-E begins only after every other requested arm finished/failed.
+        if 'opt_e' in commands:
+            method, slot = 'opt_e', slots[0]
+            record(method, 'running', slot)
+            try:
+                executor.submit(launch, method, commands[method], slot).result()
+                record(method, 'completed', slot)
+            except Exception as error:
+                record(method, 'failed', slot, error)
+    return statuses
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-root', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--device', default='cuda:0', help='Phase1/reference device')
+    parser.add_argument('--gpu-devices', default='auto',
+        help='Phase2 visible GPU indices, e.g. 0,1; auto uses up to two GPUs')
     parser.add_argument('--plateau-checkpoint', type=Path)
     parser.add_argument('--vanilla-reference', type=Path)
     parser.add_argument('--resume-phase1', type=Path)
@@ -117,9 +233,13 @@ def main():
         if (output / 'checkpoint_latest.pt').exists():
             command += ['--resume', str(output / 'checkpoint_latest.pt')]
         commands[method] = command
+    slots = gpu_slots(args.gpu_devices, args.device)
     atomic_json_save({'suite_version': SUITE_VERSION, 'fork_hash': fork_hash, 'recipe': asdict(recipe),
-                     'cp_config': asdict(config), 'arms': arms, 'commands': commands}, args.output / 'suite_protocol.json')
-    statuses = run_jobs(commands, args.output / 'arm_status.json')
+                     'cp_config': asdict(config), 'arms': arms, 'commands': commands,
+                     'execution': {'gpu_slots': slots, 'one_visible_gpu_per_arm': bool(slots),
+                                   'opt_e_last_barrier': True}}, args.output / 'suite_protocol.json')
+    statuses = (run_jobs_parallel(commands, args.output / 'arm_status.json', slots) if slots else
+                run_jobs(commands, args.output / 'arm_status.json'))
     summary = {}
     for method, status in statuses.items():
         result_path = args.output / 'arms' / method / 'result.json'

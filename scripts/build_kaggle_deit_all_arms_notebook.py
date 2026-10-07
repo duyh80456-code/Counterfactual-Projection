@@ -14,7 +14,7 @@ def markdown(source):
 
 template = json.loads(Path('notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb').read_text())
 bootstrap = ''.join(template['cells'][1]['source']).replace('deit-one-shot-repo', 'deit-all-arms-repo')
-bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py", "tests/test_deit_logging.py"')
+bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py", "tests/test_deit_logging.py", "tests/test_deit_parallel.py"')
 cells = [markdown('''# DeiT-Tiny CIFAR-100 — algorithm ablations A0–A6
 
 Input: attach CIFAR-100 (`cifar-100-python/train`, `meta`), enable Internet,
@@ -52,7 +52,9 @@ roles; failed A6 trains as Vanilla with no rollback. Thus comparisons with A0/A1
 include the controller effect. E directions only touch original selected MLP;
 A5 is explicitly the exception that keeps extra width and migrates Adam state.
 Validation selects plateau/rollback and reports scientific escape. Official test
-is unused. All arms run in separate sequential processes, Opt-E last; a failed
+is unused. Phase1 runs on GPU0. Phase2 runs independent arms concurrently, at most one
+arm on each visible GPU (up to2); free GPUs take the next queued arm. A0 exports
+on CPU before the GPU jobs. Opt-E runs last after all other arms finish; a failed
 arm is logged and later arms still run. Tagged JSON console rows report train/val,
 LR, report best, anchor, stalls, interventions, rollback, epoch time and peak
 GPU bytes; each output folder also saves console.jsonl. No full-width GPU accuracy/runtime
@@ -69,6 +71,7 @@ POST_FORK_EPOCHS = 150
 ALGORITHM_PATIENCE = 10
 MAX_EPOCH = 800
 BATCH_SIZE = 64
+GPU_DEVICES = 'auto'  # T4x2: two workers; one GPU: one worker.
 LEARNING_RATE = 5e-4  # Explicit per-arm LR; no implicit ImageNet batch scaling.
 RANK = 4
 PROJECTION_SAMPLES = 32
@@ -176,7 +179,8 @@ print('Compatible attachments:', len(states))
     '--max-epoch', str(MAX_EPOCH), '--batch-size', str(BATCH_SIZE), '--learning-rate', str(LEARNING_RATE),
     '--stall-patience', str(STALL_PATIENCE), '--post-fork-epochs', str(POST_FORK_EPOCHS),
     '--algorithm-patience', str(ALGORITHM_PATIENCE), '--rank', str(RANK),
-    '--projection-samples', str(PROJECTION_SAMPLES), '--scales', SCALES, '--opt-inner-steps', '5']
+    '--projection-samples', str(PROJECTION_SAMPLES), '--scales', SCALES, '--opt-inner-steps', '5',
+    '--gpu-devices', GPU_DEVICES]
 if FORK.exists():
     command += ['--plateau-checkpoint', str(FORK), '--vanilla-reference', str(VANILLA_REFERENCE)]
 try:

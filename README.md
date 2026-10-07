@@ -675,8 +675,9 @@ also selects scales, so its loss gains do not demonstrate generalization.
 
 The runner writes `suite_protocol.json`, `raw_intervention_reference.pt`,
 `arm_status.json`, `summary.json`, and full per-arm latest/anchor checkpoints,
-history, immediate validation, and epochs1–5 validation. Arms run in separate
-sequential processes; Opt-E is last. Failure of one arm does not skip later
+history, immediate validation, and epochs1–5 validation. Arms run in separate processes, at most one arm per visible GPU (auto uses up
+to2 GPUs). Free GPUs take the next queued arm; A0 exports on CPU first and Opt-E
+starts only after all other requested arms finish or fail. Failure of one arm does not skip later
 arms, and the notebook archives resumable state even on an error.
 
 ```bash
@@ -707,3 +708,18 @@ time and peak allocated GPU bytes are console observations; they do not enter
 training/controller state or deterministic history. CPU tests report GPU bytes0.
 `learning_rates` denotes the LR actually used to train that epoch;
 `next_learning_rates` reflects the scheduler and any subsequent rollback.
+
+Phase2 GPU scheduling: the all-arm runner defaults to `--gpu-devices auto`
+(T4x2 uses slots0/1; a single-GPU host uses one slot). Phase1 Vanilla and raw
+reference preparation still use `--device cuda:0`. Each method subprocess has
+`CUDA_VISIBLE_DEVICES` restricted to its assigned physical GPU and internally
+uses `cuda:0`; console prefixes show `[GPU0 arm]` / `[GPU1 arm]`. Scheduling
+assignments/status are written to `arm_status.json`, including failures. GPU
+assignment is not an algorithm/resume identity change: fork, CP config,
+optimizer/controller and data protocol must still match. Reattach the existing
+fork, Vanilla reference, raw intervention reference and arm latest checkpoints
+to resume a previously sequential run. Updating code does not change a running
+Kaggle process; resume using the updated notebook in a new run. GPU scheduler
+tests cover overlapping workers, slot refill, per-GPU exclusivity, the Opt-E
+barrier, single-GPU fallback, inherited visible-device mapping, failure isolation
+and real CPU subprocess forwarding. Full T4x2 training throughput is unmeasured.
