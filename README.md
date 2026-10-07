@@ -497,10 +497,16 @@ full official ImageNet training recipe.
   `[.001,.01,.1,1,10]`, and scales `[.025,.05,.1,.2]`. Only the selected original
   MLP's fc1/fc2 weight/bias enter the projection. The native TINY optimal existing
   weight update is used only in proposal statistics, never committed directly.
-  Only tensors with a nonzero applied delta have Adam moments zeroed, including
+  Only tensors actually changed after floating-point rounding have Adam moments zeroed, including
   AMSGrad's max moment if present; Adam step counters, other state, LR and the
-  scheduler are retained. The logged held-out gate batch also selects scale and
-  is not an independent generalization audit.
+  scheduler are retained. `adam_moments_reset_parameters` lists their names;
+  `momentum_states_reset` is the integer count. `gate_*` and `actual_gate_*`
+  metrics describe the scale-selection batch, with
+  `evaluation_role=gate_batch_used_for_scale_selection`. No independent held-out
+  diagnostic batch is used. `actual_loss_improvement` is gate loss reduction
+  after selecting scale on that same batch, so it may be optimistic. Use the
+  report-only validation immediately after projection and at epochs 1–5 to
+  assess generalization; do not interpret gate metrics as that evidence.
 - **Fork arms:** Vanilla, fixed-last-MLP supervised O-only (`one_hot-softmax`)
   and one-shot E-to-O all start from the same SHA-verified strict-best theta_P.
   Each restores model/optimizer/scheduler/RNG/loader state, applies at most one

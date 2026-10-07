@@ -54,7 +54,8 @@ def test_one_shot_reuses_where_raw_gain_and_no_aux_persistence(deit_small, deit_
     assert result["where_selector"] == "mean_observed_structural_E_gain"
     changed = set(result["projection_changed_parameters"])
     assert result["correction_applied"] and changed  # Exercise an actual jump, not empty sets.
-    assert changed == set(result["momentum_states_reset"])
+    assert result["momentum_states_reset"] == len(changed)
+    assert isinstance(result["momentum_states_reset"], int)
     assert changed == set(result["adam_moments_reset_parameters"])
     assert all(name.startswith(result["selected_site"] + ".") for name in changed)
     assert changed.issubset(result["projection_parameter_names"])
@@ -77,8 +78,11 @@ def test_one_shot_reuses_where_raw_gain_and_no_aux_persistence(deit_small, deit_
     assert torch.equal(torch.get_rng_state(), before_rng)
     assert set(deit_small.state_dict()) == names
     assert all(not block.mlp._forward_hooks for block in deit_small.blocks)
-    for key in ("cg_attempts", "cg_converged", "cg_damping_used", "heldout_cosine_alignment",
-                "heldout_relative_residual", "heldout_fitted_norm_ratio", "selected_scale",
+    assert result["evaluation_role"] == "gate_batch_used_for_scale_selection"
+    assert result["actual_loss_improvement_role"] == result["evaluation_role"]
+    assert not any("heldout" in key for key in result)
+    for key in ("cg_attempts", "cg_converged", "cg_damping_used", "gate_cosine_alignment",
+                "gate_relative_residual", "gate_fitted_norm_ratio", "selected_scale",
                 "line_search_gains", "actual_loss_improvement", "site_functional_evaluations"):
         assert key in result
 

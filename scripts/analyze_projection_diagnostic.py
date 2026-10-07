@@ -19,6 +19,8 @@ DEFAULT_MAPPING = {
     "selected_site": ["selected_site"],
     "r_heldout": ["heldout_relative_residual"],
     "cos_heldout": ["heldout_cosine_alignment"],
+    "r_gate": ["gate_relative_residual"],
+    "cos_gate": ["gate_cosine_alignment"],
     "r_fit": ["selected_cg_attempt.functional_relative_residual", "relative_residual"],
     "cos_fit": ["selected_cg_attempt.functional_cosine_alignment", "cosine_alignment"],
     "r_actual": ["actual_relative_residual", "actual_heldout_relative_residual"],
@@ -31,7 +33,7 @@ DEFAULT_MAPPING = {
 }
 DEFAULT_HISTORY_MAPPING = {"epoch": ["epoch"],
                            "accuracy": ["validation_accuracy"]}
-METRICS = ("r_fit", "cos_fit", "r_heldout", "cos_heldout", "r_actual", "actual_cosine")
+METRICS = ("r_fit", "cos_fit", "r_heldout", "cos_heldout", "r_gate", "cos_gate", "r_actual", "actual_cosine")
 E_METHODS = {"ours_e_driven_o", "e_driven_o", "e_projection"}
 
 
@@ -306,12 +308,15 @@ def load_interventions(root, patterns, *, mapping=None, metadata_overrides=None,
         row.update(backbone=backbone, seed=seed, run_id=str(run),
                    source_file=relative, method=method or "structural_E_inferred",
                    diagnostic_scope="selected_site_only",
-                   heldout_role="logged_batch_independence_unverified")
+                   heldout_role=event.get("heldout_role", "logged_batch_independence_unverified"),
+                   evaluation_role=event.get("evaluation_role"),
+                   realized_gain_role=event.get("actual_loss_improvement_role", "logged_gate_batch_loss_reduction"))
         row["is_boundary"] = (bool(re.search(r"(?:^|\.)boundary_to_\d+$", str(row["selected_site"])))
                               if backbone == "VGG" and row["selected_site"] is not None else None)
         rows.append(row)
     columns = list(mapping) + ["backbone", "seed", "run_id", "source_file",
-                               "method", "diagnostic_scope", "heldout_role", "is_boundary"]
+                               "method", "diagnostic_scope", "heldout_role", "evaluation_role",
+                               "realized_gain_role", "is_boundary"]
     columns += [metric + "_source" for metric in METRICS]
     df = pd.DataFrame(rows, columns=columns)
     for column in (*METRICS, "realized_gain",
@@ -377,7 +382,7 @@ def _quartiles(frame, metrics):
 def summarize_cosine_groups(df):
     """Quartiles for each run/site, plus VGG boundary/non-boundary groups."""
     rows = []
-    metrics = ("cos_fit", "cos_heldout", "actual_cosine")
+    metrics = ("cos_fit", "cos_heldout", "cos_gate", "actual_cosine")
     keys = ["backbone", "seed", "run_id"]
     for identity, run in df.groupby(keys, dropna=False):
         base = dict(zip(keys, identity))
@@ -404,7 +409,7 @@ def run_correlations(df, *, bootstrap=2000, seed=0):
             for y, horizon in targets:
                 selected = group if horizon is None else group[
                     group[f"acc_{horizon}_status"] == "observed"]
-                for x in ("cos_fit", "cos_heldout", "actual_cosine"):
+                for x in ("cos_fit", "cos_heldout", "cos_gate", "actual_cosine"):
                     pairs = selected[[x, y]].dropna()
                     rows.append({**dict(zip(keys, identity)), "subset": subset,
                                  "x": x, "y": y, "horizon": horizon,
@@ -432,6 +437,7 @@ def write_outputs(df, output, *, bootstrap=2000, seed=0):
                    "source_key": source, "count": count}
                   for metric, role in (("r_fit", "fit"), ("cos_fit", "fit"),
                                        ("r_heldout", "heldout"), ("cos_heldout", "heldout"),
+                                       ("r_gate", "scale_selection_gate"), ("cos_gate", "scale_selection_gate"),
                                        ("r_actual", "actual"), ("actual_cosine", "actual"))
                   for source, count in df[metric + "_source"].fillna("missing").value_counts().items()]
     pd.DataFrame(provenance).to_csv(output / "metric_sources.csv", index=False)
@@ -441,7 +447,8 @@ def write_outputs(df, output, *, bootstrap=2000, seed=0):
     summary = df.groupby("backbone", dropna=False).agg(
         interventions=("backbone", "size"), applied_known=("applied", "count"),
         applied_rate=("applied", "mean"), r_median=("r_heldout", "median"),
-        cos_median=("cos_heldout", "median"))
+        cos_median=("cos_heldout", "median"),
+        r_gate_median=("r_gate", "median"), cos_gate_median=("cos_gate", "median"))
     summary.to_csv(output / "backbone_summary.csv")
     quartiles = [{"backbone": backbone, **_quartiles(group, METRICS)}
                  for backbone, group in df.groupby("backbone", dropna=False)]
@@ -453,7 +460,7 @@ def write_outputs(df, output, *, bootstrap=2000, seed=0):
     for scope, name, group in groups:
         for subset in ("all", "applied_only"):
             selected = group if subset == "all" else group[group.applied.fillna(False)]
-            for x in ("r_heldout", "cos_heldout"):
+            for x in ("r_heldout", "cos_heldout", "r_gate", "cos_gate"):
                 correlations.append({"scope": scope, "group": name, "subset": subset,
                                      "x": x, "y": "realized_gain",
                                      **spearman_bootstrap(selected, x, "realized_gain",
@@ -487,6 +494,7 @@ def write_outputs(df, output, *, bootstrap=2000, seed=0):
         "notes": ["Residuals describe selected sites only, not all WHERE sites.",
                   "realized_gain is immediate logged gate-batch loss reduction, not PG_gain or accuracy gain.",
                   "Logged heldout batch may also select scale; independence is not established.",
+                  "gate_* columns are scale-selection diagnostics and are never substituted for heldout_*.",
                   "Bootstrap resamples interventions; repeated trials within a run may be dependent.",
                   "Correlations are descriptive; no capacity-need conclusion, especially for small n.",
                   "run_spearman uses each run separately; pooled spearman.csv is legacy descriptive output.",

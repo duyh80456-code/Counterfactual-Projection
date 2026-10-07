@@ -48,6 +48,26 @@ def test_explicit_mapping_metadata_missing_and_non_e_branch(tmp_path):
     assert not df.iloc[0].applied
 
 
+def test_deit_gate_metrics_are_not_labeled_independent_heldout(tmp_path):
+    event = {"selected_site": "blocks.3.mlp", "uses_structural_E": True,
+             "correction_applied": True, "gate_relative_residual": .7,
+             "gate_cosine_alignment": .8, "actual_loss_improvement": .02,
+             "evaluation_role": "gate_batch_used_for_scale_selection",
+             "actual_loss_improvement_role": "gate_batch_used_for_scale_selection"}
+    (tmp_path / "result.json").write_text(json.dumps({
+        "method": "ours_e_driven_o", "backbone": "DeiT", "seed": 1,
+        "interventions": [event]}))
+    df = load_interventions(tmp_path, ["*.json"])
+    row = df.iloc[0]
+    assert row.r_gate == .7 and row.cos_gate == .8
+    assert pd.isna(row.r_heldout) and pd.isna(row.cos_heldout)
+    assert row.cos_gate_source == "gate_cosine_alignment"
+    assert row.evaluation_role == row.realized_gain_role == event["evaluation_role"]
+    write_outputs(df, tmp_path / "analysis", bootstrap=10)
+    sources = pd.read_csv(tmp_path / "analysis" / "metric_sources.csv")
+    assert sources.loc[sources.metric == "cos_gate", "role"].tolist() == ["scale_selection_gate"]
+
+
 def test_spearman_bootstrap_ties_constants_and_small_n():
     df = pd.DataFrame({"r": [1, 2, 2, 4, 5], "gain": [5, 4, 4, 2, 1]})
     result = spearman_bootstrap(df, "r", "gain", bootstrap=100, seed=4)

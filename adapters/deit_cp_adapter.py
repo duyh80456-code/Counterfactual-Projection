@@ -10,7 +10,7 @@ from experiments.run_plateau_comparison import select_by_expansion_gain, finite_
 from experiments.run_shared_comparison import supervised_functional_descent_direction
 from experiments.run_gromo_pilot import (
     actual_update_metrics, batch_loss, cg_diagnostics, eval_logits,
-    heldout_metrics, parameter_delta_norm, preview_projected_gain)
+    parameter_delta_norm, preview_projected_gain)
 from experiments.shared_protocol import rng_state, restore_rng
 from probe import CandidateExpansionProbe
 from projection import FunctionalProjector
@@ -109,8 +109,8 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
             preconditioner_probes=config.cg_preconditioner_probes)
         projection = projector.project(model, projection_batch[0], fit_target,
                                        block=site, parameter_names=names)
-        heldout = projector.evaluate_direction(model, gate_batch[0], gate_target,
-                                               projection.parameter_delta)
+        gate_evaluation = projector.evaluate_direction(model, gate_batch[0], gate_target,
+                                                        projection.parameter_delta)
         scales = tuple(float(value) for value in config.scales)
         if not scales or any(value <= 0 for value in scales):
             raise ValueError("positive line-search scales required")
@@ -129,6 +129,8 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
             resets = reset_adam_moments(optimizer, model, projection.parameter_delta,
                                        parameter_before=before)
             actual = actual_update_metrics(model, gate_batch[0], baseline, gate_target, scale)
+            actual = {key.replace("actual_heldout_", "actual_gate_"): value
+                      for key, value in actual.items()}
         loss_after = batch_loss(model, gate_batch)
         return {**selection, "selected_site": site,
                 "uses_structural_E": method == "ours_e_driven_o",
@@ -141,11 +143,15 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
                 "parameter_delta_norm": float(parameter_delta_norm(projection.parameter_delta)),
                 "loss_before": loss_before, "loss_after": loss_after,
                 "actual_loss_improvement": loss_before - loss_after,
+                "actual_loss_improvement_role": "gate_batch_used_for_scale_selection",
                 "adam_moments_reset_parameters": resets,
-                "momentum_states_reset": resets,
+                "momentum_states_reset": len(resets),
                 "relative_residual": projection.relative_residual,
                 "cosine_alignment": projection.cosine_alignment,
-                "heldout_role": "gate_batch_also_used_for_scale_selection",
-                **actual, **heldout_metrics(heldout), **cg_diagnostics(projection)}
+                "evaluation_role": "gate_batch_used_for_scale_selection",
+                "gate_cosine_alignment": gate_evaluation.cosine_alignment,
+                "gate_relative_residual": gate_evaluation.relative_residual,
+                "gate_fitted_norm_ratio": gate_evaluation.fitted_norm_ratio,
+                **actual, **cg_diagnostics(projection)}
     finally:
         restore_rng(rng)
