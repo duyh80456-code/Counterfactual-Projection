@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-import json
+import time
 from pathlib import Path
 
 import torch
@@ -11,6 +11,7 @@ import torch
 from experiments.deit_protocol import (DeitRecipe, checked_source, load_training_context,
     protocol, save_state, evaluate_without_rng)
 from experiments.shared_protocol import atomic_json_save, seed_everything, train_epoch
+from experiments.deit_logging import emit_event, emit_epoch
 
 
 def main():
@@ -35,6 +36,10 @@ def main():
     context = load_training_context(args.data_root, recipe, device, source)
     model, optimizer, scheduler, loader, eval_loader, _, train_ids, val_ids, tuning_ids, trigger_ids = context
     declared = protocol(recipe, model)
+    emit_event("deit_run_start", {"phase": "vanilla", "architecture": declared["architecture"],
+        "seed": recipe.seed, "resume_epoch": source["epoch"] if source else 0,
+        "stall_patience": recipe.stall_patience, "stall_start_epoch": recipe.stall_start_epoch,
+        "schedule_epochs": recipe.schedule_epochs}, args.output)
     history = list(source["history"]) if source else []
     best_accuracy = source["report_best_accuracy"] if source else -1.
     best_loss = source["report_best_loss"] if source else float("inf")
@@ -73,6 +78,8 @@ def main():
     for epoch in range(start_epoch + 1, recipe.max_epoch + 1):
         if detected and start_epoch >= best_epoch + reference_epochs:
             break
+        epoch_started = time.perf_counter()
+        training_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         train = train_epoch(model, loader, optimizer, device)
         validation = evaluate_without_rng(model, eval_loader, device)
         scheduler.step()
@@ -80,18 +87,31 @@ def main():
                         "train_accuracy": train["accuracy"],
                         "validation_accuracy": validation["accuracy"],
                         "validation_loss": validation["loss"],
-                        "learning_rates": [group["lr"] for group in optimizer.param_groups]})
-        if not detected and (epoch == recipe.stall_start_epoch or validation["accuracy"] > best_accuracy):
+                        "learning_rates": training_lrs,
+                        "next_learning_rates": [float(group["lr"]) for group in optimizer.param_groups]})
+        report_improved = not detected and (epoch == recipe.stall_start_epoch or validation["accuracy"] > best_accuracy)
+        if report_improved:
             best_accuracy, best_epoch = validation["accuracy"], epoch
             best_loss = validation["loss"]
-            save(best_path, epoch, "deit_vanilla_best")
         if not detected and best_epoch >= recipe.stall_start_epoch and epoch - best_epoch >= recipe.stall_patience:
             detected = True
             detected_epoch = epoch
+        history[-1].update(phase="vanilla", architecture=declared["architecture"], seed=recipe.seed,
+            report_best_improved=report_improved, report_best_accuracy=best_accuracy,
+            report_best_loss=best_loss, report_best_epoch=best_epoch,
+            report_stall_counter=epoch - best_epoch, epochs_since_best=epoch - best_epoch,
+            stall_patience=recipe.stall_patience, plateau_detected=detected,
+            stall_detected_epoch=detected_epoch,
+            best_checkpoint_statistics={"metric": float(validation["accuracy"]),
+                "best_metric": best_accuracy, "best_epoch": best_epoch,
+                "improved": report_improved, "epochs_since_best": epoch - best_epoch,
+                "stalled": detected})
+        if report_improved:
+            save(best_path, epoch, "deit_vanilla_best")
         save(args.output / "checkpoint_latest.pt", epoch, "deit_vanilla_latest",
              plateau_detected=detected, stall_detected_epoch=detected_epoch,
              vanilla_reference_complete=detected and epoch >= best_epoch + reference_epochs)
-        print(json.dumps(history[-1]), flush=True)
+        emit_epoch("deit_vanilla", history[-1], device, epoch_started, args.output)
         if detected and epoch >= best_epoch + reference_epochs:
             break
     if source and source.get("plateau_detected"):
@@ -105,6 +125,9 @@ def main():
     if (selected_recipe != recipe or best["epoch"] != best_epoch or
             best["report_best_accuracy"] != best_accuracy or best["report_best_loss"] != best_loss):
         raise ValueError("saved best does not match historical validation-best state")
+    emit_event("deit_plateau_confirmed", {"fork_epoch": best_epoch, "historical_best_accuracy": best_accuracy,
+        "historical_best_loss": best_loss, "stall_detected_epoch": detected_epoch,
+        "epochs_since_best": detected_epoch - best_epoch, "vanilla_reference_epochs": reference_epochs}, args.output)
     best.update(kind="deit_plateau_fork", stall_detected_epoch=detected_epoch,
                 stall_history=[row for row in history if best_epoch < row["epoch"] <= detected_epoch],
                 vanilla_history=[row for row in history if row["epoch"] > best_epoch])

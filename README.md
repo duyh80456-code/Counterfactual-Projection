@@ -691,3 +691,19 @@ resume, GN symmetry/PSD/toy descent/no auxiliary residue, epoch302 lower-loss
 anchor rollback, all seven method main loops and bitwise checkpoint resume,
 recipe-complete plateau, and a longer reused Vanilla window. These CPU tests
 use small models and native Gromo; full-width CUDA cost/accuracy is not measured.
+
+DeiT console logging follows the tagged JSON style of ResNet18. Phase 1 prints
+`deit_vanilla` with train/validation loss and accuracy, LR used and next LR,
+paired report-best accuracy/loss/epoch, strict improvement, epochs since best,
+patience and plateau status. Method rows are tagged with their arm name and
+include report/anchor metrics, separate stalls, rollback flag/count, intervention
+count, delta versus historical best and scientific escape. Disabled controllers
+use `null` anchor/stall fields rather than invented metrics. Separate events
+announce run/arm start, intervention diagnostics (WHERE/site/scale, projection,
+Adam resets, persistent growth or Opt-E), rollback target, plateau confirmation
+and completion/failure. No trigger accuracy is computed or introduced.
+Every output folder saves the same console events to `console.jsonl`. Epoch wall
+time and peak allocated GPU bytes are console observations; they do not enter
+training/controller state or deterministic history. CPU tests report GPU bytes0.
+`learning_rates` denotes the LR actually used to train that epoch;
+`next_learning_rates` reflects the scheduler and any subsequent rollback.

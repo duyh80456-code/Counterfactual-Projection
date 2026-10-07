@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import time
 import torch
 from adapters.deit_ablation import SUITE_VERSION, execute_intervention
 from adapters.deit_opt_e import OptEConfig
 from experiments.deit_protocol import (checked_source, load_training_context, historical_best,
     materialize_probe_batches, evaluate_without_rng, save_state)
-from experiments.deit_e_rollback import EAccuracyRollback, rollback_protocol
+from experiments.deit_e_rollback import EAccuracyRollback
+from experiments.deit_logging import emit_event, emit_epoch
 from experiments.shared_protocol import seed_everything, rng_state, restore_rng, atomic_json_save, atomic_torch_save
 
 
@@ -40,6 +42,10 @@ def run_arm(args, config, fork, recipe, fork_hash):
         if where_table is not None:
             result.update(site_evaluations=where_table, where_role='offline_only_did_not_select_vanilla')
             atomic_json_save(result, args.output / 'result.json')
+        emit_event("vanilla_continue", {"phase": "observed_reference_export", "fork_epoch": result["fork_epoch"],
+            "post_fork_epochs": result["post_fork_epochs"], "report_best_accuracy": result["report_best_accuracy"],
+            "report_best_loss": result["report_best_loss"], "report_best_epoch": result["report_best_epoch"],
+            "scientific_escape": result["scientific_escape"], "additional_training_epochs": 0}, args.output)
         return result
     if args.raw_reference is None or not args.data_root:
         raise ValueError('ablation arms require --raw-reference and --data-root')
@@ -64,6 +70,9 @@ def run_arm(args, config, fork, recipe, fork_hash):
     model, optimizer, scheduler, loader, eval_loader, evaluation, train_ids, val_ids, tuning_ids, reserved_ids = context
     model.eval()
     args.output.mkdir(parents=True, exist_ok=True)
+    emit_event('deit_run_start', {'method': method, 'architecture': fork['protocol']['architecture'],
+        'seed': recipe.seed, 'fork_epoch': fork['epoch'], 'resume_offset': saved['completed_epochs'] if saved else 0,
+        'post_fork_epochs': args.post_fork_epochs, 'algorithm_patience': args.algorithm_patience, 'retrigger': False}, args.output)
     accuracy, loss, epoch0 = historical_best(fork)
     before = saved['validation_before'] if saved else evaluate_without_rng(model, eval_loader, device)
     controller = None
@@ -106,6 +115,8 @@ def run_arm(args, config, fork, recipe, fork_hash):
                       validation_before=before, validation_immediately_after_projection=immediate,
                       validation_1_to_5_epochs_after=[])
         interventions.append(record)
+        emit_event('e_driven_o_intervention' if method.startswith('e_driven_o') else 'deit_intervention',
+                   {'method': method, **record}, args.output)
         row = {'epoch': epoch0, 'post_fork_epoch': 0,
                'validation_accuracy': immediate['accuracy'], 'validation_loss': immediate['loss']}
         if controller:
@@ -131,12 +142,18 @@ def run_arm(args, config, fork, recipe, fork_hash):
     save(start)
     from experiments.shared_protocol import train_epoch
     for offset in range(start + 1, args.post_fork_epochs + 1):
+        epoch_started = time.perf_counter()
+        training_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         train = train_epoch(model, loader, optimizer, device)
         validation = evaluate_without_rng(model, eval_loader, device)
         scheduler.step()
         row = {'epoch': epoch0 + offset, 'post_fork_epoch': offset,
                'train_loss': train['loss'], 'train_accuracy': train['accuracy'],
-               'validation_accuracy': validation['accuracy'], 'validation_loss': validation['loss']}
+               'validation_accuracy': validation['accuracy'], 'validation_loss': validation['loss'],
+               'learning_rates': training_lrs, 'next_learning_rates': [float(g['lr']) for g in optimizer.param_groups],
+               'phase': 'post_fork', 'method': method, 'architecture': fork['protocol']['architecture'], 'seed': recipe.seed,
+               'fork_epoch': epoch0, 'post_fork_epochs': args.post_fork_epochs,
+               'intervention_count': len(interventions), 'retriggered': False}
         report_improved = validation['accuracy'] > best_accuracy
         if report_improved:
             best_accuracy, best_loss, best_epoch = validation['accuracy'], validation['loss'], epoch0 + offset
@@ -146,10 +163,23 @@ def run_arm(args, config, fork, recipe, fork_hash):
         if controller:
             row.update(controller.observe(model, optimizer, scheduler, loader, validation, epoch0 + offset, offset))
             row['controller_stall_counter'] = controller.accuracy_stall_counter
+        row['rollback_triggered'] = bool(row.get('rollback_applied', False))
+        if not controller:
+            row.update(controller_anchor_accuracy=None, controller_anchor_loss=None, controller_anchor_epoch=None,
+                controller_anchor_improved=False, controller_anchor_reason='controller_disabled',
+                controller_stall_counter=None, rollback_count=0)
+        else:
+            row['controller_anchor_update_reason'] = row['controller_anchor_reason']
+            row['next_learning_rates'] = [float(g['lr']) for g in optimizer.param_groups]
+        row['delta_vs_historical_best'] = best_accuracy - accuracy
+        row['scientific_escape'] = best_accuracy > accuracy
+        if row['rollback_triggered']:
+            emit_event('deit_rollback', {'method': method, **controller.rollback_events[-1],
+                'rng_restored': False, 'loader_stream_restored': False, 'retriggered': False}, args.output)
         history.append(row)
         interventions[0]['validation_1_to_5_epochs_after'] = [r for r in history if 1 <= r['post_fork_epoch'] <= 5]
         save(offset)
-        print(json.dumps(row), flush=True)
+        emit_epoch(method, row, device, epoch_started, args.output)
     last = history[-1]
     result = {'method': method, 'protocol': fork['protocol'], 'run_identity': identity,
         'run_id': str(args.output.resolve()), 'theta_best_hash': fork_hash, 'fork_epoch': epoch0,
@@ -169,4 +199,8 @@ def run_arm(args, config, fork, recipe, fork_hash):
         'validation_role': 'report_and_anchor_selection' if controller else 'report_only',
         'intervention_count': 1, 'retrigger': False}
     atomic_json_save(result, args.output / 'result.json')
+    emit_event('deit_arm_complete', {'method': method, 'report_best_accuracy': best_accuracy,
+        'report_best_loss': best_loss, 'report_best_epoch': best_epoch,
+        'delta_vs_historical_best': best_accuracy - accuracy, 'scientific_escape': best_accuracy > accuracy,
+        'rollback_count': len(controller.rollback_events) if controller else 0}, args.output)
     return result

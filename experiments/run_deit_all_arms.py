@@ -13,6 +13,7 @@ from adapters.deit_ablation import res18_cp_config, build_raw_reference, SUITE_V
 from experiments.deit_protocol import (DeitRecipe, checked_source, load_training_context,
     materialize_probe_batches)
 from experiments.shared_protocol import atomic_json_save, atomic_torch_save, sha256_file, seed_everything
+from experiments.deit_logging import emit_event
 
 ALL_ARMS = ('vanilla_continue', 'o_projection_only', 'e_driven_o_raw', 'e_driven_o_normalized',
             'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e')
@@ -22,11 +23,13 @@ def run_jobs(commands, manifest_path, *, runner=subprocess.run):
     """A failed arm is recorded; every independent remaining arm still runs."""
     statuses = {}
     for method, command in commands.items():
+        emit_event('deit_arm_start', {'method': method}, Path(manifest_path).parent)
         try:
             runner(command, check=True)
             statuses[method] = {'status': 'completed'}
         except Exception as error:
             statuses[method] = {'status': 'failed', 'error': repr(error)}
+        emit_event('deit_arm_status', {'method': method, **statuses[method]}, Path(manifest_path).parent)
         atomic_json_save(statuses, manifest_path)
     return statuses
 

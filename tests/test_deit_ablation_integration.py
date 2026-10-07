@@ -90,6 +90,19 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
             torch.save(torch.load(path, weights_only=False), midpoint)
     monkeypatch.setattr(runner, 'save_state', capture)
     runner.run_arm(args, config, fork, recipe, sha256_file(fork_path))
+    console = [json.loads(line) for line in (output / 'console.jsonl').read_text().splitlines()]
+    epoch_logs = [entry[method] for entry in console if method in entry]
+    assert len(epoch_logs) == 3
+    assert any('deit_intervention' in entry or 'e_driven_o_intervention' in entry for entry in console)
+    for row in epoch_logs:
+        assert {'epoch', 'post_fork_epoch', 'phase', 'method', 'train_loss', 'train_accuracy',
+                'validation_loss', 'validation_accuracy', 'learning_rates', 'next_learning_rates',
+                'report_best_accuracy', 'report_best_loss', 'report_best_epoch', 'report_best_improved',
+                'report_stall_counter', 'controller_anchor_accuracy', 'controller_anchor_loss',
+                'controller_anchor_epoch', 'controller_anchor_improved', 'controller_anchor_reason',
+                'controller_stall_counter', 'rollback_triggered', 'intervention_count',
+                'epoch_seconds', 'peak_gpu_memory'}.issubset(row)
+    assert 'epoch_seconds' not in torch.load(output / 'checkpoint_latest.pt', weights_only=False)['history'][-1]
     final = torch.load(output / 'checkpoint_latest.pt', weights_only=False)
     args.resume = midpoint
     runner.run_arm(args, config, fork, recipe, sha256_file(fork_path))

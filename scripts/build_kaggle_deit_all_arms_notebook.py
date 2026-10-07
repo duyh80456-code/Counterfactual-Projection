@@ -14,7 +14,7 @@ def markdown(source):
 
 template = json.loads(Path('notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb').read_text())
 bootstrap = ''.join(template['cells'][1]['source']).replace('deit-one-shot-repo', 'deit-all-arms-repo')
-bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py"')
+bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py", "tests/test_deit_logging.py"')
 cells = [markdown('''# DeiT-Tiny CIFAR-100 — algorithm ablations A0–A6
 
 Input: attach CIFAR-100 (`cifar-100-python/train`, `meta`), enable Internet,
@@ -53,7 +53,9 @@ include the controller effect. E directions only touch original selected MLP;
 A5 is explicitly the exception that keeps extra width and migrates Adam state.
 Validation selects plateau/rollback and reports scientific escape. Official test
 is unused. All arms run in separate sequential processes, Opt-E last; a failed
-arm is logged and later arms still run. No full-width GPU accuracy/runtime
+arm is logged and later arms still run. Tagged JSON console rows report train/val,
+LR, report best, anchor, stalls, interventions, rollback, epoch time and peak
+GPU bytes; each output folder also saves console.jsonl. No full-width GPU accuracy/runtime
 claim follows from the tiny-model tests.
 '''), code(bootstrap), code('''from dataclasses import asdict
 from experiments.deit_protocol import DeitRecipe, protocol, canonical_model_config
