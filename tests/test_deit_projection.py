@@ -10,6 +10,7 @@ from methods.e_projection import candidate_projection_parameter_names
 
 def test_projection_only_updates_original_selected_mlp(deit_small, deit_batches, deit_native_candidate):
     before = {name: value.clone() for name, value in deit_small.state_dict().items()}
+    original_parameters = dict(deit_small.named_parameters())
     signal = CandidateExpansionProbe()(deit_small, candidate=deit_native_candidate,
                                        batch=deit_batches[2], gate=.05)
     scope = DeitMLPGrowthAdapter.original_mlp_parameters(deit_small, "blocks.0.mlp")
@@ -19,6 +20,8 @@ def test_projection_only_updates_original_selected_mlp(deit_small, deit_batches,
     assert torch.isfinite(projection.fitted_delta).all()
     assert set(projection.parameter_delta) == set(scope)
     projection.apply_(deit_small, .05)
+    assert all(parameter is original_parameters[name]
+               for name, parameter in deit_small.named_parameters())
     changed = {name for name, value in deit_small.state_dict().items() if not torch.equal(value, before[name])}
     assert changed and changed.issubset(scope)
     assert not deit_small.blocks[0].mlp._forward_hooks
@@ -42,6 +45,8 @@ def test_adam_moments_reset_only_changed_tensors(deit_small, deit_batches):
     assert torch.any(delta[rounded] != 0)
     assert torch.equal(parameters[rounded], parameter_before[rounded])
     reset = reset_adam_moments(optimizer, deit_small, delta, parameter_before=parameter_before)
+    changed = {name for name in delta if not torch.equal(parameters[name], parameter_before[name])}
+    assert set(reset) == changed
     assert reset == [target]
     for index, (name, parameter) in enumerate(parameters.items()):
         state = optimizer.state[parameter]

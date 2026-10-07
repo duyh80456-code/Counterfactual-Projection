@@ -36,6 +36,10 @@ def test_one_shot_reuses_where_raw_gain_and_no_aux_persistence(deit_small, deit_
     # Seed nonzero Adam moments to test the full apply path.
     torch.nn.functional.cross_entropy(deit_small(deit_batches[0][0]), deit_batches[0][1]).backward()
     optimizer.step()
+    parameters_before = dict(deit_small.named_parameters())
+    weights_before = {name: value.detach().clone() for name, value in parameters_before.items()}
+    moments_before = {name: copy.deepcopy(optimizer.state[value])
+                      for name, value in parameters_before.items()}
     before_scheduler = copy.deepcopy(scheduler.state_dict())
     before_rng = torch.get_rng_state().clone()
     names = set(deit_small.state_dict())
@@ -48,6 +52,27 @@ def test_one_shot_reuses_where_raw_gain_and_no_aux_persistence(deit_small, deit_
     assert result["selected_site"] == expected
     assert result["site_evaluations"][expected]["gain_per_functional_delta_norm"] is not None
     assert result["where_selector"] == "mean_observed_structural_E_gain"
+    changed = set(result["projection_changed_parameters"])
+    assert result["correction_applied"] and changed  # Exercise an actual jump, not empty sets.
+    assert changed == set(result["momentum_states_reset"])
+    assert changed == set(result["adam_moments_reset_parameters"])
+    assert all(name.startswith(result["selected_site"] + ".") for name in changed)
+    assert changed.issubset(result["projection_parameter_names"])
+    auxiliary_parameter_names = set(dict(deit_small.named_parameters())) - set(parameters_before)
+    assert not auxiliary_parameter_names
+    assert auxiliary_parameter_names.isdisjoint(changed)
+    actual_changed = {name for name, value in deit_small.named_parameters()
+                      if not torch.equal(value, weights_before[name])}
+    assert changed == actual_changed
+    for name, value in deit_small.named_parameters():
+        assert value is parameters_before[name]
+        state = optimizer.state[value]
+        assert torch.equal(state["step"], moments_before[name]["step"])
+        for key in ("exp_avg", "exp_avg_sq"):
+            if name in changed:
+                assert torch.count_nonzero(state[key]) == 0
+            else:
+                assert torch.equal(state[key], moments_before[name][key])
     assert scheduler.state_dict() == before_scheduler
     assert torch.equal(torch.get_rng_state(), before_rng)
     assert set(deit_small.state_dict()) == names
