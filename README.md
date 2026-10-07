@@ -723,3 +723,31 @@ Kaggle process; resume using the updated notebook in a new run. GPU scheduler
 tests cover overlapping workers, slot refill, per-GPU exclusivity, the Opt-E
 barrier, single-GPU fallback, inherited visible-device mapping, failure isolation
 and real CPU subprocess forwarding. Full T4x2 training throughput is unmeasured.
+
+### Resume DeiT all-arm runs on Kaggle
+
+Run `notebooks/kaggle_deit_tiny_seed1_all_arms.ipynb`, attaching CIFAR-100 and
+previous notebook output (`deit_tiny_seed1_all_arms_v5.tar.gz`, or original `.pt`
+files). The discovery cell imports compatible full checkpoints on CPU and saves
+`resume_plan.json`. It checks protocol v5, architecture, seed/recipe, fork and
+raw-reference hashes, projection config, horizon and controller policy.
+
+- Phase 1 continues from latest with its matching historical-best checkpoint.
+- A confirmed fork and the observed Vanilla reference are reused without retraining.
+- Partial arms restore model, AdamW, scheduler, RNG/loader stream and rollback
+  anchor/counter; the initial intervention is not repeated.
+- Completed non-Vanilla arms rebuild missing results on CPU and are skipped by
+  the GPU scheduler. Vanilla remains a CPU export of its observed trajectory.
+- The most advanced compatible checkpoint wins over stale attached copies.
+  Conflicting trajectories or missing hash-bound dependencies raise an error.
+
+For Phase 2 attach `plateau_checkpoint.pt`, `vanilla_reference.pt` (or full
+Phase 1 terminal `checkpoint_latest.pt`), `raw_intervention_reference.pt`, and
+`arms/<method>/checkpoint_latest.pt`. Arm latest embeds its rollback anchor;
+its separate best file is not required. Logs/JSON or best-only checkpoints
+cannot restore an arm's training progress. Prefer the output tarball: Kaggle
+expanding/repacking a torch archive changes its file hash, so repacked files
+cannot substitute for an original hash-bound fork/reference.
+
+CLI equivalent: add `--resume-root /path/to/previous/output` to
+`python -m experiments.run_deit_all_arms ...`; repeat the flag for multiple mounts.

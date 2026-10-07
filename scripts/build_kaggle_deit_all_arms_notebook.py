@@ -14,12 +14,14 @@ def markdown(source):
 
 template = json.loads(Path('notebooks/kaggle_deit_tiny_seed1_one_shot.ipynb').read_text())
 bootstrap = ''.join(template['cells'][1]['source']).replace('deit-one-shot-repo', 'deit-all-arms-repo')
-bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py", "tests/test_deit_logging.py", "tests/test_deit_parallel.py"')
+bootstrap = bootstrap.replace('"tests/test_deit_e_rollback.py"', '"tests/test_deit_e_rollback.py", "tests/test_deit_ablation.py", "tests/test_deit_ablation_integration.py", "tests/test_deit_logging.py", "tests/test_deit_parallel.py", "tests/test_deit_resume.py", "tests/test_kaggle_checkpoint_discovery.py"')
 cells = [markdown('''# DeiT-Tiny CIFAR-100 — algorithm ablations A0–A6
 
 Input: attach CIFAR-100 (`cifar-100-python/train`, `meta`), enable Internet,
 a CUDA GPU and Kaggle Secret `github_token`. Run All needs no pretrained model.
-Optional: attach expanded outputs from this exact protocol v5 experiment to resume.
+Optional: attach the previous output .tar.gz or original .pt files from this exact protocol v5 experiment.
+Discovery runs on CPU; completed arms are skipped, partial arms restore full training/controller state.
+JSON/history alone cannot resume. See resume_plan.json for decisions.
 Old v4 / one-shot forks are incompatible; they are not silently reused.
 
 Res18-matched experimental budgets: batch64, rank4, projection32, scales
@@ -96,84 +98,15 @@ if len(roots) != 1:
 DATA_ROOT = next(iter(roots))
 print('Recipe:', asdict(RECIPE))
 print('Projection:', asdict(CP))
-'''), code('''# Discover compatible typed checkpoints; deduplicate identical copies by SHA256.
+'''), code('''# Import full outputs (original .pt, .tar.gz/.zip, or mounted notebook output).
 import shutil
-states, raw_references = [], []
-for path in Path('/kaggle/input').rglob('*.pt'):
-    try:
-        payload = torch.load(path, map_location='cpu', weights_only=False)
-        if not isinstance(payload, dict):
-            continue
-        if payload.get('kind') == 'deit_raw_intervention_reference':
-            if payload.get('cp_config') == asdict(CP) and payload.get('seed') == SEED:
-                raw_references.append({'path': path, 'hash': sha256_file(path), 'fork_hash': payload['fork_hash']})
-        elif payload.get('protocol') == EXPECTED:
-            metadata = {key: value for key, value in payload.items()
-                        if key not in ('model', 'optimizer', 'scheduler', 'rng', 'e_controller')}
-            states.append({'path': path, 'hash': sha256_file(path), 'meta': metadata})
-    except Exception as error:
-        print('Ignored incompatible/unreadable attachment:', path, type(error).__name__)
-
-def unique(items, label):
-    by_hash = {item['hash']: item for item in items}
-    if len(by_hash) > 1:
-        raise RuntimeError(f'Ambiguous {label}; attach one experiment trajectory')
-    return next(iter(by_hash.values())) if by_hash else None
-
+from experiments.deit_resume import prepare_resume
+from experiments.run_deit_all_arms import ALL_ARMS
+RESUME_PLAN = prepare_resume(['/kaggle/input'], OUTPUT, RECIPE, CP,
+    horizon=POST_FORK_EPOCHS, patience=ALGORITHM_PATIENCE, inner_steps=5, arms=ALL_ARMS)
 PHASE1 = OUTPUT / 'vanilla_stall'
-PHASE1.mkdir(parents=True, exist_ok=True)
 FORK = PHASE1 / 'plateau_checkpoint.pt'
 VANILLA_REFERENCE = PHASE1 / 'vanilla_reference.pt'
-fork = unique([item for item in states if item['meta']['kind'] == 'deit_plateau_fork'], 'fork')
-if not FORK.exists() and fork:
-    shutil.copy2(fork['path'], FORK)
-if FORK.exists():
-    fork_hash = sha256_file(FORK)
-    reference = unique([item for item in states if item['meta']['kind'] == 'deit_vanilla_reference'
-                        and item['meta'].get('theta_best_hash') == fork_hash], 'Vanilla reference')
-    if not VANILLA_REFERENCE.exists() and reference:
-        shutil.copy2(reference['path'], VANILLA_REFERENCE)
-    if not VANILLA_REFERENCE.exists():
-        fork_state = torch.load(FORK, map_location='cpu', weights_only=False)
-        terminal = unique([item for item in states if item['meta']['kind'] == 'deit_vanilla_latest'
-            and item['meta']['epoch'] == fork_state['epoch'] + POST_FORK_EPOCHS
-            and item['meta']['history'] == fork_state['history'] + fork_state['vanilla_history']], 'Phase1 terminal')
-        if not terminal:
-            raise FileNotFoundError('Attach the matching Vanilla reference or full Phase1 terminal checkpoint')
-        from experiments.deit_vanilla_reference import create_vanilla_reference
-        create_vanilla_reference(FORK, terminal['path'], VANILLA_REFERENCE)
-    raw = unique([item for item in raw_references if item['fork_hash'] == fork_hash], 'raw reference')
-    raw_path = OUTPUT / 'raw_intervention_reference.pt'
-    if raw and not raw_path.exists():
-        shutil.copy2(raw['path'], raw_path)
-    if raw_path.exists():
-        raw_hash = sha256_file(raw_path)
-        for method in ('vanilla_continue', 'o_projection_only', 'e_driven_o_raw', 'e_driven_o_normalized',
-                       'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e'):
-            candidates = [item for item in states if item['meta']['kind'] == 'deit_fork_arm_latest'
-                and item['meta'].get('run_identity', {}).get('fork_hash') == fork_hash
-                and item['meta'].get('run_identity', {}).get('method') == method
-                and (method == 'vanilla_continue' or item['meta']['run_identity'].get('raw_reference_hash') == raw_hash)]
-            if candidates:
-                completed = max(item['meta']['completed_epochs'] for item in candidates)
-                selected = unique([item for item in candidates if item['meta']['completed_epochs'] == completed], method)
-                destination = OUTPUT / 'arms' / method / 'checkpoint_latest.pt'
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if not destination.exists():
-                    shutil.copy2(selected['path'], destination)
-else:
-    latests = [item for item in states if item['meta']['kind'] == 'deit_vanilla_latest']
-    if latests and not (PHASE1 / 'checkpoint_latest.pt').exists():
-        epoch = max(item['meta']['epoch'] for item in latests)
-        latest = unique([item for item in latests if item['meta']['epoch'] == epoch], 'Phase1 latest')
-        best = unique([item for item in states if item['meta']['kind'] == 'deit_vanilla_best'
-            and item['meta']['epoch'] == latest['meta']['historical_best_epoch']
-            and item['meta']['history'] == latest['meta']['history'][:len(item['meta']['history'])]], 'Phase1 best')
-        if not best:
-            raise FileNotFoundError('Phase1 resume needs latest and matching full best checkpoint')
-        shutil.copy2(latest['path'], PHASE1 / 'checkpoint_latest.pt')
-        shutil.copy2(best['path'], PHASE1 / 'checkpoint_best.pt')
-print('Compatible attachments:', len(states))
 '''), code('''command = [sys.executable, '-m', 'experiments.run_deit_all_arms', '--data-root', str(DATA_ROOT),
     '--output', str(OUTPUT), '--seed', str(SEED), '--schedule-epochs', str(SCHEDULE_EPOCHS),
     '--max-epoch', str(MAX_EPOCH), '--batch-size', str(BATCH_SIZE), '--learning-rate', str(LEARNING_RATE),

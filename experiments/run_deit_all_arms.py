@@ -5,6 +5,7 @@ import argparse
 from dataclasses import asdict, replace
 import json
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from collections import deque
 import threading
@@ -159,6 +160,8 @@ def main():
     parser.add_argument('--plateau-checkpoint', type=Path)
     parser.add_argument('--vanilla-reference', type=Path)
     parser.add_argument('--resume-phase1', type=Path)
+    parser.add_argument('--resume-root', type=Path, action='append', default=[],
+        help='Attached output directory/archive directory; repeat for multiple mounts')
     parser.add_argument('--schedule-epochs', type=int, default=300)
     parser.add_argument('--max-epoch', type=int, default=800)
     parser.add_argument('--batch-size', type=int, default=64)
@@ -183,7 +186,29 @@ def main():
     recipe.validate()
     args.output.mkdir(parents=True, exist_ok=True)
     phase1 = args.output / 'vanilla_stall'
-    fork_path = args.plateau_checkpoint
+    # Preserve explicit CLI checkpoint support while validating the local import set.
+    if args.plateau_checkpoint:
+        declared, declared_recipe = checked_source(args.plateau_checkpoint, {'deit_plateau_fork'})
+        if declared_recipe != recipe:
+            raise ValueError('explicit fork recipe differs from declared recipe')
+        phase1.mkdir(parents=True, exist_ok=True)
+        for source, name in ((args.plateau_checkpoint, 'plateau_checkpoint.pt'),
+                             (args.vanilla_reference, 'vanilla_reference.pt')):
+            if source and source.resolve() != (phase1 / name).resolve():
+                destination = phase1 / name
+                if destination.exists() and sha256_file(destination) != sha256_file(source):
+                    raise ValueError('explicit checkpoint conflicts with local output')
+                shutil.copy2(source, destination)
+        args.plateau_checkpoint = phase1 / 'plateau_checkpoint.pt'
+        if args.vanilla_reference:
+            args.vanilla_reference = phase1 / 'vanilla_reference.pt'
+        del declared
+    from experiments.deit_resume import prepare_resume
+    plan = prepare_resume(args.resume_root, args.output, recipe, config,
+        horizon=args.post_fork_epochs, patience=args.algorithm_patience,
+        inner_steps=args.opt_inner_steps, arms=arms)
+    fork_path = args.plateau_checkpoint or (phase1 / 'plateau_checkpoint.pt'
+        if (phase1 / 'plateau_checkpoint.pt').exists() else None)
     if fork_path is None:
         command = [sys.executable, '-m', 'experiments.train_deit_plateau', '--data-root', args.data_root,
                    '--output', str(phase1), '--device', args.device]
@@ -217,8 +242,12 @@ def main():
         if device.type == 'cuda':
             torch.cuda.empty_cache()
     vanilla_path = args.vanilla_reference or fork_path.parent / 'vanilla_reference.pt'
-    commands = {}
+    commands, completed_statuses = {}, {}
     for method in arms:
+        if plan['arms'].get(method, {}).get('action') == 'completed':
+            completed_statuses[method] = {'status': 'completed', 'resumed_completed': True}
+            emit_event('deit_arm_skip_completed', {'method': method, 'additional_training_epochs': 0}, args.output)
+            continue
         output = args.output / 'arms' / method
         command = [sys.executable, '-m', 'experiments.run_deit_fork', '--ablation-suite',
             '--method', method, '--data-root', args.data_root, '--plateau-checkpoint', str(fork_path),
@@ -233,13 +262,15 @@ def main():
         if (output / 'checkpoint_latest.pt').exists():
             command += ['--resume', str(output / 'checkpoint_latest.pt')]
         commands[method] = command
-    slots = gpu_slots(args.gpu_devices, args.device)
+    slots = gpu_slots(args.gpu_devices, args.device) if commands else []
     atomic_json_save({'suite_version': SUITE_VERSION, 'fork_hash': fork_hash, 'recipe': asdict(recipe),
                      'cp_config': asdict(config), 'arms': arms, 'commands': commands,
                      'execution': {'gpu_slots': slots, 'one_visible_gpu_per_arm': bool(slots),
                                    'opt_e_last_barrier': True}}, args.output / 'suite_protocol.json')
     statuses = (run_jobs_parallel(commands, args.output / 'arm_status.json', slots) if slots else
                 run_jobs(commands, args.output / 'arm_status.json'))
+    statuses.update(completed_statuses)
+    atomic_json_save(statuses, args.output / 'arm_status.json')
     summary = {}
     for method, status in statuses.items():
         result_path = args.output / 'arms' / method / 'result.json'

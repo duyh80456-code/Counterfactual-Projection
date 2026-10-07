@@ -14,13 +14,49 @@ from experiments.deit_logging import emit_event, emit_epoch
 from experiments.shared_protocol import seed_everything, rng_state, restore_rng, atomic_json_save, atomic_torch_save
 
 
+def arm_identity(config, fork_hash, method, horizon, patience, inner_steps):
+    opt_config = OptEConfig(inner_steps=inner_steps)
+    identity = {'suite_version': SUITE_VERSION, 'fork_hash': fork_hash, 'method': method,
+                'post_fork_epochs': horizon, 'cp_config': json.loads(json.dumps(asdict(config))),
+                'controller_policy': 'anchor_rollback_no_retrigger_except_A0_A1_or_failed_opt_e',
+                'algorithm_patience': patience, 'opt_e_config': json.loads(json.dumps(asdict(opt_config)))}
+    return identity
+
+
+def completed_arm_result(saved, output):
+    """Rebuild a completed non-Vanilla result without data, model or CUDA."""
+    identity = saved['run_identity']
+    controller = saved.get('e_controller')
+    history, interventions = saved['history'], saved['interventions']
+    last = history[-1]
+    accuracy = saved['historical_best_accuracy']
+    result = {key: saved[key] for key in (
+        'method', 'protocol', 'run_identity', 'historical_best_accuracy', 'historical_best_loss',
+        'historical_best_epoch', 'validation_before', 'validation_immediately_after_projection',
+        'report_best_accuracy', 'report_best_loss', 'report_best_epoch', 'history', 'interventions')}
+    result.update(run_id=str(output.resolve()), theta_best_hash=identity['fork_hash'],
+        fork_epoch=saved['historical_best_epoch'], post_fork_epochs=identity['post_fork_epochs'],
+        validation_1_to_5_epochs_after=interventions[0]['validation_1_to_5_epochs_after'],
+        delta_vs_historical_best=saved['report_best_accuracy'] - accuracy,
+        scientific_escape=saved['report_best_accuracy'] > accuracy,
+        report_best_scope='epochs1_to_K_epoch0_separate',
+        final_validation_accuracy=last.get('state_validation_accuracy', last['validation_accuracy']),
+        final_validation_loss=last.get('state_validation_loss', last['validation_loss']),
+        last_observed_validation_accuracy=last['validation_accuracy'],
+        last_observed_validation_loss=last['validation_loss'], persistent_growth=saved.get('persistent_growth'),
+        controller=controller['protocol'] if controller else None,
+        rollback_events=controller['rollback_events'] if controller else [],
+        validation_role='report_and_anchor_selection' if controller else 'report_only',
+        intervention_count=1, retrigger=False)
+    atomic_json_save(result, output / 'result.json')
+    return result
+
+
 def run_arm(args, config, fork, recipe, fork_hash):
     method = 'e_driven_o_raw' if args.method == 'ours_e_driven_o' else args.method
     opt_config = OptEConfig(inner_steps=args.opt_inner_steps)
-    identity = {'suite_version': SUITE_VERSION, 'fork_hash': fork_hash, 'method': method,
-                'post_fork_epochs': args.post_fork_epochs, 'cp_config': json.loads(json.dumps(asdict(config))),
-                'controller_policy': 'anchor_rollback_no_retrigger_except_A0_A1_or_failed_opt_e',
-                'algorithm_patience': args.algorithm_patience, 'opt_e_config': json.loads(json.dumps(asdict(opt_config)))}
+    identity = arm_identity(config, fork_hash, method, args.post_fork_epochs,
+                            args.algorithm_patience, args.opt_inner_steps)
     if method == 'vanilla_continue':
         from experiments.deit_vanilla_reference import export_reused_vanilla_arm
         where_table = None
@@ -64,6 +100,10 @@ def run_arm(args, config, fork, recipe, fork_hash):
                 len(saved['history']) != saved['completed_epochs'] + 1 or len(saved['interventions']) != 1 or
                 saved['epoch'] != fork['epoch'] + saved['completed_epochs']):
             raise ValueError('inconsistent ablation resume state')
+    if saved and saved['completed_epochs'] == args.post_fork_epochs:
+        result = completed_arm_result(saved, args.output)
+        emit_event('deit_resume_complete', {'method': method, 'additional_training_epochs': 0}, args.output)
+        return result
     seed_everything(recipe.seed)
     device = torch.device(args.device)
     context = load_training_context(args.data_root, recipe, device, saved or fork)

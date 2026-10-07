@@ -104,12 +104,14 @@ def _extract_checkpoint_members(archive_path: Path, target_root: Path, *,
 
 
 def discover_checkpoints(input_root: str | Path, output: str | Path,
-                         *, kind: str | set[str] | tuple[str, ...]
-                         ) -> tuple[list[dict], list[dict]]:
+                         *, kind: str | set[str] | tuple[str, ...],
+                         payload_filter=None, payload_transform=None) -> tuple[list[dict], list[dict]]:
     """Load every plausible checkpoint and retain requested payload kinds.
 
     Kaggle may expose a torch-save zip as a directory tree. Therefore discovery
-    searches by payload type, not filename: ordinary ``*.pt`` files are tried
+    Optional payload_filter rejects incompatible states before retention;
+    payload_transform can retain only metadata to bound CPU memory use.
+    Discovery searches by payload type, not filename: ordinary ``*.pt`` files are tried
     directly and every directory containing ``data.pkl`` is repacked first.
     """
     wanted = {kind} if isinstance(kind, str) else set(kind)
@@ -155,8 +157,11 @@ def discover_checkpoints(input_root: str | Path, output: str | Path,
             if found_kind not in wanted:
                 rejected.append({"path": str(path), "kind": found_kind})
                 return False
+            if payload_filter is not None and not payload_filter(payload):
+                rejected.append({"path": str(path), "kind": found_kind, "reason": "incompatible protocol/config"})
+                return False
             seen_hashes.add(digest)
-            matches.append({"path": path, "payload": payload,
+            matches.append({"path": path, "payload": payload if payload_transform is None else payload_transform(payload),
                             "sha256": digest, "source": source})
             keep = True
             return True

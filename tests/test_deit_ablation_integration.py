@@ -112,6 +112,14 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
     result = json.loads((output / 'result.json').read_text())
     assert result['intervention_count'] == 1 and result['retrigger'] is False
     assert result['scientific_escape'] == (max(row['validation_accuracy'] for row in result['history'][1:]) > baseline['accuracy'])
+    # A fully completed checkpoint rebuilds the same result on CPU without model/data/projection.
+    def forbidden(*_a, **_k):
+        raise AssertionError('completed resume must not build/train/project')
+    monkeypatch.setattr(runner, 'load_training_context', forbidden)
+    monkeypatch.setattr(runner, 'execute_intervention', forbidden)
+    args.resume = output / 'checkpoint_latest.pt'
+    completed_result = runner.run_arm(args, config, fork, recipe, sha256_file(fork_path))
+    assert json.loads(json.dumps(completed_result)) == result
     record = result['interventions'][0]
     assert 'site_evaluations' in record
     assert all('where_score_normalized' in row for row in record['site_evaluations'].values())
