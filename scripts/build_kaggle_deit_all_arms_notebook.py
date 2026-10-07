@@ -26,12 +26,12 @@ Res18-matched experimental budgets: batch64, rank4, projection32, scales
 {.0125,.025,.05}, WHERE3x32, stats256, gate32, CG200, patience10.
 DeiT-specific: AdamW LR5e-4/WD.05, no decay on bias/norm/CLS/position,
 warmup5 + cosine300 to LR5e-6. This is an initial CIFAR recipe, not a claim
-of optimal DeiT training. Recipe finishes before plateau selection is armed.
-At epoch300 reinitialize the eligible validation-best tracker, then require
-100 epochs without a strict accuracy best. Keep that selected checkpoint frozen
-and continue Vanilla another50 epochs; reuse the observed150 epochs as A0.
-Each method starts from the identical eligible best and trains150 epochs at
-the inherited scheduler position (cosine remains at its floor after recipe).
+of optimal DeiT training. Plateau tracking starts at epoch0, with no minimum
+epoch or requirement to finish the cosine schedule. Every strict validation
+accuracy best resets the stall. After150 epochs without exceeding the latest
+best, reload that historical-best checkpoint and reuse those same150 observed
+Vanilla epochs as A0. Each method starts from the identical best and trains150
+epochs at the inherited scheduler position; cosine continues without rebasing.
 
 A0 observed Vanilla; A1 fixed last-MLP O-only; A2 raw E WHERE; A3 normalized WHERE;
 A4a Gaussian original-MLP parameters matched per tensor with A2's scale;
@@ -62,7 +62,7 @@ from experiments.shared_protocol import sha256_file
 
 SEED = 1
 SCHEDULE_EPOCHS = 300
-STALL_PATIENCE = 100
+STALL_PATIENCE = 150
 POST_FORK_EPOCHS = 150
 ALGORITHM_PATIENCE = 10
 MAX_EPOCH = 800
@@ -74,7 +74,7 @@ SCALES = '.0125,.025,.05'
 OUTPUT = Path(f'/kaggle/working/deit_tiny_seed{SEED}_all_arms_v5')
 OUTPUT.mkdir(parents=True, exist_ok=True)
 RECIPE = DeitRecipe(seed=SEED, batch_size=BATCH_SIZE, learning_rate=LEARNING_RATE,
-    schedule_epochs=SCHEDULE_EPOCHS, stall_start_epoch=SCHEDULE_EPOCHS,
+    schedule_epochs=SCHEDULE_EPOCHS, stall_start_epoch=0,
     stall_patience=STALL_PATIENCE, reference_epochs=POST_FORK_EPOCHS, max_epoch=MAX_EPOCH)
 RECIPE.validate()
 EXPECTED = protocol(RECIPE, canonical_model_config())

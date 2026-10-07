@@ -1,4 +1,4 @@
-"""Train a recipe-complete plateau, reuse Vanilla, then run isolated DeiT arms."""
+"""Confirm a 150-epoch validation-best stall, reuse Vanilla, then run isolated DeiT arms."""
 from __future__ import annotations
 
 import argparse
@@ -44,7 +44,7 @@ def main():
     parser.add_argument('--max-epoch', type=int, default=800)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--learning-rate', type=float, default=5e-4)
-    parser.add_argument('--stall-patience', type=int, default=100)
+    parser.add_argument('--stall-patience', type=int, default=150)
     parser.add_argument('--post-fork-epochs', type=int, default=150)
     parser.add_argument('--algorithm-patience', type=int, default=10)
     parser.add_argument('--rank', type=int, default=4)
@@ -59,7 +59,7 @@ def main():
     config = replace(res18_cp_config(), rank=args.rank, projection_samples=args.projection_samples,
                      scales=tuple(map(float, args.scales.split(','))))
     recipe = DeitRecipe(seed=args.seed, batch_size=args.batch_size, learning_rate=args.learning_rate,
-        schedule_epochs=args.schedule_epochs, stall_start_epoch=args.schedule_epochs,
+        schedule_epochs=args.schedule_epochs, stall_start_epoch=0,
         stall_patience=args.stall_patience, reference_epochs=args.post_fork_epochs, max_epoch=args.max_epoch)
     recipe.validate()
     args.output.mkdir(parents=True, exist_ok=True)

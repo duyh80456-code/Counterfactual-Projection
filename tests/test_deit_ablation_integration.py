@@ -159,3 +159,21 @@ def test_recipe_complete_plateau_and_reused_longer_vanilla_window(tmp_path, monk
     exported = run_arm(args, config, fork, recipe, sha256_file(output / 'plateau_checkpoint.pt'))
     assert exported['additional_training_epochs'] == 0 and exported['site_evaluations'] == table
     assert exported['where_role'] == 'offline_only_did_not_select_vanilla'
+
+
+def test_all_arm_entrypoint_has_no_recipe_gate(tmp_path, monkeypatch):
+    import experiments.run_deit_all_arms as suite
+    import json
+    captured = {}
+    def command(cmd, check):
+        pairs = dict(zip(cmd[3::2], cmd[4::2]))
+        captured.update(pairs)
+        raise RuntimeError('stop after capturing baseline recipe')
+    monkeypatch.setattr(suite.subprocess, 'run', command)
+    monkeypatch.setattr(sys, 'argv', ['suite', '--data-root', 'fixture', '--output', str(tmp_path)])
+    with pytest.raises(RuntimeError, match='capturing'):
+        suite.main()
+    assert captured['--stall-start-epoch'] == '0'
+    assert captured['--stall-patience'] == '150'
+    assert captured['--reference-epochs'] == '150'
+    assert captured['--schedule-epochs'] == '300'  # Scheduler only, not plateau eligibility.

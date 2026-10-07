@@ -614,16 +614,18 @@ starting CIFAR recipe, not a tuned ImageNet recipe or an accuracy guarantee.
 The default baseline cap is epoch800 and can be increased with a new declared
 recipe. No intervention runs if a complete plateau/control window is unavailable.
 
-Like Res18, plateau selection is armed only after the training recipe completes.
-At epoch300 the eligible strict validation-best tracker is initialized; earlier
-bests remain in history but are not eligible forks. After100 epochs without
-beating the eligible best, freeze that fork and continue the same Vanilla
-trajectory another50 epochs. Export all150 observed epochs and their actual
-terminal state as A0; never rerun Vanilla. The extra50 can beat the selected
-fork, so A0's escape is calculated rather than assumed false. All arms restore
-the same model/optimizer/scheduler/RNG/data-stream checkpoint. Official test data
-is not used. The 2000 reserved validation samples are not selection metrics;
-the 3000 evaluation samples select plateau/rollback and report results.
+Plateau tracking starts at epoch0; there is no minimum epoch or requirement to
+finish the 300-epoch cosine schedule. Each strict validation accuracy best saves
+the historical-best checkpoint and resets stall. After150 consecutive epochs
+without beating that best, reload it as theta_P and reuse the already-observed
+150 Vanilla epochs as A0. No extra50-epoch continuation and no Vanilla retraining
+are needed. For example, best epoch23 with no improvement through173 forks from23,
+not173. Each intervention arm trains150 new epochs from that same checkpoint.
+The cosine schedule continues at its inherited position, with no restart.
+This plateau window length/no-recipe gate differs from the current Res18 unified
+notebook; the projection budgets and DeiT-specific optimizer setup remain as
+listed above. The 3000 evaluation samples select plateau/rollback and report
+results; the 2000 reserved samples and official test do not select checkpoints.
 
 | Arm | Intervention |
 | --- | --- |
