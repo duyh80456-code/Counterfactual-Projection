@@ -18,7 +18,7 @@ METHODS = ("vanilla_continue", "o_projection_only", "ours_e_driven_o")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", required=True)
+    parser.add_argument("--data-root")
     parser.add_argument("--plateau-checkpoint", type=Path, required=True)
     parser.add_argument("--plateau-checkpoint-hash", required=True)
     parser.add_argument("--method", choices=METHODS, required=True)
@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--post-fork-epochs", "--horizon", dest="post_fork_epochs", type=int, default=150)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--vanilla-reference", type=Path,
+                        help="Phase 1 observed Vanilla window; defaults beside the fork checkpoint")
     for name, default in asdict(CPConfig()).items():
         if name == "scales":
             parser.add_argument("--scales", default=",".join(map(str, default)))
@@ -45,6 +47,23 @@ def main():
         raise ValueError("fork + horizon exceeds the declared global scheduler budget")
     identity = {"fork_hash": fork_hash, "method": args.method,
                 "post_fork_epochs": args.post_fork_epochs, "cp_config": json.loads(json.dumps(asdict(config)))}
+    if args.method == "vanilla_continue":
+        from experiments.deit_vanilla_reference import export_reused_vanilla_arm, TRAJECTORY_SOURCE
+        identity["trajectory_source"] = TRAJECTORY_SOURCE
+        reference_path = args.vanilla_reference or args.plateau_checkpoint.parent / "vanilla_reference.pt"
+        reference, _ = checked_source(reference_path, {"deit_vanilla_reference"})
+        if args.resume:
+            resumed, _ = checked_source(args.resume, {"deit_fork_arm_latest"})
+            if resumed.get("run_identity") != identity or resumed.get("trajectory_source") != TRAJECTORY_SOURCE:
+                raise ValueError("Vanilla resume must be an observed Phase 1 reference export")
+        result = export_reused_vanilla_arm(fork, reference, args.output, identity)
+        print(json.dumps({"reused_vanilla": result["trajectory_source"],
+                          "post_fork_epochs": result["post_fork_epochs"], "additional_training_epochs": 0}), flush=True)
+        return  # No model/data loading, evaluation, optimizer steps or CUDA calls.
+    if args.vanilla_reference:
+        parser.error("--vanilla-reference is only valid for vanilla_continue")
+    if not args.data_root:
+        parser.error("--data-root is required for projection arms")
     saved = None
     if args.resume:
         saved, _ = checked_source(args.resume, {"deit_fork_arm_latest"})
@@ -52,7 +71,7 @@ def main():
             raise ValueError("DeiT resume fork/method/recipe/CP config mismatch")
         completed = int(saved["completed_epochs"])
         if (not 0 <= completed <= args.post_fork_epochs or saved["epoch"] != fork["epoch"] + completed or
-                len(saved["interventions"]) != (0 if args.method == "vanilla_continue" else 1) or
+                len(saved["interventions"]) != 1 or
                 len(saved["history"]) != completed + 1 or
                 saved["validation_immediately_after_projection"] is None):
             raise ValueError("incomplete or inconsistent DeiT arm resume state")
@@ -83,23 +102,19 @@ def main():
             report_best_accuracy=best_accuracy, report_best_loss=best_loss, report_best_epoch=best_epoch)
 
     if saved is None:
-        if args.method != "vanilla_continue":
-            batches, indices = materialize_probe_batches(eval_set, train_ids, recipe, config, device)
-            record = one_shot_intervention(model, optimizer, config=config, method=args.method, **batches)
-            immediate = evaluate_without_rng(model, eval_loader, device)
-            record.update(epoch=int(fork["epoch"]), probe_index=0,
-                          probe_indices=indices, validation_before=before,
-                          validation_immediately_after_projection=immediate,
-                          validation_1_to_5_epochs_after=[])
-            interventions.append(record)
-            print(json.dumps({"intervention": record}), flush=True)
-        else:
-            immediate = dict(before)
+        batches, indices = materialize_probe_batches(eval_set, train_ids, recipe, config, device)
+        record = one_shot_intervention(model, optimizer, config=config, method=args.method, **batches)
+        immediate = evaluate_without_rng(model, eval_loader, device)
+        record.update(epoch=int(fork["epoch"]), probe_index=0,
+                      probe_indices=indices, validation_before=before,
+                      validation_immediately_after_projection=immediate,
+                      validation_1_to_5_epochs_after=[])
+        interventions.append(record)
+        print(json.dumps({"intervention": record}), flush=True)
         history.append({"epoch": int(fork["epoch"]), "post_fork_epoch": 0,
                         "validation_accuracy": immediate["accuracy"],
                         "validation_loss": immediate["loss"],
-                        "metric_timing": ("before_SGD_no_projection" if args.method == "vanilla_continue"
-                                          else "after_initial_projection_before_SGD")})
+                        "metric_timing": "after_initial_projection_before_SGD"})
         save(int(fork["epoch"]), 0)  # Resume does not reapply the one-shot jump.
     for offset in range(start + 1, args.post_fork_epochs + 1):
         epoch = int(fork["epoch"]) + offset

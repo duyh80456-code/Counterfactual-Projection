@@ -105,7 +105,7 @@ def _tiny_context(model_config, dataset, recipe, device, source):
     return model, optimizer, scheduler, loader, eval_loader, dataset, list(range(len(dataset))), [0, 1], [], []
 
 
-@pytest.mark.parametrize("method", ["ours_e_driven_o", "o_projection_only", "vanilla_continue"])
+@pytest.mark.parametrize("method", ["ours_e_driven_o", "o_projection_only"])
 def test_main_loop_resume_does_not_apply_one_shot_twice(deit_small, deit_batches, tmp_path, monkeypatch, method):
     import experiments.run_deit_fork as runner
     batch = deit_batches[0]
@@ -210,19 +210,29 @@ def test_notebook_cells_compile_and_no_recurrent_controller():
 def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, deit_batches, tmp_path, monkeypatch, post_fork_epochs):
     import experiments.run_deit_fork as runner
     dataset = TensorDataset(*deit_batches[0])
-    recipe = replace(DeitRecipe(), workers=0, batch_size=8)
+    recipe = replace(DeitRecipe(), workers=0, batch_size=8, stall_patience=post_fork_epochs)
     optimizer, scheduler = build_optimizer_scheduler(deit_small, recipe)
     loader = DataLoader(dataset, batch_size=8, shuffle=True, generator=torch.Generator().manual_seed(1))
     path = tmp_path / "historical_best.pt"
+    vanilla_rows = [{"epoch": 24 + i, "validation_accuracy": .52633 if i == 0 else .52533,
+                     "validation_loss": 2.9 if i == 0 else 2.8} for i in range(post_fork_epochs)]
     save_state(path, model=deit_small, optimizer=optimizer, scheduler=scheduler, loader=loader,
         epoch=23, history=[{"epoch": 23, "validation_accuracy": .528, "validation_loss": 2.}],
         train_indices=list(range(8)), evaluation_indices=[0, 1], source_tuning_indices=[], trigger_indices=[],
         run_protocol=protocol(recipe, deit_small), kind="deit_plateau_fork",
         historical_best_accuracy=.528, historical_best_loss=2., historical_best_epoch=23,
-        stall_detected_epoch=25, stall_history=[{"epoch": 25, "validation_accuracy": .512}])
+        stall_detected_epoch=23 + post_fork_epochs, stall_history=vanilla_rows)
     fork = torch.load(path, weights_only=False)
     fork_hash = sha256_file(path)
     monkeypatch.setattr(runner, "checked_source", lambda p, _kinds: (torch.load(p, weights_only=False), recipe))
+    import experiments.deit_vanilla_reference as reuse
+    monkeypatch.setattr(reuse, "checked_source", lambda p, _kinds: (torch.load(p, weights_only=False), recipe))
+    terminal = copy.deepcopy(fork)
+    terminal.update(kind="deit_vanilla_latest", epoch=23 + post_fork_epochs,
+                    plateau_detected=True, history=fork["history"] + vanilla_rows)
+    terminal_path = tmp_path / "phase1_latest.pt"
+    torch.save(terminal, terminal_path)
+    reuse.create_vanilla_reference(path, terminal_path, tmp_path / "vanilla_reference.pt")
     starts = []
     def context(_root, _recipe, device, source):
         result = _tiny_context(deit_small.config, dataset, recipe, device, source)
@@ -259,7 +269,7 @@ def test_three_arms_share_fork_and_compare_against_historical_best(deit_small, d
         assert result["post_fork_epochs"] == post_fork_epochs
         assert len(result["history"]) == post_fork_epochs + 1
         assert result["history"][-1]["post_fork_epoch"] == post_fork_epochs
-    assert len(starts) == 3
+    assert len(starts) == 2  # Vanilla never loads a model; O-only/E reload the same fork.
     assert all(torch.equal(value, fork["model"][name]) for start in starts for name, value in start.items())
 
 
@@ -353,6 +363,18 @@ def test_vanilla_plateau_exports_historical_best_not_detection_state(tmp_path, m
     if stall_patience == 150:
         assert len(trained) == 151
         assert fork["epoch"] == 23 and fork["stall_detected_epoch"] == 173
+    from experiments.deit_vanilla_reference import export_reused_vanilla_arm
+    reference, _ = checked_source(output / "vanilla_reference.pt", {"deit_vanilla_reference"})
+    assert reference["completed_epochs"] == stall_patience
+    assert reference["history"][1:] == [{**row, "post_fork_epoch": row["epoch"] - fork["epoch"]}
+                                       for row in fork["stall_history"]]
+    assert reference["source_phase1_checkpoint_hash"] == sha256_file(output / "checkpoint_latest.pt")
+    assert reference["epoch"] == latest["epoch"]
+    assert all(torch.equal(value, latest["model"][key]) for key, value in reference["model"].items())
+    reused = export_reused_vanilla_arm(fork, reference, tmp_path / "vanilla_arm", {
+        "fork_hash": sha256_file(output / "plateau_checkpoint.pt"), "post_fork_epochs": stall_patience})
+    assert reused["additional_training_epochs"] == 0
+    assert reused["scientific_escape"] is False
     assert not any("trigger_accuracy" in row for row in latest["history"])
     assert all(torch.equal(value, best["model"][key]) for key, value in fork["model"].items())
     assert fork["scheduler"]["last_epoch"] == offset + 1

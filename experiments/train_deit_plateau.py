@@ -104,6 +104,9 @@ def main():
                 stall_history=[row for row in history if row["epoch"] > best_epoch])
     from experiments.shared_protocol import atomic_torch_save
     atomic_torch_save(best, args.output / "plateau_checkpoint.pt")
+    from experiments.deit_vanilla_reference import create_vanilla_reference
+    create_vanilla_reference(args.output / "plateau_checkpoint.pt",
+                            args.output / "checkpoint_latest.pt", args.output / "vanilla_reference.pt")
     atomic_json_save({"protocol": declared, "history": history,
                       "fork_epoch": best_epoch, "report_best_accuracy": best_accuracy,
                       "report_best_loss": best_loss, "report_best_epoch": best_epoch,

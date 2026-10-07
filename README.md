@@ -509,8 +509,10 @@ full official ImageNet training recipe.
   assess generalization; do not interpret gate metrics as that evidence.
 - **Fork arms:** Vanilla, fixed-last-MLP supervised O-only (`one_hot-softmax`)
   and one-shot E-to-O all start from the same SHA-verified historical validation-best theta_P.
-  Each restores model/optimizer/scheduler/RNG/loader state, applies at most one
-  correction and trains ordinary AdamW for K epochs. There is no rollback or
+  Vanilla reuses the uninterrupted K-epoch plateau-confirmation window already
+  observed in Phase 1, including its original metrics and full terminal state.
+  Only O-only and E-to-O restore model/optimizer/scheduler/RNG/loader state, apply
+  one correction and train new AdamW arms for K epochs. There is no rollback or
   retrigger. Epoch0 after-correction checkpoints ensure resume does not reapply
   the intervention; all candidate tensors/hooks disappear before saving.
 
@@ -523,7 +525,7 @@ validation for historical-best checkpoint and plateau selection) plus128 tuning
 excluded from training. Accuracy ties, even with lower loss, do not move theta_P.
 After plateau detection, the full historical-best checkpoint is loaded to export
 theta_P; the detection-epoch checkpoint is never the fork. All arms use the same
-SHA256-verified fork and run fixed K epochs. Validation never selects site, scale
+SHA256-verified starting point and compare the same fixed K-epoch window. Validation never selects site, scale
 or damping and there is no arm rollback or early stopping.
 `report_best_accuracy/loss/epoch` describe epochs 1 through K of each arm; epoch0
 validation immediately after projection is reported separately. `scientific_escape`
@@ -532,8 +534,15 @@ is strict post-fork best accuracy > `historical_best_accuracy`, and
 is loaded. These defaults are declared experiment choices, not tuned results;
 no plateau within the cap produces a status report and no fork. Phase 1 stall
 and Phase 2 horizon are distinct: best at epoch23 and 150 epochs without a
-strict improvement confirm plateau at epoch173; all three arms reload epoch23
-and each train 150 epochs. There is no `algorithm_patience` because interventions
+strict improvement confirm plateau at epoch173. Vanilla reuses epochs24–173;
+O-only and E-to-O reload epoch23 and each train 150 new epochs. Phase 1 writes
+`vanilla_reference.pt` with the terminal model/optimizer/scheduler/RNG/loader state
+and a hash binding it to theta_P. Its CPU export writes Vanilla `result.json` and
+`checkpoint_latest.pt` with `trajectory_source=phase1_plateau_window` and
+`additional_training_epochs=0`. Vanilla escape is false by construction for this
+plateau window. A missing reference or mismatched fork/window raises an error;
+Vanilla is never retrained as a fallback. Reuse requires the post-fork horizon to
+equal stall patience. There is no `algorithm_patience` because interventions
 are one-shot and arm training has no rollback/retrigger. `--horizon` remains an
 alias for `--post-fork-epochs`.
 
@@ -548,10 +557,17 @@ python -m experiments.run_deit_fork --data-root /path/to/cifar \
   --output runs/deit/ours_e_driven_o --post-fork-epochs 150
 ```
 
-Run the fork command for `vanilla_continue` and `o_projection_only` with the same
-checkpoint/hash/horizon. `--resume` accepts each arm's `checkpoint_latest.pt`;
+Run the fork command for `o_projection_only` with the same checkpoint/hash/horizon.
+For `vanilla_continue`, use the same fork/hash and
+`--vanilla-reference runs/deit/vanilla/vanilla_reference.pt` (the default is beside the fork). This
+exports the observed Vanilla arm on CPU; no CIFAR input or GPU is needed. `--resume` accepts each arm's `checkpoint_latest.pt`;
 recipe, backbone, protocol, fork, method and CP configuration must match. Baseline
 resume additionally needs its matching `checkpoint_best.pt` in the output folder.
+When reattaching a completed Phase 1 fork on Kaggle, include `vanilla_reference.pt`
+or the full Phase 1 `checkpoint_latest.pt`. The latter regenerates the reference
+on CPU after verifying the prefix, contiguous plateau window, split, recipe and
+historical best. A fork alone is insufficient to recover the terminal state.
+Existing matching protocol-v4 Phase 1 checkpoints can be reused without retraining.
 
 Logs include validation before and immediately after correction, the first five
 ordinary AdamW epochs, all site gains/norms, WHERE winners/stability, projection
