@@ -751,3 +751,29 @@ cannot substitute for an original hash-bound fork/reference.
 
 CLI equivalent: add `--resume-root /path/to/previous/output` to
 `python -m experiments.run_deit_all_arms ...`; repeat the flag for multiple mounts.
+
+### DeiT seeds 0 and 2: projection vs rollback controls
+
+Use one notebook per seed:
+
+- `notebooks/kaggle_deit_tiny_seed0_rollback_comparison.ipynb`
+- `notebooks/kaggle_deit_tiny_seed2_rollback_comparison.ipynb`
+
+Each notebook trains its own Vanilla plateau, then forks four arms from the same
+full historical-best checkpoint: `vanilla_rollback`, `o_projection_only`,
+`o_projection_only_rollback`, `e_driven_o_raw`. Vanilla rollback is genuine
+training without proposal/projection/moment reset; it cannot reuse the observed
+Vanilla confirmation window. The two O-only arms use the same fixed last-MLP
+projection; their difference is whether the controller runs afterward. All three
+rollback arms share accuracy/loss anchor selection, patience10, full model/AdamW/
+scheduler restoration, current RNG/data stream retention, and no retrigger.
+
+Defaults remain rank4, projection32, scales(.0125,.025,.05), batch64, LR5e-4,
+plateau150 and post-fork150, no minimum plateau epoch. Four arms queue across two
+GPUs; normalized/random/persistent/Opt-E arms are excluded. Attach CIFAR-100;
+matching seed-specific checkpoint archives are optional for resume. Outputs are
+`deit_tiny_seed{0,2}_rollback_comparison_v5`; `rollback_comparison.json` includes
+both delta versus the historical best and delta versus Vanilla rollback.
+
+Generate both notebooks with `python scripts/build_kaggle_deit_rollback_notebooks.py`.
+The seed1 all-arm defaults and its non-rollback O-only control remain unchanged.

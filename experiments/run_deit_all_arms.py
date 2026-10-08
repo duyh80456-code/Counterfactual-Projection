@@ -23,6 +23,7 @@ from experiments.deit_logging import emit_event
 ALL_ARMS = ('vanilla_continue', 'o_projection_only', 'e_driven_o_raw', 'e_driven_o_normalized',
             'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e')
 
+SUPPORTED_ARMS = ALL_ARMS + ('vanilla_rollback', 'o_projection_only_rollback')
 
 def run_jobs(commands, manifest_path, *, runner=subprocess.run):
     """A failed arm is recorded; every independent remaining arm still runs."""
@@ -176,7 +177,7 @@ def main():
     parser.add_argument('--arms', default=','.join(ALL_ARMS))
     args = parser.parse_args()
     arms = args.arms.split(',')
-    if not arms or any(arm not in ALL_ARMS for arm in arms) or len(set(arms)) != len(arms):
+    if not arms or any(arm not in SUPPORTED_ARMS for arm in arms) or len(set(arms)) != len(arms):
         parser.error('invalid or duplicate arm list')
     config = replace(res18_cp_config(), rank=args.rank, projection_samples=args.projection_samples,
                      scales=tuple(map(float, args.scales.split(','))))

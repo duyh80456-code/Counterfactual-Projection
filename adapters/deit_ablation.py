@@ -15,7 +15,7 @@ from projection import FunctionalProjector
 from probe import CandidateExpansionProbe
 
 ABLATION_METHODS = ('e_driven_o_raw', 'e_driven_o_normalized', 'random_control_parameter',
-                    'random_control_logit', 'persistent_growth', 'opt_e')
+                    'random_control_logit', 'persistent_growth', 'opt_e', 'vanilla_rollback', 'o_projection_only_rollback')
 SUITE_VERSION = 1
 
 

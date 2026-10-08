@@ -32,7 +32,8 @@ def assert_state_equal(a, b):
 
 
 @pytest.mark.parametrize('method', ['o_projection_only', 'e_driven_o_raw', 'e_driven_o_normalized',
-                                   'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e'])
+                                   'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e',
+                                   'vanilla_rollback', 'o_projection_only_rollback'])
 def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkeypatch, method):
     import experiments.deit_ablation_runner as runner
     model = deit_small
@@ -78,6 +79,15 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
     monkeypatch.setattr(runner, 'checked_source', lambda path, kinds: (torch.load(path, weights_only=False), recipe))
     from adapters.deit_opt_e import OptEConfig
     monkeypatch.setattr(runner, 'OptEConfig', lambda **kw: OptEConfig(cg_iterations=8, diagonal_probes=2, **kw))
+    if method in ('vanilla_rollback', 'o_projection_only_rollback'):
+        observations = [0]
+        def never_improve(*_a, **_k):
+            observations[0] += 1
+            # Initial evaluation verifies the fork; all following training/jump
+            # evaluations fail, forcing a real main-loop rollback at patience2.
+            return dict(baseline) if observations[0] == 1 else {
+                'accuracy': baseline['accuracy'] - .1, 'loss': baseline['loss'] + .1}
+        monkeypatch.setattr(runner, 'evaluate_without_rng', never_improve)
     output = tmp_path / method
     args = SimpleNamespace(method=method, opt_inner_steps=1, post_fork_epochs=3, algorithm_patience=2,
         vanilla_reference=None, plateau_checkpoint=fork_path, resume=None, raw_reference=raw_path,
@@ -85,15 +95,27 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
     midpoint = tmp_path / 'midpoint.pt'
     original_save = runner.save_state
     def capture(path, **kwargs):
+        if method == 'vanilla_rollback' and kwargs['completed_epochs'] == 0:
+            assert kwargs['interventions'] == []
+            for key, state in [('model', kwargs['model'].state_dict()),
+                               ('optimizer', kwargs['optimizer'].state_dict()),
+                               ('scheduler', kwargs['scheduler'].state_dict())]:
+                assert_state_equal(fork[key], state)
         original_save(path, **kwargs)
         if kwargs['completed_epochs'] == 1:
             torch.save(torch.load(path, weights_only=False), midpoint)
     monkeypatch.setattr(runner, 'save_state', capture)
+    if method == 'vanilla_rollback':
+        def no_projection(*_args, **_kwargs):
+            raise AssertionError('Vanilla must not propose/project')
+        monkeypatch.setattr(runner, 'execute_intervention', no_projection)
+        monkeypatch.setattr(runner, 'materialize_probe_batches', no_projection)
     runner.run_arm(args, config, fork, recipe, sha256_file(fork_path))
     console = [json.loads(line) for line in (output / 'console.jsonl').read_text().splitlines()]
     epoch_logs = [entry[method] for entry in console if method in entry]
     assert len(epoch_logs) == 3
-    assert any('deit_intervention' in entry or 'e_driven_o_intervention' in entry for entry in console)
+    assert any('vanilla_rollback_start' in entry if method == 'vanilla_rollback' else
+               ('deit_intervention' in entry or 'e_driven_o_intervention' in entry) for entry in console)
     for row in epoch_logs:
         assert {'epoch', 'post_fork_epoch', 'phase', 'method', 'train_loss', 'train_accuracy',
                 'validation_loss', 'validation_accuracy', 'learning_rates', 'next_learning_rates',
@@ -110,7 +132,8 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
     for key in ('model', 'optimizer', 'scheduler', 'train_loader_generator_state', 'history', 'interventions', 'e_controller'):
         assert_state_equal(final[key], resumed[key])
     result = json.loads((output / 'result.json').read_text())
-    assert result['intervention_count'] == 1 and result['retrigger'] is False
+    assert result['intervention_count'] == (0 if method == 'vanilla_rollback' else 1)
+    assert result['retrigger'] is False
     assert result['scientific_escape'] == (max(row['validation_accuracy'] for row in result['history'][1:]) > baseline['accuracy'])
     # A fully completed checkpoint rebuilds the same result on CPU without model/data/projection.
     def forbidden(*_a, **_k):
@@ -120,6 +143,18 @@ def test_all_arm_main_loop_and_resume(deit_small, deit_batches, tmp_path, monkey
     args.resume = output / 'checkpoint_latest.pt'
     completed_result = runner.run_arm(args, config, fork, recipe, sha256_file(fork_path))
     assert json.loads(json.dumps(completed_result)) == result
+    if method in ('vanilla_rollback', 'o_projection_only_rollback'):
+        assert final['e_controller'] is not None
+        assert result['validation_role'] == 'report_and_anchor_selection'
+        assert final['e_controller']['anchor']['epoch'] == 23
+        assert final['e_controller']['anchor']['validation'] == baseline
+        assert result['rollback_events'][0]['epoch'] == 25
+        assert result['rollback_events'][0]['anchor_epoch'] == 23
+        for key in ('model', 'optimizer', 'scheduler'):
+            assert_state_equal(final['e_controller']['anchor'][key], fork[key])
+    if method == 'vanilla_rollback':
+        assert result['interventions'] == []
+        return
     record = result['interventions'][0]
     assert 'site_evaluations' in record
     assert all('where_score_normalized' in row for row in record['site_evaluations'].values())

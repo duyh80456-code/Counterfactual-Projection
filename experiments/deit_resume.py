@@ -135,10 +135,10 @@ def prepare_resume(roots, output, recipe, config, *, horizon, patience=10, inner
                         or state['epoch'] != fork['epoch'] + count):
                     raise ValueError(f'{method}: inconsistent progress/history')
                 if method != 'vanilla_continue':
-                    if len(state['interventions']) != 1:
+                    if len(state['interventions']) != (0 if method == 'vanilla_rollback' else 1):
                         raise ValueError(f'{method}: missing intervention state')
                     needs_controller = (method != 'o_projection_only'
-                        and state['interventions'][0].get('fallback') != 'vanilla_no_rollback')
+                        and (not state['interventions'] or state['interventions'][0].get('fallback') != 'vanilla_no_rollback'))
                     if needs_controller and not state.get('e_controller'):
                         raise ValueError(f'{method}: missing rollback controller state')
                     if state.get('e_controller'):

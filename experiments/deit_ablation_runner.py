@@ -20,6 +20,8 @@ def arm_identity(config, fork_hash, method, horizon, patience, inner_steps):
                 'post_fork_epochs': horizon, 'cp_config': json.loads(json.dumps(asdict(config))),
                 'controller_policy': 'anchor_rollback_no_retrigger_except_A0_A1_or_failed_opt_e',
                 'algorithm_patience': patience, 'opt_e_config': json.loads(json.dumps(asdict(opt_config)))}
+    if method in ('vanilla_rollback', 'o_projection_only_rollback'):
+        identity['controller_policy'] = 'anchor_rollback_no_retrigger'
     return identity
 
 
@@ -36,7 +38,7 @@ def completed_arm_result(saved, output):
         'report_best_accuracy', 'report_best_loss', 'report_best_epoch', 'history', 'interventions')}
     result.update(run_id=str(output.resolve()), theta_best_hash=identity['fork_hash'],
         fork_epoch=saved['historical_best_epoch'], post_fork_epochs=identity['post_fork_epochs'],
-        validation_1_to_5_epochs_after=interventions[0]['validation_1_to_5_epochs_after'],
+        validation_1_to_5_epochs_after=[r for r in history if 1 <= r['post_fork_epoch'] <= 5],
         delta_vs_historical_best=saved['report_best_accuracy'] - accuracy,
         scientific_escape=saved['report_best_accuracy'] > accuracy,
         report_best_scope='epochs1_to_K_epoch0_separate',
@@ -47,7 +49,7 @@ def completed_arm_result(saved, output):
         controller=controller['protocol'] if controller else None,
         rollback_events=controller['rollback_events'] if controller else [],
         validation_role='report_and_anchor_selection' if controller else 'report_only',
-        intervention_count=1, retrigger=False)
+        intervention_count=len(interventions), retrigger=False)
     atomic_json_save(result, output / 'result.json')
     return result
 
@@ -97,7 +99,7 @@ def run_arm(args, config, fork, recipe, fork_hash):
         if saved.get('run_identity') != identity or saved['protocol'] != fork['protocol']:
             raise ValueError('ablation resume identity mismatch')
         if (not 0 <= saved['completed_epochs'] <= args.post_fork_epochs or
-                len(saved['history']) != saved['completed_epochs'] + 1 or len(saved['interventions']) != 1 or
+                len(saved['history']) != saved['completed_epochs'] + 1 or len(saved['interventions']) != (0 if method == 'vanilla_rollback' else 1) or
                 saved['epoch'] != fork['epoch'] + saved['completed_epochs']):
             raise ValueError('inconsistent ablation resume state')
     if saved and saved['completed_epochs'] == args.post_fork_epochs:
@@ -138,25 +140,33 @@ def run_arm(args, config, fork, recipe, fork_hash):
         controller = EAccuracyRollback(model, optimizer, scheduler, loader, before, epoch0,
                                        args.algorithm_patience, stall_on_anchor=True)
     if not saved:
-        live_rng = rng_state()
-        try:
-            batches, indices = materialize_probe_batches(evaluation, train_ids, recipe, config, device, include_opt=True)
-            if indices != reference['probe_indices']:
-                raise ValueError('reference probe partition differs from arm')
-            record = execute_intervention(model, optimizer, batches, config, method, reference,
-                seed=recipe.seed * 10000 + 4701, opt_config=opt_config, growth_fallback=growth_fallback)
-        finally:
-            restore_rng(live_rng)
-        persistent = record.get('persistent')
-        if record.get('fallback') == 'vanilla_no_rollback':
-            controller = None
-        immediate = evaluate_without_rng(model, eval_loader, device)
-        record.update(epoch=epoch0, probe_index=0, probe_indices=indices,
-                      validation_before=before, validation_immediately_after_projection=immediate,
-                      validation_1_to_5_epochs_after=[])
-        interventions.append(record)
-        emit_event('e_driven_o_intervention' if method.startswith('e_driven_o') else 'deit_intervention',
-                   {'method': method, **record}, args.output)
+        if method == 'vanilla_rollback':
+            # Genuine Vanilla: no proposal, projection, parameter change or moment reset.
+            immediate = dict(before)
+            emit_event('vanilla_rollback_start', {'method': method, 'fork_epoch': epoch0,
+                'validation_before': before, 'intervention_count': 0}, args.output)
+        else:
+            live_rng = rng_state()
+            try:
+                batches, indices = materialize_probe_batches(evaluation, train_ids, recipe, config, device, include_opt=True)
+                if indices != reference['probe_indices']:
+                    raise ValueError('reference probe partition differs from arm')
+                projection_method = 'o_projection_only' if method == 'o_projection_only_rollback' else method
+                record = execute_intervention(model, optimizer, batches, config, projection_method, reference,
+                    seed=recipe.seed * 10000 + 4701, opt_config=opt_config, growth_fallback=growth_fallback)
+            finally:
+                restore_rng(live_rng)
+            persistent = record.get('persistent')
+            if record.get('fallback') == 'vanilla_no_rollback':
+                controller = None
+            immediate = evaluate_without_rng(model, eval_loader, device)
+            record.update(epoch=epoch0, probe_index=0, probe_indices=indices,
+                          validation_before=before, validation_immediately_after_projection=immediate,
+                          validation_1_to_5_epochs_after=[])
+            record['method'] = method
+            interventions.append(record)
+            emit_event('e_driven_o_intervention' if method.startswith('e_driven_o') else 'deit_intervention',
+                       {'method': method, **record}, args.output)
         row = {'epoch': epoch0, 'post_fork_epoch': 0,
                'validation_accuracy': immediate['accuracy'], 'validation_loss': immediate['loss']}
         if controller:
@@ -217,7 +227,8 @@ def run_arm(args, config, fork, recipe, fork_hash):
             emit_event('deit_rollback', {'method': method, **controller.rollback_events[-1],
                 'rng_restored': False, 'loader_stream_restored': False, 'retriggered': False}, args.output)
         history.append(row)
-        interventions[0]['validation_1_to_5_epochs_after'] = [r for r in history if 1 <= r['post_fork_epoch'] <= 5]
+        if interventions:
+            interventions[0]['validation_1_to_5_epochs_after'] = [r for r in history if 1 <= r['post_fork_epoch'] <= 5]
         save(offset)
         emit_epoch(method, row, device, epoch_started, args.output)
     last = history[-1]
@@ -225,7 +236,7 @@ def run_arm(args, config, fork, recipe, fork_hash):
         'run_id': str(args.output.resolve()), 'theta_best_hash': fork_hash, 'fork_epoch': epoch0,
         'historical_best_accuracy': accuracy, 'historical_best_loss': loss, 'historical_best_epoch': epoch0,
         'validation_before': before, 'validation_immediately_after_projection': immediate,
-        'validation_1_to_5_epochs_after': interventions[0]['validation_1_to_5_epochs_after'],
+        'validation_1_to_5_epochs_after': [r for r in history if 1 <= r['post_fork_epoch'] <= 5],
         'report_best_accuracy': best_accuracy, 'report_best_loss': best_loss, 'report_best_epoch': best_epoch,
         'delta_vs_historical_best': best_accuracy - accuracy, 'scientific_escape': best_accuracy > accuracy,
         'report_best_scope': 'epochs1_to_K_epoch0_separate',
@@ -237,7 +248,7 @@ def run_arm(args, config, fork, recipe, fork_hash):
         'controller': controller.protocol if controller else None,
         'rollback_events': controller.rollback_events if controller else [],
         'validation_role': 'report_and_anchor_selection' if controller else 'report_only',
-        'intervention_count': 1, 'retrigger': False}
+        'intervention_count': len(interventions), 'retrigger': False}
     atomic_json_save(result, args.output / 'result.json')
     emit_event('deit_arm_complete', {'method': method, 'report_best_accuracy': best_accuracy,
         'report_best_loss': best_loss, 'report_best_epoch': best_epoch,

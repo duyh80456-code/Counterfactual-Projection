@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--raw-reference", type=Path)
     parser.add_argument("--opt-inner-steps", type=int, default=5)
     parser.add_argument("--algorithm-patience", type=int, default=10,
-                        help="E-only epochs without strict accuracy improvement before rollback; no retrigger")
+                        help="Rollback patience for controller-enabled arms; no retrigger")
     parser.add_argument("--vanilla-reference", type=Path,
                         help="Phase 1 observed Vanilla window; defaults beside the fork checkpoint")
     for name, default in asdict(CPConfig()).items():
