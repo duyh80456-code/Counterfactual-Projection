@@ -777,3 +777,37 @@ both delta versus the historical best and delta versus Vanilla rollback.
 
 Generate both notebooks with `python scripts/build_kaggle_deit_rollback_notebooks.py`.
 The seed1 all-arm defaults and its non-rollback O-only control remain unchanged.
+
+### DeiT seed 2: projection-aware exploration from the completed fork
+
+Run `notebooks/kaggle_deit_tiny_seed2_projection_aware.ipynb` with CIFAR-100 and
+the **original full seed2 `plateau_checkpoint.pt` (epoch375, validation56.20%)**,
+or an output archive containing it. Enable Internet and T4x2. This notebook
+does not train Vanilla or rerun the completed controls.
+
+1. D0 evaluates all12 MLPs without committing or training. It exports E residual,
+   cosine, gate gain and a separate supervised-gradient residual at matched damping.
+2. A3 evaluates the original TINY top3 independently on the same anchor/batches,
+   commits the valid correction with highest gate gain, then trains150 epochs.
+3. A4 runs the same initial search, then one fresh top3 search after each rollback
+   while epochs remain. A3 and A4 run independently on GPU0/GPU1.
+
+Both arms inherit AdamW, rank4, scales(.0125,.025,.05), adaptive CG200 and patience10.
+Report best uses strict accuracy with its paired loss; the rollback anchor uses
+accuracy, then lower loss on an exact tie. Rollback restores model/optimizer/
+scheduler while retaining the current RNG and loader stream. Validation never
+selects a proposal, site, damping or scale. Gate metrics are selection diagnostics.
+
+Attach previous output archives to resume: latest checkpoints include optimizer,
+scheduler, RNG/loader, anchor, committed intervention records and a pending-search
+flag. Resume completes pending searches and skips complete arms. Separate best
+files or JSON logs alone cannot resume training. Old controls' `result.json` files
+(including those inside archives) are optional; comparison requires the same fork
+SHA256, protocol, projection config and150-epoch horizon, and rejects ambiguous
+duplicate trajectories. Best observed post-fork and stored anchor are distinct.
+Top3/recurrent searches consume more proposal/CG compute than top1.
+
+Outputs live in `deit_seed2_projection_aware_v1`: D0 CSV/summary, per-arm full
+checkpoints and logs, plus `comparison.csv`/`comparison.json` and an output tarball.
+Generate the notebook with
+`python scripts/build_kaggle_deit_seed2_projection_aware_notebook.py`.

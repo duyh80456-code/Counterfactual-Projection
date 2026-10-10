@@ -97,8 +97,10 @@ class EAccuracyRollback:
         if rollback:
             # Parameter objects stay in place. RNG and loader generator are deliberately untouched.
             model.load_state_dict(self.anchor["model"])
-            optimizer.load_state_dict(self.anchor["optimizer"])
-            scheduler.load_state_dict(self.anchor["scheduler"])
+            # CPU load_state_dict can retain tensor references. Training must not
+            # mutate the saved anchor's moments after a rollback.
+            optimizer.load_state_dict(_cpu_copy(self.anchor["optimizer"]))
+            scheduler.load_state_dict(_cpu_copy(self.anchor["scheduler"]))
             self.rollback_events.append({"epoch": int(epoch), "post_fork_epoch": int(offset),
                 "anchor_epoch": self.anchor["epoch"], "anchor_post_fork_epoch": self.anchor["post_fork_epoch"],
                 "accuracy_stall_before_rollback": stalled,

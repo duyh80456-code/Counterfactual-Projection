@@ -99,7 +99,7 @@ def intervention_batches(eval_set, train_indices, args, probe_index, device):
             one_batch(projection_indices), one_batch(gate_indices))
 
 
-def select_by_expansion_gain(model, statistics, where_batches, args, device, *, normalized=False):
+def select_by_expansion_gain(model, statistics, where_batches, args, device, *, normalized=False, return_candidates=False):
     synchronize(device)
     started = time.perf_counter()
     candidates = propose_structural_candidates(
@@ -180,6 +180,8 @@ def select_by_expansion_gain(model, statistics, where_batches, args, device, *, 
         },
         "where_seconds": time.perf_counter() - started,
     }
+    if return_candidates:
+        return selected["candidate"], diagnostics, ranked
     return selected["candidate"], diagnostics
 
 

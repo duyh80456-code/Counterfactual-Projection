@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import copy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -145,8 +146,8 @@ def load_training_context(data_root, recipe, device, source=None):
     optimizer, scheduler = build_optimizer_scheduler(model, recipe)
     if source is not None:
         model.load_state_dict(source["model"], strict=True)
-        optimizer.load_state_dict(source["optimizer"])
-        scheduler.load_state_dict(source["scheduler"])
+        optimizer.load_state_dict(copy.deepcopy(source["optimizer"]))
+        scheduler.load_state_dict(copy.deepcopy(source["scheduler"]))
     train_loader = make_train_loader(train, train_ids, recipe.batch_size, recipe.workers,
         None if source is None else source["train_loader_generator_state"], recipe.seed)
     eval_loader = make_eval_loader(evaluation, validation_ids, recipe.batch_size, recipe.workers)
@@ -177,8 +178,8 @@ def save_state(path, *, model, optimizer, scheduler, loader, epoch, history,
         **extra}, Path(path))
 
 
-def materialize_probe_batches(evaluation, train_ids, recipe, config, device, *, include_opt=False):
-    indices = probe_indices(train_ids, recipe.seed, config)
+def materialize_probe_batches(evaluation, train_ids, recipe, config, device, *, include_opt=False, probe_index=0):
+    indices = probe_indices(train_ids, recipe.seed, config, probe_index=probe_index)
 
     def load(ids, batch_size):
         loader = DataLoader(Subset(evaluation, ids), batch_size=batch_size,
