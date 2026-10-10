@@ -23,7 +23,7 @@ from experiments.deit_logging import emit_event
 ALL_ARMS = ('vanilla_continue', 'o_projection_only', 'e_driven_o_raw', 'e_driven_o_normalized',
             'random_control_parameter', 'random_control_logit', 'persistent_growth', 'opt_e')
 
-SUPPORTED_ARMS = ALL_ARMS + ('vanilla_rollback', 'o_projection_only_rollback')
+SUPPORTED_ARMS = ALL_ARMS + ('vanilla_rollback', 'o_projection_only_rollback', 'deit_bypass')
 
 def run_jobs(commands, manifest_path, *, runner=subprocess.run):
     """A failed arm is recorded; every independent remaining arm still runs."""
@@ -175,6 +175,10 @@ def main():
     parser.add_argument('--scales', default='.0125,.025,.05')
     parser.add_argument('--opt-inner-steps', type=int, default=5)
     parser.add_argument('--arms', default=','.join(ALL_ARMS))
+    parser.add_argument('--bypass-opt1-epochs', type=int, default=100)
+    parser.add_argument('--bypass-max-opt2-epochs', type=int, default=50)
+    parser.add_argument('--bypass-contraction-epsilon', type=float, default=.002)
+    parser.add_argument('--bypass-gamma-slope', type=float, default=3e-6)
     args = parser.parse_args()
     arms = args.arms.split(',')
     if not arms or any(arm not in SUPPORTED_ARMS for arm in arms) or len(set(arms)) != len(arms):
@@ -185,6 +189,11 @@ def main():
         schedule_epochs=args.schedule_epochs, stall_start_epoch=0,
         stall_patience=args.stall_patience, reference_epochs=args.post_fork_epochs, max_epoch=args.max_epoch)
     recipe.validate()
+    if 'deit_bypass' in arms:
+        from adapters.deit_bypass import BypassConfig
+        bypass_config = BypassConfig(args.bypass_opt1_epochs, args.bypass_max_opt2_epochs,
+            args.bypass_contraction_epsilon, args.bypass_gamma_slope)
+        bypass_config.validate(args.post_fork_epochs)
     args.output.mkdir(parents=True, exist_ok=True)
     phase1 = args.output / 'vanilla_stall'
     # Preserve explicit CLI checkpoint support while validating the local import set.
@@ -224,6 +233,11 @@ def main():
     if actual_recipe != recipe:
         raise ValueError('attached fork recipe does not match the declared all-arm recipe')
     fork_hash = sha256_file(fork_path)
+    if 'deit_bypass' in arms:
+        from experiments.deit_bypass_resume import prepare_bypass_resume
+        plan['arms']['deit_bypass'] = prepare_bypass_resume(args.resume_root, args.output,
+            fork_path, fork, bypass_config, args.post_fork_epochs)
+        atomic_json_save(plan, args.output / 'resume_plan.json')
     reference_path = args.output / 'raw_intervention_reference.pt'
     if reference_path.exists():
         reference = torch.load(reference_path, map_location='cpu', weights_only=False)
@@ -250,6 +264,17 @@ def main():
             emit_event('deit_arm_skip_completed', {'method': method, 'additional_training_epochs': 0}, args.output)
             continue
         output = args.output / 'arms' / method
+        if method == 'deit_bypass':
+            command = [sys.executable, '-m', 'experiments.run_deit_bypass',
+                '--data-root', args.data_root, '--plateau-checkpoint', str(fork_path),
+                '--plateau-checkpoint-hash', fork_hash, '--output', str(output), '--device', args.device,
+                '--post-fork-epochs', str(args.post_fork_epochs)]
+            for key, value in asdict(bypass_config).items():
+                command += ['--bypass-' + key.replace('_', '-'), str(value)]
+            if (output / 'checkpoint_latest.pt').exists():
+                command += ['--resume', str(output / 'checkpoint_latest.pt')]
+            commands[method] = command
+            continue
         command = [sys.executable, '-m', 'experiments.run_deit_fork', '--ablation-suite',
             '--method', method, '--data-root', args.data_root, '--plateau-checkpoint', str(fork_path),
             '--plateau-checkpoint-hash', fork_hash, '--output', str(output), '--device', args.device,
@@ -284,6 +309,9 @@ def main():
         else:
             summary[method] = status
     atomic_json_save(summary, args.output / 'summary.json')
+    if 'deit_bypass' in arms:
+        from experiments.deit_bypass_comparison import compare
+        compare(args.output, fork_hash, fork['protocol'], args.post_fork_epochs)
     print(json.dumps(summary, indent=2))
     if any(row['status'] == 'failed' for row in statuses.values()):
         raise RuntimeError('Some arms failed; see arm_status.json. Other arms were still attempted.')

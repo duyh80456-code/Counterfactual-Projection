@@ -11,7 +11,7 @@ from experiments.deit_ablation_runner import arm_identity, completed_arm_result
 from experiments.shared_protocol import atomic_json_save, sha256_file
 
 KINDS = {'deit_plateau_fork', 'deit_vanilla_latest', 'deit_vanilla_best',
-         'deit_vanilla_reference', 'deit_fork_arm_latest', 'deit_raw_intervention_reference'}
+         'deit_vanilla_reference', 'deit_fork_arm_latest', 'deit_raw_intervention_reference', 'deit_bypass_latest'}
 FULL_STATE = {'model', 'optimizer', 'scheduler', 'rng', 'train_loader_generator_state',
               'train_indices', 'evaluation_indices', 'source_tuning_indices', 'trigger_indices'}
 
@@ -49,7 +49,7 @@ def prepare_resume(roots, output, recipe, config, *, horizon, patience=10, inner
         if state['kind'] == 'deit_raw_intervention_reference':
             return {key: state[key] for key in ('kind', 'suite_version', 'seed', 'cp_config', 'fork_hash')}
         return {key: value for key, value in state.items()
-                if key not in FULL_STATE and key != 'e_controller'}
+                if key not in FULL_STATE and key not in ('e_controller', 'best_original')}
     states = []
     # Include working output, so attachment import never downgrades local progress.
     for index, root in enumerate(dict.fromkeys(map(str, [output, *roots]))):
@@ -76,7 +76,7 @@ def prepare_resume(roots, output, recipe, config, *, horizon, patience=10, inner
     fork_item = unique(typed('deit_plateau_fork'), 'historical-best fork')
     arm_states = typed('deit_fork_arm_latest')
     if not fork_item:
-        if arm_states:
+        if arm_states or typed('deit_bypass_latest'):
             raise FileNotFoundError('Arm progress exists but matching original plateau_checkpoint.pt is missing')
         latest = most_advanced(typed('deit_vanilla_latest'), 'epoch', 'Phase1 latest')
         if latest:
@@ -113,7 +113,7 @@ def prepare_resume(roots, output, recipe, config, *, horizon, patience=10, inner
         raw = unique([item for item in typed('deit_raw_intervention_reference')
             if item['payload']['fork_hash'] == fork_hash], 'raw reference')
         raw_path = output / 'raw_intervention_reference.pt'
-        if not raw and arm_states:
+        if not raw and (arm_states or typed('deit_bypass_latest')):
             raise FileNotFoundError('Arm resume requires the original raw_intervention_reference.pt; do not rebuild it')
         if raw:
             copy(raw, raw_path)

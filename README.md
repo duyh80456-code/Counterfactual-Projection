@@ -811,3 +811,47 @@ Outputs live in `deit_seed2_projection_aware_v1`: D0 CSV/summary, per-arm full
 checkpoints and logs, plus `comparison.csv`/`comparison.json` and an output tarball.
 Generate the notebook with
 `python scripts/build_kaggle_deit_seed2_projection_aware_notebook.py`.
+
+### DeiT seeds 3/4/5: E→O raw top1 versus paper Bypass
+
+Run one notebook per seed:
+
+- `notebooks/kaggle_deit_tiny_seed3_raw_vs_bypass.ipynb`
+- `notebooks/kaggle_deit_tiny_seed4_raw_vs_bypass.ipynb`
+- `notebooks/kaggle_deit_tiny_seed5_raw_vs_bypass.ipynb`
+
+Attach CIFAR-100 and enable Internet, T4x2 and `github_token`. Each seed trains
+its own Vanilla until150 epochs without a strict validation best, then reloads
+that full historical-best fork. It queues exactly two150-epoch arms across two
+GPUs: `e_driven_o_raw` and `deit_bypass`. E→O retains top1 raw TINY WHERE,
+rank4/scales(.0125,.025,.05), CG200 and patience10 anchor rollback without
+retrigger. No A3/A4 or extra algorithm arm runs.
+
+Bypass ports the paper's learnable activation / relaxed constraint (Eq.8,
+Section IV-A) into all12 MLP GELUs: `GELU(z) + d ⊙ z`, initialized at zero.
+Canonical DeiT adds9216 temporary D coordinates. All original Parameter objects
+and AdamW moments remain; D joins the existing no-decay group, and the inherited
+scheduler is not rebased. The default matched-budget schedule is100 opt1 epochs
+plus at most50 opt2 epochs. Opt2 adds
+`(3e-6 * opt2_step) * sum(||d||₂)`; once that sum is below.002, drop D and use
+remaining epochs for train3. Bypass has no rollback controller. This is a GELU
+adaptation with a matched training budget, not the paper's original benchmark
+recipe. See [Jung/Lee Bypass](https://www.donghunlee.com/papers/Jung_Lee_Bypass__IEEE_TNNLS.pdf).
+
+A run that cannot contract within150 epochs preserves its expanded checkpoint
+and sets `accuracy_comparison_eligible=false`; it never force-projects. Expanded
+best validation is logged separately. Only original-space observations after
+contraction enter Bypass best accuracy and `bypass_comparison.csv/json`. E→O
+minus Bypass accuracy is null for an incomplete Bypass. Both arms must finish
+with the same fork hash, protocol and horizon; their extra computation and
+controller policies differ and are recorded in the comparison.
+
+Output directories are `deit_tiny_seed{3,4,5}_raw_vs_bypass_v1`. Download the full
+output tarball to resume another session. Bypass saves model/D, AdamW/scheduler,
+RNG/loader, opt1/opt2/train3 phase and counters after every epoch. Its resume
+reconstructs the correct geometry before loading optimizer state; complete arms
+export results on CPU without retraining. A missing original fork or raw
+reference blocks resume rather than rebuilding an existing trajectory.
+
+Generate all three notebooks with
+`python scripts/build_kaggle_deit_bypass_notebooks.py`.
