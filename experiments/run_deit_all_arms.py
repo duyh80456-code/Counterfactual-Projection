@@ -174,7 +174,8 @@ def main():
     parser.add_argument('--projection-samples', type=int, default=32)
     parser.add_argument('--scales', default='.0125,.025,.05')
     parser.add_argument('--opt-inner-steps', type=int, default=5)
-    parser.add_argument('--arms', default=','.join(ALL_ARMS))
+    parser.add_argument('--arms', default=','.join(ALL_ARMS),
+        help='Explicit arm list; Bypass is opt-in: --arms e_driven_o_raw,deit_bypass')
     parser.add_argument('--bypass-opt1-epochs', type=int, default=100)
     parser.add_argument('--bypass-max-opt2-epochs', type=int, default=50)
     parser.add_argument('--bypass-contraction-epsilon', type=float, default=.002)
@@ -309,12 +310,24 @@ def main():
         else:
             summary[method] = status
     atomic_json_save(summary, args.output / 'summary.json')
+    comparison_error = None
     if 'deit_bypass' in arms:
         from experiments.deit_bypass_comparison import compare
-        compare(args.output, fork_hash, fork['protocol'], args.post_fork_epochs)
+        try:
+            compare(args.output, fork_hash, fork['protocol'], args.post_fork_epochs, statuses=statuses)
+            (args.output / 'comparison_error.json').unlink(missing_ok=True)
+        except Exception as error:
+            comparison_error = error
+            for name in ('bypass_comparison.json', 'bypass_comparison.csv'):
+                (args.output / name).unlink(missing_ok=True)
+            atomic_json_save({'error': repr(error), 'arm_statuses': statuses,
+                'arm_results_preserved': True}, args.output / 'comparison_error.json')
+            emit_event('deit_comparison_failed', {'error': repr(error)}, args.output)
     print(json.dumps(summary, indent=2))
     if any(row['status'] == 'failed' for row in statuses.values()):
-        raise RuntimeError('Some arms failed; see arm_status.json. Other arms were still attempted.')
+        raise RuntimeError('Some arms failed; see arm_status.json. Other arms were still attempted.') from comparison_error
+    if comparison_error is not None:
+        raise RuntimeError('Comparison failed; arm results remain saved. See comparison_error.json.') from comparison_error
 
 
 if __name__ == '__main__':

@@ -855,3 +855,11 @@ reference blocks resume rather than rebuilding an existing trajectory.
 
 Generate all three notebooks with
 `python scripts/build_kaggle_deit_bypass_notebooks.py`.
+
+Bypass is opt-in in the generic CLI: pass
+`--arms e_driven_o_raw,deit_bypass`. All three seed notebooks already do this;
+the generic `ALL_ARMS` default retains the original eight-arm experiment.
+Comparison uses current arm statuses and ignores files belonging to failed or
+unrequested arms. Failed-arm rows have no comparison delta. A comparison error
+is recorded in `comparison_error.json`, removes stale comparison tables, and
+preserves arm results/summary; an arm failure remains the primary reported error.

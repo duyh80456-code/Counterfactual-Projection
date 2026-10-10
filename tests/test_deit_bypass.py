@@ -58,8 +58,8 @@ def test_gelu_embedding_and_contraction_preserve_original_moments(deit_small,dei
     scheduler.step() # no extra param groups or scheduler reset
 
 
-@pytest.mark.parametrize('epsilon,completed',[(1e6,True),(1e-20,False)])
-def test_bypass_main_loop_full_phase_resume(deit_small,deit_batches,tmp_path,monkeypatch,epsilon,completed):
+@pytest.mark.parametrize('epsilon,completed,at_final',[(1e6,True,False),(1e-20,False,False),(1e6,True,True)])
+def test_bypass_main_loop_full_phase_resume(deit_small,deit_batches,tmp_path,monkeypatch,epsilon,completed,at_final):
     import experiments.run_deit_bypass as runner
     model=deit_small;recipe=replace(DeitRecipe(),seed=3,workers=0,batch_size=8)
     optimizer,scheduler=populated_optimizer(model,recipe)
@@ -75,8 +75,17 @@ def test_bypass_main_loop_full_phase_resume(deit_small,deit_batches,tmp_path,mon
         current.load_state_dict(source['model']);opt.load_state_dict(copy.deepcopy(source['optimizer']));sched.load_state_dict(copy.deepcopy(source['scheduler']))
         train=DataLoader(data,batch_size=8,shuffle=True,generator=torch.Generator().set_state(source['train_loader_generator_state']))
         restore_rng(source['rng'])
+        current._test_optimizer=opt
         return current,opt,sched,train,loader,data,list(range(8)),[],[],[]
     monkeypatch.setattr(runner,'load_training_context',context)
+    if at_final:
+        def delayed_norm(current):
+            modules=extensions(current)
+            norm=contraction_norm(current)
+            if modules and float(current._test_optimizer.state.get(modules[0].d,{}).get('step',0))<6:
+                norm=norm+2e6
+            return norm
+        monkeypatch.setattr(runner,'contraction_norm',delayed_norm)
     monkeypatch.setattr(runner,'evaluate_without_rng',lambda *_a:{'accuracy':.6,'loss':1.9})
     config=BypassConfig(2,4,epsilon,3e-6)
     args=SimpleNamespace(output=tmp_path/'arm',plateau_checkpoint=fork_path,data_root='fixture',device='cpu',post_fork_epochs=6,resume=None)
@@ -96,8 +105,9 @@ def test_bypass_main_loop_full_phase_resume(deit_small,deit_batches,tmp_path,mon
     assert final['opt1_done']==2 and final['completed_epochs']==6
     assert bool(any(name.endswith('.act.d') for name in final['model']))== (not completed)
     if completed:
-        assert result['train3_epochs']==3 and result['opt2_epochs']==1
-        assert result['report_best_epoch']==10 # ties retain first original-space best
+        assert result['train3_epochs']==(0 if at_final else 3)
+        assert result['opt2_epochs']==(4 if at_final else 1)
+        assert result['report_best_epoch']==(13 if at_final else 10)
     else:
         assert result['train3_epochs']==0 and result['opt2_epochs']==4
         assert not (args.output/'best_checkpoint.pt').exists()
@@ -154,7 +164,8 @@ def test_new_seed_notebooks_are_isolated_and_only_raw_vs_bypass():
         assert 'tests/test_deit_bypass.py' in code
 
 
-def test_suite_dispatches_only_raw_and_bypass_with_matching_budget(tmp_path,monkeypatch):
+@pytest.mark.parametrize('arm_failed,comparison_failed',[(False,False),(True,False),(False,True),(True,True)])
+def test_suite_dispatches_only_raw_and_bypass_with_matching_budget(tmp_path,monkeypatch,arm_failed,comparison_failed):
     import sys
     from dataclasses import asdict
     import experiments.run_deit_all_arms as suite
@@ -171,7 +182,10 @@ def test_suite_dispatches_only_raw_and_bypass_with_matching_budget(tmp_path,monk
     monkeypatch.setattr(suite,'checked_source',lambda *_a:(fork,recipe))
     monkeypatch.setattr(resume,'prepare_resume',lambda *_a,**_kw:{'arms':{}})
     monkeypatch.setattr(bypass_resume,'prepare_bypass_resume',lambda *_a,**_kw:{'action':'start'})
-    monkeypatch.setattr(comparison,'compare',lambda *_a:None)
+    def compare(*_a,**kwargs):
+        assert kwargs['statuses']['deit_bypass']['status']==('failed' if arm_failed else 'completed')
+        if comparison_failed:raise ValueError('comparison test failure')
+    monkeypatch.setattr(comparison,'compare',compare)
     def jobs(commands,*_a):
         assert set(commands)=={'e_driven_o_raw','deit_bypass'}
         for method,command in commands.items():
@@ -186,8 +200,41 @@ def test_suite_dispatches_only_raw_and_bypass_with_matching_budget(tmp_path,monk
             directory=tmp_path/'arms'/method;directory.mkdir(parents=True)
             (directory/'result.json').write_text(json.dumps({'theta_best_hash':h,'report_best_accuracy':.56,
                 'report_best_loss':2.,'delta_vs_historical_best':.01,'scientific_escape':True}))
-        return {method:{'status':'completed'} for method in commands}
+        return {method:{'status':'failed' if method=='deit_bypass' and arm_failed else 'completed'} for method in commands}
     monkeypatch.setattr(suite,'run_jobs',jobs)
     monkeypatch.setattr(sys,'argv',['suite','--data-root','fixture','--output',str(tmp_path),'--seed','3',
         '--device','cpu','--arms','e_driven_o_raw,deit_bypass'])
-    suite.main()
+    if comparison_failed:
+        for name in ('bypass_comparison.json','bypass_comparison.csv'):
+            (tmp_path/name).write_text('old comparison')
+    if arm_failed or comparison_failed:
+        message='Some arms failed' if arm_failed else 'Comparison failed'
+        with pytest.raises(RuntimeError,match=message):suite.main()
+    else:suite.main()
+    summary=json.loads((tmp_path/'summary.json').read_text())
+    assert summary['e_driven_o_raw']['report_best_accuracy']==.56
+    assert (tmp_path/'comparison_error.json').exists()==comparison_failed
+    if comparison_failed:
+        assert not (tmp_path/'bypass_comparison.json').exists()
+        assert not (tmp_path/'bypass_comparison.csv').exists()
+
+
+@pytest.mark.parametrize('failed_method',['deit_bypass','e_driven_o_raw'])
+def test_comparison_ignores_stale_failed_results(tmp_path,failed_method):
+    from experiments.deit_bypass_comparison import compare
+    for method in ('e_driven_o_raw','deit_bypass'):
+        path=tmp_path/'arms'/method;path.mkdir(parents=True)
+        if method==failed_method:
+            (path/'result.json').write_text('stale malformed JSON that must never be read')
+        else:
+            (path/'result.json').write_text(json.dumps({'theta_best_hash':'fork','protocol':{'seed':3},
+                'run_identity':{'post_fork_epochs':150},'completed_epochs':150,
+                'report_best_accuracy':.6,'report_best_loss':2.,'report_best_epoch':200,
+                'delta_vs_historical_best':.05,'scientific_escape':True,'accuracy_comparison_eligible':True}))
+    statuses={method:{'status':'failed' if method==failed_method else 'completed'}
+              for method in ('e_driven_o_raw','deit_bypass')}
+    result=compare(tmp_path,'fork',{'seed':3},150,statuses=statuses)
+    assert not result['comparison_eligible']
+    assert result['e2o_minus_bypass_best_accuracy'] is None
+    failed=next(row for row in result['rows'] if row['method']==failed_method)
+    assert failed['status']=='failed' and not failed['available']
