@@ -863,3 +863,50 @@ Comparison uses current arm statuses and ignores files belonging to failed or
 unrequested arms. Failed-arm rows have no comparison delta. A comparison error
 is recorded in `comparison_error.json`, removes stale comparison tables, and
 preserves arm results/summary; an arm failure remains the primary reported error.
+
+### DeiT seed2: short E-driven expansion diagnostics (E0..E4)
+
+Use `notebooks/kaggle_deit_tiny_seed2_expansion_diagnostics.ipynb`. Attach CIFAR-100
+and the **original full seed2 fork375 /56.20%** or an output archive containing it.
+Previous D0 output is optional and recommended to avoid repeating all12 D0 solves.
+It must match fork SHA256, protocol and CP config. Without prior D0, recompute a
+fresh D0 reference and explicitly report that no historical artifact was verified.
+No A3/A4,150-epoch training or correction commit runs in this notebook.
+
+E0 regenerates all12 rank4 TINY WHERE gains/norm/ranks and requires agreement with
+D0 before new proposals. Three distinct sites are selected from TINY top1, minimum
+D0 residual and median TINY rank (with deterministic fillers for overlaps). E3/E4
+run first: original TINY, temporary-neuron gradient tuning on disjoint opt_fit64
+for at most20 Adam steps, and random structural neurons matched to the TINY
+projection-logit norm. Original weights are frozen during tuning. Failed/zero norm
+matching makes the random control unsuitable for a matched-norm conclusion.
+
+E1 varies requested rank(2,4,8,16), logging the actual effective rank. E2 varies
+probe_epsilon(.01,.05,.1,.2) and expansion_scale(.25,.5,1,2) independently on a fixed
+proposal. Current native TINY generation uses rank/statistics; epsilon controls
+its virtual measurement gate. Default strength mode recomputes the full expanded
+forward at gate=epsilon*scale. `--strength-mode linear_logits` instead scales the
+fixed whole-logit delta. Gradient-tuned proposals use gate1 as optimized, explicitly
+logged separately. Projection/line search keeps the original CP scales/damping
+and only the same block's four original MLP tensors; all changes are previews.
+
+FP32/FP64 CE metrics share exactly the same original logits. An additional whole
+FP64 forward with the same fixed proposal is enabled by default, so rounding lost
+in the original forward is distinguishable from loss-evaluation rounding. This
+cannot recover error already incurred while generating a FP32 TINY proposal.
+Validation is never evaluated or used to select blocks, methods, steps or scales.
+Tuning/WHERE/projection/gate IDs are disjoint and checked before the suite starts.
+
+Outputs include `expansion_diagnostics.csv`, all12 E0 metrics, configuration,
+summary, unique-proposal forward/backward/time budget, proposal seeds/cached tensors,
+actual `probe_batches.pt` and resumable `diagnostic_progress.pt`. Completed diagnostic
+rows skip new solves. Proposal/solver failures are explicit Reject/unavailable
+records, never forced Accept. Model/Parameter/optimizer and RNG remain unchanged.
+The new solves use private recorded seeds; identical stochastic CG trajectories
+with old D0 are not claimed. Proposed methods have different compute budgets.
+
+Default sweeps generate63 unique transfer cases across three sites. `--all-blocks`
+extends deliberately to12; there is no automatic validation-driven escalation.
+The suite can still be expensive because every case uses the original CG200.
+Generate the notebook with
+`python scripts/build_kaggle_deit_expansion_diagnostics_notebook.py`.
