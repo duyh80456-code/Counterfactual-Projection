@@ -33,7 +33,7 @@ from methods.e_projection import (
 from projection import FunctionalProjector
 
 
-METHODS = ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only")
+METHODS = ("vanilla", "bypass", "ours_e_driven_o", "o_projection_only", "vanilla_rollback")
 
 
 def arguments():
@@ -73,6 +73,8 @@ def arguments():
     parser.add_argument("--damping", type=float, default=1e-3)
     parser.add_argument("--line-search-scales", default="0.0125,0.025,0.05")
     parser.add_argument("--retrigger-patience", type=int, default=10)
+    parser.add_argument("--record-continuation-config", action="store_true",
+                        help="Bind resume to the complete continuation config without changing legacy arm identities")
     parser.add_argument("--opt1-epochs", type=int, default=70)
     parser.add_argument("--max-opt2-epochs", type=int, default=30)
     parser.add_argument("--contraction-epsilon", type=float, default=0.002)
@@ -203,6 +205,9 @@ def main():
     source = torch.load(fork_path, map_location=device, weights_only=False)
     if source.get("kind") != "plateau_fork_checkpoint":
         raise RuntimeError("input is not a plateau fork checkpoint")
+    source_seed = source.get("protocol", {}).get("seed", source.get("seed"))
+    if source_seed is not None and int(source_seed) != args.seed:
+        raise RuntimeError("plateau checkpoint seed mismatch")
     fork_epoch = int(source["epoch"])
 
     source_tuning = list(source["source_tuning_indices"])
@@ -269,6 +274,11 @@ def main():
              "rollback_rng": False,
              "rollback_loader_stream": False}
             if args.method == "ours_e_driven_o" else
+            {"mode": "rollback_only", "patience": args.retrigger_patience,
+             "metric": "validation accuracy, then lower loss on exact tie",
+             "sgd_epoch_budget": args.post_fork_epochs,
+             "rollback_rng": False, "rollback_loader_stream": False}
+            if args.method == "vanilla_rollback" else
             {"mode": "single_initial_intervention",
              "patience": None,
              "metric": None,
@@ -295,6 +305,13 @@ def main():
             "line_search_scales": [
                 float(value) for value in args.line_search_scales.split(",")],
         }
+    if args.method == "vanilla_rollback" or getattr(args, "record_continuation_config", False):
+        protocol["seed"] = args.seed
+        protocol["continuation_config"] = {key: getattr(args, key) for key in (
+            "batch_size", "workers", "weight_decay", "rank", "probe_epsilon", "statistics_samples",
+            "where_batches", "where_samples", "projection_samples", "gate_samples",
+            "cg_iterations", "cg_relative_tolerance", "cg_preconditioner_probes", "damping",
+            "line_search_scales", "site", "site_selection_mode")}
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     latest = output / "checkpoint_latest.pt"
@@ -340,6 +357,7 @@ def main():
     intervention = None
     interventions = []
     rollback_count = 0
+    rollback_events = []
     report_stall_counter = 0
     controller_stall_counter = 0
     start_offset = 0
@@ -364,6 +382,7 @@ def main():
         interventions = list(saved.get(
             "interventions", [intervention] if intervention else []))
         rollback_count = int(saved.get("rollback_count", 0))
+        rollback_events = list(saved.get("rollback_events", []))
         report_stall_counter = int(saved.get("report_stall_counter", 0))
         controller_stall_counter = int(
             saved.get("controller_stall_counter", 0))
@@ -405,6 +424,7 @@ def main():
             "history": history, "intervention": intervention,
             "interventions": interventions,
             "rollback_count": rollback_count,
+            "rollback_events": rollback_events,
             "report_stall_counter": report_stall_counter,
             "controller_stall_counter": controller_stall_counter,
             "post_fork_epoch": post_offset, "phase": phase,
@@ -606,7 +626,8 @@ def main():
                 "plateau_fork_arm_best", offset + 1, elapsed, peak))
 
         retriggered = False
-        if (args.method == "ours_e_driven_o" and
+        rollback_applied = False
+        if (args.method in {"ours_e_driven_o", "vanilla_rollback"} and
                 controller_stall_counter >= args.retrigger_patience and
                 offset + 1 < args.post_fork_epochs):
             # Roll back model/optimizer/scheduler to the controller anchor but
@@ -623,40 +644,48 @@ def main():
             restore_rng(live_rng)
             train_loader.generator.set_state(live_loader_state.cpu())
             rollback_count += 1
+            rollback_applied = True
+            rollback_events.append({"epoch": epoch, "post_fork_epoch": offset + 1,
+                "anchor_epoch": controller_anchor_offset,
+                "observed_validation_accuracy": validation["accuracy"],
+                "observed_validation_loss": validation["loss"],
+                "anchor_accuracy": controller_anchor_accuracy,
+                "anchor_loss": controller_anchor_loss})
             controller_stall_counter = 0
-            perform_intervention(
-                len(interventions), offset + 1,
-                "raw_validation_stall")
-            immediate_trigger = evaluate(model, trigger_loader, device)
-            immediate = evaluate(model, evaluation_loader, device)
-            immediate_report_improved = (
-                immediate["accuracy"] > report_best_accuracy)
-            if immediate_report_improved:
-                report_best_accuracy = float(immediate["accuracy"])
-                report_best_loss = float(immediate["loss"])
-                report_best_offset = epoch
-                report_stall_counter = 0
-            immediate_anchor_improved = (
-                immediate["accuracy"] > controller_anchor_accuracy or
-                (immediate["accuracy"] == controller_anchor_accuracy and
-                 immediate["loss"] < controller_anchor_loss))
-            if immediate_anchor_improved:
-                immediate_anchor_reason = (
-                    "post_intervention_accuracy_increase"
-                    if immediate["accuracy"] > controller_anchor_accuracy
-                    else "post_intervention_same_accuracy_lower_loss")
-                controller_anchor_accuracy = float(immediate["accuracy"])
-                controller_anchor_loss = float(immediate["loss"])
-                controller_anchor_offset = epoch
-                controller_anchor_reason = immediate_anchor_reason
-                controller_stall_counter = 0
-                save_checkpoint(best_checkpoint, state_payload(
-                    "plateau_fork_arm_best", offset + 1, elapsed, peak))
-            anchor_improved = anchor_improved or immediate_anchor_improved
-            anchor_reason = ("post_intervention_anchor_improved"
-                             if immediate_anchor_improved else anchor_reason)
-            report_improved = report_improved or immediate_report_improved
-            retriggered = True
+            if args.method == "ours_e_driven_o":
+                perform_intervention(
+                    len(interventions), offset + 1,
+                    "raw_validation_stall")
+                immediate_trigger = evaluate(model, trigger_loader, device)
+                immediate = evaluate(model, evaluation_loader, device)
+                immediate_report_improved = (
+                    immediate["accuracy"] > report_best_accuracy)
+                if immediate_report_improved:
+                    report_best_accuracy = float(immediate["accuracy"])
+                    report_best_loss = float(immediate["loss"])
+                    report_best_offset = epoch
+                    report_stall_counter = 0
+                immediate_anchor_improved = (
+                    immediate["accuracy"] > controller_anchor_accuracy or
+                    (immediate["accuracy"] == controller_anchor_accuracy and
+                     immediate["loss"] < controller_anchor_loss))
+                if immediate_anchor_improved:
+                    immediate_anchor_reason = (
+                        "post_intervention_accuracy_increase"
+                        if immediate["accuracy"] > controller_anchor_accuracy
+                        else "post_intervention_same_accuracy_lower_loss")
+                    controller_anchor_accuracy = float(immediate["accuracy"])
+                    controller_anchor_loss = float(immediate["loss"])
+                    controller_anchor_offset = epoch
+                    controller_anchor_reason = immediate_anchor_reason
+                    controller_stall_counter = 0
+                    save_checkpoint(best_checkpoint, state_payload(
+                        "plateau_fork_arm_best", offset + 1, elapsed, peak))
+                anchor_improved = anchor_improved or immediate_anchor_improved
+                anchor_reason = ("post_intervention_anchor_improved"
+                                 if immediate_anchor_improved else anchor_reason)
+                report_improved = report_improved or immediate_report_improved
+                retriggered = True
         row["report_best_improved"] = report_improved
         row["controller_anchor_improved"] = anchor_improved
         row["controller_anchor_reason"] = controller_anchor_reason
@@ -669,7 +698,14 @@ def main():
         row["controller_anchor_epoch"] = controller_anchor_offset
         row["report_stall_counter"] = report_stall_counter
         row["controller_stall_counter"] = controller_stall_counter
-        row["rollback_triggered"] = retriggered
+        row["rollback_triggered"] = rollback_applied
+        row["rollback_applied"] = rollback_applied
+        row["rollback_anchor_epoch"] = (rollback_events[-1]["anchor_epoch"] if rollback_applied else None)
+        row["state_validation_accuracy"] = (immediate["accuracy"] if retriggered else
+            controller_anchor_accuracy if rollback_applied else validation["accuracy"])
+        row["state_validation_loss"] = (immediate["loss"] if retriggered else
+            controller_anchor_loss if rollback_applied else validation["loss"])
+        row["retriggered"] = retriggered
         row["intervention_count"] = len(interventions)
         if anchor_improved:
             # Refresh the anchor after the completed row has been annotated,
@@ -727,14 +763,14 @@ def main():
         "controller_stall_counter": controller_stall_counter,
         "fork_validation_accuracy": fork_evaluation["accuracy"],
         "fork_validation_loss": fork_evaluation["loss"],
-        "final_validation_accuracy": last["validation_accuracy"],
+        "final_validation_accuracy": last.get("state_validation_accuracy", last["validation_accuracy"]),
         "final_validation_accuracy_space": (
             "expanded_diagnostic"
             if args.method == "bypass" and not bypass_completed
             else "compact_deploy"),
         "best_validation_accuracy": reported_best_accuracy,
         "best_validation_accuracy_space": "compact_deploy",
-        "final_validation_loss": last["validation_loss"],
+        "final_validation_loss": last.get("state_validation_loss", last["validation_loss"]),
         "best_validation_loss": reported_best_loss,
         "validation_accuracy_delta": (
             last["validation_accuracy"] - fork_evaluation["accuracy"]),
@@ -767,9 +803,11 @@ def main():
             float(item.get("intervention_seconds", 0.0))
             for item in interventions),
         "rollback_count": rollback_count,
+        "rollback_events": rollback_events,
+        "scientific_escape": reported_best_accuracy > fork_evaluation["accuracy"] if reported_best_accuracy is not None else False,
         "retrigger_patience": (
             args.retrigger_patience
-            if args.method == "ours_e_driven_o" else None),
+            if args.method in {"ours_e_driven_o", "vanilla_rollback"} else None),
         "retrigger_metric": (
             "validation accuracy, then lower loss on exact tie"
             if args.method == "ours_e_driven_o" else None),

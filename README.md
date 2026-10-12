@@ -995,3 +995,29 @@ on evaluated batches, not a generalization guarantee. A validation plateau does
 not prove exact stationarity; the first-order limitation applies to an exact
 stationary point of the same loss/Jacobian. CPU tests validate implementation and
 small-model mathematics; no full DeiT GPU run or accuracy improvement is claimed.
+
+### ResNet18 seed1 — existing plateau, raw E→O versus Vanilla rollback
+
+Run `notebooks/kaggle_resnet18_seed1_raw_vs_vanilla_rollback.ipynb` with T4x2,
+Internet, `github_token`, CIFAR-100 and the existing seed1 ResNet18 full
+`plateau_checkpoint.pt` (or a full output archive). The notebook loads only a
+validation-selected plateau with explicit seed/backbone metadata and complete
+model/optimizer/scheduler/RNG/loader/split state. It does not retrain Phase1 or
+require the old observed Vanilla window to be complete.
+
+GPU0 runs `ours_e_driven_o`: original raw TINY WHERE over8 sites, projection,
+then patience10 stall → rollback → query E again. GPU1 runs genuine new
+`vanilla_rollback`: the same SGD/validation anchor rule and patience10, without
+E/projection. Both spend150 training epochs from identical full fork, preserve
+the inherited LR/momentum/scheduler, and keep current RNG/data streams on rollback.
+The original R18 projection32/scales(.0125,.025,.05) recipe is retained.
+As in the original recurrent arm, no new rollback/intervention is scheduled
+at the final horizon epoch. Report best uses strict accuracy with its paired loss;
+anchor selection uses accuracy then lower loss on an exact tie.
+
+The new notebook binds arm resume to fork hash, seed, config and schedule;
+legacy arm progress without the complete config is not imported by this notebook.
+It writes `comparison.csv/json`, separate rollback PNG/PDF plots and a full output
+archive. Download the entire archive for resume, including both latest and best
+checkpoints. Generate with
+`python scripts/build_kaggle_resnet18_seed1_raw_vs_vanilla_rollback_notebook.py`.
