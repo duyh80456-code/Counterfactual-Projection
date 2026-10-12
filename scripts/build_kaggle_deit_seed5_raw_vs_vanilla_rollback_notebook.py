@@ -131,6 +131,84 @@ else:
     bootstrap = ''.join(notebook['cells'][1]['source']).replace('"tests/test_deit_resume.py"',
         '"tests/test_deit_resume.py", "tests/test_research_projection_v2.py"')
     notebook['cells'][1]['source'] = bootstrap.splitlines(keepends=True)
+    notebook['cells'].append({'cell_type':'markdown','metadata':{},'source':[
+        '## Final summary\n',
+        'Seven continuation arms, including incomplete/failed arms. Accuracy is percent; deltas are percentage points.\n',
+        'Only complete results matching the current fork/protocol/config enter comparisons. Diagnostic previews are shown separately.\n']})
+    summary_code = """import pandas as pd
+from IPython.display import display, Markdown
+
+def read_json_if_present(path):
+    return json.loads(path.read_text()) if path.exists() else {}
+
+arm_specs = [('vanilla_rollback', 'Vanilla + rollback'),
+             ('e_driven_o_raw', 'TINY / absolute'),
+             ('cp_v2_tiny_relative_gram', 'TINY / relative_gram'),
+             ('cp_v2_gradmax_absolute', 'GradMax / absolute'),
+             ('cp_v2_gradmax_relative_gram', 'GradMax / relative_gram'),
+             ('cp_v2_optimized_e_absolute', 'Optimized-E / absolute'),
+             ('cp_v2_optimized_e_relative_gram', 'Optimized-E / relative_gram')]
+statuses = {**read_json_if_present(OUTPUT / 'arm_status.json'),
+            **read_json_if_present(RESEARCH / 'v2_arm_status.json')}
+fork_hash = sha256_file(FORK) if FORK.exists() else None
+reference_path = RESEARCH / 'generator_reference.pt'
+reference_hash = sha256_file(reference_path) if reference_path.exists() else None
+summary_rows = []
+for method, label in arm_specs:
+    root = RESEARCH if method.startswith('cp_v2_') else OUTPUT / 'arms'
+    row = {'Arm': label, 'Status': statuses.get(method, {}).get('status', 'not_started')}
+    try:
+        result = read_json_if_present(root / method / 'result.json')
+        if result:
+            identity = result['run_identity']
+            expected_cp = json.loads(json.dumps(asdict(CP)))
+            if method.startswith('cp_v2_'):
+                expected_cp.update(damping_mode='absolute' if method.endswith('_absolute')
+                    else 'relative_gram', trace_probes=8, trace_seed=2028)
+                if reference_hash is None or identity['generator_reference_hash'] != reference_hash:
+                    raise ValueError('generator reference mismatch')
+            if (result['theta_best_hash'] != fork_hash or result['protocol'] != EXPECTED
+                    or identity['cp_config'] != expected_cp
+                    or identity['post_fork_epochs'] != POST_FORK_EPOCHS
+                    or identity['algorithm_patience'] != ALGORITHM_PATIENCE
+                    or result['history'][-1]['post_fork_epoch'] != POST_FORK_EPOCHS):
+                raise ValueError('fork/protocol/config/horizon mismatch')
+            row.update(Status='completed', **{'Best acc (%)': 100 * result['report_best_accuracy'],
+                'Best loss': result['report_best_loss'], 'Best epoch': result['report_best_epoch'],
+                'Delta vs fork (pp)': 100 * result['delta_vs_historical_best'],
+                'Scientific escape': result['scientific_escape'], 'Rollbacks': len(result['rollback_events'])})
+        elif row['Status'] == 'completed':
+            row['Status'] = 'missing_result'
+    except (KeyError, ValueError, TypeError, IndexError) as error:
+        row.update(Status='excluded', Reason=str(error))
+    summary_rows.append(row)
+vanilla = next((row['Best acc (%)'] for row in summary_rows
+                if row['Arm'] == 'Vanilla + rollback' and row['Status'] == 'completed'), None)
+for row in summary_rows:
+    row['Delta vs Vanilla (pp)'] = (row['Best acc (%)'] - vanilla
+        if row['Status'] == 'completed' and vanilla is not None else None)
+columns = ['Arm', 'Status', 'Best acc (%)', 'Best loss', 'Best epoch',
+           'Delta vs fork (pp)', 'Delta vs Vanilla (pp)', 'Scientific escape', 'Rollbacks', 'Reason']
+summary_table = pd.DataFrame(summary_rows).reindex(columns=columns)
+summary_table.to_csv(OUTPUT / 'final_arm_summary.csv', index=False)
+display(Markdown('### Continuation results'))
+display(summary_table.style.format({'Best acc (%)': '{:.3f}', 'Best loss': '{:.5f}',
+    'Best epoch': '{:.0f}', 'Delta vs fork (pp)': '{:+.3f}',
+    'Delta vs Vanilla (pp)': '{:+.3f}', 'Rollbacks': '{:.0f}'}, na_rep='—'))
+
+diagnostic = read_json_if_present(RESEARCH / 'diagnostics.json')
+if diagnostic.get('rows'):
+    diagnostic_table = pd.DataFrame(diagnostic['rows']).reindex(columns=[
+        'generator', 'selected_site', 'projection_scope', 'damping_mode', 'cg_converged',
+        'e_gain', 'projection_relative_residual', 'heldout_projection_residual',
+        'heldout_cosine', 'gate_gain', 'gate_accepted'])
+    display(Markdown('### Projection diagnostics — previews, not continuation accuracy'))
+    display(diagnostic_table)
+print('Saved:', OUTPUT / 'final_arm_summary.csv')
+print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', root_dir=OUTPUT))
+"""
+    notebook['cells'].append({'cell_type':'code','execution_count':None,'metadata':{},'outputs':[],
+                             'source':summary_code.splitlines(keepends=True)})
     for cell in notebook['cells']:
         if cell['cell_type']=='code':cell['outputs']=[];cell['execution_count']=None
     path=Path('notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb')
