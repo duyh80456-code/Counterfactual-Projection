@@ -154,6 +154,7 @@ fork_hash = sha256_file(FORK) if FORK.exists() else None
 reference_path = RESEARCH / 'generator_reference.pt'
 reference_hash = sha256_file(reference_path) if reference_path.exists() else None
 summary_rows = []
+completed_results = {}
 for method, label in arm_specs:
     root = RESEARCH if method.startswith('cp_v2_') else OUTPUT / 'arms'
     row = {'Arm': label, 'Status': statuses.get(method, {}).get('status', 'not_started')}
@@ -177,6 +178,7 @@ for method, label in arm_specs:
                 'Best loss': result['report_best_loss'], 'Best epoch': result['report_best_epoch'],
                 'Delta vs fork (pp)': 100 * result['delta_vs_historical_best'],
                 'Scientific escape': result['scientific_escape'], 'Rollbacks': len(result['rollback_events'])})
+            completed_results[method] = (label, result)
         elif row['Status'] == 'completed':
             row['Status'] = 'missing_result'
     except (KeyError, ValueError, TypeError, IndexError) as error:
@@ -209,6 +211,81 @@ print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', roo
 """
     notebook['cells'].append({'cell_type':'code','execution_count':None,'metadata':{},'outputs':[],
                              'source':summary_code.splitlines(keepends=True)})
+    notebook['cells'].append({'cell_type':'markdown','metadata':{},'source':[
+        '## Rollback trajectories\n',
+        'All seven arms use rollback. Graphs use the complete compatible results accepted by the summary cell.\n',
+        'The x-axis counts elapsed post-fork training epochs 1–150 and never rewinds. Solid lines show validation measured before the controller; dashed lines show the stored anchor.\n',
+        'Red markers/arrows show the restored anchor at each rollback, not a fresh validation evaluation. Labels identify the original anchor epoch.\n']})
+    graph_code = """import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+plot_root = OUTPUT / 'plots'
+plot_root.mkdir(parents=True, exist_ok=True)
+if not completed_results:
+    print('No complete compatible continuation results yet; no rollback curves to plot.')
+else:
+    # Overlay measured accuracy/loss for a direct comparison of the arms.
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4.5), constrained_layout=True)
+    for method, (label, result) in completed_results.items():
+        history = pd.DataFrame(result['history']).sort_values('post_fork_epoch').query('post_fork_epoch > 0')
+        x = history['post_fork_epoch']
+        axes[0].plot(x, 100 * history['validation_accuracy'], label=label, linewidth=1.2)
+        axes[1].plot(x, history['validation_loss'], label=label, linewidth=1.2)
+    reference = next(iter(completed_results.values()))[1]
+    axes[0].axhline(100 * reference['historical_best_accuracy'], color='black',
+                   linestyle='--', linewidth=1, label='Historical-best fork')
+    axes[1].axhline(reference['historical_best_loss'], color='black', linestyle='--', linewidth=1)
+    for ax, title, ylabel in zip(axes, ('Validation accuracy comparison', 'Validation loss comparison'),
+                                 ('Validation accuracy (%)', 'Validation loss')):
+        ax.set(title=title, xlabel='Elapsed post-fork epochs', ylabel=ylabel)
+        ax.grid(alpha=.2)
+    axes[0].legend(fontsize=8, ncol=2)
+    fig.savefig(plot_root / 'all_arms_validation.png', dpi=180)
+    fig.savefig(plot_root / 'all_arms_validation.pdf')
+    plt.show()
+    plt.close(fig)
+
+    for method, (label, result) in completed_results.items():
+        history = pd.DataFrame(result['history']).sort_values('post_fork_epoch').query('post_fork_epoch > 0')
+        rollback_rows = history.loc[history.get('rollback_applied',
+            pd.Series(False, index=history.index)).fillna(False).astype(bool)]
+        fig, axes = plt.subplots(1, 2, figsize=(15, 4), constrained_layout=True)
+        for ax, metric, anchor_metric, factor, ylabel in (
+                (axes[0], 'validation_accuracy', 'controller_anchor_accuracy', 100, 'Validation accuracy (%)'),
+                (axes[1], 'validation_loss', 'controller_anchor_loss', 1, 'Validation loss')):
+            ax.plot(history['post_fork_epoch'], factor * history[metric], color='tab:blue',
+                    linewidth=1.3, label='Measured before controller')
+            if anchor_metric in history:
+                ax.step(history['post_fork_epoch'], factor * history[anchor_metric], where='post',
+                        color='tab:orange', linestyle='--', linewidth=1.2, label='Stored controller anchor')
+            for _, row in rollback_rows.iterrows():
+                epoch = row['post_fork_epoch']
+                observed, restored = factor * row[metric], factor * row[anchor_metric]
+                ax.axvline(epoch, color='tab:red', linestyle=':', alpha=.35, linewidth=.8)
+                ax.scatter([epoch], [restored], marker='v', color='tab:red', s=30, zorder=4)
+                ax.annotate('', xy=(epoch, restored), xytext=(epoch, observed),
+                            arrowprops={'arrowstyle':'->', 'color':'tab:red', 'lw':.8})
+                if ax is axes[0]:
+                    ax.annotate('anchor ' + str(int(row['rollback_anchor_epoch'])),
+                                xy=(epoch, restored), xytext=(3, 8), textcoords='offset points',
+                                fontsize=7, rotation=90, color='tab:red')
+            ax.set(xlabel='Elapsed post-fork epochs', ylabel=ylabel)
+            ax.grid(alpha=.2)
+        handles, labels = axes[0].get_legend_handles_labels()
+        if not rollback_rows.empty:
+            handles.append(Line2D([], [], color='tab:red', marker='v', linestyle=':', label='Rollback to anchor'))
+            labels.append('Rollback to anchor')
+        axes[0].legend(handles, labels, fontsize=8)
+        fig.suptitle(f'{label} — {len(rollback_rows)} rollbacks')
+        fig.savefig(plot_root / f'{method}_rollback.png', dpi=180)
+        fig.savefig(plot_root / f'{method}_rollback.pdf')
+        plt.show()
+        plt.close(fig)
+    print('Saved PNG/PDF graphs:', plot_root)
+print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', root_dir=OUTPUT))
+"""
+    notebook['cells'].append({'cell_type':'code','execution_count':None,'metadata':{},'outputs':[],
+                             'source':graph_code.splitlines(keepends=True)})
     for cell in notebook['cells']:
         if cell['cell_type']=='code':cell['outputs']=[];cell['execution_count']=None
     path=Path('notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb')
