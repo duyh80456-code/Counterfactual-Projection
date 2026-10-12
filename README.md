@@ -910,3 +910,21 @@ extends deliberately to12; there is no automatic validation-driven escalation.
 The suite can still be expensive because every case uses the original CG200.
 Generate the notebook with
 `python scripts/build_kaggle_deit_expansion_diagnostics_notebook.py`.
+
+### DeiT seed5: E→O raw versus Vanilla rollback only
+
+Run `notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb`, attaching
+CIFAR-100 and enabling Internet, T4x2 and `github_token`. This notebook requests
+exactly `e_driven_o_raw,vanilla_rollback`. Phase1 finds seed5's historical best
+following150 epochs without a new accuracy best, then both arms start from the
+same full fork on separate GPUs for150 epochs each. Both use patience10 anchor
+rollback (accuracy, then lower loss on an exact tie), current RNG/data stream,
+and no retrigger. Vanilla rollback is genuine new training without projection.
+
+Matching full seed5 output archives are optional for resume. Compatible E→O raw
+progress from the seed5 raw-vs-Bypass experiment can be imported with its original
+fork/raw reference and matching recipe/config; completed E→O is skipped while
+Vanilla rollback trains. Output is `deit_tiny_seed5_raw_vs_vanilla_rollback_v1`;
+`raw_vs_vanilla_rollback_comparison.json` compares only completed current arms
+with identical fork/protocol/config/horizon. Generate the notebook with
+`python scripts/build_kaggle_deit_seed5_raw_vs_vanilla_rollback_notebook.py`.
