@@ -79,7 +79,7 @@ print(json.dumps(report, indent=2))
 print('Status:', statuses)
 '''.splitlines(keepends=True)
     notebook['cells'][0]['source'] += """
-## Optional Counterfactual Projection v2 research
+## Counterfactual Projection v2 research
 The notebook prepares the same fork/raw reference, then runs technical diagnostics
 before any continuation. TINY, GradMax GELU-SVD plus incoming-only steps, and
 full-A/a/B Optimized-E share the fixed original TINY top1 site. Compare absolute
@@ -90,14 +90,28 @@ the full DeiT minimum residual remains unknown. SSD is not registered until its
 GELU splitting-matrix assumptions are audited. No accuracy gain is established
 by these diagnostics. GradMax source: https://arxiv.org/abs/2201.05125
 
-Default RUN_CONTINUATIONS=False runs Phase1/fork preparation and diagnostics only.
-After reviewing technical results, set it True to run the original two controls
-and five new one-shot arms (TINY relative, GradMax/Optimized-E absolute/relative),
-150 epochs each, shared patience10 rollback, no retrigger. Two GPUs queue arms.
+Default RUN_CONTINUATIONS=True runs Phase1/fork preparation, diagnostics, then
+the original two controls and five new one-shot arms (TINY relative,
+GradMax/Optimized-E absolute/relative),150 epochs each, shared patience10 rollback,
+no retrigger. Two distinct visible CUDA GPUs are required for continuation.
+All seven arms share one queue, refilling each free GPU immediately.
+Set RUN_CONTINUATIONS=False for diagnostics only.
 Existing compatible control results are reused. v2 resume requires the original
 generator_reference.pt plus full arm latest; download the full output archive.
 """.splitlines(keepends=True)
-    notebook['cells'][2]['source'] += "\nRUN_CONTINUATIONS = False\nRESEARCH = OUTPUT / 'research_v2'\n".splitlines(keepends=True)
+    notebook['cells'][2]['source'] = ''.join(notebook['cells'][2]['source']).replace(
+        "GPU_DEVICES = 'auto'  # T4x2: two workers; one GPU: one worker.",
+        "GPU_DEVICES = '0,1'  # Required two distinct CUDA workers.").splitlines(keepends=True)
+    notebook['cells'][2]['source'] += """
+RUN_CONTINUATIONS = True
+RESEARCH = OUTPUT / 'research_v2'
+if RUN_CONTINUATIONS:
+    if torch.cuda.device_count() < 2:
+        raise RuntimeError('Enable Kaggle T4x2: this seven-arm run requires two visible CUDA GPUs.')
+    if GPU_DEVICES != '0,1':
+        raise ValueError("This notebook requires GPU_DEVICES='0,1'.")
+    print('Continuation GPU workers:', {i: torch.cuda.get_device_name(i) for i in (0, 1)})
+""".splitlines(keepends=True)
     prepare_command = ''.join(notebook['cells'][4]['source'])
     prepare_command = prepare_command.replace("if FORK.exists():", "command += ['--prepare-only']\nif FORK.exists():")
     notebook['cells'][4]['source'] = prepare_command.splitlines(keepends=True)
@@ -113,9 +127,8 @@ print((RESEARCH / 'diagnostics.json').read_text())
 """
     continuation_code = """if RUN_CONTINUATIONS:
     try:
-        baseline_command = [value for value in command if value != '--prepare-only']
-        subprocess.run(baseline_command, cwd=REPO, env=ENV, check=True)
-        subprocess.run(research_command + ['--phase', 'all-continuations', '--gpu-devices', GPU_DEVICES],
+        subprocess.run(research_command + ['--phase', 'all-continuations', '--gpu-devices', GPU_DEVICES,
+                                          '--include-controls', '--require-two-gpus'],
                        cwd=REPO, env=ENV, check=True)
     finally:
         print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', root_dir=OUTPUT))

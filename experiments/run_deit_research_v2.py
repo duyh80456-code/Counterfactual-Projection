@@ -198,8 +198,14 @@ def main():
     parser.add_argument('--device',default='cuda:0');parser.add_argument('--phase',choices=('diagnostics','continuation','all-continuations'),default='diagnostics')
     parser.add_argument('--generator',choices=METHODS);parser.add_argument('--damping-mode',choices=('absolute','relative_gram'))
     parser.add_argument('--gpu-devices',default='auto')
+    parser.add_argument('--include-controls',action='store_true',help='Queue Vanilla rollback and original TINY with the five v2 arms')
+    parser.add_argument('--require-two-gpus',action='store_true',help='Reject continuation unless exactly two GPU workers are configured')
     parser.add_argument('--input-root',type=Path,action='append',default=[])
     args=parser.parse_args()
+    if args.require_two_gpus:
+        if args.phase!='all-continuations':parser.error('--require-two-gpus needs all-continuations')
+        if len(gpu_slots(args.gpu_devices,args.device))!=2:
+            parser.error('This run requires two distinct visible CUDA GPUs')
     if args.phase!='continuation':
         from experiments.deit_research_resume import import_research
         fork,_=checked_source(args.plateau_checkpoint,{'deit_plateau_fork'})
@@ -209,6 +215,20 @@ def main():
         if not args.generator or not args.damping_mode:parser.error('continuation needs generator and damping mode')
         return continuation(args)
     commands={}
+    if args.include_controls:
+        config=res18_cp_config();fork_hash=sha256_file(args.plateau_checkpoint)
+        for method in ('e_driven_o_raw','vanilla_rollback'):
+            output=args.output.parent/'arms'/method
+            command=[sys.executable,'-m','experiments.run_deit_fork','--ablation-suite',
+                '--method',method,'--data-root',str(args.data_root),'--plateau-checkpoint',str(args.plateau_checkpoint),
+                '--plateau-checkpoint-hash',fork_hash,'--raw-reference',str(args.raw_reference),
+                '--output',str(output),'--device',args.device,'--post-fork-epochs','150',
+                '--algorithm-patience','10','--opt-inner-steps','5']
+            for key,value in asdict(config).items():
+                command+=['--'+key.replace('_','-'),','.join(map(str,value)) if key=='scales' else str(value)]
+            latest=output/'checkpoint_latest.pt'
+            if latest.exists():command+=['--resume',str(latest)]
+            commands[method]=command
     for name in METHODS:
         for mode in ('absolute','relative_gram'):
             if name=='tiny' and mode=='absolute':continue # existing raw baseline, reused separately
@@ -219,6 +239,11 @@ def main():
                 '--output',str(args.output/method),'--device',args.device]
     slots=gpu_slots(args.gpu_devices,args.device)
     statuses=run_jobs_parallel(commands,args.output/'v2_arm_status.json',slots) if slots else run_jobs(commands,args.output/'v2_arm_status.json')
+    if args.include_controls:
+        path=args.output.parent/'arm_status.json'
+        baseline=json.loads(path.read_text()) if path.exists() else {}
+        baseline.update({method:statuses[method] for method in ('e_driven_o_raw','vanilla_rollback')})
+        atomic_json_save(baseline,path)
     compare_results(args,statuses)
     if any(row['status']=='failed' for row in statuses.values()):raise RuntimeError('Some v2 arms failed; other arms were attempted')
 

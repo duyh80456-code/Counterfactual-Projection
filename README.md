@@ -932,9 +932,12 @@ with identical fork/protocol/config/horizon. Generate the notebook with
 
 ### Counterfactual Projection v2 — diagnostic-first seed5 notebook
 
-The same seed5 notebook now defaults to `RUN_CONTINUATIONS=False`: prepare or
-reuse the original fork/raw reference, then run diagnostics without post-fork
-training. It requires CIFAR-100 and a GPU for DeiT JVP/VJP. Optional mounted full
+The same seed5 notebook now defaults to `RUN_CONTINUATIONS=True`: prepare or
+reuse the original fork/raw reference, run diagnostics, then train/resume all7
+arms in one shared queue. Continuation requires two distinct visible CUDA GPUs
+(`GPU_DEVICES='0,1'`); the notebook stops before training if fewer are available.
+Set `RUN_CONTINUATIONS=False` for diagnostics only. It requires CIFAR-100 and a
+GPU for DeiT JVP/VJP. Optional mounted full
 output archives restore matching fork, generator proposals and continuation state.
 No external research patch ZIP was supplied; these additions implement the written
 specification independently.
@@ -970,10 +973,10 @@ Outputs under `research_v2/`:
 - `experimental_selection.json`, `generator_reference.pt`, `probe_batches.pt`:
   gate-only diagnostic selection and reproducible cached proposals/probe data.
 
-After technical review set `RUN_CONTINUATIONS=True`. The original TINY absolute
-and Vanilla rollback controls run/resume, followed by5 research arms:
+With the default `RUN_CONTINUATIONS=True`, the original TINY absolute and
+Vanilla rollback controls plus5 research arms run/resume in one shared queue:
 TINY relative; GradMax absolute/relative; Optimized-E absolute/relative.
-Two GPU workers queue arms. All use the same full fork,150 post-fork epochs,
+Two GPU workers immediately refill free slots across all7 arms. All use the same full fork,150 post-fork epochs,
 patience10 accuracy/loss anchor rollback, current RNG/data stream and one-shot
 intervention. Only the selected original MLP can change; Adam moments reset only
 for tensors actually changed. Failed/rejected proposals do not force intervention.

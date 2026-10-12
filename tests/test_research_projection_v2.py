@@ -134,7 +134,7 @@ def test_seed5_notebook_v2_stages_and_code_syntax():
     from pathlib import Path
     notebook=json.loads(Path('notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb').read_text())
     code='\n'.join(''.join(cell['source']) for cell in notebook['cells'] if cell['cell_type']=='code')
-    assert 'RUN_CONTINUATIONS = False' in code and "['--prepare-only']" in code
+    assert 'RUN_CONTINUATIONS = True' in code and "['--prepare-only']" in code
     assert "'all-continuations'" in code and "'--input-root', '/kaggle/input'" in code
     for cell in notebook['cells']:
         if cell['cell_type']=='code':ast.parse(''.join(cell['source']))
