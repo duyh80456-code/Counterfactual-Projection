@@ -914,8 +914,9 @@ Generate the notebook with
 ### DeiT seed5: E→O raw versus Vanilla rollback only
 
 Run `notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb`, attaching
-CIFAR-100 and enabling Internet, T4x2 and `github_token`. This notebook requests
-exactly `e_driven_o_raw,vanilla_rollback`. Phase1 finds seed5's historical best
+CIFAR-100 and enabling Internet, T4x2 and `github_token`. The two controls are
+`e_driven_o_raw,vanilla_rollback`; the v2 section below adds optional research arms.
+Phase1 finds seed5's historical best
 following150 epochs without a new accuracy best, then both arms start from the
 same full fork on separate GPUs for150 epochs each. Both use patience10 anchor
 rollback (accuracy, then lower loss on an exact tie), current RNG/data stream,
@@ -928,3 +929,66 @@ Vanilla rollback trains. Output is `deit_tiny_seed5_raw_vs_vanilla_rollback_v1`;
 `raw_vs_vanilla_rollback_comparison.json` compares only completed current arms
 with identical fork/protocol/config/horizon. Generate the notebook with
 `python scripts/build_kaggle_deit_seed5_raw_vs_vanilla_rollback_notebook.py`.
+
+### Counterfactual Projection v2 — diagnostic-first seed5 notebook
+
+The same seed5 notebook now defaults to `RUN_CONTINUATIONS=False`: prepare or
+reuse the original fork/raw reference, then run diagnostics without post-fork
+training. It requires CIFAR-100 and a GPU for DeiT JVP/VJP. Optional mounted full
+output archives restore matching fork, generator proposals and continuation state.
+No external research patch ZIP was supplied; these additions implement the written
+specification independently.
+
+Generators share the original TINY top1 block, keeping WHERE fixed:
+
+- TINY: the cached original proposal and gate0.05.
+- GradMax: GELU-compatible zero incoming weights/bias and outgoing SVD columns,
+  followed by5 incoming-only SGD steps on opt_fit. The rank-k outgoing columns
+  satisfy BᵀB=I/k. This is an auxiliary-only adaptation of
+  [GradMax](https://arxiv.org/abs/2201.05125), not a reproduction of its full growth run.
+- Optimized-E:20 Adam steps over A/a/B with O frozen, distinct from the existing
+  B-only Gauss–Newton `opt_e` arm.
+
+Each proposal is evaluated with absolute and `relative_gram` damping, on the
+selected MLP and that MLP plus its next neighboring block. Multi-block scope is
+**diagnostic only**. Relative damping uses μ=λ tr(JJᵀ)/m with8 private-seed
+Hutchinson probes and records the effective damping, including retry increases.
+Absolute remains the default in the original projector and old checkpoint schema.
+The appended independent heldout256 IDs do not change the original probe split
+and never select generators, sites, damping or scale. Scale selection uses gate
+loss, exactly as before; an experimental gate-margin selector is reported without
+committing an update or selecting continuation arms.
+
+Outputs under `research_v2/`:
+
+- `expansion_projection_diagnostics.csv` and `diagnostics.json`:12 paired cases,
+  E gains/margins, fit and heldout residual/cosine, actual nonlinear error,
+  corrected/damaged sample counts, generator compute/time and code commit.
+- `small_svd_reference.json`: a bounded synthetic rank-deficient reference
+  separates unavoidable range error, ridge regularization and solver error.
+  It does **not** establish the full DeiT range floor.
+- `experimental_selection.json`, `generator_reference.pt`, `probe_batches.pt`:
+  gate-only diagnostic selection and reproducible cached proposals/probe data.
+
+After technical review set `RUN_CONTINUATIONS=True`. The original TINY absolute
+and Vanilla rollback controls run/resume, followed by5 research arms:
+TINY relative; GradMax absolute/relative; Optimized-E absolute/relative.
+Two GPU workers queue arms. All use the same full fork,150 post-fork epochs,
+patience10 accuracy/loss anchor rollback, current RNG/data stream and one-shot
+intervention. Only the selected original MLP can change; Adam moments reset only
+for tensors actually changed. Failed/rejected proposals do not force intervention.
+Generator compute budgets differ and are logged; equal post-fork training budget
+is not a claim of equal total compute. Results are in
+`research_v2/continuation_comparison.csv` and `.json`.
+
+Resume requires original `generator_reference.pt` and each full
+`checkpoint_latest.pt`; checkpoints bind fork/config/reference hashes and preserve
+optimizer, scheduler, controller, RNG and loader state. Diagnostics currently
+rerun projection solves on a new session while reusing cached generators.
+
+SSD is intentionally unregistered pending an audit of GELU splitting assumptions.
+The margin condition m_E>2(e_fit+e_nonlinear) is a per-sample sufficient condition
+on evaluated batches, not a generalization guarantee. A validation plateau does
+not prove exact stationarity; the first-order limitation applies to an exact
+stationary point of the same loss/Jacobian. CPU tests validate implementation and
+small-model mathematics; no full DeiT GPU run or accuracy improvement is claimed.

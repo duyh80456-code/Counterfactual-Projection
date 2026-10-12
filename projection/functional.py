@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor, nn
@@ -100,6 +101,9 @@ class ProjectionResult:
     preconditioner_probes: int
     selected_attempt: int
     selection_rule: str
+    damping_mode: str = 'absolute'
+    gram_trace_mean: float | None = None
+    trace_probes: int = 0
 
     @property
     def projection_ratio(self) -> float:
@@ -119,16 +123,22 @@ class FunctionalProjector:
     def __init__(self, damping: float = 1e-3, max_iter: int = 200,
                  tolerance: float = 1e-6, max_damping_retries: int = 4,
                  damping_multiplier: float = 10.0,
-                 preconditioner_probes: int = 8):
+                 preconditioner_probes: int = 8, *, damping_mode: str = 'absolute',
+                 trace_probes: int = 8, trace_seed: int = 2028):
         if (damping < 0 or max_damping_retries < 0 or
                 damping_multiplier <= 1 or preconditioner_probes < 0):
             raise ValueError("invalid damping/retry configuration")
+        if damping_mode not in ('absolute','relative_gram') or (damping_mode=='relative_gram' and trace_probes<1):
+            raise ValueError('invalid spectral damping configuration')
         self.damping = float(damping)
         self.max_iter = int(max_iter)
         self.tolerance = float(tolerance)
         self.max_damping_retries = int(max_damping_retries)
         self.damping_multiplier = float(damping_multiplier)
         self.preconditioner_probes = int(preconditioner_probes)
+        self.damping_mode = damping_mode
+        self.trace_probes = int(trace_probes)
+        self.trace_seed = int(trace_seed)
 
     def project(self, model: nn.Module, inputs: Tensor, target_delta: Tensor,
                 *, block: str,
@@ -216,12 +226,25 @@ class FunctionalProjector:
             scale = estimate.abs().mean().clamp_min(1e-12)
             gram_diagonal = estimate.clamp_min(scale * 1e-3).detach()
 
+        trace_mean = None
+        base_damping = self.damping
+        if self.damping_mode == 'relative_gram':
+            generator = torch.Generator(device=solver_rhs.device).manual_seed(self.trace_seed)
+            estimates = []
+            for _ in range(self.trace_probes):
+                signs = torch.empty_like(solver_rhs).bernoulli_(.5, generator=generator).mul_(2).sub_(1)
+                image = transpose_jacobian(signs.to(normalized_target)).double()
+                estimates.append(float(image.square().sum()) / solver_rhs.numel())
+            trace_mean = sum(estimates) / len(estimates)
+            if not math.isfinite(trace_mean) or trace_mean < 0:
+                raise RuntimeError('nonfinite/negative Gram trace estimate')
+            base_damping = self.damping * trace_mean
         cg_attempts = []
         candidate_solutions = []
-        damping_used = self.damping
+        damping_used = base_damping
         for attempt in range(self.max_damping_retries + 1):
-            damping_used = (self.damping * self.damping_multiplier ** attempt
-                            if self.damping > 0 else 0.0)
+            damping_used = (base_damping * self.damping_multiplier ** attempt
+                            if base_damping > 0 else 0.0)
 
             # Solve the equivalent output-space ridge system
             #
@@ -283,7 +306,7 @@ class FunctionalProjector:
                     0 if cg.converged else 1,
                     len(cg_attempts) - 1,
                     damping_used, cg, candidate_fitted))
-            if cg.converged or self.damping == 0:
+            if cg.converged or base_damping == 0:
                 break
         if not candidate_solutions:
             raise RuntimeError("all projection attempts produced non-finite solutions")
@@ -307,7 +330,9 @@ class FunctionalProjector:
                             else "none"),
             preconditioner_probes=self.preconditioner_probes,
             selected_attempt=selected_attempt,
-            selection_rule="minimum_finite_functional_relative_residual")
+            selection_rule="minimum_finite_functional_relative_residual",
+            damping_mode=self.damping_mode, gram_trace_mean=trace_mean,
+            trace_probes=self.trace_probes if self.damping_mode=='relative_gram' else 0)
 
     def evaluate_direction(
             self, model: nn.Module, inputs: Tensor, target_delta: Tensor,

@@ -44,6 +44,26 @@ class CPConfig:
             raise ValueError("invalid DeiT CP configuration")
 
 
+@dataclass(frozen=True)
+class ResearchCPConfig(CPConfig):
+    # Separate opt-in schema: old CPConfig/asdict checkpoint identities stay intact.
+    damping_mode: str = 'absolute'
+    trace_probes: int = 8
+    trace_seed: int = 2028
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.damping_mode not in ('absolute','relative_gram') or self.trace_probes<1:
+            raise ValueError('invalid research projection configuration')
+
+
+def make_projector(config):
+    return FunctionalProjector(config.damping,config.cg_iterations,
+        tolerance=config.cg_relative_tolerance,preconditioner_probes=config.cg_preconditioner_probes,
+        damping_mode=getattr(config,'damping_mode','absolute'),
+        trace_probes=getattr(config,'trace_probes',8),trace_seed=getattr(config,'trace_seed',2028))
+
+
 def probe_indices(train_indices, seed, config, probe_index=0):
     """Same deterministic batch recipe as the CNN intervention protocol."""
     sizes = [config.statistics_samples] + [config.where_samples] * config.where_batches
@@ -108,9 +128,7 @@ def one_shot_intervention(model, optimizer, *, statistics, where_batches,
             fit_target = supervised_functional_descent_direction(model, projection_batch)
             gate_target = supervised_functional_descent_direction(model, gate_batch)
         names = DeitMLPGrowthAdapter.original_mlp_parameters(model, site)
-        projector = FunctionalProjector(config.damping, config.cg_iterations,
-            tolerance=config.cg_relative_tolerance,
-            preconditioner_probes=config.cg_preconditioner_probes)
+        projector = make_projector(config)
         projection = projector.project(model, projection_batch[0], fit_target,
                                        block=site, parameter_names=names)
         gate_evaluation = projector.evaluate_direction(model, gate_batch[0], gate_target,

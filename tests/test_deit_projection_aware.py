@@ -109,7 +109,7 @@ def test_top3_previews_same_anchor_then_commits_only_valid_scope(deit_small,deit
     assert not any(module._forward_hooks for module in model.modules())
 
 
-@pytest.mark.parametrize('method,rounds', [('e2o_top3_best_gate',1),('e2o_top3_recurrent',3)])
+@pytest.mark.parametrize('method,rounds', [('e2o_top3_best_gate',1),('e2o_top3_recurrent',3),('cp_v2_gradmax_relative_gram',1)])
 @pytest.mark.parametrize('accept', [False, True])
 def test_main_loop_rollbacks_and_pending_resume(deit_small,deit_batches,tmp_path,monkeypatch,method,rounds,accept):
     import experiments.run_deit_projection_aware as runner
@@ -168,7 +168,14 @@ def test_main_loop_rollbacks_and_pending_resume(deit_small,deit_batches,tmp_path
             torch.save(torch.load(path,weights_only=False),midpoint_path)
     monkeypatch.setattr(runner,'save_state',capture)
     cfg=res18_cp_config()
-    result=runner.run(args,fork,recipe,cfg,expected_sites=2)
+    extra={}
+    if method.startswith('cp_v2_'):
+        from experiments.shared_protocol import sha256_file
+        extra={'identity_override':{**runner.identity_for(sha256_file(fork_path),method,cfg,25,10),
+            'version':2,'generator_reference_hash':'fixture_cached_reference'},'search_fn':search}
+        monkeypatch.setattr(runner,'projection_aware_search',lambda *_a,**_kw:pytest.fail('v2 called old WHERE search'))
+    def execute():return runner.run(args,fork,recipe,cfg,expected_sites=2,**extra)
+    result=execute()
     final=torch.load(args.output/'checkpoint_latest.pt',weights_only=False)
     assert_state_equal(final['e_controller']['anchor']['optimizer'],fork['optimizer'])
     assert result['search_rounds']==rounds and result['corrections_accepted']==rounds*int(accept)
@@ -189,18 +196,18 @@ def test_main_loop_rollbacks_and_pending_resume(deit_small,deit_batches,tmp_path
         assert len(set(tokens[1:]))==rounds-1
         assert all(token > 0 for token in tokens[1:])
     args.resume=midpoint_path
-    runner.run(args,fork,recipe,cfg,expected_sites=2)
+    execute()
     resumed=torch.load(args.output/'checkpoint_latest.pt',weights_only=False)
     for key in ['model','optimizer','scheduler','rng','train_loader_generator_state','history','interventions','e_controller']:
         assert_state_equal(final[key],resumed[key])
     if method=='e2o_top3_recurrent':
-        args.resume=pending_path;runner.run(args,fork,recipe,cfg,expected_sites=2)
+        args.resume=pending_path;execute()
         resumed=torch.load(args.output/'checkpoint_latest.pt',weights_only=False)
         for key in ['model','optimizer','scheduler','rng','train_loader_generator_state','history','interventions','e_controller']:
             assert_state_equal(final[key],resumed[key])
     args.resume=args.output/'checkpoint_latest.pt'
     monkeypatch.setattr(runner,'load_training_context',lambda *_a: pytest.fail('completed resume rebuilt model'))
-    assert runner.run(args,fork,recipe,cfg,expected_sites=2)['search_rounds']==rounds
+    assert execute()['search_rounds']==rounds
 
 
 def test_seed2_archive_discovery_and_readonly_comparison(tmp_path):

@@ -12,13 +12,14 @@ Attach CIFAR-100; enable Internet, T4x2 and Kaggle Secret `github_token`.
 Optional resume: full output archive from this same seed/recipe. Compatible
 seed5 E→O progress from the earlier raw-vs-Bypass notebook can be reused only
 with its original hash-bound fork/raw reference and matching configuration.
-Each requested arm resumes independently. No Bypass, O-only, A3/A4 or extra arm.
+Each requested arm resumes independently. Controls are E→O raw and Vanilla rollback;
+the v2 section below adds explicit research arms, without Bypass or A3/A4.
 
 Phase1 trains Vanilla for seed5 until150 epochs without a strict validation
 accuracy best. No minimum epoch and no requirement to finish schedule300.
 Reload that historical-best model, AdamW, scheduler and RNG/loader state.
 
-Phase2 runs two independent150-epoch trajectories from identical full fork:
+When RUN_CONTINUATIONS=True, Phase2 runs two control trajectories from identical full fork:
 - GPU0: `e_driven_o_raw`, original TINY top1 WHERE over12 MLPs, one E→O projection.
 - GPU1: `vanilla_rollback`, genuine Vanilla training without E/projection/moment reset.
 
@@ -77,6 +78,59 @@ atomic_json_save(report, OUTPUT / 'raw_vs_vanilla_rollback_comparison.json')
 print(json.dumps(report, indent=2))
 print('Status:', statuses)
 '''.splitlines(keepends=True)
+    notebook['cells'][0]['source'] += """
+## Optional Counterfactual Projection v2 research
+The notebook prepares the same fork/raw reference, then runs technical diagnostics
+before any continuation. TINY, GradMax GELU-SVD plus incoming-only steps, and
+full-A/a/B Optimized-E share the fixed original TINY top1 site. Compare absolute
+and relative_gram damping. Heldout256 is independent of WHERE/fit/gate/tuning;
+margin/nonlinear errors are diagnostic only. Multi-MLP scope is diagnostic only.
+SVD range/regularization/solver decomposition uses a small rank-deficient problem;
+the full DeiT minimum residual remains unknown. SSD is not registered until its
+GELU splitting-matrix assumptions are audited. No accuracy gain is established
+by these diagnostics. GradMax source: https://arxiv.org/abs/2201.05125
+
+Default RUN_CONTINUATIONS=False runs Phase1/fork preparation and diagnostics only.
+After reviewing technical results, set it True to run the original two controls
+and five new one-shot arms (TINY relative, GradMax/Optimized-E absolute/relative),
+150 epochs each, shared patience10 rollback, no retrigger. Two GPUs queue arms.
+Existing compatible control results are reused. v2 resume requires the original
+generator_reference.pt plus full arm latest; download the full output archive.
+""".splitlines(keepends=True)
+    notebook['cells'][2]['source'] += "\nRUN_CONTINUATIONS = False\nRESEARCH = OUTPUT / 'research_v2'\n".splitlines(keepends=True)
+    prepare_command = ''.join(notebook['cells'][4]['source'])
+    prepare_command = prepare_command.replace("if FORK.exists():", "command += ['--prepare-only']\nif FORK.exists():")
+    notebook['cells'][4]['source'] = prepare_command.splitlines(keepends=True)
+    diagnostic_code = """research_command = [sys.executable, '-m', 'experiments.run_deit_research_v2',
+    '--data-root', str(DATA_ROOT), '--plateau-checkpoint', str(FORK),
+    '--raw-reference', str(OUTPUT / 'raw_intervention_reference.pt'),
+    '--output', str(RESEARCH), '--input-root', '/kaggle/input']
+try:
+    subprocess.run(research_command, cwd=REPO, env=ENV, check=True)
+finally:
+    print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', root_dir=OUTPUT))
+print((RESEARCH / 'diagnostics.json').read_text())
+"""
+    continuation_code = """if RUN_CONTINUATIONS:
+    try:
+        baseline_command = [value for value in command if value != '--prepare-only']
+        subprocess.run(baseline_command, cwd=REPO, env=ENV, check=True)
+        subprocess.run(research_command + ['--phase', 'all-continuations', '--gpu-devices', GPU_DEVICES],
+                       cwd=REPO, env=ENV, check=True)
+    finally:
+        print('Resumable output archive:', shutil.make_archive(str(OUTPUT), 'gztar', root_dir=OUTPUT))
+else:
+    print('Technical diagnostics only; set RUN_CONTINUATIONS=True after reviewing the report.')
+"""
+    for text in (continuation_code, diagnostic_code):
+        notebook['cells'].insert(5, {'cell_type':'code','execution_count':None,'metadata':{},'outputs':[],
+                                    'source':text.splitlines(keepends=True)})
+    old_report = ''.join(notebook['cells'][-1]['source'])
+    notebook['cells'][-1]['source'] = ('if RUN_CONTINUATIONS:\n' + ''.join('    '+line for line in old_report.splitlines(keepends=True))).splitlines(keepends=True)
+    notebook['cells'][-1]['source'] += "    print((RESEARCH / 'continuation_comparison.json').read_text())\n".splitlines(keepends=True)
+    bootstrap = ''.join(notebook['cells'][1]['source']).replace('"tests/test_deit_resume.py"',
+        '"tests/test_deit_resume.py", "tests/test_research_projection_v2.py"')
+    notebook['cells'][1]['source'] = bootstrap.splitlines(keepends=True)
     for cell in notebook['cells']:
         if cell['cell_type']=='code':cell['outputs']=[];cell['execution_count']=None
     path=Path('notebooks/kaggle_deit_tiny_seed5_raw_vs_vanilla_rollback.ipynb')

@@ -180,6 +180,8 @@ def main():
     parser.add_argument('--bypass-max-opt2-epochs', type=int, default=50)
     parser.add_argument('--bypass-contraction-epsilon', type=float, default=.002)
     parser.add_argument('--bypass-gamma-slope', type=float, default=3e-6)
+    parser.add_argument('--prepare-only', action='store_true',
+        help='Confirm/reuse fork and raw reference, then stop before continuation arms')
     args = parser.parse_args()
     arms = args.arms.split(',')
     if not arms or any(arm not in SUPPORTED_ARMS for arm in arms) or len(set(arms)) != len(arms):
@@ -258,6 +260,11 @@ def main():
         if device.type == 'cuda':
             torch.cuda.empty_cache()
     vanilla_path = args.vanilla_reference or fork_path.parent / 'vanilla_reference.pt'
+    if args.prepare_only:
+        atomic_json_save({'fork_hash':fork_hash,'fork_path':str(fork_path),
+            'raw_reference_hash':sha256_file(reference_path),'recipe':asdict(recipe),
+            'cp_config':asdict(config),'continuation_epochs_run':0},args.output/'prepared_fork.json')
+        return
     commands, completed_statuses = {}, {}
     for method in arms:
         if plan['arms'].get(method, {}).get('action') == 'completed':

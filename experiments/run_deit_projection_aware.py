@@ -61,10 +61,10 @@ def identity_for(fork_hash, method, config, horizon, patience):
         'report_best_scope': 'postfork_training_validation_only', 'retrigger_after_final_epoch': False, 'official_test_used': False}
 
 
-def run(args, fork, recipe, config, *, expected_sites=12):
+def run(args, fork, recipe, config, *, expected_sites=12, identity_override=None, search_fn=None):
     output = Path(args.output); output.mkdir(parents=True, exist_ok=True)
     fork_hash = sha256_file(args.plateau_checkpoint)
-    identity = identity_for(fork_hash, args.method, config, args.post_fork_epochs, args.algorithm_patience)
+    identity = identity_override or identity_for(fork_hash, args.method, config, args.post_fork_epochs, args.algorithm_patience)
     diagnostic = args.method == METHODS[0]
     latest = output / 'checkpoint_latest.pt'
     saved = torch.load(args.resume, map_location='cpu', weights_only=False) if args.resume else None
@@ -103,7 +103,8 @@ def run(args, fork, recipe, config, *, expected_sites=12):
         'post_fork_epochs': 0 if diagnostic else args.post_fork_epochs,
         'algorithm_patience': args.algorithm_patience, 'retrigger': identity['retrigger']}, output)
     live = rng_state()
-    comparison_batches, first_indices = materialize_probe_batches(evaluation, train_ids, recipe, config, device)
+    comparison_batches, first_indices = materialize_probe_batches(evaluation, train_ids, recipe, config, device,
+        include_opt=search_fn is not None)
     restore_rng(live)
     fixed_inputs = comparison_batches['projection_batch'][0]
     if diagnostic:
@@ -162,7 +163,7 @@ def run(args, fork, recipe, config, *, expected_sites=12):
         try:
             batches, indices = (comparison_batches, first_indices) if round_id == 0 else materialize_probe_batches(
                 evaluation, train_ids, recipe, config, device, probe_index=probe_index)
-            chosen, record, direction = projection_aware_search(model, batches, config,
+            chosen, record, direction = (search_fn or projection_aware_search)(model, batches, config,
                 expected_sites=expected_sites, comparison_inputs=fixed_inputs)
         finally:
             # Probe/solver randomness does not rewind the live training stream.
