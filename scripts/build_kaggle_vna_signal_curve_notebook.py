@@ -46,7 +46,7 @@ def build(commit):
     setup = setup.replace('env=test_env, check=True)', 'env={**test_env, "CUDA_VISIBLE_DEVICES": ""}, check=True)')
     setup += '''
 if not (REPO / "experiments/vna_kaggle.py").exists():
-    raise RuntimeError("Regenerate this notebook with the supervisor's committed Stage 1B hash")
+    raise RuntimeError("Regenerate this notebook with the supervisor's committed Stage 1C hash")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pandas", "matplotlib"], check=True)
 sys.path[:0] = [str(REPO), str(GROMO_SRC), str(REFERENCE)]
 print("Official TEST verified:", DATA_ROOT / "cifar-100-python/test")
@@ -54,18 +54,21 @@ print("Official TEST verified:", DATA_ROOT / "cifar-100-python/test")
     cells = [cell('markdown', '''# VNA Phase 0 — seed 0, pinned repository, Kaggle T4×2
 Enable **Internet**, **T4×2**, and secret **github_token**. Attach CIFAR-100 with
 `cifar-100-python/{train,test,meta}`. Optionally attach previous notebook outputs
-(directory, tar.gz or zip). Run all cells; finished checkpoint diagnostics are reused.
+(directory, tar.gz or zip). Run all cells; compatible Stage 1C checkpoint diagnostics are reused.
+Diagnostics run every 20 epochs; training retains checkpoints every 10.
+Old diagnostic completion markers are rejected; use a fresh signal directory.
 Training on GPU0 overlaps the checkpoint watcher on GPU1; after training both
 GPUs process remaining checkpoints. Outputs and hourly atomic archives survive
 normal interruptions. A hard session kill can lose only the current epoch and
 unfinished checkpoint diagnostic; download/attach the saved output directory too.
-The pin must contain Stage 1B. After the supervisor commits, regenerate with
+The pin must contain Stage 1C. After the supervisor commits, regenerate with
 `python scripts/build_kaggle_vna_signal_curve_notebook.py --commit FULL_HASH`.
 '''), cell('code', f'''REPO_COMMIT = "{commit}"  # immutable, builder --commit; default current HEAD
 GPU_DATA = True  # supervisor: Phase 0 has one SGD trajectory; prioritize T4 speed
 CHANNELS_LAST = True
 CUDNN_BENCHMARK = True
 AMP = False  # stays off: no measured >=1.5x CUDA speedup
+DIAGNOSTIC_STRIDE = 20
 CACHE_BLOCK_INPUT = True  # exact native eval-BN suffix, covered by parity tests
 '''), cell('code', bootstrap), cell('code', setup), cell('code', '''from experiments.vna_kaggle import restore_outputs, archive_outputs
 from experiments.train_recipe_checkpoints import parser as recipe_parser
@@ -91,7 +94,8 @@ training = [sys.executable, "-u", "-m", "experiments.train_recipe_checkpoints",
 if (RECIPE / "latest.pt").exists():
     training += ["--resume", str(RECIPE / "latest.pt")]
 diagnostic = [sys.executable, "-u", "-m", "diagnostics.signal_curve", *common,
-              "--checkpoint-dir", str(RECIPE), "--output", str(SIGNAL)]
+              "--checkpoint-dir", str(RECIPE), "--output", str(SIGNAL),
+              "--diagnostic-stride", str(DIAGNOSTIC_STRIDE)]
 for enabled, flag in ((GPU_DATA, "--gpu-data"), (CHANNELS_LAST, "--channels-last"),
                       (CUDNN_BENCHMARK, "--cudnn-benchmark")):
     if enabled: diagnostic.append(flag)
@@ -156,23 +160,30 @@ from IPython.display import display
 frame = pd.read_csv(SIGNAL / "signal_curve.csv")
 summary = json.loads((SIGNAL / "summary.json").read_text())
 frame["V_TINY/V_random"] = frame["V"] / frame["random_V"]
-columns = ["epoch", "site", "U", "V", "eta", "rho", "V_TINY/V_random", "vna_derivative", "random_derivative", "lr_boost_derivative",
-           "realized_gain", "nonpositive_gain", "cold_sgd_ratio", "warm_sgd_ratio", "lambda_full", "noise_floor", "lambda_split_half", "lambda_shuffled"]
-display(frame[columns])
-metrics = ["U", "V", "eta", "rho", "V_TINY/V_random", "vna_derivative", "random_derivative", "lr_boost_derivative"]
+columns = ["epoch", "site", "row_kind", "requested_rank", "effective_rank", "U", "V", "eta", "rho",
+           "lite_U", "lite_V", "lite_eta", "lite_rho", "V_TINY/V_random", "vna_derivative",
+           "lite_derivative", "random_derivative", "random_lite_derivative", "lr_boost_derivative",
+           "lite_lr_boost_derivative", "realized_gain", "random_realized_gain", "lite_realized_gain",
+           "random_lite_realized_gain", "skipped", "random_skipped", "lite_skipped", "random_lite_skipped",
+           "cold_sgd_ratio", "warm_sgd_ratio", "lite_sgd_ratio", "lambda_full", "lambda_split_half",
+           "lambda_shuffled_mean", "lambda_shuffled_max", "significant_vs_shuffled", "significant_split_half"]
+display(frame.reindex(columns=columns))
+display(pd.DataFrame(summary["significance_by_checkpoint_site"]))
+rank_table = pd.DataFrame(summary["per_rank"])
+display(rank_table)
+metrics = ["U", "V", "rho", "lite_V", "lite_rho", "vna_derivative", "lite_derivative", "V_TINY/V_random"]
 fig, axes = plt.subplots(4, 2, figsize=(16, 18))
 for axis, metric in zip(axes.flat, metrics):
-    for site, values in frame.groupby("site"):
-        axis.plot(values["epoch"], values[metric], marker=".", label=site)
+    for (site, requested), values in frame[frame["row_kind"] == "sweep"].groupby(["site", "requested_rank"]):
+        axis.plot(values["epoch"], values[metric], marker=".", label=f"{site} r={requested}")
     axis.set(title=metric, xlabel="epoch"); axis.grid(alpha=.3)
 axes.flat[0].legend(fontsize=7)
 plt.tight_layout(); fig.savefig(SIGNAL / "signal_curve.png"); plt.show()
-print("SPEC §6 Phase-0 decision:", summary["phase0_acceptance"])
-print("Simultaneous pre-150 3x criteria rows:", summary["simultaneous_early_criteria_rows"])
-print("Near-end decay:", summary["signal_decay_by_site"], "rule:", summary["decay_rule"])
+print("Per-rank Phase-0 decision:", summary["phase0_acceptance"])
+print("Decay rule:", summary["decay_rule"])
+print("Excluded counts appear separately for each full/lite criterion in the rank table.")
 print("rho > 0.3 frequency:", summary["rho_above_0_3_fraction"])
 print("Skipped non-positive realized gains:", summary["skipped_nonpositive_gain"])
-print("Supervisor cost/noise/LR-boost diagnostics are in the table above.")
 print("Final archive:", archive_outputs(RUN_ROOT))
 ''')]
     return {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},

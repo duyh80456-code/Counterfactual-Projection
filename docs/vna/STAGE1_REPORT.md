@@ -347,3 +347,214 @@ Notebook generation was reproduced byte-for-structure from current HEAD; every
 code cell compiled. `compileall` for all implementation/builder files and
 `git diff --check` passed. HEAD is unchanged; the pre-existing `.DS_Store`
 modification is retained and outside this task.
+
+## Stage 1C — controls, VNA-lite, and stride-20 rank diagnostics
+
+Date: 2026-10-13. All changes remain in the working tree; no commit, push,
+clone, bundle, or Git metadata write was made. The pre-existing `.DS_Store`
+modification and untracked `TASK_STAGE1C.md` were preserved. No unrelated runner
+or shared helper was modified.
+
+### Changes and declared analysis rules
+
+- Full VNA accepts `apply_gain_guard=True`; random-A controls use `False`,
+  retaining finite negative-gain directions rather than replacing them with an
+  empty mapping. Full/lite/random/random-lite realized gains, guard settings,
+  skip flags/reasons, and nonfinite flags are logged. Nonfinite corrections are
+  still skipped. Held-out empty directions produce null derivatives/cosines and
+  explicit validity/empty flags. Every criterion requires its actual finite,
+  nonempty directions; predicted V cannot rescue a skipped direction. Rank
+  matching is checked, and each criterion has eligible/passed/excluded counts.
+- G1's primary comparison is `lambda_full` from all `stat_samples` against
+  three independently seeded shuffled-label solves on exactly those same
+  inputs/sample counts. The shuffled values, mean, maximum, and sample counts
+  are logged. `significant_vs_shuffled` uses **full lambda > shuffled maximum**;
+  `significant_split_half` uses **cross-validated lambda > shuffled maximum**.
+  These conservative, declared comparisons are reported per checkpoint/site.
+  The sub-batch mean+2std remains an extra logged diagnostic; it no longer drives
+  the primary significance flag or d_mu. No threshold was tuned.
+- `vna_lite_correction` shares full VNA's native `_Products`, state/RNG/mode/
+  gradient restoration, precision, and Hutchinson trace. It replaces both R
+  products by I/sqrt(c), c=(trace_K/n)^2, and never invokes CG. It reports U,
+  V/V_lite, eta, rho/rho_lite, c, per-neuron energies, realized gain, actual
+  product/forward counts, and synchronized wall time. Cached lite has two
+  network JVPs (including the gain measurement), two network VJPs, one extension
+  JVP, and three extension VJPs (including diagnostic energies). Cold lite adds
+  the eight Hutchinson products; diagnostic lite per-step cost reuses the full
+  correction's same trace cache. Full VNA now also reuses its already computed
+  J^Tg when forming Kg, removing one redundant pullback application.
+- All J^Tg, J, and J_E products use the configured `--vna-bn` mode. **Stage 2
+  may reuse the SGD batch's train-mode gradient only with `bn_mode="train"`
+  and copied buffers, or must recompute J^Tg in eval mode.** A logit gradient
+  (`shared_g`) is distinct from a parameter gradient; the diagnostics compute
+  shared logits/g in the matching BN mode and never silently mix modes.
+- Each checkpoint selects up to three sites by default-rank full V on an
+  independent augmented selection batch. Selection TINY statistics use their
+  own `rank-selection-statistics` generator and stat_samples; selection products
+  use a distinct `rank-selection` generator and vna_batch. Neither uses the
+  measurement statistics or measurement VNA batch. Selection V/time and chosen
+  sites are logged. Nonfinite selection scores are omitted rather than ranked.
+- All sites retain a default-rank row. Selected sites additionally request
+  ranks 4, 16, 64, and current hidden width, deduplicating identical requests.
+  Native counterfactual Gromo receives width+r and supplies its available rank;
+  both requested/effective ranks, width, and spectrum count/min/sum are logged.
+  Each sweep row includes full/lite/random/random-lite U/V/eta/rho, gains,
+  timings, held-out derivatives/cosines, and independently norm-matched full
+  and lite LR-boost comparisons (including scales/realized training gains).
+  Rank shortfalls are recorded and do not abort. The tiny CPU model naturally
+  returns only rank 3 for requests 4/16/64, demonstrating that path.
+- `--diagnostic-stride 20` filters compute, watcher, and final drain; training
+  still retains ten-epoch checkpoints. Sharding divides by diagnostic stride
+  before assigning GPU shards, so both GPUs receive work at stride 20. Explicit
+  partial/smoke diagnostics require a stride override when epochs are off-grid.
+- Every row measures SGD at **batch 64**, including smoke, with three restored
+  single-step trials after setup and median cost. Full cold/warm and cached
+  lite ratios use that same model/device baseline; all CUDA timings synchronize.
+- `summary.json` and the printed compact table report each requested rank's
+  three full and three lite early criteria, joint rows, exclusion counts,
+  cost ratios, and per-site decay. Early means epoch <150; late means >=180;
+  the existing <=10%-of-early-mean rule applies separately to U/V/rho for each
+  requested rank/site/variant. Decay exclusions are counted too. Synthetic or
+  incomplete coverage remains unassessed. Defaults and sweeps are kept separate
+  to avoid double-counting the default rank. A go requires all three criteria
+  together on an early row and the declared decay rule; full and lite decisions
+  are available separately in the per-rank table.
+- Resume identity now includes `schema_version="stage1c-v1"`, stride, flags,
+  and the existing algorithm source digest. Run preflights **all** old markers,
+  even epochs excluded by the new stride; merge also rejects incompatible data.
+  Training checkpoints remain resumable. Use a fresh diagnostic output directory
+  for Stage 1C when attaching pre-Stage-1C diagnostics.
+- The notebook was regenerated through its builder at current HEAD (supervisor
+  must re-pin after committing Stage 1C). Its common diagnostic command carries
+  stride 20 into watcher and both drain workers, and final cells show new
+  full/lite columns, significance, and the per-rank acceptance/cost/exclusion
+  table. Plots group by site and requested rank instead of joining rank sweeps.
+
+Files touched: `methods/vna.py`, `diagnostics/signal_curve.py`,
+`scripts/build_kaggle_vna_signal_curve_notebook.py`,
+`notebooks/kaggle_vna_signal_curve.ipynb`, `tests/test_vna.py`, and this report.
+**Shared helpers touched: none.** Existing training and unrelated runners are
+unchanged.
+
+### Validation and CPU timing
+
+New tests cover forced-negative unguarded controls and exclusion of empty/NaN
+comparisons; dense VNA-lite equality to the full chain with R=I/sqrt(c), descent
+identity to 2e-5 relative tolerance, and centered double-forward finite differences
+at 1e-3 relative tolerance in eval and train BN; state/gradient/mode/RNG invariance;
+no CG calls; standalone/cached Hutchinson consistency and product counts;
+independent selection statistics/products; same-count three-shuffle significance;
+requested/effective rank shortfalls; stride-20 watcher and two-shard drain;
+pre-Stage-1C identity rejection; and per-rank decay, missing-direction exclusions,
+and epoch-150/180 boundaries. Existing recipe resume and notebook checks remain.
+
+Focused command `.venv/bin/python -m pytest -o addopts='' -q tests/test_vna.py`
+passed **24 tests**, with 36 upstream deprecation warnings, in **31.06 s**.
+The notebook is structurally identical to `build(current_HEAD)` and every code
+cell compiles; its current pin is `018f79415cb64491b5b304bfb1b8c4c2658a86fb`.
+
+CPU CLI smoke (native one-block Gromo, hidden width 3, three classes, fake 8x8
+inputs; stat_samples=16, selection/VNA batch=2, heldout=4, CG cap=10,
+`--cache-block-input`, fp32, no AMP) produced one default row plus four sweep
+rows and a per-rank table. All rows were finite; requests 4/16/64 returned rank
+3. This is an integration observation, not evidence for CIFAR/T4 acceptance.
+SGD was genuinely batch 64; full warm and lite reused the cold trace cache,
+and full warm also reused z/q on the identical batch (a favorable bound).
+
+| CPU row | Full cold seconds / SGD ratio | Full warm seconds / SGD ratio | Cached lite seconds / SGD ratio |
+|---|---:|---:|---:|
+| Default requested/effective rank 2 | 0.14617 / 45.24 | 0.03048 / 9.43 | 0.02063 / 6.39 |
+| Mean of four sweep requests (all effective rank 3) | 0.14032 / 43.43 | 0.03329 / 10.30 | 0.02313 / 7.16 |
+
+Median batch-64 SGD step: **0.003231 s**. These are single-run CPU timings with
+other test work possible during execution, not stable GPU speed predictions.
+The synthetic checkpoint met neither three-way joint early criterion set;
+summary correctly remains `not assessed: synthetic/partial run` because no
+late training trend exists. Scratch commands/evidence (outside the repository):
+
+```bash
+.venv/bin/python -m experiments.train_recipe_checkpoints --fake-data --max-epochs 1 --limit-batches 1 --output /tmp/stage1c-recipe
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m diagnostics.signal_curve --fake-data --smoke --diagnostic-stride 1 --cache-block-input --checkpoint-dir /tmp/stage1c-recipe --output /tmp/stage1c-smoke-final
+```
+
+Scratch CSV/summary/markers are under `/tmp/stage1c-smoke-final`; focused logs
+are `/tmp/stage1c_vna_tests_final.log`. A first full-suite attempt was interrupted
+at 92 passed/1 skipped after 135.12 s during checkpoint serialization. The next
+full run completed with **248 passed, 8 failed, 5 skipped** in **122.48 s**:
+seven failures were the unchanged 256 MiB checkpoint-discovery free-space guard
+(including the VNA archive round trip), and one was the historical plateau source
+assertion. Free space had fallen to ~212 MiB because those two full-suite scratch
+runs together retained ~1.5 GiB. Only those newly generated scratch directories
+were removed; logs were retained, no guard was bypassed, and the full suite was
+rerun with OMP/MKL threads limited to one.
+
+### Updated T4 planning estimate and open questions
+
+The stride-20 plan has ten checkpoint times (20..200), eight default sites per
+checkpoint, and up to 3x4 additional rank rows: **80 default + up to 120 sweep =
+200 measurement rows**, plus **80 independent selection-site evaluations**.
+Width 64 coincides with request 64 at some sites and reduces actual row count.
+Three null shuffles increase refresh work; nulls/sub-batches/split-half estimates
+are reused across requested ranks. The expensive top-q check remains only on
+80 default rows. Selection uses 1,024 statistics samples but only 128 product
+samples; it does not construct full-stat-sample NTKs or run CG on 1,024 samples.
+
+Using Stage 1B's deliberately broad, **unmeasured** 1–10 min/site-diagnostic
+budget and conservatively charging each measurement or selection evaluation a
+whole such unit gives **280–2,800 GPU-min = 4.7–46.7 GPU-hours**, approximately
+**2.3–23.3 h with both T4s draining**, plus the existing 0.6–2.2 h training budget
+(10–40 s/epoch). A more favorable planning scenario charges sweep rows half and
+selection rows one quarter of a default diagnostic, yielding 160 units,
+**2.7–26.7 GPU-hours / 1.3–13.3 h dual-GPU drain**. These are capacity ranges,
+not hardware benchmarks. Training overlaps the watcher; the two-GPU drain and
+strict checkpoint transactions support interruption/resume if the session ends.
+Use actual selection/refresh/rank/full/lite/heldout row costs from the first T4
+checkpoints to revise this estimate. Local CUDA/MPS and CIFAR data are unavailable.
+
+Open questions recorded without asking: actual T4 cold/warm/lite and high-rank
+memory costs; whether split-half significance should eventually compare against
+split-half shuffled Rayleigh scores instead of the declared full-sample null
+maximum; how to assess per-site decay if top-three membership changes so a site
+has no valid early or late sweep measurements (currently left unassessed, never
+imputed); whether the existing 10% decay rule is the intended scientific rule;
+and whether default truncated full CG needs a later accuracy change. No
+controller parameters, convergence tolerances, recipe, or acceptance thresholds
+were tuned in Stage 1C. Stage 2 gradient reuse must observe the BN restriction
+above. The supervisor still needs to commit and regenerate the notebook pin;
+this task deliberately leaves all changes uncommitted.
+
+Final validation after all implementation changes:
+
+- `.venv/bin/python -m pytest -o addopts='' -q tests/test_vna.py`:
+  **24 passed, 36 warnings in 19.28 s**. Log:
+  `/tmp/stage1c_vna_tests_delivery.log`.
+- `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -o addopts='' -q`:
+  **253 passed, 3 failed, 5 skipped, 36 warnings in 122.65 s**. All 24 VNA
+  cases passed in this full run. Log: `/tmp/stage1c_full_tests_delivery.log`.
+  The two environmental failures were
+  `tests/test_deit_resume.py::test_archive_resume_selects_latest_and_preserves_original_bytes`
+  (199,933,952 bytes free versus the 256 MiB reserve) and
+  `tests/test_kaggle_checkpoint_discovery.py::test_rebuilds_kaggle_expanded_torch_archive`
+  (262,459,392 bytes free versus that reserve). Space temporarily dipped during
+  large checkpoint writes despite ~1.9 GiB available at the start. After deleting
+  only this run's completed scratch directory, these two exact tests passed:
+  **2 passed in 0.21 s**, `/tmp/stage1c_disk_rechecks.log`. No guard or unrelated
+  code was changed. The remaining failure is the previously documented
+  `tests/test_plateau_fork.py::test_plateau_fork_has_recurrent_e_and_single_shot_o_control`
+  source assertion at line 252; its runner/test remain untouched.
+- The intervening clean full rerun had **248 passed, 8 failed, 5 skipped in
+  130.31 s** (seven disk-reserve failures and that same source assertion).
+  A focused rerun during that temporary disk shortage had 23 passed/1 archive
+  failure; the final focused run above recovered all 24 without code changes.
+  Historical failed-run logs remain in `/tmp/stage1c_full_tests_final.log`,
+  `/tmp/stage1c_full_tests_clean.log`, and `/tmp/stage1c_vna_tests_verified.log`.
+- Final-source CLI smoke under `/tmp/stage1c-delivery-signal` was verified against
+  the **current** diagnostic identity: five finite rows, four requested-rank
+  summary entries, one checkpoint/site significance entry, SGD batch 64,
+  explicit missing late decay (`n/a`), and synthetic/partial acceptance.
+  The report's timing table above uses the separately retained earlier smoke
+  timing sample; the final smoke has the same math/schema and its own timings.
+- Regenerated notebook equals `build(current_HEAD)`; every code cell compiles.
+  `py_compile` for all four implementation/test/builder files and
+  `git diff --check` pass. HEAD remains
+  `018f79415cb64491b5b304bfb1b8c4c2658a86fb`; no commit was made.

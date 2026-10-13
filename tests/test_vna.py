@@ -9,7 +9,7 @@ from torch.func import functional_call
 
 from experiments.vna_support import tiny_model, tiny_candidate, isolated_rng
 from methods.vna import (VNAConfig, dedicated_generator, extract_tiny_A, random_A_like,
-    vna_block_correction, block_products, _mean_ce_logit_grad, _virtual_b_context,
+    vna_block_correction, vna_lite_correction, block_products, _mean_ce_logit_grad, _virtual_b_context,
     _resolve_site, assert_disjoint_scopes)
 from projection.functional import _preserve_functional_state
 
@@ -219,8 +219,16 @@ def test_recipe_resume_and_signal_smoke(tmp_path):
     for pid, values in a["optimizer"]["state"].items():
         assert torch.equal(values["momentum_buffer"],b["optimizer"]["state"][pid]["momentum_buffer"])
     rows = signal_run(signal_parser().parse_args(["--fake-data","--smoke","--channels-last","--cudnn-benchmark",
-        "--checkpoints",str(resumed),"--output",str(tmp_path/"signal")]))
-    assert len(rows) == 1 and not rows[0]["nonfinite"]
+        "--diagnostic-stride","1","--checkpoints",str(resumed),"--output",str(tmp_path/"signal")]))
+    assert len(rows) == 5 and all(not r["nonfinite"] for r in rows)
+    assert {r["requested_rank"] for r in rows if r["row_kind"] == "sweep"} == {3,4,16,64}
+    assert all(r["sgd_batch_size"] == 64 for r in rows)
+    assert all(len(r["lambda_shuffled_values"]) == 3 for r in rows)
+    assert all(r["stat_samples"] == r["shuffled_samples"] == 16 for r in rows)
+    assert all(r["lite_realized_gain"] >= 0 and r["random_apply_gain_guard"] is False for r in rows)
+    assert all(r["significant_vs_shuffled"] == (r["lambda_full"] > max(r["lambda_shuffled_values"])) for r in rows)
+    assert all(r["significant_split_half"] == (r["lambda_split_half"] > max(r["lambda_shuffled_values"])) for r in rows)
+    assert all(r["rank"] == r["random_rank"] <= r["requested_rank"] for r in rows)
     assert rows[0]["per_neuron_V"] and rows[0]["lambda_split_half"] >= 0
     assert "lr_boost_derivative" in rows[0]
     assert (tmp_path/"signal"/"signal_curve.csv").exists()
@@ -325,7 +333,7 @@ def test_watch_markers_shards_merge_resume_and_archive(tmp_path, monkeypatch):
     monkeypatch.setattr(signal, "compute", compute)
     output = tmp_path/"original"/"signal"
     stop = tmp_path/"stop"
-    base = ["--fake-data","--smoke","--checkpoint-dir",str(recipe),"--output",str(output)]
+    base = ["--fake-data","--smoke","--diagnostic-stride","10","--checkpoint-dir",str(recipe),"--output",str(output)]
     run(parser().parse_args(base+["--watch","--stop-file",str(stop),"--no-merge"]))
     assert calls == [10,20]
     run(parser().parse_args(base+["--watch","--stop-file",str(stop),"--no-merge"]))
@@ -425,3 +433,203 @@ def test_cached_suffix_after_earlier_blocks_and_shared_logits():
         assert diag["forward_calls"] == diag2["forward_calls"] + 1
     finally:
         torch.set_num_threads(previous)
+
+
+@pytest.mark.parametrize("bn_mode", ["eval", "train"])
+def test_lite_dense_identity_finite_difference_invariance(case, bn_mode, monkeypatch):
+    import methods.vna as core
+    model, site, batch, _, A = case
+    model.train()
+    for parameter in model.parameters():
+        parameter.grad = torch.ones_like(parameter)
+    before = state(model)
+    rng = torch.get_rng_state().clone()
+    cfg = VNAConfig(bn_mode=bn_mode, lambda_vna=.7)
+    with block_products(model, site, A, batch[0], bn_mode) as products:
+        g = _mean_ce_logit_grad(products._call({}).reshape(2, -1), batch[1])
+        eye = torch.eye(g.numel())
+        J = torch.stack([products.JT(u) for u in eye]).double()
+        E = torch.stack([products.JET(u) for u in eye]).double()
+        refs = products.parameter_refs
+    K, KE = J @ J.T, E @ E.T
+    trace = float(K.trace())
+    cache = {"trace_K": trace, "mu": .01*trace/len(K), "jacobi": K.diag()}
+    monkeypatch.setattr(core, "conjugate_gradient", lambda *a, **k: pytest.fail("lite called CG"))
+    correction, diag = vna_lite_correction(model, site, A, batch, cfg, damping_cache=cache)
+    c = (trace / len(K))**2
+    R = torch.eye(len(K), dtype=torch.float64) / c**.5
+    expected = cfg.lambda_vna * J.T @ R @ KE @ R @ K @ g
+    flat = vector(correction, refs).double()
+    assert torch.allclose(flat, expected, rtol=2e-5, atol=1e-9)
+    gain = float(g @ J @ flat)
+    predicted = float(cfg.lambda_vna * (K@g) @ KE @ (K@g) / c)
+    assert gain >= 0 and gain == pytest.approx(predicted, rel=2e-5, abs=1e-10)
+    assert diag["realized_gain"] == pytest.approx(predicted, rel=2e-5, abs=1e-10)
+    assert diag["V_lite"] == diag["V"] and diag["rho_lite"] == diag["rho"]
+    assert sum(diag["per_neuron_V"]) == pytest.approx(diag["V"], rel=1e-6)
+    assert diag["cg_z"] is None and diag["cg_q"] is None
+    assert_state(model, before)
+    assert torch.equal(rng, torch.get_rng_state())
+    # Double forward oracle checks the actual returned parameter direction.
+    oracle = copy.deepcopy(model).double()
+    double_A = {n: None if v is None else v.double() for n,v in A.items()}
+    with block_products(oracle, site, double_A, batch[0].double(), bn_mode) as products:
+        epsilon = 1e-3
+        delta = {n: correction[n].double() for n,_ in products.parameter_refs}
+        plus = products._call({n: r + epsilon*delta[n] for n,r in products.parameter_refs})
+        minus = products._call({n: r - epsilon*delta[n] for n,r in products.parameter_refs})
+        image = products.Jv(vector(delta, products.parameter_refs)).double()
+        assert torch.allclose(image, (plus-minus)/(2*epsilon), rtol=1e-3, atol=1e-9)
+    assert_state(model, before)
+    bad = {"weight": torch.full_like(A["weight"], float("nan")), "bias": A["bias"]}
+    empty, bad_diag = vna_lite_correction(model, site, bad, batch, cfg)
+    assert not empty and bad_diag["nonfinite"]
+    assert_state(model, before)
+
+
+def test_negative_random_control_is_retained_and_empty_excluded(case, monkeypatch):
+    import methods.vna as core
+    from diagnostics.signal_curve import heldout, criterion_results, rank_summary
+    model, site, batch, _, A = case
+    cfg = VNAConfig(cg_iters=100, cg_tol=1e-5)
+    original = core.conjugate_gradient
+    calls = 0
+    def negative_q(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        return replace(result, solution=-result.solution) if calls % 2 == 0 else result
+    monkeypatch.setattr(core, "conjugate_gradient", negative_q)
+    random_A = random_A_like(A, generator=dedicated_generator(1, "forced-negative-random"))
+    random, diag = vna_block_correction(model, site, random_A, batch, cfg, apply_gain_guard=False)
+    assert random and diag["realized_gain"] < 0 and diag["nonpositive_gain"] and not diag["skipped"]
+    measured = heldout(model, site, random_A, batch, {"random": {n:-v for n,v in random.items()}, "vna": {}}, cfg)
+    assert measured["random_derivative"] > 0
+    assert measured["vna_empty"] and measured["vna_derivative"] is None
+    row = {"row_kind":"sweep", "requested_rank":4, "rank":2, "random_rank":2, "site":site, "epoch":20,
+        "V": 10., "random_V":1., "nonfinite":False, "random_nonfinite":False,
+        "vna_valid":True, "vna_empty":False, "vna_derivative":-1.,
+        "random_valid":False, "random_empty":True, "random_derivative":0.,
+        "lr_boost_valid":True, "lr_boost_empty":False, "lr_boost_derivative":-.5}
+    assert criterion_results(row,"full")["derivative"] == (False,False)
+    assert criterion_results(row,"full")["V"] == (False,False)
+    table = rank_summary([row])[0]
+    assert table["excluded_full_derivative"] == 1 and table["full_joint_rows"] == 0
+    row.update(random_valid=True, random_empty=False, random_derivative=float("nan"))
+    assert criterion_results(row,"full")["derivative"] == (False,False)
+    row.update(random_derivative=2.)
+    assert criterion_results(row,"full")["derivative"] == (True,False)
+
+
+def test_stride20_watch_drain_shards_and_old_identity(tmp_path, monkeypatch):
+    import json
+    import diagnostics.signal_curve as signal
+    from experiments.train_recipe_checkpoints import parser as train_parser, run as train_run
+    checkpoint = train_run(train_parser().parse_args(["--fake-data", "--limit-batches", "1", "--max-epochs", "1", "--output", str(tmp_path/"recipe")]))
+    payload = torch.load(checkpoint, weights_only=False)
+    for epoch in (10,20,30,40):
+        torch.save({**payload, "epoch":epoch}, tmp_path/"recipe"/f"epoch_{epoch:03d}.pt")
+    (tmp_path/"recipe"/"training_done.json").unlink(missing_ok=True)
+    calls = []
+    stop = tmp_path/"stop"
+    def compute(args):
+        epoch = torch.load(args.checkpoints[0], weights_only=False)["epoch"]
+        calls.append(epoch)
+        if epoch == 40: stop.touch()
+        return [{"epoch":epoch,"site":"test","nonfinite":True}]
+    monkeypatch.setattr(signal,"compute",compute)
+    base = ["--fake-data","--smoke","--checkpoint-dir",str(tmp_path/"recipe"),"--output",str(tmp_path/"signal")]
+    args = signal.parser().parse_args(base)
+    assert args.diagnostic_stride == 20
+    signal.run(signal.parser().parse_args(base+["--watch","--stop-file",str(stop),"--no-merge"]))
+    assert calls == [20,40]
+    for marker in (tmp_path/"signal"/"completed").glob("*.json"): marker.unlink()
+    for shard in (0,1):
+        signal.run(signal.parser().parse_args(base+["--shards","2","--shard",str(shard),"--no-merge"]))
+    assert calls == [20,40,40,20]  # stride-normalized sharding uses both GPUs
+    assert len(signal.merge(args)) == 2
+    marker = tmp_path/"signal"/"completed"/"epoch_020.json"
+    old = json.loads(marker.read_text())
+    old["identity"].pop("schema_version")
+    marker.write_text(json.dumps(old))
+    for operation in (signal.run, signal.merge):
+        with pytest.raises(ValueError, match="schema_version"):
+            operation(args)
+
+
+def test_lite_hutchinson_cache_consistency_and_product_counts(case):
+    model, site, batch, _, A = case
+    cfg = VNAConfig(cg_iters=100, cg_tol=1e-5)
+    _, full = vna_block_correction(model, site, A, batch, cfg)
+    cold, lite = vna_lite_correction(model, site, A, batch, cfg)
+    cached, warm = vna_lite_correction(model, site, A, batch, cfg, damping_cache=full["damping_cache"])
+    assert all(torch.equal(cold[n], cached[n]) for n in cold)
+    assert lite["trace_K"] == full["trace_K"]
+    assert lite["c"] == (full["trace_K"] / 6)**2
+    assert warm["jvp_calls"] == 2 and warm["vjp_calls"] == 2
+    assert warm["extension_jvp_calls"] == 1 and warm["extension_vjp_calls"] == 3
+    assert lite["jvp_calls"] == warm["jvp_calls"] + cfg.hutchinson_probes
+
+
+def test_rank_selection_uses_separate_batches(case, tmp_path, monkeypatch):
+    import diagnostics.signal_curve as signal
+    model, _, _, _, _ = case
+    checkpoint = tmp_path/"epoch_020.pt"
+    torch.save({"kind":"vna_recipe", "epoch":20, "model":model.state_dict()}, checkpoint)
+    batches = {}
+    original_batch = signal.augmented_batch
+    original_candidate = signal.tiny_candidate
+    original_correction = signal.vna_block_correction
+    statistics_calls, correction_calls = [], []
+    def batch(*args, **kwargs):
+        result = original_batch(*args, **kwargs)
+        batches[id(result[0])] = result[0].clone()
+        return result
+    def candidate(model, site, batch, rank, *args):
+        statistics_calls.append((id(batch[0]), rank))
+        return original_candidate(model, site, batch, rank, *args)
+    def correction(model, site, A, batch, cfg, *args, **kwargs):
+        correction_calls.append((id(batch[0]), kwargs.get("apply_gain_guard", True)))
+        return original_correction(model, site, A, batch, cfg, *args, **kwargs)
+    monkeypatch.setattr(signal,"augmented_batch",batch)
+    monkeypatch.setattr(signal,"tiny_candidate",candidate)
+    monkeypatch.setattr(signal,"vna_block_correction",correction)
+    rows = signal.compute(signal.parser().parse_args([
+        "--fake-data","--smoke","--checkpoints",str(checkpoint),"--output",str(tmp_path/"signal")]))
+    assert len(rows) == 5
+    selection_stats, measurement_stats = statistics_calls[0][0], statistics_calls[1][0]
+    selection_products, measurement_products = correction_calls[0][0], correction_calls[1][0]
+    assert len({selection_stats, measurement_stats, selection_products, measurement_products}) == 4
+    assert not torch.equal(batches[selection_stats], batches[measurement_stats])
+    assert not torch.equal(batches[selection_products], batches[measurement_products])
+    assert correction_calls[0][1] is False
+    assert all(row["selected_top3"] for row in rows)
+
+
+def test_per_rank_criteria_decay_and_epoch_boundaries():
+    from diagnostics.signal_curve import rank_summary
+    base = {"row_kind":"sweep", "site":"block", "rank":4, "random_rank":4,
+        "nonfinite":False, "lite_nonfinite":False, "random_nonfinite":False, "random_lite_nonfinite":False,
+        "U":10., "V":10., "rho":1., "lite_U":10., "lite_V":10., "lite_rho":1.,
+        "random_V":1., "random_lite_V":1.,
+        "cold_sgd_ratio":20., "warm_sgd_ratio":10., "lite_sgd_ratio":2.}
+    for label in ("vna","lite","random","random_lite","lr_boost","lite_lr_boost"):
+        base[label+"_valid"] = True
+        base[label+"_empty"] = False
+        base[label+"_derivative"] = -4. if label in ("vna","lite") else -1.
+    rows = []
+    for rank in (4,16):
+        for epoch in (20,140,150,180,200):
+            row = {**base,"epoch":epoch,"requested_rank":rank}
+            if epoch >=180:
+                for key in ("U","V","rho","lite_U","lite_V","lite_rho"): row[key] *= .05
+            if rank == 16: row.update(lite_valid=False, lite_empty=True, lite_derivative=None)
+            rows.append(row)
+    table = rank_summary(rows)
+    assert table[0]["rows_before_150"] == 2
+    assert table[0]["full_joint_rows"] == table[0]["lite_joint_rows"] == 2
+    assert table[0]["full_go"] and table[0]["lite_go"] and table[0]["complete"]
+    assert table[0]["full_decay_eligible"] == 4 and table[0]["excluded_full_decay"] == 0
+    assert table[1]["excluded_lite_V"] == table[1]["excluded_lite_derivative"] == table[1]["excluded_lite_lr_boost"] == 2
+    assert table[1]["excluded_lite_decay"] == 4 and not table[1]["lite_go"]
+    assert table[1]["full_go"] and table[1]["lite_decay_by_site"]["block"]["V"] is None

@@ -398,6 +398,7 @@ def vna_block_correction(
     warm_start: Mapping[str, Tensor] | None = None,
     *, damping_cache: Mapping[str, Any] | None = None,
     shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
+    apply_gain_guard: bool = True, _lite: bool = False,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return ``lambda_vna * J^T R K_E R K g`` for addition to gradients.
 
@@ -411,7 +412,9 @@ def vna_block_correction(
     modes = {module: module.training for module in model.modules()}
     grads = {parameter: None if parameter.grad is None else parameter.grad.detach().clone()
              for parameter in model.parameters()}
-    diag: dict[str, Any] = {"nonfinite": False, "jvp_calls": 0, "vjp_calls": 0,
+    diag: dict[str, Any] = {"nonfinite": False, "skipped": False,
+                            "apply_gain_guard": apply_gain_guard, "variant": "lite" if _lite else "full",
+                            "jvp_calls": 0, "vjp_calls": 0,
                             "extension_jvp_calls": 0, "extension_vjp_calls": 0}
     products = None
     try:
@@ -448,8 +451,8 @@ def vna_block_correction(
             if not math.isfinite(mu) or not torch.isfinite(g).all() or not torch.isfinite(jacobi).all():
                 diag.update({"nonfinite": True})
                 return {}, diag
-            w = products.K(g.to(inputs)).to(dtype=torch.float64)
             jt_g = products.JT(g.to(inputs)).to(dtype=torch.float64)
+            w = products.Jv(jt_g.to(inputs)).to(dtype=torch.float64)
             inv_diag = (jacobi + mu).clamp_min(1e-12).reciprocal()
 
             def matvec(vector: Tensor) -> Tensor:
@@ -458,19 +461,29 @@ def vna_block_correction(
             def precondition(vector: Tensor) -> Tensor:
                 return inv_diag * vector
 
-            z0 = None if warm_start is None else warm_start.get("z")
-            q0 = None if warm_start is None else warm_start.get("q")
-            z_result = conjugate_gradient(
-                matvec, w, x0=None if z0 is None else z0.to(w),
-                max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
-                preconditioner=precondition, eps=1e-30)
-            z = z_result.solution
-            s = products.KE(z.to(inputs)).to(dtype=torch.float64)
-            q_result = conjugate_gradient(
-                matvec, s, x0=None if q0 is None else q0.to(s),
-                max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
-                preconditioner=precondition, eps=1e-30)
-            q = q_result.solution
+            if _lite:
+                c = (trace / max(1, n)) ** 2
+                if not math.isfinite(c) or c <= 0:
+                    diag.update(nonfinite=True, skipped=True, skip_reason="invalid_trace_scale")
+                    return {}, diag
+                z = w / math.sqrt(c)
+                s = products.KE(z.to(inputs)).to(dtype=torch.float64)
+                q = s / math.sqrt(c)
+                z_result = q_result = None
+            else:
+                z0 = None if warm_start is None else warm_start.get("z")
+                q0 = None if warm_start is None else warm_start.get("q")
+                z_result = conjugate_gradient(
+                    matvec, w, x0=None if z0 is None else z0.to(w),
+                    max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
+                    preconditioner=precondition, eps=1e-30)
+                z = z_result.solution
+                s = products.KE(z.to(inputs)).to(dtype=torch.float64)
+                q_result = conjugate_gradient(
+                    matvec, s, x0=None if q0 is None else q0.to(s),
+                    max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
+                    preconditioner=precondition, eps=1e-30)
+                q = q_result.solution
             d_flat = products.JT(q.to(inputs)).to(dtype=torch.float64)
             je_t_g = products.JET(g.to(inputs)).to(dtype=torch.float64)
             je_t_z = products.JET(z.to(inputs)).to(dtype=torch.float64)
@@ -510,6 +523,7 @@ def vna_block_correction(
                 diag["nonfinite"] = True
                 return {}, diag
             realized_gain = float(g.dot(products.Jv(_flatten(tuple(grad_delta[n] for n, _ in products.parameter_refs))).double()))
+            diag["realized_gain"] = realized_gain
             nonpositive_gain = realized_gain <= 0
             if not math.isfinite(realized_gain):
                 diag["nonfinite"] = True
@@ -519,8 +533,10 @@ def vna_block_correction(
             diag.update({
                 "realized_gain": realized_gain,
                 "nonpositive_gain": nonpositive_gain,
-                "skipped": nonpositive_gain,
-                "skip_reason": "nonpositive_realized_gain" if nonpositive_gain else None,
+                "skipped": apply_gain_guard and nonpositive_gain,
+                "apply_gain_guard": apply_gain_guard,
+                "variant": "lite" if _lite else "full",
+                "skip_reason": "nonpositive_realized_gain" if apply_gain_guard and nonpositive_gain else None,
                 "ce": float(F.cross_entropy(logits.double(), targets)),
                 "bn_mode": cfg.bn_mode,
                 "damping_cache": {"mu": mu, "jacobi": jacobi.detach(), "trace_K": trace},
@@ -534,8 +550,8 @@ def vna_block_correction(
                 "rho": rho,
                 "per_neuron_V": per_neuron,
                 "jt_g_norm_sq": jt_g_norm_sq,
-                "cg_z": _cg_record(z_result),
-                "cg_q": _cg_record(q_result),
+                "cg_z": None if _lite else _cg_record(z_result),
+                "cg_q": None if _lite else _cg_record(q_result),
                 "warm_start": {"z": z.detach(), "q": q.detach()},
                 "jvp_calls": products.jvp_calls,
                 "vjp_calls": products.vjp_calls,
@@ -543,7 +559,9 @@ def vna_block_correction(
                 "extension_vjp_calls": products.extension_vjp_calls,
                 "wall_time": time.perf_counter() - start,
             })
-            return ({} if nonpositive_gain else grad_delta), diag
+            if _lite:
+                diag.update(c=c, V_lite=V, rho_lite=rho)
+            return ({} if apply_gain_guard and nonpositive_gain else grad_delta), diag
     except (FloatingPointError, torch.linalg.LinAlgError) as error:
         diag.update({
             "nonfinite": True,
@@ -552,6 +570,8 @@ def vna_block_correction(
         })
         return {}, diag
     finally:
+        if diag["nonfinite"]:
+            diag.update(skipped=True, skip_reason=diag.get("skip_reason") or "nonfinite")
         if products is not None:
             for key in ("forward_calls", "jvp_calls", "vjp_calls", "extension_jvp_calls", "extension_vjp_calls"):
                 diag[key] = getattr(products, key)
@@ -565,6 +585,26 @@ def vna_block_correction(
         _assert_unchanged(model, before)
 
 
+def vna_lite_correction(
+    model: nn.Module, site, A: Tensor | Mapping[str, Tensor],
+    batch: tuple[Tensor, Tensor], cfg: VNAConfig, *,
+    damping_cache: Mapping[str, Any] | None = None,
+    shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
+    apply_gain_guard: bool = True,
+) -> tuple[dict[str, Tensor], dict[str, Any]]:
+    """Return λ Jᵀ K_E K g / c without CG, c=(tr(K)/n)².
+
+    All products, including Jᵀg, use cfg.bn_mode. Stage 2 may reuse an SGD
+    train-mode parameter gradient only with train BN and copied buffers;
+    eval BN requires recomputing Jᵀg. shared_g is a logit gradient, not Jᵀg.
+    A refresh cache supplies the same Hutchinson trace as full VNA.
+    """
+    return vna_block_correction(
+        model, site, A, batch, cfg, damping_cache=damping_cache,
+        shared_logits=shared_logits, shared_g=shared_g,
+        apply_gain_guard=apply_gain_guard, _lite=True)
+
+
 def add_vna_grad_(model: nn.Module, grad_delta: Mapping[str, Tensor], scale: float = 1.0) -> None:
     parameters = dict(model.named_parameters())
     for name, delta in grad_delta.items():
@@ -576,7 +616,7 @@ def add_vna_grad_(model: nn.Module, grad_delta: Mapping[str, Tensor], scale: flo
 
 
 __all__ = ["VNAConfig", "dedicated_generator", "extract_tiny_A", "random_A_like",
-           "vna_block_correction", "add_vna_grad_"]
+           "vna_block_correction", "vna_lite_correction", "add_vna_grad_"]
 
 
 @contextmanager

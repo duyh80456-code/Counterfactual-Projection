@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import time
 import statistics
+import math
 import os
 import hashlib
 import shutil
@@ -17,7 +18,7 @@ from experiments.shared_protocol import atomic_json_save, validate_resume_protoc
 from experiments.vna_support import (setup_data, build_model, augmented_batch,
                                       tiny_candidate, isolated_rng, DeviceCIFAR)
 from methods.vna import (VNAConfig, extract_tiny_A, random_A_like, dedicated_generator,
-                         vna_block_correction, block_products, _mean_ce_logit_grad,
+                         vna_block_correction, vna_lite_correction, block_products, _mean_ce_logit_grad,
                          assert_disjoint_scopes)
 
 
@@ -39,9 +40,16 @@ def heldout(model, site, A, batch, directions, cfg, shared=None):
             g = _mean_ce_logit_grad(logits, targets)
         desired = -(products.K(g) + products.KE(g)).double()
         for label, direction in directions.items():
+            valid = bool(direction) and all(torch.isfinite(v).all() for v in direction.values())
+            if not valid:
+                result.update({label + "_empty": not bool(direction), label + "_valid": False,
+                               label + "_cosine": None, label + "_derivative": None})
+                continue
             image = products.Jv(direction_vector(direction, products)).double()
+            result[label + "_empty"] = False
+            result[label + "_valid"] = bool(torch.isfinite(image).all())
             denom = image.norm() * desired.norm()
-            result[label + "_cosine"] = float(image.dot(desired) / denom) if denom > 0 else 0.
+            result[label + "_cosine"] = float(image.dot(desired) / denom) if denom > 0 else None
             result[label + "_derivative"] = float(g.dot(image))
         result["heldout_ce"] = float(F.cross_entropy(logits.double(), targets))
     return result
@@ -141,24 +149,28 @@ def compute(args):
     if not checkpoints:
         raise ValueError("no recipe checkpoints found")
     rows = []
+    selection_stat = augmented_batch(train, indices, cfg.stat_samples,
+        dedicated_generator(args.seed, "rank-selection-statistics"), device)
+    selection = augmented_batch(train, indices, cfg.vna_batch,
+        dedicated_generator(args.seed, "rank-selection"), device)
     # Fixed augmented train and trigger batches pair sites/checkpoints exactly.
     stat = augmented_batch(train, indices, cfg.stat_samples, dedicated_generator(args.seed, "statistics"), device)
     vna_batch = augmented_batch(train, indices, cfg.vna_batch, dedicated_generator(args.seed, "vna"), device)
     check = augmented_batch(evaluation, trigger, 4 if args.smoke else 512,
                             dedicated_generator(args.seed, "heldout"), device)
-    sgd_batch = augmented_batch(train, indices, 4 if args.smoke else 64,
+    sgd_batch = augmented_batch(train, indices, 64,
                                 dedicated_generator(args.seed, "cost-sgd"), device)
     if args.channels_last:
-        stat, vna_batch, check, sgd_batch = [
+        stat, vna_batch, check, sgd_batch, selection, selection_stat = [
             (inputs.contiguous(memory_format=torch.channels_last), labels)
-            for inputs, labels in (stat, vna_batch, check, sgd_batch)]
+            for inputs, labels in (stat, vna_batch, check, sgd_batch, selection, selection_stat)]
     seen_epochs = set()
     for path in checkpoints:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         if checkpoint.get("kind") != "vna_recipe":
             raise ValueError("expected a vna_recipe checkpoint")
         epoch = checkpoint["epoch"]
-        if epoch in seen_epochs:
+        if epoch % args.diagnostic_stride or epoch in seen_epochs:
             continue
         seen_epochs.add(epoch)
         model.load_state_dict(checkpoint["model"])
@@ -183,12 +195,25 @@ def compute(args):
             return logits.detach(), _mean_ce_logit_grad(logits, batch[1])
         vna_logits, vna_g = shared(vna_batch)
         heldout_shared = shared(check)
+        # Selection has its own augmented data stream, never measurement V.
+        selection_logits, selection_g = shared(selection)
+        selection_scores = {}
+        selection_start = time.perf_counter()
+        for site in sites:
+            selected = tiny_candidate(model, site, selection_stat, cfg.r_max, args.seed)
+            selected_A, _ = extract_tiny_A(model, selected)
+            _, selected_diag = vna_block_correction(
+                model, site, selected_A, selection, cfg,
+                shared_logits=selection_logits, shared_g=selection_g, apply_gain_guard=False)
+            score = selected_diag.get("V", float("nan"))
+            if not selected_diag["nonfinite"] and math.isfinite(score):
+                selection_scores[site] = score
+        sync(device)
+        selection_seconds = time.perf_counter() - selection_start
+        top_sites = sorted(selection_scores, key=lambda site: (-selection_scores[site], site))[:3]
         for site in sites:
             refresh_start = time.perf_counter()
-            candidate = tiny_candidate(model, site, stat, cfg.r_max, args.seed)
-            spectrum = candidate.payload["tiny_eigenvalues"][:16]
-            A, rank = extract_tiny_A(model, candidate)
-            random_A = random_A_like(A, generator=dedicated_generator(args.seed, f"random-A:{site}", device))
+            default_candidate = tiny_candidate(model, site, stat, cfg.r_max, args.seed)
             lambdas = []
             for xb, yb in zip(stat[0].chunk(4), stat[1].chunk(4)):
                 sub = tiny_candidate(model, site, (xb, yb), 1, args.seed)
@@ -199,62 +224,180 @@ def compute(args):
                 tiny_candidate(model, site, (xb, yb), 1, args.seed, capture)
                 halves.append(capture)
             cv = cross_validated_lambda(*halves)
-            order = torch.randperm(len(stat[1]), device=device,
-                                   generator=dedicated_generator(args.seed, "shuffled-labels", device))
-            null = tiny_candidate(model, site, (stat[0], stat[1][order]), 1, args.seed).payload["tiny_eigenvalues"][0]
-            std = float(torch.tensor(lambdas, dtype=torch.float64).std(unbiased=False))
-            mean = sum(lambdas) / 4
+            nulls = []
+            for shuffle in range(3):
+                order = torch.randperm(len(stat[1]), device=device,
+                    generator=dedicated_generator(args.seed, f"shuffled-labels:{shuffle}", device))
+                nulls.append(tiny_candidate(model, site, (stat[0], stat[1][order]), 1,
+                                           args.seed).payload["tiny_eigenvalues"][0])
+            null_mean, null_max = statistics.mean(nulls), max(nulls)
+            std = statistics.pstdev(lambdas)
+            mean = statistics.mean(lambdas)
             noise = mean + 2 * std
             sync(device)
             refresh_seconds = time.perf_counter() - refresh_start
-            correction, cold = vna_block_correction(model, site, A, vna_batch, cfg, shared_logits=vna_logits, shared_g=vna_g)
-            if cold["nonfinite"]:
-                rows.append({"epoch": epoch, "site": site, "nonfinite": True})
-                continue
-            _, warm = vna_block_correction(model, site, A, vna_batch, cfg,
-                                           warm_start=cold["warm_start"], damping_cache=cold["damping_cache"], shared_logits=vna_logits, shared_g=vna_g)
-            random_correction, random_diag = vna_block_correction(model, site, random_A, vna_batch, cfg,
-                                                                  damping_cache=cold["damping_cache"], shared_logits=vna_logits, shared_g=vna_g)
-            with block_products(model, site, A, vna_batch[0], cfg.bn_mode, cache_block_input=cfg.cache_block_input) as products:
-                plain = products.JT(vna_g)
-                sizes = [r.numel() for _, r in products.parameter_refs]
-                plain_dict = {name: -piece.reshape_as(ref) for (name, ref), piece in
-                              zip(products.parameter_refs, plain.split(sizes))}
-                correction_norm = direction_vector(correction, products).norm()
-                boost = float(correction_norm / plain.norm().clamp_min(1e-30))
-            directions = {"vna": {n: -v for n, v in correction.items()}, "plain": plain_dict,
-                          "random": {n: -v for n, v in random_correction.items()},
-                          "lr_boost": {n: v * boost for n, v in plain_dict.items()}}
-            row = {"checkpoint": str(path), "epoch": epoch, "site": site, "rank": rank,
-                   "lambda_spectrum": spectrum, "lambda_full": spectrum[0],
-                   "lambda_sub_mean": mean, "lambda_sub_std": std, "lambda_sub_values": lambdas,
-                   "lambda_split_half": cv, "lambda_shuffled": null, "noise_floor": noise,
-                   "d_mu": sum(v / (v + noise) for v in spectrum),
-                   **{k:v for k,v in serial_diag(cold).items() if k != "site"}, "block_path": cold["site"], "random_V": random_diag.get("V"),
-                   "random_nonfinite": random_diag["nonfinite"],
-                   **heldout(model, site, A, check, {k:v for k,v in directions.items() if k != "random"}, cfg, shared=heldout_shared),
-                   **heldout(model, site, random_A, check, {"random": directions["random"]}, cfg, shared=heldout_shared),
-                   "g_outside_top_q": outside_top_space(model, site, A, vna_batch, cfg, shared=(vna_logits, vna_g)),
-                   "refresh_seconds": refresh_seconds, "sgd_seconds": base_cost, "sgd_step_timings": sgd_trials,
-                   "cold_seconds": cold["wall_time"], "warm_seconds": warm["wall_time"],
-                   "warm_jvp_calls": warm["jvp_calls"], "warm_vjp_calls": warm["vjp_calls"],
-                   "warm_extension_jvp_calls": warm["extension_jvp_calls"],
-                   "warm_extension_vjp_calls": warm["extension_vjp_calls"],
-                   "warm_cg_z": warm["cg_z"], "warm_cg_q": warm["cg_q"]}
-            for kind in ("cold", "warm"):
-                ratio = row[kind + "_seconds"] / base_cost
-                row[kind + "_sgd_ratio"] = ratio
-                row[kind + "_overhead_1_site"] = ratio / cfg.vna_every
-                row[kind + "_overhead_3_sites"] = 3 * ratio / cfg.vna_every
-            rows.append(row)
+            width = int(model.block(site).hidden_neurons)
+            requests = [("default", cfg.r_max)]
+            if site in top_sites:
+                requests += [("sweep", r) for r in dict.fromkeys((4, 16, 64, width))]
+            for row_kind, requested in requests:
+                rank_start = time.perf_counter()
+                candidate = default_candidate if row_kind == "default" else tiny_candidate(
+                    model, site, stat, requested, args.seed)
+                spectrum = candidate.payload["tiny_eigenvalues"]
+                A, rank = extract_tiny_A(model, candidate)
+                sync(device)
+                rank_refresh_seconds = time.perf_counter() - rank_start
+                random_A = random_A_like(A, generator=dedicated_generator(
+                    args.seed, f"random-A:{site}:{requested}", device))
+                common = dict(shared_logits=vna_logits, shared_g=vna_g)
+                correction, cold = vna_block_correction(model, site, A, vna_batch, cfg, **common)
+                cache = cold.get("damping_cache")
+                warm = {}
+                if cache is not None:
+                    _, warm = vna_block_correction(model, site, A, vna_batch, cfg,
+                        warm_start=cold["warm_start"], damping_cache=cache, **common)
+                random_correction, random_diag = vna_block_correction(
+                    model, site, random_A, vna_batch, cfg, damping_cache=cache,
+                    apply_gain_guard=False, **common)
+                lite_correction, lite = vna_lite_correction(
+                    model, site, A, vna_batch, cfg, damping_cache=cache, **common)
+                random_lite_correction, random_lite = vna_lite_correction(
+                    model, site, random_A, vna_batch, cfg, damping_cache=cache,
+                    apply_gain_guard=False, **common)
+                with block_products(model, site, A, vna_batch[0], cfg.bn_mode,
+                                    cache_block_input=cfg.cache_block_input) as products:
+                    plain = products.JT(vna_g)
+                    sizes = [r.numel() for _, r in products.parameter_refs]
+                    plain_dict = {name: -piece.reshape_as(ref) for (name, ref), piece in
+                                  zip(products.parameter_refs, plain.split(sizes))}
+                    boost = float(direction_vector(correction, products).norm() / plain.norm().clamp_min(1e-30))
+                    lite_boost = float(direction_vector(lite_correction, products).norm() / plain.norm().clamp_min(1e-30))
+                    lr_gain = float(vna_g.dot(products.Jv(plain * boost).double())) if correction else None
+                    lite_lr_gain = float(vna_g.dot(products.Jv(plain * lite_boost).double())) if lite_correction else None
+                directions = {
+                    "vna": {n: -v for n, v in correction.items()}, "plain": plain_dict,
+                    "lite": {n: -v for n, v in lite_correction.items()},
+                    "lr_boost": {n: v * boost for n, v in plain_dict.items()} if correction else {},
+                    "lite_lr_boost": {n: v * lite_boost for n, v in plain_dict.items()} if lite_correction else {}}
+                row = {"checkpoint": str(path), "epoch": epoch, "site": site,
+                       "row_kind": row_kind, "requested_rank": requested, "effective_rank": rank,
+                       "site_width": width, "rank": rank, "random_rank": rank,
+                       "lr_boost_realized_gain": lr_gain, "lite_lr_boost_realized_gain": lite_lr_gain,
+                       "lr_boost_scale": boost, "lite_lr_boost_scale": lite_boost,
+                       "selection_batch_purpose": "rank-selection", "selection_V": selection_scores.get(site),
+                       "selected_top3": site in top_sites, "selection_seconds": selection_seconds,
+                       "lambda_spectrum": spectrum, "lambda_full": spectrum[0],
+                       "lambda_spectrum_count": len(spectrum), "lambda_spectrum_min": min(spectrum),
+                       "lambda_spectrum_sum": sum(spectrum), "stat_samples": len(stat[1]),
+                       "lambda_sub_mean": mean, "lambda_sub_std": std, "lambda_sub_values": lambdas,
+                       "lambda_split_half": cv, "lambda_shuffled": null_mean,
+                       "lambda_shuffled_values": nulls, "lambda_shuffled_mean": null_mean,
+                       "lambda_shuffled_max": null_max, "shuffled_samples": len(stat[1]),
+                       "significant_vs_shuffled": spectrum[0] > null_max,
+                       "significant_split_half": cv > null_max,
+                       "noise_floor": noise, "d_mu": sum(v / (v + null_max) for v in spectrum),
+                       **{k:v for k,v in serial_diag(cold).items() if k != "site"},
+                       "block_path": cold.get("site"),
+                       **{"random_"+k: v for k,v in serial_diag(random_diag).items()},
+                       **{"lite_"+k: v for k,v in serial_diag(lite).items()},
+                       **{"random_lite_"+k: v for k,v in serial_diag(random_lite).items()},
+                       **heldout(model, site, A, check, directions, cfg, shared=heldout_shared),
+                       **heldout(model, site, random_A, check, {
+                           "random": {n:-v for n,v in random_correction.items()},
+                           "random_lite": {n:-v for n,v in random_lite_correction.items()}}, cfg, shared=heldout_shared),
+                       "refresh_seconds": refresh_seconds, "rank_refresh_seconds": rank_refresh_seconds,
+                       "sgd_batch_size": len(sgd_batch[1]), "sgd_seconds": base_cost, "sgd_step_timings": sgd_trials,
+                       "cold_seconds": cold["wall_time"], "warm_seconds": warm.get("wall_time"),
+                       "lite_seconds": lite["wall_time"],
+                       **{"warm_"+k:v for k,v in serial_diag(warm).items()}}
+                if row_kind == "default":
+                    row["g_outside_top_q"] = outside_top_space(
+                        model, site, A, vna_batch, cfg, shared=(vna_logits, vna_g))
+                for kind in ("cold", "warm", "lite"):
+                    seconds = row[kind + "_seconds"]
+                    ratio = None if seconds is None else seconds / base_cost
+                    row[kind + "_sgd_ratio"] = ratio
+                    row[kind + "_overhead_1_site"] = None if ratio is None else ratio / cfg.vna_every
+                    row[kind + "_overhead_3_sites"] = None if ratio is None else 3 * ratio / cfg.vna_every
+                rows.append(row)
     return rows
+
+
+def finite(value):
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def criterion_results(row, variant):
+    """Every criterion explicitly requires its finite, nonempty directions."""
+    own, random = ("vna", "random") if variant == "full" else ("lite", "random_lite")
+    prefix = "" if variant == "full" else "lite_"
+    lr = "lr_boost" if variant == "full" else "lite_lr_boost"
+    def direction_ok(label):
+        return row.get(label + "_valid", False) and not row.get(label + "_empty", True) and finite(row.get(label+"_derivative"))
+    def diag_ok(p):
+        return not row.get(p+"nonfinite", True) and finite(row.get(p+"V"))
+    both = (direction_ok(own) and direction_ok(random) and diag_ok(prefix) and diag_ok(random+"_")
+            and row.get("random_rank") == row.get("rank") and row.get("rank", 0) > 0)
+    d, rd = row.get(own+"_derivative"), row.get(random+"_derivative")
+    v, rv = row.get(prefix+"V"), row.get(random+"_V")
+    return {
+        "V": (both, bool(both and v >= 3*rv)),
+        "derivative": (both, bool(both and d < 0 and abs(d) >= 3*abs(rd))),
+        "lr_boost": (direction_ok(own) and diag_ok(prefix) and direction_ok(lr),
+            bool(direction_ok(own) and diag_ok(prefix) and direction_ok(lr) and d < 0 and d < row[lr+"_derivative"]))}
+
+
+def rank_summary(rows):
+    result = []
+    sweep = [r for r in rows if r.get("row_kind") == "sweep"]
+    for rank in sorted({r["requested_rank"] for r in sweep}):
+        group = [r for r in sweep if r["requested_rank"] == rank]
+        early = [r for r in group if r["epoch"] < 150]
+        item = {"requested_rank": rank, "rows_before_150": len(early),
+                "effective_ranks": sorted({r["rank"] for r in group})}
+        for variant in ("full", "lite"):
+            outcomes = [criterion_results(r, variant) for r in early]
+            for criterion in ("V", "derivative", "lr_boost"):
+                eligible = sum(o[criterion][0] for o in outcomes)
+                item[variant+"_"+criterion+"_eligible"] = eligible
+                item[variant+"_"+criterion+"_passed"] = sum(o[criterion][1] for o in outcomes)
+                item["excluded_"+variant+"_"+criterion] = len(early) - eligible
+            item[variant+"_joint_rows"] = sum(all(v[1] for v in o.values()) for o in outcomes)
+            prefix = "" if variant == "full" else "lite_"
+            trends = {}
+            decay_eligible = decay_excluded = 0
+            for site in sorted({r["site"] for r in group}):
+                def usable(r):
+                    label = "vna" if variant == "full" else "lite"
+                    return (r.get(label+"_valid", False) and not r.get(label+"_empty", True)
+                            and not r.get(prefix+"nonfinite", True) and finite(r.get(label+"_derivative"))
+                            and all(finite(r.get(prefix+k)) for k in ("U", "V", "rho")))
+                a = [r for r in early if r["site"] == site and usable(r)]
+                b = [r for r in group if r["site"] == site and r["epoch"] >=180 and usable(r)]
+                relevant = [r for r in group if r["site"] == site and (r["epoch"] <150 or r["epoch"] >=180)]
+                decay_eligible += sum(usable(r) for r in relevant)
+                decay_excluded += sum(not usable(r) for r in relevant)
+                trends[site] = {k: statistics.mean(r[prefix+k] for r in b) <= .1*statistics.mean(r[prefix+k] for r in a)
+                                if a and b else None for k in ("U", "V", "rho")}
+            item[variant+"_decay_eligible"] = decay_eligible
+            item["excluded_"+variant+"_decay"] = decay_excluded
+            item[variant+"_decay_by_site"] = trends
+            item[variant+"_decay"] = bool(trends) and all(v is True for t in trends.values() for v in t.values())
+            item[variant+"_go"] = bool(item[variant+"_joint_rows"] and item[variant+"_decay"])
+        item["complete"] = max(r["epoch"] for r in group) >=200 and all(
+            v is not None for variant in ("full", "lite") for t in item[variant+"_decay_by_site"].values() for v in t.values())
+        for key in ("cold_sgd_ratio", "warm_sgd_ratio", "lite_sgd_ratio"):
+            costs = [r[key] for r in group if finite(r.get(key))]
+            item[key] = statistics.mean(costs) if costs else None
+        result.append(item)
+    return result
 
 
 def write_outputs(rows, args):
     cfg = VNAConfig(seed=args.seed, bn_mode=args.vna_bn, cache_block_input=args.cache_block_input)
     if args.smoke:
         cfg = replace(cfg, stat_samples=16, vna_batch=2, r_max=2, cg_iters=10)
-    sites = sorted({r["site"] for r in rows})
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     fields = sorted(set().union(*(r.keys() for r in rows)))
@@ -265,42 +408,33 @@ def write_outputs(rows, args):
         for row in rows:
             writer.writerow({k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in row.items()})
     temporary.replace(output / "signal_curve.csv")
-    valid = [r for r in rows if not r["nonfinite"] and "rho" in r]
-    summary = {"config": asdict(cfg), "rows": len(rows), "nonfinite_rows": len(rows) - len(valid),
-               "rho_above_0_3": sum(r["rho"] > .3 for r in valid),
-               "rho_above_0_3_fraction": sum(r["rho"] > .3 for r in valid) / max(1, len(valid)),
-               "rho_by_site": {site: [r["rho"] for r in valid if r["site"] == site] for site in sites},
+    valid = [r for r in rows if not r["nonfinite"] and finite(r.get("rho"))]
+    summary = {"config": asdict(cfg), "diagnostic_stride": args.diagnostic_stride,
+               "rows": len(rows), "nonfinite_rows": sum(r["nonfinite"] for r in rows),
                "fake_data": args.fake_data, "smoke": args.smoke,
-               "phase0_acceptance": "not assessed: smoke/partial checkpoints cannot establish training trends",
+               "rho_above_0_3_fraction": sum(r["rho"] > .3 for r in valid) / max(1, len(valid)),
+               "skipped_nonpositive_gain": sum(r.get("skipped", False) for r in rows),
+               "significance_rule": "full and split-half lambda > max of 3 full-stat-sample shuffled nulls",
+               "significance_by_checkpoint_site": [{k:r[k] for k in (
+                   "epoch", "site", "lambda_full", "lambda_split_half", "lambda_shuffled_mean",
+                   "lambda_shuffled_max", "significant_vs_shuffled", "significant_split_half")}
+                   for r in rows if r.get("row_kind") == "default"],
                "grow_epochs": "TODO: paired persistent-growth experiment deferred; no growth installed"}
-    summary["tiny_V_at_least_3x_random_before_150"] = sum(
-        r["epoch"] < 150 and r["random_V"] is not None and r["V"] >= 3*r["random_V"] for r in valid)
-    summary["heldout_negative_at_least_3x_random_before_150"] = sum(
-        r["epoch"] < 150 and r["vna_derivative"] < 0 and
-        abs(r["vna_derivative"]) >= 3*abs(r["random_derivative"]) for r in valid)
-    summary["signals_by_epoch"] = [
-        {"epoch": r["epoch"], "site": r["site"], "U": r["U"], "V": r["V"], "rho": r["rho"]}
-        for r in valid]
-    early = [r for r in valid if r["epoch"] < 150]
-    joint = [r for r in early if r["random_V"] is not None and r["V"] >= 3*r["random_V"]
-             and r["vna_derivative"] < 0
-             and abs(r["vna_derivative"]) >= 3*abs(r["random_derivative"])]
-    # SPEC gives no numerical definition of "toward 0". Use a declared,
-    # untuned operational rule: late (>=180) mean below 10% of early (<150).
-    trends = {}
-    for site in sites:
-        a = [r for r in early if r["site"] == site]
-        b = [r for r in valid if r["site"] == site and r["epoch"] >= 180]
-        trends[site] = {key: (statistics.mean(r[key] for r in b) <= .1*statistics.mean(r[key] for r in a))
-                        if a and b else None for key in ("U", "V", "rho")}
-    complete = bool(valid) and max(r["epoch"] for r in valid) >= 200 and all(
-        value is not None for trend in trends.values() for value in trend.values())
-    decay = complete and all(value for trend in trends.values() for value in trend.values())
-    summary.update(phase0_acceptance=("not assessed: synthetic/partial run" if args.fake_data or args.smoke or not complete
-                    else "go" if joint and decay else "no-go"),
-                   simultaneous_early_criteria_rows=len(joint), signal_decay_by_site=trends,
-                   decay_rule="mean epochs >=180 <= 0.1 * mean epochs <150, per site and U/V/rho",
-                   skipped_nonpositive_gain=sum(r.get("nonpositive_gain", False) for r in rows))
+    table = rank_summary(rows)
+    summary["per_rank"] = table
+    summary["decay_rule"] = "mean epochs >=180 <= 0.1 * mean epochs <150, per requested rank/site and U/V/rho"
+    complete = bool(table) and all(t["complete"] for t in table)
+    summary["phase0_acceptance"] = ("not assessed: synthetic/partial run" if args.fake_data or args.smoke or not complete
+        else "go" if any(t["full_go"] or t["lite_go"] for t in table) else "no-go")
+    print("r | full V/derivative/LR (pass/eligible; excluded), decay | lite V/derivative/LR, decay | cold/warm/lite SGD cost", flush=True)
+    for t in table:
+        def cells(variant):
+            outcomes = " ".join(f"{t[variant+'_'+c+'_passed']}/{t[variant+'_'+c+'_eligible']} (x{t['excluded_'+variant+'_'+c]})"
+                            for c in ("V", "derivative", "lr_boost"))
+            decay = t[variant+"_decay"] if all(v is not None for trend in t[variant+"_decay_by_site"].values() for v in trend.values()) else "n/a"
+            return outcomes + f", decay={decay}"
+        print(f"{t['requested_rank']} | {cells('full')} | {cells('lite')} | "
+              f"{t['cold_sgd_ratio']} / {t['warm_sgd_ratio']} / {t['lite_sgd_ratio']}", flush=True)
     atomic_json_save(summary, output / "summary.json")
     return rows
 
@@ -319,7 +453,8 @@ def checkpoint_identity(path):
 def diagnostic_identity(args):
     identity = {k: getattr(args, k) for k in (
         "seed", "vna_bn", "fake_data", "smoke", "gpu_data", "cache_block_input",
-        "channels_last", "cudnn_benchmark")}
+        "channels_last", "cudnn_benchmark", "diagnostic_stride")}
+    identity["schema_version"] = "stage1c-v1"
     identity["amp"] = False  # VNA products and solves always use fp32.
     # Include algorithm source so markers from changed math are never reused.
     identity["source"] = hashlib.sha256(Path(__file__).read_bytes() +
@@ -333,7 +468,12 @@ def run(args):
     output = Path(args.output)
     done = output / "completed"
     done.mkdir(parents=True, exist_ok=True)
+    if args.diagnostic_stride < 1:
+        raise ValueError("diagnostic_stride must be positive")
     identity = diagnostic_identity(args)
+    # Reject every old marker before filtering epochs or starting new work.
+    for marker in done.glob("epoch_*.json"):
+        validate_resume_protocol(json.loads(marker.read_text())["identity"], identity)
     while True:
         paths = [Path(p) for p in args.checkpoints] or sorted(Path(args.checkpoint_dir).glob("epoch_*.pt"))
         latest = Path(args.checkpoint_dir)/"latest.pt"
@@ -346,7 +486,9 @@ def run(args):
                                (Path(args.checkpoint_dir)/"training_done.json").exists()):
                 break
             epoch, digest = checkpoint_identity(path)
-            if (epoch // 10) % args.shards != args.shard:
+            if epoch % args.diagnostic_stride:
+                continue
+            if (epoch // args.diagnostic_stride) % args.shards != args.shard:
                 continue
             marker = done / f"epoch_{epoch:03d}.json"
             if marker.exists():
@@ -395,6 +537,8 @@ def run(args):
 
 
 def merge(args):
+    if args.diagnostic_stride < 1:
+        raise ValueError("diagnostic_stride must be positive")
     rows = []
     identities = set()
     for path in sorted((Path(args.output)/"completed").glob("epoch_*.json")):
@@ -418,6 +562,7 @@ def parser():
     p.add_argument("--vna-bn", choices=["eval", "train"], default="eval")
     p.add_argument("--fake-data", action="store_true")
     p.add_argument("--smoke", action="store_true", help="small batches/solves for CPU end-to-end verification")
+    p.add_argument("--diagnostic-stride", type=int, default=20)
     p.add_argument("--watch", action="store_true")
     p.add_argument("--stop-file")
     p.add_argument("--poll-seconds", type=float, default=10.)
