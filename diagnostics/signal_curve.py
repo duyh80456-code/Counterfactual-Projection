@@ -221,7 +221,7 @@ def run(args):
     fields = sorted(set().union(*(r.keys() for r in rows)))
     temporary = output / "signal_curve.csv.tmp"
     with temporary.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fields)
+        writer = csv.DictWriter(stream, fields, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in row.items()})

@@ -380,12 +380,6 @@ def vna_block_correction(
         inputs = inputs.detach().float()
         targets = targets.detach().to(inputs.device)
         A_dict = _as_a_dict(A)
-        with torch.no_grad():
-            model.eval()
-        if cfg.bn_mode == "train":
-            model.train()
-        else:
-            model.eval()
         # Disable dropout in both BN modes; train mode applies only to BN.
         model.eval()
         if cfg.bn_mode == "train":
@@ -471,6 +465,9 @@ def vna_block_correction(
                 name: (cfg.lambda_vna * value).detach().to(dict(model.named_parameters())[name])
                 for name, value in _unflatten(d_flat.to(dtype=products.parameter_refs[0][1].dtype), products.parameter_refs).items()
             }
+            if not all(torch.isfinite(value).all() for value in grad_delta.values()):
+                diag["nonfinite"] = True
+                return {}, diag
             if inputs.is_cuda:
                 torch.cuda.synchronize(inputs.device)
             diag.update({

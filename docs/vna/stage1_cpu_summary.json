@@ -1,0 +1,52 @@
+{
+  "config": {
+    "accept_steps": 50,
+    "bn_mode": "eval",
+    "cg_iters": 30,
+    "cg_tol": 0.01,
+    "check_every": 1,
+    "damping_rel": 0.01,
+    "dorfler_theta": 0.5,
+    "eta_drift": 0.5,
+    "hutchinson_probes": 8,
+    "lambda_vna": 1.0,
+    "max_sites": 3,
+    "n_boot": 4,
+    "r_max": 16,
+    "rank_energy": 0.9,
+    "refresh_max_epochs": 10,
+    "seed": 0,
+    "stat_ema": 0.5,
+    "stat_samples": 1024,
+    "stop_patience": 3,
+    "tau_rel": 0.05,
+    "tau_rho": 0.3,
+    "use_g3": false,
+    "vna_batch": 128,
+    "vna_every": 4
+  },
+  "fake_data": true,
+  "grow_epochs": "TODO: paired persistent-growth experiment deferred; no growth installed",
+  "heldout_negative_at_least_3x_random_before_150": 0,
+  "nonfinite_rows": 0,
+  "phase0_acceptance": "not assessed: smoke/partial checkpoints cannot establish training trends",
+  "rho_above_0_3": 0,
+  "rho_above_0_3_fraction": 0.0,
+  "rho_by_site": {
+    "stages.0.blocks.0": [
+      4.3501816356003626e-05
+    ]
+  },
+  "rows": 1,
+  "signals_by_epoch": [
+    {
+      "U": 2.20860813106273e-07,
+      "V": 1.7173061155785403e-07,
+      "epoch": 1,
+      "rho": 4.3501816356003626e-05,
+      "site": "stages.0.blocks.0"
+    }
+  ],
+  "smoke": false,
+  "tiny_V_at_least_3x_random_before_150": 0
+}

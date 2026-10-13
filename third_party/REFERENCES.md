@@ -24,3 +24,38 @@ revisions instead of vendoring or rewriting them:
 
 Only data/budget/checkpoint/metric wrappers live in this repository. External
 operators are imported from those checkouts at runtime.
+
+## Stage 1 VNA / TINY alignment
+
+Gromo uses the official `https://github.com/growingnet/gromo` revision
+`8d19107b61a9459a9021065a329b699adcb0f25b` (BSD-3-Clause, installed
+`gromo-0.0.1.dist-info/licenses/LICENCE.md`). The installed VCS metadata verifies
+this pin; existing notebooks use the same detached checkout and install its
+package and declared dependencies.
+
+For the non-preactivation CIFAR BasicBlock, A is
+`first_layer.extended_output_layer`, B is
+`second_layer.extended_input_layer`; the virtual activation is ReLU with no BN:
+`GrowingBatchNorm.extended_forward` passes extension channels through unchanged
+(`gromo/modules/growing_normalisation.py:270-296`). B enters before the original
+second BN. The native candidate forward and extracted-A forward are tested for
+exact agreement; VNA treats B as a variable at zero, ignoring native B and delta.
+Counterfactual proposals override target width to current width plus requested
+rank (`probe/counterfactual_tiny.py:63-84`).
+
+**Spec discrepancy:** sum-reduction CE does not imply batch-size-scaled TINY
+values. Native S/M statistics sum spatial positions but divide by sample count
+(`gromo/utils/tensor_statistic.py:122-140`,
+`gromo/modules/conv2d_growing_module.py:998-1061,2064-2083`). The payload contains
+retained **singular values**, not squares; native threshold/rank limits and the
+adapter's effective-rank slice truncate the spectrum
+(`gromo/utils/tools.py:304-339`, `tiny_adapter.py:489-522`). Stage 1 leaves these
+in native units and uses mean CE independently for VNA. Statistics force eval
+mode (`gromo/utils/training_utils.py:375-387`); standard tracked BN does not update
+running buffers in this pinned path. The transactional wrapper still restores
+all state buffers, gradients and modes (`probe/gromo_adapter.py:89-107`).
+
+See `docs/vna/STAGE1_REPORT.md` for full file:line evidence, empirical scaling,
+noise/cost measurements, limitations and CPU tests. Paths under `gromo/` above
+are relative to the pinned installed package, and `tiny_adapter.py` is under
+`third_party/One-Shot-TAS-CCIL/dual_growth/adapters/`.
