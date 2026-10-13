@@ -21,6 +21,16 @@ TOTAL_EPOCHS = 360
 POST_FORK_EPOCHS = TOTAL_EPOCHS - FORK_EPOCH
 
 
+def validate_resume_protocol(saved, requested):
+    """Reject changes to a resumed run with the differing settings in the error."""
+    if saved != requested:
+        saved = saved or {}
+        differences = [f"{key}: saved={saved.get(key)!r}, requested={requested.get(key)!r}"
+                       for key in sorted(saved.keys() | requested.keys())
+                       if saved.get(key) != requested.get(key) or (key in saved) != (key in requested)]
+        raise ValueError("resume protocol mismatch: " + "; ".join(differences))
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
