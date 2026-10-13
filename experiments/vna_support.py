@@ -69,6 +69,8 @@ def augmented_batch(dataset, indices, count, generator, device):
     # Materialize under an isolated stream, including torchvision transforms.
     order = torch.randperm(len(indices), generator=generator)
     chosen = [indices[int(order[i % len(order)])] for i in range(count)]
+    if isinstance(dataset, DeviceCIFAR):
+        return dataset.batch(chosen, generator)
     with isolated_rng(generator):
         pairs = [dataset[i] for i in chosen]
     return (torch.stack([x for x, _ in pairs]).to(device),
@@ -99,3 +101,70 @@ def tiny_candidate(model, site, batch, rank, seed=0, capture=None):
     finally:
         if hook is not None:
             second._compute_optimal_added_parameters = hook
+
+
+class DeviceCIFAR:
+    """Resident uint8 CIFAR; all crop/flip choices use the supplied CPU stream.
+
+    CPU is supported as an oracle/fallback. Transform distribution matches the
+    reference train transform; the legacy PIL stream is not bitwise equivalent.
+    Every paired arm must use the same path and restored generator state.
+    """
+    def __init__(self, dataset, device):
+        self.data = torch.as_tensor(np.asarray(dataset.data), device=device).permute(0, 3, 1, 2).contiguous()
+        self.targets = torch.as_tensor(dataset.targets, device=device, dtype=torch.long)
+        self.mean = torch.tensor((.5071, .4867, .4408), device=device)[None, :, None, None]
+        self.std = torch.tensor((.2675, .2565, .2761), device=device)[None, :, None, None]
+
+    def batch(self, indices, generator):
+        import torch.nn.functional as F
+        index = torch.as_tensor(indices, device=self.data.device, dtype=torch.long)
+        images = F.pad(self.data[index], (4, 4, 4, 4))
+        count = len(index)
+        offsets = torch.randint(9, (count, 2), generator=generator).to(self.data.device)
+        flip = (torch.rand(count, generator=generator) < .5).to(self.data.device)
+        axis = torch.arange(32, device=self.data.device)
+        yy = offsets[:, 0, None, None] + axis[None, :, None]
+        xx = offsets[:, 1, None, None] + axis[None, None, :]
+        images = images.permute(0, 2, 3, 1)[torch.arange(count, device=self.data.device)[:, None, None], yy, xx].permute(0, 3, 1, 2)
+        images = torch.where(flip[:, None, None, None], images.flip(-1), images).float().div_(255)
+        return (images - self.mean) / self.std, self.targets[index]
+
+
+class DeviceTrainLoader:
+    def __init__(self, dataset, indices, batch_size, seed, generator_state=None):
+        self.dataset, self.indices, self.batch_size = dataset, indices, batch_size
+        self.generator = torch.Generator().manual_seed(seed)
+        if generator_state is not None:
+            self.generator.set_state(generator_state.cpu())
+
+    def __iter__(self):
+        order = torch.randperm(len(self.indices), generator=self.generator).tolist()
+        for start in range(0, len(order), self.batch_size):
+            yield self.dataset.batch([self.indices[i] for i in order[start:start + self.batch_size]], self.generator)
+
+
+def fast_train_epoch(model, loader, optimizer, device, *, amp=False, scaler=None, channels_last=False):
+    """Plain SGD only; VNA math is never entered under this autocast scope."""
+    model.train()
+    loss_sum = correct = count = 0
+    for inputs, targets in loader:
+        inputs = inputs.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        if channels_last:
+            inputs = inputs.contiguous(memory_format=torch.channels_last)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
+            logits = model(inputs)
+            loss = torch.nn.functional.cross_entropy(logits.float(), targets)
+        if amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+        loss_sum += float(loss.detach()) * targets.numel()
+        correct += int((logits.argmax(1) == targets).sum())
+        count += targets.numel()
+    return {"loss": loss_sum/count, "task_loss": loss_sum/count, "accuracy": correct/count}

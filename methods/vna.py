@@ -53,6 +53,7 @@ class VNAConfig:
     use_g3: bool = False
     bn_mode: str = "eval"
     hutchinson_probes: int = 8
+    cache_block_input: bool = False
     seed: int = 20261013
 
 
@@ -250,6 +251,20 @@ def _unflatten(vector: Tensor, refs: tuple[tuple[str, Tensor], ...]) -> dict[str
     return {name: piece.reshape_as(ref) for (name, ref), piece in zip(refs, pieces)}
 
 
+class _Suffix(nn.Module):
+    """Exact native Gromo forward from a fixed selected block input onward."""
+    def __init__(self, model, start, inputs):
+        super().__init__()
+        self.model, self.start, self.inputs = model, start, inputs
+
+    def forward(self):
+        x = self.inputs
+        nodes = [node for stage in self.model.core.stages for node in stage]
+        for node in nodes[self.start:]:
+            x = node.extended_forward(x) if hasattr(node, "extended_forward") else node(x)
+        return self.model.core.post_net(x)
+
+
 class _Products:
     def __init__(
         self,
@@ -259,6 +274,7 @@ class _Products:
         extension_names: tuple[str, ...],
         *,
         bn_mode: str,
+        cache_block_input: bool = False,
     ) -> None:
         if bn_mode not in {"eval", "train"}:
             raise ValueError("bn_mode must be 'eval' or 'train'")
@@ -269,15 +285,33 @@ class _Products:
         self.extension_refs = tuple((name, named_parameters[name].detach()) for name in extension_names)
         self.bn_mode = bn_mode
         self.buffers = _copy_buffers(model) if bn_mode == "train" else {}
+        self.forward_calls = 0
+        self._pullbacks = {}
+        self.suffix = None
+        if cache_block_input and bn_mode == "eval" and hasattr(model, "core"):
+            block_path = parameter_names[0].split(".first_layer")[0]
+            target = dict(model.named_modules())[block_path]
+            nodes = [node for stage in model.core.stages for node in stage]
+            if target not in nodes:
+                raise ValueError("cached products require a native Gromo block")
+            with torch.no_grad():
+                x = model.core.pre_net(inputs)
+                for node in nodes[:nodes.index(target)]:
+                    x = node.extended_forward(x) if hasattr(node, "extended_forward") else node(x)
+            self.forward_calls += 1  # one prefix evaluation
+            self.suffix = _Suffix(model, nodes.index(target), x.detach())
         self.jvp_calls = 0
         self.vjp_calls = 0
         self.extension_jvp_calls = 0
         self.extension_vjp_calls = 0
 
     def _call(self, replacements: Mapping[str, Tensor]) -> Tensor:
+        self.forward_calls += 1
         merged: dict[str, Tensor] = dict(replacements)
         if self.bn_mode == "train":
             merged.update({name: value.clone() for name, value in self.buffers.items()})
+        if self.suffix is not None:
+            return functional_call(self.suffix, {"model." + k: v for k, v in merged.items()}, (), strict=False).reshape(-1)
         return functional_call(self.model, merged, (self.inputs,), strict=False).reshape(-1)
 
     def _function_for(self, refs: tuple[tuple[str, Tensor], ...]):
@@ -288,6 +322,11 @@ class _Products:
 
         return fn
 
+    def _pullback(self, key, refs):
+        if key not in self._pullbacks:
+            _, self._pullbacks[key] = vjp(self._function_for(refs), *(r for _, r in refs))
+        return self._pullbacks[key]
+
     def Jv(self, vector: Tensor) -> Tensor:
         self.jvp_calls += 1
         primals = tuple(ref for _, ref in self.parameter_refs)
@@ -297,7 +336,7 @@ class _Products:
     def JT(self, vector: Tensor) -> Tensor:
         self.vjp_calls += 1
         primals = tuple(ref for _, ref in self.parameter_refs)
-        _, pullback = vjp(self._function_for(self.parameter_refs), *primals)
+        pullback = self._pullback("J", self.parameter_refs)
         return _flatten(tuple(value.detach() for value in pullback(vector.detach().to(primals[0]))))
 
     def JEv(self, vector: Tensor) -> Tensor:
@@ -310,7 +349,7 @@ class _Products:
     def JET(self, vector: Tensor) -> Tensor:
         self.extension_vjp_calls += 1
         primals = tuple(ref for _, ref in self.extension_refs)
-        _, pullback = vjp(self._function_for(self.extension_refs), *primals)
+        pullback = self._pullback("E", self.extension_refs)
         return _flatten(tuple(value.detach() for value in pullback(vector.detach().to(primals[0]))))
 
     def K(self, vector: Tensor) -> Tensor:
@@ -358,6 +397,7 @@ def vna_block_correction(
     cfg: VNAConfig,
     warm_start: Mapping[str, Tensor] | None = None,
     *, damping_cache: Mapping[str, Any] | None = None,
+    shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return ``lambda_vna * J^T R K_E R K g`` for addition to gradients.
 
@@ -393,9 +433,10 @@ def vna_block_correction(
                 if id(parameter) in {id(p) for p in b_layer.parameters(recurse=True)}
             )
             products = _Products(
-                model, inputs, parameter_names, extension_names, bn_mode=cfg.bn_mode)
-            logits = products._call({}).reshape(targets.numel(), -1)
-            g = _mean_ce_logit_grad(logits, targets).to(dtype=torch.float64)
+                model, inputs, parameter_names, extension_names, bn_mode=cfg.bn_mode,
+                cache_block_input=cfg.cache_block_input)
+            logits = products._call({}).reshape(targets.numel(), -1) if shared_logits is None else shared_logits
+            g = _mean_ce_logit_grad(logits, targets).to(dtype=torch.float64) if shared_g is None else shared_g
             n = g.numel()
             if damping_cache is None:
                 trace, jacobi = _hutchinson_trace_and_diag(products, n, cfg, g.device)
@@ -468,9 +509,18 @@ def vna_block_correction(
             if not all(torch.isfinite(value).all() for value in grad_delta.values()):
                 diag["nonfinite"] = True
                 return {}, diag
+            realized_gain = float(g.dot(products.Jv(_flatten(tuple(grad_delta[n] for n, _ in products.parameter_refs))).double()))
+            nonpositive_gain = realized_gain <= 0
+            if not math.isfinite(realized_gain):
+                diag["nonfinite"] = True
+                return {}, diag
             if inputs.is_cuda:
                 torch.cuda.synchronize(inputs.device)
             diag.update({
+                "realized_gain": realized_gain,
+                "nonpositive_gain": nonpositive_gain,
+                "skipped": nonpositive_gain,
+                "skip_reason": "nonpositive_realized_gain" if nonpositive_gain else None,
                 "ce": float(F.cross_entropy(logits.double(), targets)),
                 "bn_mode": cfg.bn_mode,
                 "damping_cache": {"mu": mu, "jacobi": jacobi.detach(), "trace_K": trace},
@@ -493,7 +543,7 @@ def vna_block_correction(
                 "extension_vjp_calls": products.extension_vjp_calls,
                 "wall_time": time.perf_counter() - start,
             })
-            return grad_delta, diag
+            return ({} if nonpositive_gain else grad_delta), diag
     except (FloatingPointError, torch.linalg.LinAlgError) as error:
         diag.update({
             "nonfinite": True,
@@ -503,7 +553,7 @@ def vna_block_correction(
         return {}, diag
     finally:
         if products is not None:
-            for key in ("jvp_calls", "vjp_calls", "extension_jvp_calls", "extension_vjp_calls"):
+            for key in ("forward_calls", "jvp_calls", "vjp_calls", "extension_jvp_calls", "extension_vjp_calls"):
                 diag[key] = getattr(products, key)
         if next(model.parameters()).is_cuda:
             torch.cuda.synchronize(next(model.parameters()).device)
@@ -530,7 +580,7 @@ __all__ = ["VNAConfig", "dedicated_generator", "extract_tiny_A", "random_A_like"
 
 
 @contextmanager
-def block_products(model, site, A, inputs, bn_mode="eval"):
+def block_products(model, site, A, inputs, bn_mode="eval", cache_block_input=False):
     """Read-only matrix-free operators, also used by Phase 0 diagnostics."""
     before = _snapshot(model)
     modes = {module: module.training for module in model.modules()}
@@ -545,7 +595,7 @@ def block_products(model, site, A, inputs, bn_mode="eval"):
                 _preserve_functional_state(model), _virtual_b_context(model, block, _as_a_dict(A)) as outgoing:
             ids = {id(p) for p in outgoing.parameters()}
             ext_names = tuple(n for n, p in model.named_parameters() if id(p) in ids)
-            yield _Products(model, inputs, names, ext_names, bn_mode=bn_mode)
+            yield _Products(model, inputs, names, ext_names, bn_mode=bn_mode, cache_block_input=cache_block_input)
     finally:
         for module, training in modes.items():
             module.training = training

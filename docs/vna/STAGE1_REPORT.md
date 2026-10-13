@@ -111,3 +111,239 @@ git merge --ff-only FETCH_HEAD
 ```
 
 The current worktree already contains identical authorized file contents; because they are untracked/modified relative to the original branch, archive those working copies before merging if Git reports an overwrite conflict. Do not discard unrelated changes. The clone is the immediately reviewable committed result; the original-checkout commit requirement remains limited by the sandbox.
+
+## Stage 1B — supervisor fixes and resumable Kaggle Phase 0
+
+Date: 2026-10-13. Changes are left in the working tree. No commit, clone, bundle,
+push, or Git metadata write was performed for Stage 1B. The preceding Stage 1
+commit-delivery section is historical: Stage 1 is now at HEAD
+`454f3bd61000e65d72bb86f3a768061fb11b5f79`. The obsolete
+`docs/vna/STAGE1_COMMITS.bundle` was absent; the existing `stage1_*.json/csv`
+evidence files were retained. No new generated measurement files were added to
+the repository; CPU timing scratch evidence is `/tmp/stage1b_cpu_benchmark.json`.
+
+### Supervisor fixes
+
+- `_Products.JT` and `JET` lazily build one pullback each per product object
+  (fixed parameter set/batch/virtual context), then reuse it. `forward_calls`
+  counts actual functional forwards plus the optional prefix evaluation;
+  `vjp_calls` and `extension_vjp_calls` count pullback applications, including
+  applications of an already-built pullback. Existing JVP counters remain.
+  Tests compare both eval- and copied-buffer train-BN pullbacks bitwise against
+  the old rebuild-on-every-call path, and verify subsequent applications perform
+  no new forward.
+- `realized_gain = gᵀJ grad_delta` uses one additional fp32 network JVP and an
+  fp64 dot product. It measures the returned, rounded, lambda-scaled parameter
+  correction. A finite gain <=0 sets `nonpositive_gain`, `skipped`, and
+  `skip_reason=nonpositive_realized_gain`; the returned correction is empty.
+  Nonfinite gains also return no correction. Predicted V/rho, solver residuals,
+  and warm/damping caches remain logged. Tests force a negative q iterate and
+  prove it is rejected. Converged dense-oracle/descent tests still pass.
+- This guard addresses the unsafe sign of an unconverged correction; it does
+  not assert convergence, repair the default CG tolerance, or imply that the
+  predicted lambda*V equals the realized gain for truncated solves.
+
+### Kaggle inputs
+
+Read and reused the conventions in
+`scripts/build_kaggle_resnet18_seed1_raw_vs_vanilla_rollback_notebook.py`,
+`scripts/build_kaggle_deit_seed5_raw_vs_vanilla_rollback_notebook.py`,
+`scripts/build_kaggle_unified_seed_notebooks.py`, and
+`experiments/kaggle_checkpoint_discovery.py`. The new builder reuses the unified
+notebook's bootstrap/setup cells; the older experiment-specific selection and
+training logic is not incorporated.
+
+- Attach one CIFAR-100 Python-format dataset. Discovery walks `/kaggle/input`
+  with `os.walk(..., followlinks=True)` and requires a directory named
+  `cifar-100-python` containing **train, meta, and official test**. The notebook
+  prints the verified test path and passes its parent as `--data-root`.
+  Multiple matches are sorted and the first is used, matching unified discovery.
+  This is a path/content-presence check; no local CIFAR data exists to validate
+  the dataset bytes or perform the full scientific run.
+- Enable **Internet**, **T4×2**, and Kaggle secret **github_token** with repository
+  access. The existing temporary askpass script supplies the token from a child
+  environment, never from a URL or printed command. It is removed in `finally`.
+- Clone `https://github.com/duyh80456-code/Counterfactual-Projection.git` into
+  `/kaggle/working/counterfactual-projection` with no checkout, fetch
+  `REPO_COMMIT` using the same authenticated environment, detach at that full
+  hash, and verify HEAD. The repository is never selected by a branch tip.
+- Reuse the existing reference checkout from
+  `https://github.com/duyh80456-code/One-Shot-TAS-CCIL.git`, branch
+  `ccil-residual-capacity`, under `/kaggle/working/One-Shot-TAS-CCIL`.
+  Gromo is cloned under `/kaggle/working/gromo`, fetched and detached at
+  `8d19107b61a9459a9021065a329b699adcb0f25b`, and installed editable with its
+  declared dependencies. The repo is installed with test/vision/diagnostics
+  extras. Runtime PYTHONPATH follows the existing repo/Gromo-src/reference order.
+- Before accelerator work, a fresh subprocess with `CUDA_VISIBLE_DEVICES=""`
+  must pass `python -m pytest -q tests/test_vna.py`. Two GPUs are then required.
+- Optional previous outputs may be attached as a directory, tar/tar.gz/tgz, zip,
+  or Kaggle-expanded torch-save directory. The existing `discover_checkpoints`
+  helper searches by `kind=vna_recipe` and matching recipe/throughput protocol,
+  recovers full latest state plus all periodic model snapshots, and releases
+  temporary extraction storage. Diagnostic completion JSON is restored from
+  directories or archive members without extracting arbitrary paths. Conflicting
+  completed outputs are rejected. Model hashes and algorithm/config identity
+  prevent silently reusing diagnostic rows from different math or trajectories.
+- Outputs live under `/kaggle/working/vna_phase0_seed0/{recipe,signal}`.
+  `recipe/latest.pt` retains fp32 model, optimizer momentum, scheduler, RNG,
+  training-generator state, splits, history, protocol, and AMP scaler state.
+  `epoch_010.pt` through `epoch_200.pt` retain fp32 model/epoch/protocol only.
+  `signal/completed/epoch_NNN.json` commits all rows for one checkpoint atomically;
+  CSV and summary are rebuildable from these completion files.
+- `experiments/vna_kaggle.py` creates an atomic sibling
+  `/kaggle/working/vna_phase0_seed0.tar.gz` hourly and in the execution cell's
+  `finally`, then again after final plots. It hard-links immutable checkpoint/
+  JSON inodes into a temporary snapshot so replacement of latest during archive
+  creation cannot mix checkpoint bytes. Logs are copied; locks and `.tmp` files
+  are omitted. A hard kill preserves the last archive and working files; attach
+  both available outputs when resuming. The interrupted epoch and unfinished
+  checkpoint transaction may be repeated; committed checkpoints are not recomputed.
+
+### Notebook instructions and execution
+
+Generate with `.venv/bin/python scripts/build_kaggle_vna_signal_curve_notebook.py`
+(or `--commit FULL_40_CHARACTER_HASH`). The delivered notebook has the required
+**current HEAD default** above. Because this task explicitly forbids committing,
+that Stage 1 hash does not yet contain Stage 1B. **After the supervisor commits
+these changes, regenerate with that new committed/published hash before Kaggle
+execution.** A preflight error explains a missing Stage 1B revision. No local
+uncommitted code is silently injected into the pinned checkout.
+
+Attach the inputs above and run all cells. Seed 0, 200 epochs, batch 64, the
+shared splits, SGD/momentum/WD, and milestones 100/150 remain fixed. GPU0 trains;
+GPU1 watches atomically saved periodic checkpoints. At training completion the
+watcher finishes at most its current checkpoint, then remaining checkpoints are
+split by `(epoch // 10) % 2` across both GPUs, sharing the completion directory.
+This explicitly avoids putting all even-numbered epochs on one GPU. Drain workers
+never write the merged CSV concurrently; one merge follows their successful exit.
+A crashed claim is recoverable on the next invocation. Duplicate latest/periodic
+models at the same epoch are skipped, not processed twice.
+
+Final output displays per-site U/V/eta/rho, TINY/random V ratio, held-out VNA,
+random and norm-matched LR-boost derivatives, realized gains, cold/warm SGD cost
+ratios, native/full/sub-batch/split-half/shuffled noise controls, and rho>0.3
+frequency. It saves plots and automatically evaluates the simultaneous pre-150
+3x criteria. For the qualitative "decay toward 0" criterion, the declared,
+untuned operational rule is: mean U, V and rho at epochs >=180 must each be <=10%
+of the pre-150 mean, per site. Missing end checkpoints or synthetic/smoke data
+produce **not assessed**, never a scientific go result. This operational rule
+is an explicit interpretation, pending supervisor standardization.
+
+### Throughput flags, correctness, and evidence
+
+All CLI throughput flags default **off**. The notebook enables only
+`CACHE_BLOCK_INPUT=True`, supported by exact-product tests; optional
+`GPU_DATA`, `CHANNELS_LAST`, `CUDNN_BENCHMARK`, and `AMP` are false.
+
+- `--gpu-data`: keeps CIFAR train uint8 resident on the selected device. Each
+  gathered batch uses zero-pad-4, uniform 32x32 crops, horizontal flip p=.5,
+  float conversion and the unchanged CIFAR normalization. Only the supplied
+  CPU training generator draws shuffle/crop/flip decisions; VNA/statistics/cost
+  batches use their separate purpose generators. No global RNG is consumed.
+  CPU-oracle tests verify bitwise paired-arm batches, global-RNG preservation,
+  dedicated statistics batches, and continuation after restoring generator state.
+  The distribution matches the original transform, but its draw ordering is not
+  the legacy PIL loader's bitwise stream. Use the same flag in every paired arm;
+  changing it is a resume protocol mismatch. Resident uint8 costs ~154 MB/GPU.
+- `--channels-last`: changes model and SGD input layout; no float precision
+  change. `--cudnn-benchmark`: enables cuDNN algorithm benchmarking. Both remain
+  optional because local CUDA timing/determinism could not be tested. Existing
+  shared loaders already supply pin_memory and non_blocking copies; the new SGD
+  helper retains those transfers. Resident training needs no per-batch image
+  host-to-device copy beyond the small random offsets/index vectors.
+- `--amp`: CUDA fp16 autocast and GradScaler for plain SGD only, with saved scaler
+  state. It must match every arm. **OFF** for Phase 0: no CUDA is available to
+  demonstrate the required >=1.5x speedup. VNA and block product contexts disable
+  enclosing autocast explicitly; tests verify fp32/bitwise results even inside
+  CPU bfloat16 autocast. No fp16 diagnostic checkpoints are written.
+- `--cache-block-input`: exact native eval-BN Gromo prefix input cached once per
+  product object, then functional products execute only the selected block and
+  all subsequent native blocks/activations/post-net. Train-BN uses the full path.
+  Tests prove bitwise logits, J/J_E JVP/VJP equality both at the first block and
+  a later block after earlier stages. Diagnostic batches are fixed across sites/
+  epochs; logits and mean-CE g are cached once per checkpoint for VNA and heldout
+  batches. A shared-logits/g equivalence test verifies identical correction and
+  realized gain with one fewer forward.
+
+CPU measurements used Python 3.12.7/torch 2.2.2, one thread, native tiny Gromo,
+128 VNA samples, rank 3, default 30 CG iterations and eight Hutchinson probes.
+Baseline code was read from HEAD into a temporary Python module, not cloned.
+Each correction timing is the median of three runs after a setup call. Epoch
+measurements use the same initialized tiny model and 16 prebuilt batch-64 batches,
+three timed epochs after setup, with identical SGD; augmentation/I/O is excluded.
+
+| CPU surrogate | Stage 1 | Stage 1B | Interpretation |
+|---|---:|---:|---|
+| Cold correction, full path | 0.66751 s | 0.50162 s | 1.33x; includes new gain JVP |
+| Cold correction, cached prefix | 0.66751 s | 0.44711 s | 1.49x on this tiny model |
+| 16-batch plain SGD epoch | 0.06837 s | 0.06742 s | essentially unchanged default SGD |
+
+Old correction executes 46 JVP and 48 VJP applications, each VJP rebuilding its
+forward. New full path executes 47 JVP and 48 VJP applications with only two
+pullback-building forwards; total forward count is 51 including extension
+products/logits. Suffix path has 52 calls including its one cached prefix, with
+all later product forwards shorter. This count is not a claim about full-model
+GPU speed. No CUDA/MPS is available and no local CIFAR exists.
+
+T4×2 planning estimates (unmeasured, deliberately broad): training at roughly
+10–40 s/epoch would take 0.6–2.2 h for 200 epochs; diagnostics at 1–10 min per
+checkpoint/site across 20 checkpoints ×8 sites would consume 2.7–26.7 GPU-hours,
+or approximately 1.3–13.3 h on two GPUs after allowing both to drain. Overlap
+reduces elapsed time, but a full run may exceed Kaggle's ~12-hour session; resume
+is required rather than assumed unnecessary. Native TINY covariance solves,
+512-sample heldout products, and the matrix-free top-q eigensolver may dominate,
+so these are capacity-planning assumptions, not predicted/verified benchmarks.
+Actual train-only epoch seconds are saved in history; every row includes refresh,
+cold/warm, SGD-step timings and ratios for revising estimates from the first
+real checkpoints. CPU augmentation on four vCPUs motivates the optional resident
+path; fp32/batch-64 is kept until accelerator evidence justifies other toggles.
+
+Disk: full ResNet18 has 11,220,132 parameters, and state_dict tensor storage is
+44,980,656 bytes. Twenty fp32 model-only snapshots total ~0.900 GB; latest model
+plus SGD momentum is ~0.090 GB, giving ~0.99 GB raw outputs plus small JSON/logs.
+Output + final archive should be ~2 GB even without compression savings. During
+atomic archive replacement, raw + old + new archives is conservatively ~3 GB,
+plus checkouts and an old hard-linked latest inode. Restore extraction storage is
+removed before execution. Archive creation checks a conservative 3x raw-byte
+budget against 5 GB and prints raw/archive/free bytes; training prints checkpoint
+bytes each epoch. Periodic momentum retention would nearly double snapshot
+storage, so the Stage 1B model-only exception is used from the outset.
+
+### Stage 1B validation and open questions
+
+Supervisor decision: Phase 0 trains one SGD trajectory with no paired-arm bitwise requirement, so Kaggle defaults GPU_DATA=True, CUDNN_BENCHMARK=True, CHANNELS_LAST=True for T4 speed; AMP=False and CACHE_BLOCK_INPUT=True remain unchanged, with relevant flags propagated to training/diagnostics and enforced in resume identities.
+
+Focused checks cover bitwise old/new pullbacks, forced negative gain rejection,
+outer-autocast isolation, exact first/later-block suffixes, shared logits/g,
+generator-only device augmentation on CPU, atomic completion idempotence,
+watch/shard/merge, tar resume of model/latest/diagnostics, and generated notebook
+code-cell compilation/pinning/CPU gate/test-file discovery.
+
+Open questions (recorded without asking): what numerical criterion should define
+"decay toward 0" for the official Phase-0 decision? What are actual T4 epoch,
+TINY refresh and per-site diagnostic times? Do channels_last/cuDNN benchmarking
+preserve the intended accelerator reproducibility, and does identical-arm AMP
+exceed 1.5x speedup? Is the existing reference branch checkout sufficient, or
+should its helper code also get a separate immutable pin? Stage 2 controller/
+real-growth questions from Stage 1 remain deferred. Full 200-epoch CIFAR/T4
+scientific acceptance and accelerator flag performance cannot be established
+in this CPU-only environment.
+
+Final full-suite command (after the final shared-logits cache change):
+`.venv/bin/python -m pytest -o addopts='' -q` → **248 passed, 1 failed,
+5 skipped, 36 warnings in 112.83 s**. The one failure is the same pre-existing
+`tests/test_plateau_fork.py::test_plateau_fork_has_recurrent_e_and_single_shot_o_control`
+source assertion at line 252 documented in Stage 1. The unrelated runner and
+its test were left unchanged. All **17 VNA tests pass** (nine Stage 1 cases plus
+eight Stage 1B cases counting parameterization).
+
+An additional real CLI integration started a CPU watcher before a concurrent
+10-epoch, one-batch-per-epoch fake-data recipe. The watcher processed the arriving
+atomic epoch-10 checkpoint with `--cache-block-input`; the periodic checkpoint
+had only fp32 model tensors and no optimizer. Re-running diagnostics, including
+the duplicate latest, preserved the completion marker's nanosecond mtime and
+merged exactly one row. The smoke result is synthetic and not Phase-0 acceptance.
+Notebook generation was reproduced byte-for-structure from current HEAD; every
+code cell compiled. `compileall` for all implementation/builder files and
+`git diff --check` passed. HEAD is unchanged; the pre-existing `.DS_Store`
+modification is retained and outside this task.
