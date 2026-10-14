@@ -59,3 +59,51 @@ See `docs/vna/STAGE1_REPORT.md` for full file:line evidence, empirical scaling,
 noise/cost measurements, limitations and CPU tests. Paths under `gromo/` above
 are relative to the pinned installed package, and `tiny_adapter.py` is under
 `third_party/One-Shot-TAS-CCIL/dual_growth/adapters/`.
+
+## Stage 2-core K-FAC library decision and TINY cotangent alignment
+
+Audited official sources on 2026-10-14 (no dependency or environment changes):
+
+- [curvlinops](https://github.com/f-dangel/curvlinops/tree/34783a5f923639305e508605dd6263838b20e3a8),
+  commit `34783a5f923639305e508605dd6263838b20e3a8`, MIT. Its declared
+  torch floor is 2.0, so this is **not a proven torch-2.2 incompatibility**.
+  The documented supported KFAC/EKFAC parameter modules are Linear and Conv2d,
+  and the documented operator lifecycle caches factors for a fixed model:
+  [official EKFAC documentation](https://curvlinops.readthedocs.io/en/stable/_modules/curvlinops/ekfac.html).
+  Gromo's residual scope also includes growing BN affine parameters; the task
+  requires their true diagonal GGN, explicit EMA and factor/eigenbasis state
+  refresh/load. Those are not a drop-in supported full-scope operator here.
+  Source was downloaded only to `/tmp/stage2-curvlinops-audit` for inspection.
+  BackPACK, einconv, linear_operator and curvlinops are absent in the pinned
+  Phase-0 environment. No end-to-end library compatibility claim is made.
+- [ASDL](https://github.com/kazukiosawa/asdl/tree/b7afcaabd6d9c4501f1466f8d4610d238bfc2e87),
+  commit `b7afcaabd6d9c4501f1466f8d4610d238bfc2e87`, MIT. Its official README
+  advertises compatibility with torch 1.13; no validated torch-2.2/Gromo
+  integration was found. It is not installed or used.
+
+Decision: use the task's explicitly allowed minimal-factor fallback in
+`methods/vna_kfac.py`, with no copied library source. This avoids introducing
+unvalidated hooks/dependencies into the live Phase-0 environment and supplies
+BN diagonal blocks and explicit refresh/serialization in one tested operator.
+This is a conservative integration decision, not evidence that either library
+can never support Gromo with additional adapters. Reconsider for Stage 2a.
+
+Factors are from **exact softmax GGN**, summed over per-sample class-Hessian
+square-root columns, independently of observed labels. A uses unfolded patch
+covariances; G uses output-gradient covariances. Optional EKFAC correction uses
+the exact diagonal GGN in the Kronecker eigenbasis; Tikhonov damping adds mu
+once to eigenvalues. Cross curvature is never factored. CPU tests compare
+uncorrected eigenbasis inversion with dense `G ⊗ A`, check the corrected
+spectrum against an independent dense GGN, and check symmetry/descent and
+serialization. Refresh cost is intentionally larger than MC true-Fisher.
+
+`methods/vna_select.py` reuses pinned Gromo statistics and optimal-update solve
+at the existing pin above. A pseudo-loss `sum(f*z)` has logit cotangent `z`.
+Native `N_z=-M_prev` (plus nuisance residualization only when requested),
+`S=tensor_s_growth`; native SVD of `S^(-1/2)N_z` implements the thresholded
+pencil `(N_z N_z^T, S)`. For CE parity use `z=p-y`, the sum-CE cotangent; the
+mean-CE `g` differs by batch size and therefore scales raw A by its square-root.
+The parity test uses that known scaling and a direct sum-CE test. No upstream
+solver or sign convention is replaced. Default existing-weight projection is
+off. Native statistics sample-average all batches; the solve runs on a deep
+copy so scheduler/statistics/grad state of the caller is untouched.
