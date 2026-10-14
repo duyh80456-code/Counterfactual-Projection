@@ -15,7 +15,6 @@ def build(commit=None):
     constants = ''.join(base['cells'][1]['source']).split('GPU_DATA =')[0]
     constants += '''GPU_HOURS_BUDGET = 3
 ALLOW_OVER_BUDGET = False
-PHASE0_DIR = Path("/kaggle/input/vna-phase0-seed0/vna_phase0_seed0")  # extracted tar.gz; recipe/epoch_*.pt
 '''
     # Path is imported explicitly so the configuration cell runs standalone.
     constants = 'from pathlib import Path\n' + constants
@@ -25,8 +24,8 @@ PHASE0_DIR = Path("/kaggle/input/vna-phase0-seed0/vna_phase0_seed0")  # extracte
     if not (REPO / module).exists(): raise RuntimeError(f"Missing Stage-A module: {module}")
 '''
     cells = [cell('markdown', '''# VNA Stage A — Phase-0 checkpoints, T4×2
-Attach the extracted `vna_phase0_seed0.tar.gz` and CIFAR-100. Set PHASE0_DIR to
-its root (containing recipe/epoch_*.pt). Enable Internet, T4×2, github_token.
+Attach Phase-0 notebook outputs (extracted recipe or tar/zip) and CIFAR-100.
+Phase-0 checkpoints are discovered automatically. Enable Internet, T4×2, github_token.
 Only diagnostics run. All VNA tests run first on CPU. Immutable REPO_COMMIT must
 include Stage A; regenerate with --commit after making the code available remotely.
 GPU0 runs A5 at epochs 90, 100, 110, 160, 200 first, then the two-checkpoint cost smoke, then A1 and A3.
@@ -41,9 +40,8 @@ def archive_outputs(output):
     return _archive_outputs(output, folders=("outputs/stageA",))
 STAGE_A = RUN_ROOT / "outputs" / "stageA"
 STAGE_A.mkdir(parents=True, exist_ok=True)
-RECIPE = PHASE0_DIR / "recipe"
-if not list(RECIPE.glob("epoch_*.pt")):
-    raise RuntimeError(f"No extracted Phase-0 checkpoints in {RECIPE}")
+from experiments.phase0_discovery import discover_phase0
+RECIPE = discover_phase0()
 # Restore Stage-A directory and tar/zip outputs from prior sessions.
 restore_archives(Path("/kaggle/input"), STAGE_A)
 common = ["--checkpoint-dir", str(RECIPE), "--data-root", str(DATA_ROOT),

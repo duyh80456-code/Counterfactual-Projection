@@ -129,7 +129,7 @@ def restore_learner(learner, state):
 
 class LearnHook:
     def __init__(self, benchmark, arm, params, measure=None, *, seed=0, checkpoint=None,
-                 resume=None, observe=None):
+                 resume=None, observe=None, time_steps=False, timing_started=None, timing_interval=50):
         self.benchmark, self.arm, self.params = benchmark, arm, params
         self.buffer = MeasurementBuffer(params['mini_batch_size'] if benchmark == 'imagenet' else 64)
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
@@ -139,6 +139,14 @@ class LearnHook:
         self.shadows, self.cbp_candidates = {}, []
         self.init_row_norms = None
         self.measurement_point_seconds = []
+        self.time_steps = time_steps
+        self.timing_started = time.monotonic() if timing_started is None else timing_started
+        self.timing_interval = timing_interval
+        self.startup_seconds = None
+        self.step_wall_seconds = []
+        self._timing_mark = None
+        self._timing_step = 0
+        self._timing_measurement = 0.
         self.points = {1, 2, 5, 10, 20, 50, 100, 150, 200}
         if benchmark == 'regression':
             self.task_steps = int(params['flip_after'])
@@ -243,10 +251,34 @@ class LearnHook:
                        'shadow': self.shadow, 'cbp_units': self.selected, 'learner': learner}
                 ctx['init_row_norms'] = self.init_row_norms
                 ctx['cbp_candidates'] = self.cbp_candidates
+                device = next(learner.net.parameters()).device
+                if self.time_steps and device.type == 'cuda': torch.cuda.synchronize(device)
                 started = time.monotonic()
                 rows = self.measurement(model, self.buffer.batch(), spec, ctx)
+                if self.time_steps and device.type == 'cuda': torch.cuda.synchronize(device)
                 self.measurement_point_seconds.append({'batch_size': len(self.buffer), 'seconds': time.monotonic()-started})
                 self.rows.extend(rows or [])
+        return result
+
+    def timed_learn(self, original, learner, x, target):
+        device = next(learner.net.parameters()).device
+        def sync():
+            if device.type == 'cuda': torch.cuda.synchronize(device)
+        if self._timing_mark is None:
+            sync()
+            self._timing_mark = time.monotonic()
+            self.startup_seconds = self._timing_mark - self.timing_started
+        result = self.after_or_replay(original, learner, x, target)
+        # GPU windows amortize synchronization; CPU steps are timed individually.
+        if device.type != 'cuda' or self.step % self.timing_interval == 0 or self.step % self.task_steps == 0:
+            sync()
+            now = time.monotonic()
+            measurement = sum(p['seconds'] for p in self.measurement_point_seconds)
+            count = self.step - self._timing_step
+            seconds = max(0., now - self._timing_mark - (measurement - self._timing_measurement)) / count
+            self.step_wall_seconds.extend([seconds] * count)
+            self._timing_mark, self._timing_step = now, self.step
+            self._timing_measurement = measurement
         return result
 
     @contextmanager
@@ -258,7 +290,8 @@ class LearnHook:
         try:
             for cls, original in originals.items():
                 def wrapped(learner, x, target, original=original):
-                    return self.after_or_replay(original, learner, x, target)
+                    return (self.timed_learn(original, learner, x, target) if self.time_steps
+                            else self.after_or_replay(original, learner, x, target))
                 cls.learn = wrapped
             yield self
         finally:

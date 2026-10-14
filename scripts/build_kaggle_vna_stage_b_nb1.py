@@ -46,9 +46,7 @@ STAGE_B = RUN_ROOT / "outputs/stageB"
 STAGE_A.mkdir(parents=True, exist_ok=True); STAGE_B.mkdir(parents=True, exist_ok=True)
 restore_a(Path("/kaggle/input"), STAGE_A); restore_b(Path("/kaggle/input"), STAGE_B)
 merge_json(STAGE_B / "gate.json", "imagenet", "dropped (supervisor 2026-10-15)")
-RECIPE = PHASE0_DIR / "recipe"
-common = ["--checkpoint-dir", str(RECIPE), "--data-root", str(DATA_ROOT),
-          "--output", str(STAGE_A), "--seed", "0"]
+from experiments.phase0_discovery import discover_phase0
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
 CPU_ENV = {k: v for k, v in ENV.items() if k != "CUDA_VISIBLE_DEVICES"}
 archive_lock = threading.Lock(); archive_stop = threading.Event(); archive_errors = []
@@ -69,6 +67,8 @@ def periodic_archive():
         except Exception as error: archive_errors.append(str(error)); print(error, flush=True)
 archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.start()
 def stage_command(measurement, *, cost=False):
+    common = ["--checkpoint-dir", str(RECIPE), "--data-root", str(DATA_ROOT),
+              "--output", str(STAGE_A), "--seed", "0"]
     cmd = [sys.executable, "-u", "-m", "diagnostics.stage_a", measurement, *common, "--device", "cuda:0"]
     if cost: cmd += ["--checkpoints", str(RECIPE / "epoch_090.pt"), str(RECIPE / "epoch_100.pt")]
     return cmd
@@ -109,9 +109,15 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     start = time.monotonic()
     summary = run_b5(benchmark, arm, lane, mu, source, smoke=True, rate=rate)
     steps = 1000000 if benchmark == "regression" else 12000000
-    hours = (summary["training_seconds"] * steps / summary["steps_run"] +
-             (16 if benchmark == "regression" else 18) *
-             max((p["seconds"] for p in summary["measurement_point_seconds"]), default=0)) / 3600
+    point_seconds = (sum(p["seconds"] for p in summary["measurement_point_seconds"]) /
+                     len(summary["measurement_point_seconds"])) if summary["measurement_point_seconds"] else 0
+    startup = summary["startup_seconds"]
+    steady = summary["steady_step_seconds"]
+    points = (16 if benchmark == "regression" else 18) if arm == "bp" else 0
+    hours = (startup + steady * steps + points * point_seconds) / 3600
+    print(benchmark, arm, rate, f"startup {startup:.3f} s; {steady*1000:.3f} ms/step; "
+          f"full steps {steps}; measurement {point_seconds:.3f} s/point; "
+          f"projected {hours:.3f} hours", flush=True)
     projections.setdefault(lane, []).append(hours + (time.monotonic()-start)/3600)
     projected = sum(projections[lane])
     print(lane, f"{projected:.3f} projected {'CPU' if lane == 'CPU' else 'GPU'}-hours including smoke", flush=True)
@@ -127,7 +133,8 @@ RUN = '''def gpu0():
     start = time.monotonic()
     try:
         try:
-            if not list(RECIPE.glob("epoch_*.pt")): raise RuntimeError(f"No Phase-0 checkpoints: {RECIPE}")
+            global RECIPE
+            RECIPE = discover_phase0()
             for measurement in ("a5", "cost", "null", "selection", "joint", "mu", "solver", "summary"):
                 with (RUN_ROOT / f"stage_a_{measurement}_gpu0.log").open("a", buffering=1) as log:
                     subprocess.run(stage_command(measurement, cost=measurement == "cost"), cwd=REPO,

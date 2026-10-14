@@ -272,6 +272,7 @@ def finalize(output, benchmark, *, mu_rel_default=.01):
 
 
 def run(args):
+    timing_started = time.monotonic()
     upstream_imports()
     if args.benchmark == 'regression' and args.arm == 'cbp' and args.replacement_rate is None:
         from copy import copy
@@ -285,9 +286,9 @@ def run(args):
     params['use_gpu'] = int(actual_device.startswith('cuda'))
     if actual_device.startswith('cuda'): torch.cuda.set_device(torch.device(actual_device))
     if args.smoke:
-        if args.benchmark == 'regression': params.update(num_data_points=100, flip_after=50)
+        if args.benchmark == 'regression': params.update(num_data_points=1000, flip_after=500)
         else: params['num_tasks'] = 2
-        if args.benchmark == 'mnist': params.update(change_after=50, fixture_rank_padding=True)
+        if args.benchmark == 'mnist': params.update(change_after=500, fixture_rank_padding=True)
         if args.benchmark == 'imagenet':
             params['num_showings'] = 1
             if args.fake_data: params.update(fake_train_images_per_class=100, fake_test_images_per_class=50)
@@ -331,7 +332,8 @@ def run(args):
         write_csv(run_dir/'measurements.csv', state['rows'])
     hook = LearnHook(args.benchmark, args.arm, params,
                      B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default) if args.arm == 'bp' else None,
-                     seed=args.seed, checkpoint=checkpoint, resume=resumed)
+                     seed=args.seed, checkpoint=checkpoint, resume=resumed,
+                     time_steps=args.smoke, timing_started=timing_started)
     start = time.monotonic()
     try:
         logs = run_native(args.benchmark, params, run_dir, hook)
@@ -348,6 +350,11 @@ def run(args):
     summary['measurement_seconds'] = sum(point['seconds'] for point in hook.measurement_point_seconds)
     summary['training_seconds'] = max(0., summary['wall_seconds']-summary['measurement_seconds'])
     summary['steps_run'] = hook.step
+    if args.smoke:
+        second_task = hook.step_wall_seconds[hook.task_steps:2*hook.task_steps]
+        summary['startup_seconds'] = hook.startup_seconds
+        summary['step_wall_seconds'] = hook.step_wall_seconds
+        summary['steady_step_seconds'] = float(np.median(second_task))
     write_json(run_dir/'measurements.json', hook.rows); write_csv(run_dir/'measurements.csv', hook.rows)
     write_csv(run_dir/'online.csv', tasks); write_json(run_dir/'summary.json', summary)
     atomic_pickle(run_dir/'final_state.pkl', __import__('adapters.lop_hooks', fromlist=['learner_state']).learner_state(hook.last_learner))
