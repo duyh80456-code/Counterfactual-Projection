@@ -212,6 +212,8 @@ def random_A_like(
 
 
 def _resolve_site(model: nn.Module, site) -> tuple[str, nn.Module, tuple[str, ...]]:
+    if hasattr(site, "resolve"):
+        return site.resolve(model)
     if isinstance(site, str):
         from types import SimpleNamespace
         site = SimpleNamespace(module_name=site)
@@ -438,6 +440,19 @@ def _mean_ce_logit_grad(logits: Tensor, targets: Tensor) -> Tensor:
     return ((probs - one_hot) / targets.numel()).reshape(-1)
 
 
+
+def loss_logit_grad(logits, targets, loss_spec=None, ctx=None):
+    """Autograd on the supplied loss; legacy default CE keeps its exact rounding.
+
+    Stage A/Phase 0 used softmax-minus-onehot in float64. Retain those bits
+    for default/explicit CE when no upstream context is supplied.
+    """
+    from methods.vna_losses import CE
+    residual = (CE() if loss_spec is None else loss_spec).residual(
+        logits, {'targets': targets, **(ctx or {})}).flatten()
+    legacy_ce = (loss_spec is None or type(loss_spec) is CE) and ctx is None
+    return _mean_ce_logit_grad(logits, targets) if legacy_ce else residual
+
 def _hutchinson_trace_and_diag(products: _Products, n: int, cfg: VNAConfig, device: torch.device) -> tuple[float, Tensor]:
     generator = dedicated_generator(cfg.seed, "vna-hutchinson", device=device)
     trace_terms = []
@@ -487,7 +502,7 @@ def vna_block_correction(
     *, damping_cache: Mapping[str, Any] | None = None,
     shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
     apply_gain_guard: bool = True, _lite: bool = False, cg_breakdown_flags: bool = False,
-    rhs_normalized_cg: bool = False,
+    rhs_normalized_cg: bool = False, loss_spec=None, ctx=None,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return ``lambda_vna * J^T R K_E R K g`` for addition to gradients.
 
@@ -518,17 +533,10 @@ def vna_block_correction(
             for module in model.modules():
                 if isinstance(module, nn.modules.batchnorm._BatchNorm):
                     module.train()
-        with torch.autocast(device_type=inputs.device.type, enabled=False), \
-                _preserve_functional_state(model), _virtual_b_context(model, block, A_dict) as b_layer:
-            extension_names = tuple(
-                name for name, parameter in model.named_parameters()
-                if id(parameter) in {id(p) for p in b_layer.parameters(recurse=True)}
-            )
-            products = _Products(
-                model, inputs, parameter_names, extension_names, bn_mode=cfg.bn_mode,
-                cache_block_input=cfg.cache_block_input)
-            logits = products._call({}).reshape(targets.numel(), -1) if shared_logits is None else shared_logits
-            g = _mean_ce_logit_grad(logits, targets).to(dtype=torch.float64) if shared_g is None else shared_g
+        with block_products(model, site, A_dict, inputs, cfg.bn_mode,
+                            cache_block_input=cfg.cache_block_input) as products:
+            logits = products._call({}).reshape(len(inputs), -1) if shared_logits is None else shared_logits
+            g = loss_logit_grad(logits, targets, loss_spec, ctx) if shared_g is None else shared_g
             n = g.numel()
             if damping_cache is None:
                 trace, jacobi = _hutchinson_trace_and_diag(products, n, cfg, g.device)
@@ -591,8 +599,8 @@ def vna_block_correction(
                     per_neuron.extend(piece.reshape(ref.shape).movedim(1, 0).flatten(1).square().sum(dim=1).tolist())
             # An outgoing bias is shared across virtual channels. Attribute
             # its energy equally so the partition still sums exactly to V.
-            if b_layer.bias is not None:
-                energy = float(je_t_z[-b_layer.bias.numel():].square().sum())
+            if any(n.endswith('.bias') for n, _ in products.extension_refs):
+                energy = float(je_t_z[-products.extension_refs[-1][1].numel():].square().sum())
                 per_neuron = [value + energy / len(per_neuron) for value in per_neuron]
             finite = (
                 torch.isfinite(d_flat).all()
@@ -679,7 +687,7 @@ def vna_lite_correction(
     batch: tuple[Tensor, Tensor], cfg: VNAConfig, *,
     damping_cache: Mapping[str, Any] | None = None,
     shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
-    apply_gain_guard: bool = True,
+    apply_gain_guard: bool = True, loss_spec=None, ctx=None,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return λ Jᵀ K_E K g / c without CG, c=(tr(K)/n)².
 
@@ -691,7 +699,7 @@ def vna_lite_correction(
     return vna_block_correction(
         model, site, A, batch, cfg, damping_cache=damping_cache,
         shared_logits=shared_logits, shared_g=shared_g,
-        apply_gain_guard=apply_gain_guard, _lite=True)
+        apply_gain_guard=apply_gain_guard, _lite=True, loss_spec=loss_spec, ctx=ctx)
 
 
 def add_vna_grad_(model: nn.Module, grad_delta: Mapping[str, Tensor], scale: float = 1.0) -> None:
@@ -711,6 +719,12 @@ __all__ = ["VNAConfig", "dedicated_generator", "extract_tiny_A", "random_A_like"
 @contextmanager
 def block_products(model, site, A, inputs, bn_mode="eval", cache_block_input=False):
     """Read-only matrix-free operators, also used by Phase 0 diagnostics."""
+    if hasattr(site, 'resolve'):
+        from methods.vna_sites import hook_products
+        with hook_products(model, [site], {site: A}, inputs, bn_mode=bn_mode,
+                           cache_block_input=cache_block_input) as p:
+            yield p
+        return
     before = _snapshot(model)
     modes = {module: module.training for module in model.modules()}
     try:

@@ -28,6 +28,14 @@ def joint_products(model, sites, A_by_site, inputs, o_params=None, *, cache_bloc
             raise ValueError('o_params must name distinct model parameters')
     if not names:
         raise ValueError('need a nonempty original-parameter scope')
+    if any(hasattr(site, 'resolve') for site in sites):
+        if not all(hasattr(site, 'resolve') for site in sites):
+            raise ValueError('joint sites must use the same resolver')
+        from methods.vna_sites import hook_products
+        with hook_products(model, sites, A_by_site, inputs, names,
+                           cache_block_input=cache_block_input) as products:
+            yield products
+        return
     before = _snapshot(model)
     modes = {m: m.training for m in model.modules()}
     try:
@@ -61,7 +69,7 @@ def _inverse(action, rhs, cfg):
 
 
 def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,
-                     *, mu=None, cotangent=None):
+                     *, mu=None, cotangent=None, loss_spec=None, ctx=None):
     """Return (d, V, rho, record), without installing or applying neurons.
 
     GGNConfig selects trace(F)/p or trace(F)/n_out via damping_norm.
@@ -71,7 +79,7 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
     start = time.perf_counter()
     with joint_products(model, sites, A_by_site, batch[0], o_params,
                         cache_block_input=cfg.cache_block_input) as p:
-        op = GGNProducts(p, batch[1])
+        op = GGNProducts(p, batch[1], loss_spec, ctx)
         if cotangent is not None:
             op.g = cotangent.detach().flatten().double()
             op.gradient = p.JT(op.g).double()

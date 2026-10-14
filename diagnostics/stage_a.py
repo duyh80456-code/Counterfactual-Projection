@@ -17,7 +17,7 @@ import torch
 from experiments.shared_protocol import atomic_json_save
 from experiments.vna_provenance import code_commit
 from experiments.vna_support import build_model, setup_data, augmented_batch, isolated_rng, tiny_candidate
-from methods.vna import dedicated_generator, _mean_ce_logit_grad, extract_tiny_A, VNAConfig, vna_block_correction, _resolve_site
+from methods.vna import dedicated_generator, loss_logit_grad, extract_tiny_A, VNAConfig, vna_block_correction, _resolve_site
 from methods.vna_ggn import GGNConfig, filtered_cotangent
 from methods.vna_joint import joint_correction, joint_products
 from methods.vna_select import (tiny_U_from_cotangent, tiny_V, greedy_V, prepare_A,
@@ -63,13 +63,13 @@ def invariant(model):
         assert all(torch.equal(a, b) for a, b in zip(cuda_rng, torch.cuda.get_rng_state_all()))
 
 
-def residual(model, batch):
+def residual(model, batch, loss_spec=None, ctx=None):
     modes = {m: m.training for m in model.modules()}
     try:
         model.eval()
         with torch.no_grad():
             logits = model(batch[0])
-        return _mean_ce_logit_grad(logits, batch[1]).reshape_as(logits)
+        return loss_logit_grad(logits, batch[1], loss_spec, ctx).reshape_as(logits)
     finally:
         for m, mode in modes.items():
             m.training = mode
@@ -217,7 +217,7 @@ class Measurement:
 
     def derivative(self, sites, A, d):
         with joint_products(self.model, sites, A, self.check[0], list(d)) as p:
-            g = _mean_ce_logit_grad(p._call({}).reshape(len(self.check[1]), -1), self.check[1])
+            g = loss_logit_grad(p._call({}).reshape(len(self.check[1]), -1), self.check[1])
             flat = torch.cat([d[n].flatten() for n, _ in p.parameter_refs])
             return -float(g.dot(p.Jv(flat).double()))
 
@@ -399,7 +399,7 @@ class Measurement:
             with torch.no_grad(): logits = model(batch[0]).detach()
         finally:
             for m, mode in modes.items(): m.training = mode
-        g = _mean_ce_logit_grad(logits, batch[1])
+        g = loss_logit_grad(logits, batch[1])
         optimizer = checkpoint.get('optimizer', checkpoint.get('optimizer_state_dict', {}))
         scheduler = checkpoint.get('scheduler', checkpoint.get('scheduler_state_dict'))
         inferred = recipe_scheduler_state(checkpoint['epoch'])

@@ -1,4 +1,4 @@
-"""Mean-CE GGN solvers. H contains the single 1/batch normalization.
+"""Loss-generic GGN solvers. H contains the single 1/batch normalization.
 
 Network products use the native dtype; curvature actions, CG and scalar
 reductions use float64. All public corrections are read-only and eval-BN.
@@ -6,9 +6,10 @@ reductions use float64. All public corrections are read-only and eval-BN.
 from dataclasses import dataclass
 import time
 import torch
-from methods.vna import (block_products, _mean_ce_logit_grad, _unflatten,
+from methods.vna import (block_products, loss_logit_grad, _unflatten,
                          dedicated_generator, _resolve_site)
 from projection.cg import conjugate_gradient
+from methods.vna_losses import CE
 
 
 @dataclass(frozen=True)
@@ -29,17 +30,20 @@ class GGNConfig:
 
 class GGNProducts:
     """F, cross-curvature and H without a batch-by-batch dense matrix."""
-    def __init__(self, products, targets):
+    def __init__(self, products, targets, loss_spec=None, ctx=None):
         self.p = products
-        logits = products._call({}).reshape(targets.numel(), -1).detach()
+        logits = products._call({}).reshape(len(products.inputs), -1).detach()
         self.probs = logits.double().softmax(-1)
-        self.g = _mean_ce_logit_grad(logits, targets)
+        self.loss_spec = CE() if loss_spec is None else loss_spec
+        self.ctx = {'targets': targets, **(ctx or {})}
+        self.logits = logits.double()
+        self.g = loss_logit_grad(logits, targets, loss_spec, ctx)
         self.gradient = products.JT(self.g).double()
         self.size = self.gradient.numel()
 
     def H(self, v):
         v = v.double().reshape_as(self.probs)
-        return (self.probs * (v - (self.probs * v).sum(-1, keepdim=True)) / len(v)).flatten()
+        return self.loss_spec.metric_apply(self.logits, v, self.ctx).flatten()
 
     def F(self, v):
         return self.p.JT(self.H(self.p.Jv(v))).double()
@@ -65,6 +69,15 @@ def bn_conv_weights(model, site):
     """Locate convs followed by BN within each native residual growing layer."""
     path, block, _ = _resolve_site(model, site)
     result = {}
+    if hasattr(site, 'resolve'):
+        modules = dict(model.named_modules())
+        if isinstance(modules[site.first], torch.nn.Conv2d) and any(
+                isinstance(modules[n], torch.nn.modules.batchnorm._BatchNorm)
+                or 'BatchNorm' in type(modules[n]).__name__ for n in site.between):
+            result[site.first + '.weight'] = modules[site.first].weight.detach()
+        if site.native_path:
+            result.update(bn_conv_weights(model, site.native_path))
+        return result
     for label in ('first_layer', 'second_layer'):
         layer = getattr(block, label)
         if isinstance(layer.layer, torch.nn.Conv2d) and any(
@@ -107,10 +120,10 @@ def _counts(p):
                                       'extension_jvp_calls', 'extension_vjp_calls')}
 
 
-def _correction(model, site, A, batch, cfg, variant, *, mu=None, trace_F=None, preconditioner=None):
+def _correction(model, site, A, batch, cfg, variant, *, mu=None, trace_F=None, preconditioner=None, loss_spec=None, ctx=None):
     start = time.perf_counter()
     with block_products(model, site, A, batch[0], cache_block_input=cfg.cache_block_input) as p:
-        op = GGNProducts(p, batch[1])
+        op = GGNProducts(p, batch[1], loss_spec, ctx)
         trace = op.trace(cfg) if trace_F is None else float(trace_F)
         damping = relative_damping(cfg, trace, op) if mu is None else float(mu)
         if damping <= 0:
@@ -165,14 +178,14 @@ def vna_lite_ggn(model, site, A, batch, cfg=GGNConfig(), **kwargs):
     return _correction(model, site, A, batch, cfg, 'lite', **kwargs)
 
 
-def filtered_cotangent(model, site, A, batch, cfg=GGNConfig(), *, mu=None, preconditioner=None):
+def filtered_cotangent(model, site, A, batch, cfg=GGNConfig(), *, mu=None, preconditioner=None, loss_spec=None, ctx=None):
     """z = H J M J^T g; V(A) = ||J_E(A)^T z||² before projection.
 
     For exact M, z = (HK + mu I)^-1 H K g. H is applied
     outside the parameter inverse; omitting it selects a different metric.
     """
     with block_products(model, site, A, batch[0]) as p:
-        op = GGNProducts(p, batch[1])
+        op = GGNProducts(p, batch[1], loss_spec, ctx)
         damping = relative_damping(cfg, op.trace(cfg), op) if mu is None else mu
         u = (solve_ggn(op, op.gradient, damping, cfg).solution if preconditioner is None
              else preconditioner.apply(op.gradient, p.parameter_refs, damping))

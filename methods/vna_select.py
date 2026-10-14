@@ -19,7 +19,7 @@ def neuron_norms(A):
 
 
 def normalize_A(model, site, A):
-    layer = model.block(site).first_layer.layer
+    layer = site.first_layer.layer if hasattr(site, 'resolve') else model.block(site).first_layer.layer
     existing = {'weight': layer.weight.detach(), 'bias': None if layer.bias is None else layer.bias.detach()}
     a = _as_a_dict(A)
     scale = neuron_norms(existing).mean() / neuron_norms(a).clamp_min(1e-30)
@@ -50,7 +50,7 @@ def choose_signs(model, site, A, inputs, z):
 
 def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
            existing_weight_projection=False, normalize=True, score_signs=True,
-           numerical_threshold=1e-6):
+           numerical_threshold=1e-6, loss_spec=None, contexts=None):
     """Reuse native TINY's thresholded generalized eigensolve.
 
     Pseudo loss sum(f*z) has logit derivative exactly z. Native N=-M_prev
@@ -59,6 +59,17 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
     For z=g parity use sum-CE cotangents (batch*g), as upstream expects sums.
     Default z=H J (F+mu)^-1 J^T g (or the supplied solver's cotangent).
     """
+    if hasattr(site, 'resolve'):
+        if site.native_path:
+            return tiny_V(model, site.native_name, batches, rank, cotangents=cotangents,
+                          cfg=cfg, existing_weight_projection=existing_weight_projection,
+                          normalize=normalize, score_signs=score_signs,
+                          numerical_threshold=numerical_threshold, loss_spec=loss_spec, contexts=contexts)
+        from methods.vna_sites import hook_tiny
+        return hook_tiny(model, site, batches, rank, cotangents=cotangents, cfg=cfg,
+                         existing_weight_projection=existing_weight_projection,
+                         normalize=normalize, score_signs=score_signs,
+                         numerical_threshold=numerical_threshold, loss_spec=loss_spec, contexts=contexts)
     from experiments.vna_support import isolated_rng
     from gromo.utils.training_utils import compute_statistics
     from dual_growth.adapters import TinyAdapter
@@ -80,7 +91,11 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
     clone.core.set_growing_layers(scheduling_method='sequential', index=index)
     if cotangents is None:
         seed_A = {'weight': model.block(site).first_layer.layer.weight.detach()[:1], 'bias': None}
-        cotangents = [filtered_cotangent(model, site, seed_A, batch, cfg) for batch in batches]
+        contexts = [None] * len(batches) if contexts is None else list(contexts)
+        if len(contexts) != len(batches):
+            raise ValueError('one context required per batch')
+        cotangents = [filtered_cotangent(model, site, seed_A, batch, cfg, loss_spec=loss_spec, ctx=ctx)
+                      for batch, ctx in zip(batches, contexts)]
     cotangents = list(cotangents)
     if len(cotangents) != len(batches):
         raise ValueError('one cotangent required per batch')

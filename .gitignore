@@ -8,3 +8,6 @@ data/
 *.pth
 third_party/One-Shot-TAS-CCIL/
 
+third_party/loss-of-plasticity/
+third_party/PyCIL/
+third_party/RepDistiller/

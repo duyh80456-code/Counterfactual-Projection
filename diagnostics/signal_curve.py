@@ -19,7 +19,7 @@ from experiments.vna_provenance import code_commit
 from experiments.vna_support import (setup_data, build_model, augmented_batch,
                                       tiny_candidate, isolated_rng, DeviceCIFAR)
 from methods.vna import (VNAConfig, extract_tiny_A, random_A_like, dedicated_generator,
-                         vna_block_correction, vna_lite_correction, block_products, _mean_ce_logit_grad,
+                         vna_block_correction, vna_lite_correction, block_products, loss_logit_grad,
                          assert_disjoint_scopes)
 
 
@@ -32,13 +32,13 @@ def direction_vector(direction, products):
     return torch.cat([direction.get(name, torch.zeros_like(ref)).reshape(-1) for name, ref in products.parameter_refs])
 
 
-def heldout(model, site, A, batch, directions, cfg, shared=None):
+def heldout(model, site, A, batch, directions, cfg, shared=None, *, loss_spec=None, ctx=None):
     inputs, targets = batch
     result = {}
     with block_products(model, site, A, inputs, cfg.bn_mode, cache_block_input=cfg.cache_block_input) as products:
         logits, g = shared if shared is not None else (products._call({}).reshape(len(targets), -1), None)
         if g is None:
-            g = _mean_ce_logit_grad(logits, targets)
+            g = loss_logit_grad(logits, targets, loss_spec, ctx)
         desired = -(products.K(g) + products.KE(g)).double()
         for label, direction in directions.items():
             valid = bool(direction) and all(torch.isfinite(v).all() for v in direction.values())
@@ -52,15 +52,24 @@ def heldout(model, site, A, batch, directions, cfg, shared=None):
             denom = image.norm() * desired.norm()
             result[label + "_cosine"] = float(image.dot(desired) / denom) if denom > 0 else None
             result[label + "_derivative"] = float(g.dot(image))
-        result["heldout_ce"] = float(F.cross_entropy(logits.double(), targets))
+        if loss_spec is None and ctx is None:
+            result["heldout_ce"] = float(F.cross_entropy(logits.double(), targets))
+        else:
+            from methods.vna_losses import CE
+            loss_context = {'targets': targets, **(ctx or {})}
+            spec = CE() if loss_spec is None else loss_spec
+            loss = (loss_context['loss_fn'](logits.double(), loss_context)
+                    if 'loss_fn' in loss_context else spec.loss(logits.double(), loss_context))
+            result['heldout_loss'] = float(loss.detach())
+            result['loss_name'] = spec.name
     return result
 
 
-def outside_top_space(model, site, A, batch, cfg, q=20, shared=None):
+def outside_top_space(model, site, A, batch, cfg, q=20, shared=None, *, loss_spec=None, ctx=None):
     with block_products(model, site, A, batch[0], cfg.bn_mode, cache_block_input=cfg.cache_block_input) as products:
         if shared is None:
             logits = products._call({}).reshape(len(batch[1]), -1)
-            g = _mean_ce_logit_grad(logits, batch[1])
+            g = loss_logit_grad(logits, batch[1], loss_spec, ctx)
         else:
             _, g = shared
         n, width = g.numel(), min(g.numel(), q + 8)
@@ -193,7 +202,7 @@ def compute(args):
                     model.eval()
                 else:
                     logits = model(batch[0])
-            return logits.detach(), _mean_ce_logit_grad(logits, batch[1])
+            return logits.detach(), loss_logit_grad(logits, batch[1])
         vna_logits, vna_g = shared(vna_batch)
         heldout_shared = shared(check)
         # Selection has its own augmented data stream, never measurement V.
