@@ -24,10 +24,6 @@ def build(commit):
     bootstrap = ''.join(base['cells'][2]['source']).replace('vna_stage_b_nb2', 'vna_cifar_pilot')
     setup = ''.join(base['cells'][3]['source'])
     # Retain pinned dependencies/upstreams and dataset discovery; pilot runs are the checks.
-    lines = setup.splitlines(keepends=True)
-    start = next(i for i, line in enumerate(lines) if '"pytest"' in line)
-    del lines[start:start+2]
-    setup = ''.join(lines)
     return {'cells': [cell('markdown', '''# CIFAR pilot — Kaggle T4×2
 Enable Internet, T4×2 and the `github_token` secret; attach real CIFAR-100.
 Two queues run six bounded real-data pilots, aiming for 15–20 minutes total.
@@ -59,8 +55,8 @@ def pilot_lane(gpu, jobs):
         log_path = PILOT / (job["name"] + ".log")
         cmd = [sys.executable, "-u", "-m", job["module"], *job["args"],
                "--pilot", "--pilot-batches", str(PILOT_BATCHES), "--out", str(out),
-               "--device", "cuda:0", "--workers", "4", "--data-dir", str(DATA_ROOT),
-               "--mu-rel-default", str(MU_REL_DEFAULT)]
+               "--device", "cuda:0", "--workers", "2", "--data-dir", str(DATA_ROOT),
+               "--mu-rel-default", str(MU_REL_DEFAULT), "--mu-source", MU_SOURCE]
         try:
             with log_path.open("w", buffering=1) as log:
                 completed = subprocess.run(cmd, cwd=REPO, env={**ENV, "CUDA_VISIBLE_DEVICES": str(gpu)},
@@ -93,12 +89,20 @@ for result in RESULTS:
                  "gate keys present": summary.get("gate_keys_present", False)})
 with pd.option_context("display.max_colwidth", None):
     display(pd.DataFrame(rows))
-for notebook, names in {"nb2": {"b3", "b2_resnet8x4", "b4"},
-                        "nb3": {"b1_resnet8x4", "b1_wrn_16_2", "b2_wrn_16_2"}}.items():
-    selected = [r for r in rows if r["setting"] in names]
-    total = sum(r["projected full GPU-hours"] or 0 for r in selected)
-    complete = all(r["status"] == "OK" for r in selected)
-    print(f"{notebook}: {total:.3f} projected GPU-hours" + ("" if complete else " (partial; failed jobs omitted)"))
+for notebook, lanes in {"nb2": (("b3",), ("b2_resnet8x4", "b4")),
+                        "nb3": (("b1_resnet8x4", "b1_wrn_16_2"), ("b2_wrn_16_2",))}.items():
+    for gpu, names in enumerate(lanes):
+        selected = [r for r in rows if r["setting"] in names]
+        total = sum(r["projected full GPU-hours"] or 0 for r in selected)
+        if notebook == "nb2":
+            b4_path = PILOT / "b4/summary.json"
+            if b4_path.exists():
+                b4 = json.loads(b4_path.read_text())
+                measure_hours = 12 * b4.get("seconds_per_measurement_point", 0) / 3600
+                total += measure_hours if gpu == 0 else -measure_hours
+        complete = all(r["status"] == "OK" for r in selected)
+        print(f"{notebook} GPU{gpu}: {total:.3f} projected GPU-hours" +
+              ("" if complete else " (partial; failed jobs omitted)"))
 '''
 
 

@@ -617,3 +617,33 @@ memory restriction in PyCIL's hard-coded four-worker exemplar loaders; the
 runtime adapter now applies `--workers` to those loaders too. That fix was
 linted, without another pilot invocation. End-to-end summaries and real T4
 runtime remain unverified locally. No pytest or commit.
+
+
+### Revised notebook schedule (supervisor, 2026-10-15)
+
+Run nb1 first, then nb2 and nb3 in separate Kaggle sessions. Nb1 GPU0 runs the
+existing Stage A CLI in order (a5, cost smoke, null, selection, joint, mu, solver,
+summary), preserving checkpoint identity and resume checks, then measured MNIST
+BP. GPU1 starts unmeasured MNIST CBP at rr 1e-4 immediately. A separate
+CPU subprocess queue starts all five regression CBP arms, then BP after polling
+the freshly validated Stage A summary; CPU torch threads are limited to two.
+Both BP diagnostics retain the default μ and 1e-2. Stage A failure records
+`mu_source="fallback: stage A failed"`. MNIST first uses upstream load_mnist.py,
+with attached MNIST as fallback. ImageNet-32 is removed from nb1, retained in
+the runner, and recorded as `"imagenet": "dropped (supervisor 2026-10-15)"`.
+The final cell reports Stage A, B5 baseline/G gates, lane timings, and archives
+both stages. The standalone Stage A notebook remains available.
+
+Nb2 GPU0 runs B3 then B4 measurement, polling for `recipe/epoch_200.pt`; GPU1
+runs resnet32x4→resnet8x4 B2 then B4 training. Failures release checkpoint waits.
+Nb3 retains its two B1 jobs on GPU0 and WRN B2 on GPU1. Both notebooks (and the
+shared CIFAR pilot setup) search attached Stage A summaries, then other summaries
+containing `mu_rel_default`; absence prints a prominent 1e-2 warning. Every runner
+receives μ and records `mu_source` in its summary. All notebook loader processes
+use two workers, and smoke reports print projected GPU-hours per lane (CPU
+regression cost is reported separately). B3's train-accuracy condition is `n/a`,
+with raw final accuracy retained; all gate thresholds are unchanged.
+
+Validation for this revision: regenerated nb1/nb2/nb3 and the CIFAR pilot, and
+compiled every generated code cell. No pytest or commit. Notebook pins must be
+regenerated against the eventual published implementation before Kaggle runs.

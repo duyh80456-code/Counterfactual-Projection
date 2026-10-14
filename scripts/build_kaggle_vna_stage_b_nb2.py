@@ -1,4 +1,4 @@
-"""Build pinned Notebook 2: GPU0 B3; GPU1 gated B2 resnet8x4, then B4."""
+"""Build pinned Notebook 2: GPU0 B3 then B4 measure; GPU1 B2 resnet8x4 then B4 train."""
 import argparse
 import json
 from pathlib import Path

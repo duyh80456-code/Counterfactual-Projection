@@ -20,7 +20,7 @@ def setting_config(setting, *, tasks_run=None, mu_rel_default=1e-2):
         window = lambda r: r['task'] > tasks_run / 2
     else:
         raise ValueError(f'unknown setting {setting}')
-    return {'window': window, 'train_acc_applicable': setting != 'B5',
+    return {'window': window, 'train_acc_applicable': setting not in ('B3', 'B5'),
             'mu_rel_default': mu_rel_default, 'damping_norm': 'outputs'}
 
 
@@ -39,7 +39,7 @@ def evaluate_gate(rows, setting_cfg):
     tiny = frac(lambda r: r['V_tiny_V'] > r['V_random_frob'])
     applicable = setting_cfg['train_acc_applicable']
     final = setting_cfg.get('final_train_acc')
-    if applicable and final is None and rows:
+    if final is None and rows:
         final = max(rows, key=lambda r: (r.get('task', 0), r.get('epoch', 0))).get('train_acc')
     conditions = {'rho': rho >= RHO_FRAC, 'N1': n1 >= N1_FRAC,
                   'tiny_V': tiny >= TINYV_FRAC,
@@ -47,4 +47,4 @@ def evaluate_gate(rows, setting_cfg):
     return {'status': 'PASS' if n and all(v is True or v == 'n/a' for v in conditions.values()) else 'FAIL',
             'eligible_points': n, 'rho_fraction': rho, 'N1_fraction': n1,
             'tiny_V_fraction': tiny, 'final_train_acc': final if applicable else 'n/a',
-            'conditions': conditions}
+            'raw_final_train_acc': final, 'conditions': conditions}

@@ -149,7 +149,7 @@ def run(args):
     write_json(out/'reproduction_gate.json', baseline)
     write_json(out/'gate.json', gate)
     diagnostic_seconds = sum(p['seconds'] for p in hook.point_seconds)
-    write_json(out/'summary.json', {**metadata, 'seconds': seconds,
+    write_json(out/'summary.json', {**metadata, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds,
                'training_seconds': seconds-diagnostic_seconds, 'epochs_run': len(hook.epochs),
                'tasks_run': len(hook.tasks), 'measurement_point_seconds': hook.point_seconds,
                'resume_supported': False, 'reproduction': baseline, 'gate': gate,
@@ -170,6 +170,7 @@ def main():
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--data-dir')
     p.add_argument('--mu-rel-default', type=float, default=.01)
+    p.add_argument('--mu-source', default='cli/default')
     run(p.parse_args())
 
 

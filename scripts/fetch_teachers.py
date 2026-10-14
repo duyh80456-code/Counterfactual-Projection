@@ -79,10 +79,11 @@ def main():
     p.add_argument('--teacher', choices=TEACHERS, required=True)
     p.add_argument('--data-dir', default='data')
     p.add_argument('--device', default='cuda:0')
+    p.add_argument('--workers', type=int, default=2)
     p.add_argument('--gate-out', default='outputs/stageB/teacher_gate.json')
     args = p.parse_args()
     path = fetch(args.teacher)
-    row = teacher_gate(args.teacher, path, args.data_dir, args.device)
+    row = teacher_gate(args.teacher, path, args.data_dir, args.device, workers=args.workers)
     out = Path(args.gate_out)
     rows = json.loads(out.read_text()) if out.exists() else {}
     rows[args.teacher] = row

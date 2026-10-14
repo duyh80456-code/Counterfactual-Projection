@@ -126,7 +126,7 @@ def run(args):
     write_csv(out/'epochs.csv', [{**meta, 'epoch': h['epoch'], 'train_acc': h['train']['accuracy'],
               'train_loss': h['train']['loss'], 'eval_acc': h['eval']['accuracy'],
               'eval_loss': h['eval']['loss'], 'lr': h['lr'], 'seconds': h['seconds']} for h in history])
-    write_json(out/'summary.json', {**meta, 'gate': gate, 'seconds': time.monotonic()-started,
+    write_json(out/'summary.json', {**meta, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'gate': gate, 'seconds': time.monotonic()-started,
                'training_seconds': sum(r['seconds'] for r in history), 'epochs_run': len(history),
                'measurement_point_seconds': costs, 'resume_supported': True,
                'final_test': json.loads((out/'final_test.json').read_text()) if (out/'final_test.json').exists() else None,
@@ -147,6 +147,7 @@ def parser():
     p.add_argument('--data-dir', default='data')
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--mu-rel-default', type=float, default=.01)
+    p.add_argument('--mu-source', default='cli/default')
     p.add_argument('--resume')
     return p
 

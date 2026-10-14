@@ -106,7 +106,7 @@ def run(args, *, measure_override=None, observe=None):
     write_json(out/'reproduction.json', reproduction)
     write_json(out/'gate.json', gate)
     diagnostic = sum(p['seconds'] for p in hook.point_seconds)
-    write_json(out/'summary.json', {**meta, 'seconds': seconds, 'training_seconds': seconds-diagnostic,
+    write_json(out/'summary.json', {**meta, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds, 'training_seconds': seconds-diagnostic,
                'epochs_run': len(hook.epochs), 'measurement_point_seconds': hook.point_seconds,
                'final_test_acc': float(acc), 'parameter_count': sum(p.numel() for p in hook.model.parameters()),
                'gate': gate, 'resume_supported': False,
@@ -129,6 +129,7 @@ def parser():
     p.add_argument('--data-dir', default='data')
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--mu-rel-default', type=float, default=.01)
+    p.add_argument('--mu-source', default='cli/default')
     return p
 
 
