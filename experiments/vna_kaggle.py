@@ -82,13 +82,13 @@ def restore_outputs(input_root, output, protocol):
     print("Resume checkpoints:", len(found), "excluded:", len(rejected))
 
 
-def archive_outputs(output, budget=5_000_000_000):
+def archive_outputs(output, budget=5_000_000_000, *, folders=("recipe", "signal")):
     """Hard-link atomic immutable outputs before tar creation, even during training."""
     output = Path(output)
     target = output.with_suffix(".tar.gz")
     with tempfile.TemporaryDirectory(dir=output.parent, prefix="vna_snapshot_") as temporary:
         snapshot = Path(temporary)
-        for folder in ("recipe", "signal"):
+        for folder in folders:
             for path in (output/folder).rglob("*"):
                 if path.is_file() and not path.name.endswith(".tmp") and not any(part.endswith(".lock") for part in path.parts):
                     dest = snapshot/path.relative_to(output)

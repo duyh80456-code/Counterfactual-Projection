@@ -17,6 +17,7 @@ class CGResult:
     converged: bool
     residual_history: tuple[float, ...] = ()
     relative_residual: float = float("inf")
+    breakdown: bool = False
 
 
 def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
@@ -43,10 +44,12 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
     residual_product = torch.dot(residual, preconditioned)
     iteration = 0
     completed_iterations = 0
+    breakdown = False
     for iteration in range(1, max_iter + 1):
         image = matvec(direction).detach()
         denominator = torch.dot(direction, image)
         if abs(float(denominator)) <= eps:
+            breakdown = True
             break
         alpha = residual_product / denominator
         x = (x + alpha * direction).detach()
@@ -71,6 +74,7 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
         next_preconditioned = precondition(residual).detach()
         next_product = torch.dot(residual, next_preconditioned)
         if abs(float(residual_product)) <= eps:
+            breakdown = True
             break
         direction = (next_preconditioned +
                      (next_product / residual_product) * direction).detach()
@@ -81,4 +85,4 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
     history[-1] = final_norm
     return CGResult(
         x, completed_iterations, final_norm, False, tuple(history),
-        final_norm / rhs_norm)
+        final_norm / rhs_norm, breakdown)

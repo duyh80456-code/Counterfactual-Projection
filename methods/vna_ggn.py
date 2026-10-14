@@ -20,6 +20,11 @@ class GGNConfig:
     seed: int = 20261014
     project_bn: bool = True
     cache_block_input: bool = False
+    damping_norm: str = "params"
+
+    def __post_init__(self):
+        if self.damping_norm not in ("params", "outputs"):
+            raise ValueError("damping_norm must be params or outputs")
 
 
 class GGNProducts:
@@ -107,7 +112,7 @@ def _correction(model, site, A, batch, cfg, variant, *, mu=None, trace_F=None, p
     with block_products(model, site, A, batch[0], cache_block_input=cfg.cache_block_input) as p:
         op = GGNProducts(p, batch[1])
         trace = op.trace(cfg) if trace_F is None else float(trace_F)
-        damping = max(cfg.damping_rel * trace / op.size, 1e-12) if mu is None else float(mu)
+        damping = relative_damping(cfg, trace, op) if mu is None else float(mu)
         if damping <= 0:
             raise ValueError('mu must be positive')
         records = []
@@ -133,7 +138,7 @@ def _correction(model, site, A, batch, cfg, variant, *, mu=None, trace_F=None, p
         delta = project_bn_tangent(model, site, _unflatten(d, p.parameter_refs), cfg.project_bn)
         flat = torch.cat([delta[n].flatten() for n, _ in p.parameter_refs]).double()
         diag = {'variant': variant, 'mu': damping, 'trace_F': trace,
-                'trace_F_per_parameter': trace / op.size, 'cg': records, 'c': c,
+                'trace_F_per_parameter': trace / op.size, **damping_metadata(cfg, trace, op, damping), 'cg': records, 'c': c,
                 'V': float(p.JET(z).double().square().sum()),
                 'raw_gain': raw_gain, 'realized_gain': float(op.gradient.dot(flat)),
                 'project_bn': cfg.project_bn, 'weight_norms': bn_weight_norms(model, site),
@@ -168,7 +173,20 @@ def filtered_cotangent(model, site, A, batch, cfg=GGNConfig(), *, mu=None, preco
     """
     with block_products(model, site, A, batch[0]) as p:
         op = GGNProducts(p, batch[1])
-        damping = max(cfg.damping_rel * op.trace(cfg) / op.size, 1e-12) if mu is None else mu
+        damping = relative_damping(cfg, op.trace(cfg), op) if mu is None else mu
         u = (solve_ggn(op, op.gradient, damping, cfg).solution if preconditioner is None
              else preconditioner.apply(op.gradient, p.parameter_refs, damping))
         return op.H(p.Jv(u)).reshape_as(op.probs).detach()
+
+
+def damping_metadata(cfg, trace, op, mu):
+    return {'mu': float(mu), 'mu_rel': cfg.damping_rel,
+            'damping_norm': cfg.damping_norm, 'trace_F': float(trace),
+            'n_out': op.g.numel(), 'p': op.size,
+            'mu_rel_equiv_params': float(mu) / (trace / op.size) if trace > 0 else None}
+
+
+def relative_damping(cfg, trace, op):
+    if cfg.damping_norm == 'params':
+        return max(cfg.damping_rel * trace / op.size, 1e-12)
+    return cfg.damping_rel * trace / op.g.numel()

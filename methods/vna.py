@@ -8,7 +8,7 @@ added to the matching parameter gradients by the caller.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 import time
@@ -379,12 +379,27 @@ def _hutchinson_trace_and_diag(products: _Products, n: int, cfg: VNAConfig, devi
     return trace, diagonal
 
 
-def _cg_record(result: CGResult) -> dict[str, Any]:
+def _phase0_cg(action, rhs, *, normalize_rhs=False, **kwargs):
+    if not normalize_rhs:
+        return conjugate_gradient(action, rhs, **kwargs)
+    scale = float(rhs.norm())
+    if not scale:
+        return conjugate_gradient(action, rhs, **kwargs)
+    if kwargs.get('x0') is not None:
+        kwargs['x0'] = kwargs['x0'] / scale
+    result = conjugate_gradient(action, rhs / scale, **kwargs)
+    return replace(result, solution=result.solution * scale,
+                   residual_norm=result.residual_norm * scale,
+                   residual_history=tuple(v * scale for v in result.residual_history))
+
+
+def _cg_record(result: CGResult, *, include_breakdown=False) -> dict[str, Any]:
     return {
         "iterations": result.iterations,
         "residual_norm": result.residual_norm,
         "relative_residual": result.relative_residual,
         "converged": result.converged,
+        **({"breakdown": result.breakdown} if include_breakdown else {}),
         "residual_history": list(result.residual_history),
     }
 
@@ -398,7 +413,8 @@ def vna_block_correction(
     warm_start: Mapping[str, Tensor] | None = None,
     *, damping_cache: Mapping[str, Any] | None = None,
     shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
-    apply_gain_guard: bool = True, _lite: bool = False,
+    apply_gain_guard: bool = True, _lite: bool = False, cg_breakdown_flags: bool = False,
+    rhs_normalized_cg: bool = False,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return ``lambda_vna * J^T R K_E R K g`` for addition to gradients.
 
@@ -420,7 +436,7 @@ def vna_block_correction(
     try:
         block_name, block, parameter_names = _resolve_site(model, site)
         inputs, targets = batch
-        inputs = inputs.detach().float()
+        inputs = inputs.detach().to(dtype=next(model.parameters()).dtype)
         targets = targets.detach().to(inputs.device)
         A_dict = _as_a_dict(A)
         # Disable dropout in both BN modes; train mode applies only to BN.
@@ -473,16 +489,16 @@ def vna_block_correction(
             else:
                 z0 = None if warm_start is None else warm_start.get("z")
                 q0 = None if warm_start is None else warm_start.get("q")
-                z_result = conjugate_gradient(
+                z_result = _phase0_cg(
                     matvec, w, x0=None if z0 is None else z0.to(w),
                     max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
-                    preconditioner=precondition, eps=1e-30)
+                    preconditioner=precondition, eps=1e-30, normalize_rhs=rhs_normalized_cg)
                 z = z_result.solution
                 s = products.KE(z.to(inputs)).to(dtype=torch.float64)
-                q_result = conjugate_gradient(
+                q_result = _phase0_cg(
                     matvec, s, x0=None if q0 is None else q0.to(s),
                     max_iter=cfg.cg_iters, tolerance=cfg.cg_tol,
-                    preconditioner=precondition, eps=1e-30)
+                    preconditioner=precondition, eps=1e-30, normalize_rhs=rhs_normalized_cg)
                 q = q_result.solution
             d_flat = products.JT(q.to(inputs)).to(dtype=torch.float64)
             je_t_g = products.JET(g.to(inputs)).to(dtype=torch.float64)
@@ -550,8 +566,8 @@ def vna_block_correction(
                 "rho": rho,
                 "per_neuron_V": per_neuron,
                 "jt_g_norm_sq": jt_g_norm_sq,
-                "cg_z": None if _lite else _cg_record(z_result),
-                "cg_q": None if _lite else _cg_record(q_result),
+                "cg_z": None if _lite else _cg_record(z_result, include_breakdown=cg_breakdown_flags),
+                "cg_q": None if _lite else _cg_record(q_result, include_breakdown=cg_breakdown_flags),
                 "warm_start": {"z": z.detach(), "q": q.detach()},
                 "jvp_calls": products.jvp_calls,
                 "vjp_calls": products.vjp_calls,

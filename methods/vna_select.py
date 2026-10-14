@@ -67,6 +67,14 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
         raise ValueError('need batches and positive rank')
     clone = copy.deepcopy(model)
     block = clone.block(site)
+    # Pinned Gromo creates this lazy convolution identity in float32 even
+    # for float64 models. Initialize it on the private statistics clone.
+    second = block.second_layer
+    if hasattr(second, 'bordering_weight') and second.bordering_weight is None:
+        from gromo.utils.tools import create_bordering_effect_weight
+        previous = second.previous_module
+        channels = previous.in_channels * previous.kernel_size[0] * previous.kernel_size[1] + previous.use_bias
+        second.bordering_weight = create_bordering_effect_weight(channels, convolution=second.layer).to(second.layer.weight)
     block.second_layer.target_in_neurons = block.second_layer.in_neurons + rank
     index = next(i for i, b in enumerate(clone.core._growable_layers) if b is block)
     clone.core.set_growing_layers(scheduling_method='sequential', index=index)
@@ -78,7 +86,6 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
         raise ValueError('one cotangent required per batch')
     pseudo_batches = [(x, z.detach().reshape(len(x), -1)) for (x, _), z in zip(batches, cotangents)]
     capture = {}
-    second = block.second_layer
     original = second._compute_optimal_added_parameters
     def capture_solve(*args, **kwargs):
         capture['S'] = second.tensor_s_growth().detach().double().clone()
@@ -122,7 +129,7 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
 
 
 def greedy_V(model, site, tiny_A, inputs, z, *, random_count=8, r_max=16,
-             theta=.6, nu=1e-8, seed=20261014):
+             theta=.6, nu=1e-8, seed=20261014, matrix_free=False):
     """Group OMP: a neuron includes all its outgoing B coordinates.
 
     Gram is the logit-space Gram of the true-ReLU feature Jacobian pool.
@@ -142,6 +149,9 @@ def greedy_V(model, site, tiny_A, inputs, z, *, random_count=8, r_max=16,
                        (a[n] is not None and b[n] is not None and torch.equal(a[n], b[n]))
                        for n in a) for b in unique):
             unique.append(a)
+    if matrix_free:
+        return _greedy_matrix_free(model, site, unique, inputs, z,
+                                   r_max=r_max, theta=theta, nu=nu)
     features, groups = [], []
     offset = 0
     for a in unique:
@@ -178,18 +188,176 @@ def greedy_V(model, site, tiny_A, inputs, z, *, random_count=8, r_max=16,
         'theta': theta, 'pool_size': len(unique), 'nu': nu}
 
 
+def _greedy_matrix_free(model, site, pool, inputs, z, *, r_max, theta, nu):
+    """Same ridge group-OMP objective using KE, without a dense feature Gram.
+
+    c^T(G+nu I)^-1 c = z^T KE(KE+nu I)^-1 z. The latter
+    needs only logit-space vectors; a CIFAR outgoing group can contain 4608
+    coordinates, making the explicit full-pool Gram prohibitively large.
+    """
+    from methods.vna_joint import _inverse
+    records = []
+    z = z.flatten().double()
+    def gain(indices):
+        if not indices:
+            return 0.
+        A = _concat([pool[i] for i in indices])
+        with block_products(model, site, A, inputs) as p:
+            solution, record = _inverse(lambda v: p.KE(v).double()+nu*v, z,
+                GGNConfig(cg_iters=1000, cg_tol=1e-6))
+            records.append(record)
+            return float(z.dot(p.KE(solution).double()))
+    pool_gain = gain(list(range(len(pool))))
+    selected, gains = [], [0.]
+    while len(selected) < min(r_max, len(pool)) and gains[-1] < theta*pool_gain:
+        value, index = max((gain(selected+[i]), i) for i in range(len(pool)) if i not in selected)
+        selected.append(index); gains.append(value)
+    if not selected:
+        selected = [0]; gains.append(gain(selected))
+    return _concat([pool[i] for i in selected]), {'selected': selected, 'gains': gains,
+        'pool_gain': pool_gain, 'threshold_reached': gains[-1] >= theta*pool_gain,
+        'theta': theta, 'pool_size': len(pool), 'nu': nu, 'matrix_free': True,
+        'cg_converged': all(r['converged'] for r in records), 'cg': records}
+
+
 def extension_trace(model, site, A, inputs):
     """Exact tr(K_E), intended for small CPU controls and refresh only."""
     with block_products(model, site, A, inputs) as p:
         n = p._call({}).numel()
-        eye = torch.eye(n, dtype=inputs.dtype, device=inputs.device)
-        return sum(float(p.JET(v).double().square().sum()) for v in eye)
+        # Stream coordinate vectors: an n-by-n identity is prohibitive on
+        # CIFAR statistics batches (n=25600 logits).
+        v = torch.zeros(n, dtype=inputs.dtype, device=inputs.device)
+        total = 0.
+        for i in range(n):
+            v.zero_(); v[i] = 1
+            total += float(p.JET(v).double().square().sum())
+        return total
 
 
-def trace_matched_random_A(model, site, reference, inputs, *, seed=20261014):
-    a = random_A_like(reference, generator=dedicated_generator(seed, 'random-A-trace', inputs.device))
-    target, actual = extension_trace(model, site, reference, inputs), extension_trace(model, site, a, inputs)
+def extension_trace_estimate(model, site, A, inputs, *, seed, probes=64):
+    """Rademacher tr(K_E), using a repeatable shared output-probe stream."""
+    if probes < 64:
+        raise ValueError('trace estimate requires at least 64 probes')
+    with block_products(model, site, A, inputs) as p:
+        n = p._call({}).numel()
+        gen = dedicated_generator(seed, 'extension-trace-crn', inputs.device)
+        terms = []
+        for _ in range(probes):
+            v = torch.empty(n, dtype=inputs.dtype, device=inputs.device).bernoulli_(.5, generator=gen).mul_(2).sub_(1)
+            terms.append(float(p.JET(v).double().square().sum()))
+    values = torch.tensor(terms, dtype=torch.float64)
+    return float(values.mean()), {'estimator': 'hutchinson', 'probes': probes,
+                                 'std': float(values.std()),
+                                 'standard_error': float(values.std() / probes**.5),
+                                 'probe_seed': seed, 'common_random_numbers': True}
+
+
+def trace_cost(model, site, A, inputs, *, coordinates=4):
+    """Time a bounded coordinate sample and extrapolate the exact A3 trace work."""
+    import time
+    with block_products(model, site, A, inputs) as p:
+        n = p._call({}).numel()
+        v = torch.zeros(n, dtype=inputs.dtype, device=inputs.device)
+        p.JET(v)  # warm up
+        if inputs.is_cuda: torch.cuda.synchronize(inputs.device)
+        start = time.perf_counter()
+        for i in range(min(coordinates, n)):
+            v.zero_(); v[i] = 1
+            p.JET(v)
+        if inputs.is_cuda: torch.cuda.synchronize(inputs.device)
+        seconds = (time.perf_counter() - start) / min(coordinates, n)
+    # 5 epochs * 3 sites * 3 ranks * 3 draws * (full + two halves), two traces.
+    a3_seconds = seconds * n * 2 * (5 * 3 * 3 * 3) * 2
+    return {'coordinate_vjp_seconds': seconds, 'n_out': n,
+            'exact_pair_seconds': 2 * seconds * n,
+            'projected_a3_exact_trace_seconds': a3_seconds,
+            'device': str(inputs.device)}
+
+
+def trace_matched_random_A(model, site, reference, inputs, *, seed=20261014, A=None,
+                           estimator='exact'):
+    a = (random_A_like(reference, generator=dedicated_generator(seed, 'random-A-trace', inputs.device))
+         if A is None else _as_a_dict(A))
+    cost = {}
+    if estimator == 'auto':
+        # Only CIFAR-scale output spaces need the cost-based switch.
+        with block_products(model, site, reference, inputs) as p:
+            n = p._call({}).numel()
+        if n >= 1000:
+            cost = trace_cost(model, site, reference, inputs)
+            estimator = 'hutchinson' if cost['projected_a3_exact_trace_seconds'] > 1800 else 'exact'
+        else:
+            estimator = 'exact'
+    if estimator == 'hutchinson':
+        target, target_record = extension_trace_estimate(model, site, reference, inputs, seed=seed)
+        actual, actual_record = extension_trace_estimate(model, site, a, inputs, seed=seed)
+    elif estimator == 'exact':
+        target, actual = extension_trace(model, site, reference, inputs), extension_trace(model, site, a, inputs)
+        target_record = actual_record = {'estimator': 'exact', 'std': 0., 'probes': 0}
+    else:
+        raise ValueError('unknown trace estimator')
     if actual == 0 and target > 0:
         raise RuntimeError('random-A has zero trace and cannot be trace matched')
     scale = (target / actual) ** .5 if actual else 1.
-    return {n: None if v is None else v * scale for n, v in a.items()}, {'trace_target': target, 'trace_before': actual, 'scale': scale}
+    return {n: None if v is None else v * scale for n, v in a.items()}, {
+        'trace_target': target, 'trace_before': actual, 'scale': scale,
+        'trace_estimator': estimator, 'trace_target_record': target_record,
+        'trace_random_record': actual_record, 'trace_cost': cost}
+
+
+def tiny_U_from_cotangent(model, site, inputs, cotangent, rank, cfg=GGNConfig()):
+    """Native projected TINY closed form driven by a mean-loss cotangent.
+
+    Native statistics consume sum-loss derivatives. Convert the supplied
+    mean-batch derivative once, before Gromo's sample averaging. No labels
+    enter the pseudo-loss or the generalized singular-value solve.
+    """
+    cotangent = cotangent.detach().reshape(len(inputs), -1)
+    batches = [(x, torch.zeros(len(x), dtype=torch.long, device=inputs.device))
+               for x in inputs.split(64)]
+    A, capture = tiny_V(model, site, batches, rank,
+        cotangents=list((cotangent * len(inputs)).split(64)), cfg=cfg,
+        existing_weight_projection=True, normalize=False, score_signs=False)
+    return A, capture['singular_values']
+
+
+def prepare_A(model, site, A, kind, *, reference=None, inputs=None, seed=20261014, trace_estimator="exact"):
+    """Single Stage-A normalization boundary, including matched controls.
+
+    Row scales are the normalization constants; a final scalar records the
+    exact Frobenius/trace matching operation after row normalization.
+    """
+    before = neuron_norms(A)
+    normalized = normalize_A(model, site, A)
+    scales = neuron_norms(normalized) / before.clamp_min(1e-30)
+    match = 1.
+    trace_record = {}
+    if kind == 'random_frob':
+        if reference is None:
+            raise ValueError('random_frob requires normalized tiny_U reference')
+        norm = lambda a: sum(v.double().square().sum() for v in a.values() if v is not None).sqrt()
+        match = float(norm(reference) / norm(normalized).clamp_min(1e-30))
+    elif kind == 'random_trace':
+        if reference is None or inputs is None:
+            raise ValueError('random_trace requires reference and inputs')
+        _, trace_record = trace_matched_random_A(model, site, reference, inputs,
+                                                seed=seed, A=normalized, estimator=trace_estimator)
+        match = trace_record['scale']
+    normalized = {n: None if v is None else v * match for n, v in normalized.items()}
+    return normalized, {'normalization_constant': scales.detach().cpu().tolist(),
+                        'match_scale': match, 'kind': kind, **trace_record}
+
+
+def subspace_sim(A, B):
+    """Squared overlap of orthonormal row spaces (bias is a homogeneous input)."""
+    def basis(a):
+        a = _as_a_dict(a)
+        rows = a['weight'].flatten(1).double()
+        if a['bias'] is not None:
+            rows = torch.cat((rows, a['bias'].double()[:, None]), 1)
+        _, s, vh = torch.linalg.svd(rows, full_matrices=False)
+        keep = s > (s.max() * max(rows.shape) * torch.finfo(s.dtype).eps)
+        return vh[keep].T
+    q1, q2 = basis(A), basis(B)
+    rank = min(q1.shape[1], q2.shape[1])
+    return float((q1.T @ q2).square().sum() / rank) if rank else 0.

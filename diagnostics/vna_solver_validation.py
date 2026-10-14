@@ -146,8 +146,9 @@ def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
     return summary
 
 
-def run_checkpoint(args):
+def run_checkpoint(args, *, stage_metadata=None, require_convergence=True):
     """Matrix-free real recipe checkpoint audit; never touches official test."""
+    audit_start=time.perf_counter()
     import copy
     from experiments.run_vna_training import parser as training_parser
     from experiments.vna_support import setup_data, build_model, augmented_batch
@@ -180,15 +181,25 @@ def run_checkpoint(args):
     sgd=statistics.median(times[1:]); del clone,optimizer,state
     rows=[]; factor_cost={}; batch_checks=[]
     cfg=engine.cfg
+    if stage_metadata is not None:
+        from dataclasses import replace
+        cfg=replace(cfg, damping_norm="outputs")
     for site,entry in engine.cache.items():
         A=entry['A']; trace=entry['trace_F']
+        normalization=None
+        if stage_metadata is not None:
+            from methods.vna_select import prepare_A
+            A,normalization=prepare_A(model,site,A,args.selection)
         kfac=KFACBlockPreconditioner()
         sync(device); t=time.perf_counter(); kfac.refresh(model,site,batch); sync(device)
         factor_cost[site]=time.perf_counter()-t
         with block_products(model,site,A,batch[0],cache_block_input=cfg.cache_block_input) as p:
             refs=p.parameter_refs; size=sum(p.numel() for _,p in refs)
+            op=GGNProducts(p,batch[1])
+            n_out=op.g.numel()
+            block_gradient_norm=float(op.gradient.norm())
         for relative in sorted({1e-4,1e-3,1e-2,1e-1,config.damping_rel}):
-            mu=max(relative*trace/size,1e-12)
+            mu=(max(relative*trace/size,1e-12) if cfg.damping_norm == "params" else relative*trace/n_out)
             variants={}
             with isolated_rng(engine.generators['construction']):
                 for name in ('exact','kfac','lite','euclidean','ngd'):
@@ -215,6 +226,14 @@ def run_checkpoint(args):
                     'seconds':diag['seconds'],'sgd_units':diag['seconds']/sgd,
                     'cg_converged':all(r['converged'] for r in diag.get('cg',[])),
                     'cg':diag.get('cg',[]),'rank':entry['rank']}
+                row.update(mu_rel=relative, damping_norm=cfg.damping_norm, trace_F=trace,
+                           n_out=n_out, p=size, mu_rel_equiv_params=mu/(trace/size) if trace else None)
+                if name == 'euclidean':
+                    row.update(mu=diag.get('mu'), damping_metric='phase0_euclidean_trace_K')
+                    row['mu_rel_equiv_params']=diag.get('mu')/(trace/size) if trace else None
+                row['lambda_d_over_g']=abs(config.lambda_vna)*float(value.norm())/max(block_gradient_norm,1e-30)
+                if normalization is not None:
+                    row['normalization_constant']=normalization['normalization_constant']
                 for group,match in [('W1','.first_layer.layer.weight'),('W2','.second_layer.layer.weight'),('BN','post_layer_function')]:
                     mask=torch.cat([torch.full((p.numel(),),match in n,device=device,dtype=torch.bool) for n,p in refs])
                     row['cos_'+group]=cosine(value[mask],reference[mask])
@@ -253,11 +272,18 @@ def run_checkpoint(args):
         'exact_converged_at_train_mu':all(r['cg_converged'] for r in rows if r['variant']=='exact' and r['relative_mu']==config.damping_rel),
         'exact_converged':all(r['cg_converged'] for r in rows if r['variant']=='exact'),
         'cost_note':'Synchronized correction cost; refresh separately measured; training-batch recipe SGD units.'}
+    if stage_metadata is not None:
+        stage_metadata=dict(stage_metadata,wall_seconds=time.perf_counter()-audit_start)
+        summary.update(stage_metadata)
+        for row in rows:
+            row.update(stage_metadata)
+        for check in batch_checks:
+            check.update(stage_metadata)
     atomic_json_save(summary,output/'summary.json')
     with (output/'solvers.csv').open('w',newline='') as f:
         writer=csv.DictWriter(f,fieldnames=list(dict.fromkeys(k for row in rows for k in row))); writer.writeheader(); writer.writerows(rows)
     print(json.dumps(summary,indent=2))
-    if not summary['exact_converged_at_train_mu']:
+    if require_convergence and not summary['exact_converged_at_train_mu']:
         raise RuntimeError('Exact reference did not converge; residuals saved. Increase --cg-iters or inspect precision.')
     return summary
 
