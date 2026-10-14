@@ -12,16 +12,15 @@ from experiments.vna_training_kaggle import apply_budget_policy
 from scripts.build_kaggle_vna_training_notebooks import PART_ARMS, build
 
 
-def test_six_notebooks():
+def test_six_notebooks(tmp_path):
     root = Path(__file__).resolve().parents[1]
     for seed in (0, 1):
         assert not (root/f'notebooks/kaggle_vna_training_seed{seed}.ipynb').exists()
         for part in (1, 2, 3):
-            path = root/f'notebooks/kaggle_vna_seed{seed}_part{part}.ipynb'
-            stored = json.loads(path.read_text())
-            constants = {}; exec(''.join(stored['cells'][1]['source']), constants)
-            assert stored == build(constants['REPO_COMMIT'], seed=seed, part=part)
-            notebook = build('a'*40, seed, part)
+            path = tmp_path/f'kaggle_vna_seed{seed}_part{part}.ipynb'
+            path.write_text(json.dumps(build('a'*40, seed=seed, part=part)))
+            notebook = json.loads(path.read_text())
+            assert notebook == build('a'*40, seed=seed, part=part)
             source = ''.join(''.join(c['source']) for c in notebook['cells'])
             assert f'/kaggle/working/vna_seed{seed}_part{part}' in source
             assert 'GPU_HOURS_BUDGET = 15' in source

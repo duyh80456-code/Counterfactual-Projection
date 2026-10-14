@@ -6,13 +6,31 @@ The main method needs only the public ``virtual_direction`` transaction.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from .virtual_expansion import ProbeSignal
+
+@dataclass(frozen=True)
+class ProbeSignal:
+    block: str
+    A_E: Tensor | None
+    B_E: Tensor | None
+    delta_feature: Tensor | None
+    delta_logits: Tensor
+    predicted_gain: float
+    singular_values: Tensor | None
+    source: str = "unknown"
+    is_structural_expansion: bool = False
+    probe_gate: float | None = None
+    observed_loss_gain: float | None = None
+
+    @property
+    def rank(self) -> int:
+        return 0 if self.A_E is None else int(self.A_E.shape[0])
 
 
 def _snapshot(model: nn.Module) -> dict[str, Tensor]:

@@ -180,37 +180,10 @@ def build_cifar_gromo_resnet34(device):
     return model
 
 
-def build_cifar_gromo_vgg16(device):
-    """Build the native-Gromo CIFAR VGG16-BN used for architecture transfer."""
-    from probe.vgg_tiny_adapter import GromoVGG16
-
-    model = GromoVGG16(num_classes=100, device=device).to(device)
-    widths = [int(ref.module.hidden_neurons)
-              for ref in model.growing_blocks()]
-    expected = [64, 64, 128, 128, 256, 256, 256,
-                512, 512, 512, 512, 512]
-    if widths != expected:
-        raise RuntimeError(f"unexpected CIFAR-VGG16 link widths: {widths}")
-    return model
-
-
-def build_cifar_densenet121(device):
-    """Build the CIFAR DenseNet-121 used for block-boundary transfer."""
-    from probe.densenet_auxiliary import CifarDenseNet121
-
-    model = CifarDenseNet121(num_classes=100, device=device).to(device)
-    refs = model.growing_blocks()
-    if len(refs) != 4:
-        raise RuntimeError(f"unexpected DenseNet-121 block count: {len(refs)}")
-    return model
-
-
 def build_cifar_gromo_resnet(architecture: str, device):
     builders = {
         "resnet18": build_cifar_gromo_resnet18,
         "resnet34": build_cifar_gromo_resnet34,
-        "vgg16": build_cifar_gromo_vgg16,
-        "densenet121": build_cifar_densenet121,
     }
     try:
         builder = builders[architecture]
@@ -223,8 +196,6 @@ def architecture_label(architecture: str) -> str:
     labels = {
         "resnet18": "CIFAR-ResNet18",
         "resnet34": "CIFAR-ResNet34",
-        "vgg16": "CIFAR-VGG16-BN",
-        "densenet121": "CIFAR-DenseNet121",
     }
     try:
         return labels[architecture]

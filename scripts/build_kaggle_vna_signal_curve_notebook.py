@@ -8,6 +8,90 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+# Self-contained setup cells retained for all VNA notebook builders.
+_BOOTSTRAP = (
+    'import hashlib, json, os, shutil, subprocess, sys, threading, time, zipfile\n'
+    'from pathlib import Path\n'
+    'from kaggle_secrets import UserSecretsClient\n'
+    '\n'
+    'MAIN_URL = "https://github.com/duyh80456-code/Counterfactual-Projection.git"\n'
+    'REPO = Path("/kaggle/working/counterfactual-projection")\n'
+    'REFERENCE_URL = "https://github.com/duyh80456-code/One-Shot-TAS-CCIL.git"\n'
+    'REFERENCE = Path("/kaggle/working/One-Shot-TAS-CCIL")\n'
+    'GROMO_URL = "https://github.com/growingnet/gromo.git"\n'
+    'GROMO_COMMIT = "8d19107b61a9459a9021065a329b699adcb0f25b"\n'
+    'GROMO = Path("/kaggle/working/gromo")\n'
+    'RUN_ROOT = Path("/kaggle/working/vna_phase0_seed0")\n'
+    'OUTPUT = RUN_ROOT\n'
+    '\n'
+    'def private_clone(url, destination, branch):\n'
+    '    token = UserSecretsClient().get_secret("github_token").strip()\n'
+    '    if not token: raise RuntimeError("Kaggle Secret github_token is unavailable")\n'
+    '    askpass = Path("/kaggle/working/.counterfactual_git_askpass.py")\n'
+    '    askpass.write_text("#!/usr/bin/env python3\\nimport os,sys\\np=sys.argv[1] if len(sys.argv)>1 else \'\'\\nprint(\'x-access-token\' if \'Username\' in p else os.environ[\'GITHUB_TOKEN_RUNTIME\'])\\n")\n'
+    '    askpass.chmod(0o700)\n'
+    '    env = os.environ.copy()\n'
+    '    env.update(GITHUB_TOKEN_RUNTIME=token, GIT_ASKPASS=str(askpass),\n'
+    '               GIT_TERMINAL_PROMPT="0")\n'
+    '    try:\n'
+    '        subprocess.run(["git", "clone", "--branch", branch, "--single-branch",\n'
+    '                        url, str(destination)], env=env, check=True)\n'
+    '    finally:\n'
+    '        askpass.unlink(missing_ok=True)\n'
+    '\n'
+    'for checkout in (REPO, REFERENCE, GROMO):\n'
+    '    if checkout.exists(): shutil.rmtree(checkout)\n'
+    'OUTPUT.mkdir(parents=True, exist_ok=True)\n'
+    'private_clone(MAIN_URL, REPO, "main")\n'
+    'private_clone(REFERENCE_URL, REFERENCE, "ccil-residual-capacity")\n'
+    'subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",\n'
+    '                GROMO_URL, str(GROMO)], check=True)\n'
+    'subprocess.run(["git", "-C", str(GROMO), "fetch", "--depth", "1",\n'
+    '                "origin", GROMO_COMMIT], check=True)\n'
+    'subprocess.run(["git", "-C", str(GROMO), "checkout", "--detach",\n'
+    '                GROMO_COMMIT], check=True)\n'
+    'print("main:", subprocess.check_output(\n'
+    '    ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip())\n'
+)
+
+_SETUP = (
+    'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO)], check=True)\n'
+    'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)], check=True)\n'
+    'GROMO_SRC = GROMO / "src"\n'
+    'RUNTIME_PYTHONPATH = os.pathsep.join(filter(None, (\n'
+    '    str(REPO), str(GROMO_SRC), str(REFERENCE), os.environ.get("PYTHONPATH", ""))))\n'
+    'test_env = os.environ.copy(); test_env.update(PYTHONPATH=RUNTIME_PYTHONPATH)\n'
+    'subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO,\n'
+    '               env=test_env, check=True)\n'
+    'import torch\n'
+    'if torch.cuda.device_count() != 2:\n'
+    '    raise RuntimeError(f"Select T4 x2; found {torch.cuda.device_count()} GPU(s)")\n'
+    'required_cifar_files = {"train", "test", "meta"}\n'
+    'cifar_dirs = []\n'
+    'for directory, _, filenames in os.walk("/kaggle/input", followlinks=True):\n'
+    '    path = Path(directory)\n'
+    '    if (path.name == "cifar-100-python" and\n'
+    '            required_cifar_files.issubset(filenames)):\n'
+    '        cifar_dirs.append(path.parent)\n'
+    'cifar_dirs = sorted(set(cifar_dirs), key=str)\n'
+    'if not cifar_dirs:\n'
+    '    visible = []\n'
+    '    for directory, dirnames, filenames in os.walk(\n'
+    '            "/kaggle/input", followlinks=True):\n'
+    '        visible.append({\n'
+    '            "directory": directory,\n'
+    '            "directories": sorted(dirnames)[:10],\n'
+    '            "files": sorted(filenames)[:10],\n'
+    '        })\n'
+    '        if len(visible) == 20:\n'
+    '            break\n'
+    '    raise FileNotFoundError(\n'
+    '        "Attach CIFAR-100 containing cifar-100-python/{train,test,meta}. "\n'
+    '        f"Visible input inventory: {visible}")\n'
+    'DATA_ROOT = cifar_dirs[0]\n'
+    'print("CIFAR-100 root:", DATA_ROOT)\n'
+)
+
 def cell(kind, source):
     result = {"cell_type": kind, "metadata": {}, "source": source.splitlines(keepends=True)}
     if kind == "code":
@@ -20,10 +104,7 @@ def build(commit=None):
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("--commit must be a full immutable commit hash")
-    template = json.loads((ROOT/'notebooks/kaggle_unified_seed0_end_to_end_t4x2.ipynb').read_text())
-    bootstrap = ''.join(template['cells'][1]['source'])
-    bootstrap = bootstrap.replace('RUN_ROOT = Path("/kaggle/working/unified_seed0_end_to_end_v5")\nOUTPUT = RUN_ROOT / "phase2"',
-        'RUN_ROOT = Path("/kaggle/working/vna_phase0_seed0")\nOUTPUT = RUN_ROOT')
+    bootstrap = _BOOTSTRAP
     # Reuse the established token/askpass mechanism for both clone and fetch.
     original_clone = '\n'.join([
         '        subprocess.run(["git", "clone", "--branch", branch, "--single-branch",',
@@ -53,7 +134,7 @@ def build(commit=None):
         'temporary.write_text(json.dumps(sessions, indent=2) + "\\n")',
         'temporary.replace(commit_path)',
     ]) + '\n'
-    setup = ''.join(template['cells'][2]['source'])
+    setup = _SETUP
     setup = setup.replace('"-e", str(REPO)', '"-e", str(REPO) + "[test,vision,diagnostics]"')
     setup = setup.replace('"pytest", "-q"', '"pytest", "-q", "tests/test_vna.py"')
     setup = setup.replace('env=test_env, check=True)', 'env={**test_env, "CUDA_VISIBLE_DEVICES": ""}, check=True)')

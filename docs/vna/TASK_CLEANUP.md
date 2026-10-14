@@ -60,3 +60,15 @@ If any of these imports something on the delete list, stop and report instead of
   diagnostics, training engine), mention the archive tag/branch for the old pipeline, and remove
   instructions for deleted scripts.
 - Final summary: list of deleted files (count), moved symbols, edited files.
+
+## 4. Supervisor resolution of the blockers you reported (now authorised)
+- `projection/functional.py` ← `projection/metrics.py`: move `cosine_alignment`, `fitted_norm_ratio`,
+  `relative_residual` verbatim into `projection/functional.py` (or a new `projection/_metrics.py` if
+  they have helpers), then delete `metrics.py`. Check `projection/__init__.py` exports.
+- `tests/test_functional.py`: delete the tests that exercise `run_gromo_pilot` helpers
+  (momentum reset, sign-randomized control, actual_update_metrics, application gate) and the import;
+  keep every test that only uses `projection` (FunctionalProjector, CG, damping retry, normalisation).
+- `tests/conftest.py`: delete the DeiT fixtures (`deit_small`, `deit_batches`, `deit_native_candidate`)
+  and any import of `models`/`adapters`; keep everything else. Verify no surviving test uses them.
+- `probe/gromo_adapter.py`: move `ProbeSignal` (and only what it needs) into `probe/gromo_adapter.py`.
+Then continue with §2–§3 in full. Any further protected-file blocker: same rule, stop and report.

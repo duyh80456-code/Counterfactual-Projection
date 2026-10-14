@@ -19,13 +19,86 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.func import functional_call, jvp, vjp
 
-from methods.e_projection import (
-    candidate_projection_block,
-    candidate_projection_parameter_names,
-)
 from probe.gromo_adapter import _assert_unchanged, _snapshot
 from projection.cg import CGResult, conjugate_gradient
 from projection.functional import _preserve_functional_state
+
+
+def _module_path(model: nn.Module, target: nn.Module) -> str:
+    matches = [name for name, module in model.named_modules() if module is target]
+    if len(matches) != 1:
+        raise RuntimeError("candidate block is not uniquely registered on model")
+    return matches[0]
+
+
+def candidate_projection_block(model: nn.Module, candidate) -> str:
+    logical_name = str(candidate.module_name)
+    if hasattr(model, "projection_parameter_modules"):
+        return logical_name
+    if logical_name in dict(model.named_modules()):
+        return logical_name
+    resolver = getattr(model, "block", None)
+    if resolver is None:
+        raise KeyError(f"cannot resolve candidate block {logical_name!r}")
+    return _module_path(model, resolver(logical_name))
+
+
+def candidate_projection_parameter_names(
+        model: nn.Module, candidate,
+        scope: str = "residual_path") -> tuple[str, ...] | None:
+    """Select residual-path trainable coordinates while excluding shortcuts."""
+    if scope == "whole_block":
+        return None
+    if scope not in {"residual_path", "conv_only"}:
+        raise ValueError(f"unknown projection scope {scope!r}")
+    custom_resolver = getattr(model, "projection_parameter_modules", None)
+    if custom_resolver is not None:
+        resolved = custom_resolver(str(candidate.module_name))
+        if isinstance(resolved, dict):
+            modules = list(resolved[scope])
+        else:
+            modules = list(resolved[:2] if scope == "conv_only" else resolved)
+        parameter_ids = {
+            id(parameter) for module in modules
+            for parameter in module.parameters(recurse=True)}
+        names = tuple(name for name, parameter in model.named_parameters()
+                      if id(parameter) in parameter_ids)
+        if not names:
+            raise RuntimeError("custom projection scope selected no parameters")
+        return names
+    block_path = candidate_projection_block(model, candidate)
+    block = dict(model.named_modules())[block_path]
+    if hasattr(block, "first_layer") and hasattr(block, "second_layer"):
+        convolution_modules = (
+            block.first_layer.layer, block.second_layer.layer)
+    elif hasattr(block, "conv1") and hasattr(block, "conv2"):
+        convolution_modules = (block.conv1, block.conv2)
+    else:
+        raise TypeError("candidate block does not expose its two-convolution path")
+    modules = list(convolution_modules)
+    if scope == "residual_path":
+        if hasattr(block, "first_layer") and hasattr(block, "second_layer"):
+            post_functions = (block.first_layer.post_layer_function,
+                              block.second_layer.post_layer_function)
+            modules.extend(
+                child for post in post_functions for child in post.modules()
+                if isinstance(child, nn.modules.batchnorm._BatchNorm))
+        else:
+            modules.extend(
+                module for name in ("bn1", "bn2")
+                if isinstance(
+                    (module := getattr(block, name, None)),
+                    nn.modules.batchnorm._BatchNorm))
+    parameter_ids = {
+        id(parameter) for module in convolution_modules
+        for parameter in module.parameters(recurse=False)} | {
+        id(parameter) for module in modules
+        for parameter in module.parameters(recurse=False)}
+    names = tuple(name for name, parameter in model.named_parameters()
+                  if id(parameter) in parameter_ids)
+    if not names:
+        raise RuntimeError("residual-path projection selected no parameters")
+    return names
 
 
 @dataclass(frozen=True)

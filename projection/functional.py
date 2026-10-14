@@ -11,7 +11,25 @@ from torch import Tensor, nn
 from torch.func import functional_call, jvp, vjp
 
 from .cg import CGResult, conjugate_gradient
-from .metrics import cosine_alignment, fitted_norm_ratio, relative_residual
+
+
+def fitted_norm_ratio(fitted_delta: Tensor, target_delta: Tensor) -> float:
+    """Norm ratio only; with damping this is not an orthogonal projection ratio."""
+    denominator = torch.linalg.vector_norm(target_delta).clamp_min(1e-12)
+    return float(torch.linalg.vector_norm(fitted_delta) / denominator)
+
+
+def relative_residual(fitted_delta: Tensor, target_delta: Tensor) -> float:
+    denominator = torch.linalg.vector_norm(target_delta).clamp_min(1e-12)
+    return float(torch.linalg.vector_norm(target_delta - fitted_delta) / denominator)
+
+
+def cosine_alignment(fitted_delta: Tensor, target_delta: Tensor) -> float:
+    fitted = fitted_delta.reshape(-1)
+    target = target_delta.reshape(-1)
+    denominator = (torch.linalg.vector_norm(fitted) *
+                   torch.linalg.vector_norm(target)).clamp_min(1e-12)
+    return float(torch.dot(fitted, target) / denominator)
 
 
 @contextmanager
