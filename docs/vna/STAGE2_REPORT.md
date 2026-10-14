@@ -783,3 +783,5 @@ Open questions, recorded without asking:
    complete historical smoke/correction analysis. The unrelated full repository
    suite was not rerun; the required three VNA files all pass, and previous
    full-suite disk-exhaustion issues remain outside this task's scope.
+
+- Decision reversal: all three Kaggle notebooks now clone, fetch, detach, and verify an immutable `--commit` pin (default current HEAD); per-arm code_commit/code_history provenance remains unchanged.

@@ -1,8 +1,9 @@
-"""Build the branch-tracking, resumable Phase-0 T4x2 notebook from existing setup cells."""
+"""Build the pinned, resumable Phase-0 T4x2 notebook from existing setup cells."""
 import argparse
 import json
 from pathlib import Path
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,22 +15,40 @@ def cell(kind, source):
     return result
 
 
-def build(branch="vna-phase0"):
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch):
-        raise ValueError("invalid --branch")
+def build(commit=None):
+    if commit is None:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("--commit must be a full immutable commit hash")
     template = json.loads((ROOT/'notebooks/kaggle_unified_seed0_end_to_end_t4x2.ipynb').read_text())
     bootstrap = ''.join(template['cells'][1]['source'])
     bootstrap = bootstrap.replace('RUN_ROOT = Path("/kaggle/working/unified_seed0_end_to_end_v5")\nOUTPUT = RUN_ROOT / "phase2"',
         'RUN_ROOT = Path("/kaggle/working/vna_phase0_seed0")\nOUTPUT = RUN_ROOT')
-    bootstrap = bootstrap.replace('private_clone(MAIN_URL, REPO, "main")',
-                                  'private_clone(MAIN_URL, REPO, REPO_BRANCH)')
+    # Reuse the established token/askpass mechanism for both clone and fetch.
+    original_clone = '\n'.join([
+        '        subprocess.run(["git", "clone", "--branch", branch, "--single-branch",',
+        '                        url, str(destination)], env=env, check=True)'])
+    pinned_clone = '\n'.join([
+        '        if branch == REPO_COMMIT:',
+        '            subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",',
+        '                            url, str(destination)], env=env, check=True)',
+        '            subprocess.run(["git", "-C", str(destination), "fetch", "origin", REPO_COMMIT], env=env, check=True)',
+        '            subprocess.run(["git", "-C", str(destination), "checkout", "--detach", REPO_COMMIT], check=True)',
+        '        else:',
+        '            subprocess.run(["git", "clone", "--branch", branch, "--single-branch",',
+        '                            url, str(destination)], env=env, check=True)'])
+    if original_clone not in bootstrap:
+        raise RuntimeError("Existing clone setup changed; inspect before regenerating")
+    bootstrap = bootstrap.replace(original_clone, pinned_clone).replace(
+        'private_clone(MAIN_URL, REPO, "main")', 'private_clone(MAIN_URL, REPO, REPO_COMMIT)')
+    bootstrap += '\nif subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip() != REPO_COMMIT:\n    raise RuntimeError("Pinned repository revision mismatch")\n'
     bootstrap += '\n' + '\n'.join([
         'from datetime import datetime, timezone',
         'CODE_COMMIT = subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip()',
-        'print("Resolved code commit:", CODE_COMMIT, "branch:", REPO_BRANCH)',
+        'print("Resolved code commit:", CODE_COMMIT, "pin:", REPO_COMMIT)',
         'commit_path = OUTPUT / "code_commit.json"',
         'sessions = json.loads(commit_path.read_text()) if commit_path.exists() else []',
-        'sessions.append({"timestamp": datetime.now(timezone.utc).isoformat(), "branch": REPO_BRANCH, "commit": CODE_COMMIT})',
+        'sessions.append({"timestamp": datetime.now(timezone.utc).isoformat(), "pin": REPO_COMMIT, "commit": CODE_COMMIT})',
         'temporary = commit_path.with_suffix(".json.tmp")',
         'temporary.write_text(json.dumps(sessions, indent=2) + "\\n")',
         'temporary.replace(commit_path)',
@@ -40,14 +59,14 @@ def build(branch="vna-phase0"):
     setup = setup.replace('env=test_env, check=True)', 'env={**test_env, "CUDA_VISIBLE_DEVICES": ""}, check=True)')
     setup += '''
 if not (REPO / "experiments/vna_kaggle.py").exists():
-    raise RuntimeError("Required module experiments/vna_kaggle.py is missing from the branch tip")
+    raise RuntimeError("Required module experiments/vna_kaggle.py is missing from the pinned commit")
 for module in ("experiments/vna_provenance.py", "diagnostics/signal_curve.py", "methods/vna.py"):
-    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the branch tip")
+    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the pinned commit")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pandas", "matplotlib"], check=True)
 sys.path[:0] = [str(REPO), str(GROMO_SRC), str(REFERENCE)]
 print("Official TEST verified:", DATA_ROOT / "cifar-100-python/test")
 '''
-    cells = [cell('markdown', '''# VNA Phase 0 — seed 0, branch tip, Kaggle T4×2
+    cells = [cell('markdown', '''# VNA Phase 0 — seed 0, pinned repository, Kaggle T4×2
 Enable **Internet**, **T4×2**, and secret **github_token**. Attach CIFAR-100 with
 `cifar-100-python/{train,test,meta}`. Optionally attach previous notebook outputs
 (directory, tar.gz or zip). Run all cells; compatible Stage 1C checkpoint diagnostics are reused.
@@ -57,8 +76,10 @@ Training on GPU0 overlaps the checkpoint watcher on GPU1; after training both
 GPUs process remaining checkpoints. Outputs and hourly atomic archives survive
 normal interruptions. A hard session kill can lose only the current epoch and
 unfinished checkpoint diagnostic; download/attach the saved output directory too.
-Code follows `vna-phase0`; every session records its resolved commit in code_commit.json.
-'''), cell('code', f'''REPO_BRANCH = "{branch}"  # builder --branch; follows the branch tip
+Code is pinned to an immutable commit; every session records its resolved commit in code_commit.json.
+Regenerate with `python scripts/build_kaggle_vna_signal_curve_notebook.py --commit FULL_HASH`
+to change the pin; the default is current HEAD. The pin must include Phase 0.
+'''), cell('code', f'''REPO_COMMIT = "{commit}"  # immutable, builder --commit; default current HEAD
 GPU_DATA = True  # supervisor: Phase 0 has one SGD trajectory; prioritize T4 speed
 CHANNELS_LAST = True
 CUDNN_BENCHMARK = True
@@ -187,8 +208,8 @@ print("Final archive:", archive_outputs(RUN_ROOT))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--branch', default='vna-phase0')
+    parser.add_argument('--commit', default=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip())
     parser.add_argument('--output', default=str(ROOT/'notebooks/kaggle_vna_signal_curve.ipynb'))
     args = parser.parse_args()
-    Path(args.output).write_text(json.dumps(build(args.branch), indent=1, ensure_ascii=False) + '\n')
+    Path(args.output).write_text(json.dumps(build(args.commit), indent=1, ensure_ascii=False) + '\n')
     print(args.output)

@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -11,13 +12,15 @@ if str(ROOT) not in sys.path:
 from scripts.build_kaggle_vna_signal_curve_notebook import build as phase0_build, cell, ROOT
 
 
-def build(branch="vna-phase0",seed=0):
-    base=phase0_build(branch)
+def build(commit=None,seed=0):
+    if commit is None:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    base=phase0_build(commit)
     bootstrap=''.join(base['cells'][2]['source']).replace('vna_phase0_seed0',f'vna_training_seed{seed}')
     setup=''.join(base['cells'][3]['source'])
     setup=setup.replace('"tests/test_vna.py"', '"tests/test_vna.py", "tests/test_vna_stage2.py", "tests/test_vna_training.py"')
     setup=setup.replace('experiments/vna_kaggle.py','experiments/run_vna_training.py')
-    setup += '\nfor module in ("experiments/vna_training_support.py", "experiments/vna_training_config.py", "experiments/vna_training_kaggle.py", "diagnostics/vna_solver_validation.py"):\n    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the branch tip")\n'
+    setup += '\nfor module in ("experiments/vna_training_support.py", "experiments/vna_training_config.py", "experiments/vna_training_kaggle.py", "diagnostics/vna_solver_validation.py"):\n    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the pinned commit")\n'
     return {**base,'cells':[
         cell('markdown',f'''# VNA Stage 2a — seed {seed}, T4×2
 Enable Internet, T4×2 and `github_token`. Attach official CIFAR-100 train/test/meta.
@@ -25,7 +28,9 @@ Attach Phase-0 checkpoints at epochs 40, 100, 160 to enable validation by defaul
 Attach prior Stage 2a directory/zip/tar.gz outputs to resume. Only latest per arm
 is retained; hourly atomic archives enforce a conservative 5 GB peak budget.
 Each arm runs in a fresh process. Final official test metrics use the final model.
-Code follows `vna-phase0`; each session records its resolved commit.
+Code is pinned to an immutable commit; each session records its resolved commit.
+Regenerate with `python scripts/build_kaggle_vna_training_notebooks.py --commit FULL_HASH`
+to change the pin; the default is current HEAD. The pin must include Stage 2a.
 GPU_HOURS_BUDGET=30 is the TOTAL projected full-training cost across all arms
 of this seed, including sgd_cm. If over budget, drop sgd_cm, then vna_tiny_U;
 raise if the remaining arms still exceed it unless ALLOW_OVER_BUDGET=True.
@@ -37,7 +42,7 @@ Cell A uses minimum batch agreement across sites/epochs: cos16 >= 0.5 →
 The batch/every override constants take precedence.
 T4 runtime must be measured by Cell A.
 '''),
-        cell('code',f'''REPO_BRANCH = "{branch}"
+        cell('code',f'''REPO_COMMIT = "{commit}"
 SEED = {seed}
 SOLVER_OVERRIDE = None  # exact / kfac / lite wins over validation
 VALIDATE_SOLVERS = None  # None = ON when Phase-0 checkpoint attached
@@ -221,10 +226,10 @@ print("Final archive:", archive_training(RUN_ROOT))
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--branch',default='vna-phase0')
+    p.add_argument('--commit',default=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
     p.add_argument('--output-dir',default=str(ROOT/'notebooks'))
     args=p.parse_args()
     for seed in (0,1):
         path=Path(args.output_dir)/f'kaggle_vna_training_seed{seed}.ipynb'
         path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_text(json.dumps(build(args.branch,seed),indent=1,ensure_ascii=False)+'\n'); print(path)
+        path.write_text(json.dumps(build(args.commit,seed),indent=1,ensure_ascii=False)+'\n'); print(path)

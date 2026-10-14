@@ -101,7 +101,7 @@ def test_training_notebooks_and_solver_decision():
     from scripts.build_kaggle_vna_training_notebooks import build
     from experiments.vna_training_kaggle import choose_solver
     for seed in (0,1):
-        notebook=build('vna-phase0',seed)
+        notebook=build('a'*40,seed)
         for cell in notebook['cells']:
             if cell['cell_type']=='code': ast.parse(''.join(cell['source']))
         source=''.join(''.join(c['source']) for c in notebook['cells'])
@@ -264,7 +264,7 @@ def test_notebook_smoke_budget_and_queue(tmp_path,allow_over_budget):
     import shutil
     import sys
     from types import SimpleNamespace
-    notebook=build('vna-phase0',0)
+    notebook=build('a'*40,0)
     source=next(''.join(c['source']) for c in notebook['cells'] if ''.join(c['source']).startswith('# Cell B:'))
     source=source[:source.index('restore_training(Path(')]
     launched=[]

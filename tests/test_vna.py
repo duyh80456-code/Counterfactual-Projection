@@ -370,17 +370,22 @@ def test_watch_markers_shards_merge_resume_and_archive(tmp_path, monkeypatch):
             assert not (destination/"_resume_cache").exists()
 
 
-def test_notebook_branch_setup_and_syntax(tmp_path, monkeypatch):
+def test_notebook_pinned_setup_and_syntax(tmp_path, monkeypatch):
     from scripts.build_kaggle_vna_signal_curve_notebook import build
-    branch = "vna-phase0"
-    notebook = build(branch)
+    commit = "a" * 40
+    notebook = build(commit)
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
     for cell in notebook["cells"]:
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), "notebook", "exec")
-    assert f'REPO_BRANCH = "{branch}"' in source
-    assert 'private_clone(MAIN_URL, REPO, REPO_BRANCH)' in source
-    assert "REPO_COMMIT" not in source and "code_commit.json" in source
+    assert f'REPO_COMMIT = "{commit}"' in source
+    assert 'private_clone(MAIN_URL, REPO, REPO_COMMIT)' in source
+    assert "REPO_BRANCH" not in source and "code_commit.json" in source
+    assert '"--no-checkout"' in source
+    assert '"fetch", "origin", REPO_COMMIT' in source
+    assert '"checkout", "--detach", REPO_COMMIT' in source
+    assert '!= REPO_COMMIT:' in source
+    assert "Pinned repository revision mismatch" in source
     assert '"tests/test_vna.py"' in source and '"CUDA_VISIBLE_DEVICES": ""' in source
     assert '{"train", "test", "meta"}' in source
     assert '"--watch"' in source and '"--shards", "2"' in source
@@ -401,7 +406,9 @@ def test_notebook_branch_setup_and_syntax(tmp_path, monkeypatch):
         assert protocols[0][name] is True
     assert training.amp is False and protocols[0]["amp"] is False
     assert diagnostic.cache_block_input is True
-    with pytest.raises(ValueError): build("--invalid")
+    for invalid in ("--invalid", "vna-phase0", "a" * 39, "g" * 40):
+        with pytest.raises(ValueError, match="full immutable commit hash"):
+            build(invalid)
 
 
 def test_cached_suffix_after_earlier_blocks_and_shared_logits():
@@ -636,23 +643,33 @@ def test_per_rank_criteria_decay_and_epoch_boundaries():
     assert table[1]["full_go"] and table[1]["lite_decay_by_site"]["block"]["V"] is None
 
 
-def test_branch_tip_session_commit_records(tmp_path):
+def test_pinned_session_commit_records(tmp_path):
     import json
     from types import SimpleNamespace
     from scripts.build_kaggle_vna_signal_curve_notebook import build as phase0
     from scripts.build_kaggle_vna_training_notebooks import build as training
     for notebook in [phase0(), training(seed=0), training(seed=1)]:
         bootstrap = ''.join(notebook['cells'][2]['source'])
-        assert 'private_clone(MAIN_URL, REPO, REPO_BRANCH)' in bootstrap
+        assert 'private_clone(MAIN_URL, REPO, REPO_COMMIT)' in bootstrap
+        assert '"--no-checkout"' in bootstrap
+        assert '"fetch", "origin", REPO_COMMIT' in bootstrap
+        assert '"checkout", "--detach", REPO_COMMIT' in bootstrap
+        verification = bootstrap[bootstrap.index('if subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"]'):bootstrap.index('from datetime import datetime, timezone')]
+        scope = dict(subprocess=SimpleNamespace(check_output=lambda *a, **k: 'a'*40+'\n'),
+                     REPO=tmp_path, REPO_COMMIT='a'*40)
+        exec(compile(verification, 'bootstrap-pin', 'exec'), scope)
+        scope['REPO_COMMIT'] = 'b'*40
+        with pytest.raises(RuntimeError, match="Pinned repository revision mismatch"):
+            exec(compile(verification, 'bootstrap-pin', 'exec'), scope)
         source = bootstrap[bootstrap.index('from datetime import datetime, timezone'):]
         scope = dict(subprocess=SimpleNamespace(check_output=lambda *a,**k:'a'*40+'\n'),
-                     REPO=tmp_path, OUTPUT=tmp_path, REPO_BRANCH='vna-phase0', json=json)
+                     REPO=tmp_path, OUTPUT=tmp_path, REPO_COMMIT='a'*40, json=json)
         exec(compile(source, 'bootstrap-provenance', 'exec'), scope)
         scope['subprocess'] = SimpleNamespace(check_output=lambda *a,**k:'b'*40+'\n')
         exec(compile(source, 'bootstrap-provenance', 'exec'), scope)
         records = json.loads((tmp_path/'code_commit.json').read_text())
         assert [r['commit'] for r in records[-2:]] == ['a'*40,'b'*40]
-        assert all(r['timestamp'] and r['branch']=='vna-phase0' for r in records)
+        assert all(r['timestamp'] and r['pin']=='a'*40 for r in records)
         assert scope['CODE_COMMIT'] == 'b'*40
 
 
