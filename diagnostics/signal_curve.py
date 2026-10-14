@@ -15,6 +15,7 @@ import shutil
 import torch
 import torch.nn.functional as F
 from experiments.shared_protocol import atomic_json_save, validate_resume_protocol
+from experiments.vna_provenance import code_commit
 from experiments.vna_support import (setup_data, build_model, augmented_batch,
                                       tiny_candidate, isolated_rng, DeviceCIFAR)
 from methods.vna import (VNAConfig, extract_tiny_A, random_A_like, dedicated_generator,
@@ -456,10 +457,12 @@ def diagnostic_identity(args):
         "channels_last", "cudnn_benchmark", "diagnostic_stride")}
     identity["schema_version"] = "stage1c-v1"
     identity["amp"] = False  # VNA products and solves always use fp32.
-    # Include algorithm source so markers from changed math are never reused.
-    identity["source"] = hashlib.sha256(Path(__file__).read_bytes() +
-        (Path(__file__).resolve().parents[1]/"methods/vna.py").read_bytes()).hexdigest()
     return identity
+
+
+def validate_diagnostic_identity(previous, current):
+    # Legacy source fingerprints are code provenance, not experiment config.
+    validate_resume_protocol({k:v for k,v in previous.items() if k != 'source'}, current)
 
 
 def run(args):
@@ -473,7 +476,7 @@ def run(args):
     identity = diagnostic_identity(args)
     # Reject every old marker before filtering epochs or starting new work.
     for marker in done.glob("epoch_*.json"):
-        validate_resume_protocol(json.loads(marker.read_text())["identity"], identity)
+        validate_diagnostic_identity(json.loads(marker.read_text())["identity"], identity)
     while True:
         paths = [Path(p) for p in args.checkpoints] or sorted(Path(args.checkpoint_dir).glob("epoch_*.pt"))
         latest = Path(args.checkpoint_dir)/"latest.pt"
@@ -493,7 +496,7 @@ def run(args):
             marker = done / f"epoch_{epoch:03d}.json"
             if marker.exists():
                 previous = json.loads(marker.read_text())
-                validate_resume_protocol(previous["identity"], identity)
+                validate_diagnostic_identity(previous["identity"], identity)
                 if previous["model_sha256"] != digest:
                     raise ValueError(f"incompatible completed diagnostic: {marker}")
                 continue
@@ -520,7 +523,7 @@ def run(args):
                 single = copy(args)
                 single.checkpoints = [str(path)]
                 rows = compute(single)
-                atomic_json_save({"identity": identity, "model_sha256": digest, "epoch": epoch, "rows": rows}, marker)
+                atomic_json_save({"identity": identity, "model_sha256": digest, "epoch": epoch, "rows": rows, "code_commit": code_commit()}, marker)
                 print(f"Completed diagnostic epoch {epoch}", flush=True)
             finally:
                 shutil.rmtree(claim)
@@ -543,8 +546,8 @@ def merge(args):
     identities = set()
     for path in sorted((Path(args.output)/"completed").glob("epoch_*.json")):
         payload = json.loads(path.read_text())
-        validate_resume_protocol(payload["identity"], diagnostic_identity(args))
-        identities.add(json.dumps(payload["identity"], sort_keys=True))
+        validate_diagnostic_identity(payload["identity"], diagnostic_identity(args))
+        identities.add(json.dumps({k:v for k,v in payload["identity"].items() if k != "source"}, sort_keys=True))
         rows.extend(payload["rows"])
     if len(identities) > 1:
         raise ValueError("cannot merge incompatible diagnostics")

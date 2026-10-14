@@ -220,17 +220,29 @@ def run_checkpoint(args):
                     row['cos_'+group]=cosine(value[mask],reference[mask])
                 rows.append(row)
             if relative==config.damping_rel:
-                # One shuffled sample pool guarantees disjoint correction batches.
-                if len(indices)<2*config.vna_batch:
-                    raise ValueError('not enough samples for disjoint vna_batch audit')
+                # One augmented 256-example pool: nested 16/64/128 reference,
+                # and a strictly disjoint 128-example comparison at the same mu.
+                if len(indices)<256: raise ValueError('not enough samples for disjoint 128 audit')
+                audit_size=128
                 order=torch.randperm(len(indices),generator=generator).tolist()
-                pools=[[indices[i] for i in order[j*config.vna_batch:(j+1)*config.vna_batch]] for j in range(2)]
-                small=[augmented_batch(train,pool,config.vna_batch,generator,device) for pool in pools]
-                large=augmented_batch(train,indices,128,generator,device)
-                directions=[flatten(vna_exact_ggn(model,site,A,b,cfg,mu=mu,trace_F=trace)[0],refs) for b in [*small,large]]
+                pools=[[indices[i] for i in order[j*audit_size:(j+1)*audit_size]] for j in range(2)]
+                reference_batches=[augmented_batch(train,pool,audit_size,generator,device) for pool in pools]
+                large=reference_batches[0]
+                nested=[(large[0][:b],large[1][:b]) for b in (16,64)]
+                directions=[flatten(vna_exact_ggn(model,site,A,b,cfg,mu=mu,trace_F=trace)[0],refs)
+                            for b in [*nested,*reference_batches,
+                                      (reference_batches[1][0][:16],reference_batches[1][1][:16]),
+                                      (reference_batches[1][0][:64],reference_batches[1][1][:64])]]
                 check={'site':site,'epoch':payload.get('epoch'),'vna_batch':config.vna_batch,
-                    'cos_batch_128':cosine(directions[0],directions[2]),
-                    'cos_disjoint_batches':cosine(directions[0],directions[1])}
+                    'cos16':cosine(directions[0],directions[2]),
+                    'cos64':cosine(directions[1],directions[2]),
+                    'cos_batch_128':cosine(directions[0 if config.vna_batch==16 else 1 if config.vna_batch==64 else 2],directions[2]),
+                    'cos_disjoint16':cosine(directions[0],directions[4]),
+                    'cos_disjoint64':cosine(directions[1],directions[5]),
+                    'cos_disjoint128':cosine(directions[2],directions[3]),
+                    'cos_disjoint_batches':cosine(directions[0],directions[4]) if config.vna_batch==16 else
+                        cosine(directions[1],directions[5]) if config.vna_batch==64 else cosine(directions[2],directions[3]),
+                    'batch_reference_size':audit_size}
                 batch_checks.append(check)
                 for row in rows:
                     if row['site']==site and row['relative_mu']==relative: row.update(check)

@@ -5,6 +5,7 @@ from itertools import islice
 from pathlib import Path
 import time
 
+from experiments.vna_provenance import code_commit, resume_code_history
 import torch
 from experiments.shared_protocol import (atomic_torch_save, atomic_json_save,
     make_train_loader, make_eval_loader, evaluate, seed_everything,
@@ -31,10 +32,12 @@ def run(args):
                 "workers": args.workers, "limit_batches": args.limit_batches,
                 "gpu_data": args.gpu_data, "amp": args.amp, "channels_last": args.channels_last,
                 "cudnn_benchmark": args.cudnn_benchmark, "epochs": 200, "architecture": "tiny" if args.fake_data else "resnet18"}
+    commit = code_commit(); code_history = [{"from_epoch": 1, "commit": commit}]
     epoch, history, loader_state = 0, [], None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         validate_resume_protocol(checkpoint["protocol"], protocol)
+        code_history = resume_code_history(checkpoint, commit)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -65,16 +68,17 @@ def run(args):
         eval_metrics = evaluate(model, eval_loader, device)
         lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
-        history.append({"epoch": current, "train": metrics, "eval": eval_metrics,
+        history.append({"code_commit": commit, "code_history": list(code_history), "epoch": current, "train": metrics, "eval": eval_metrics,
                         "lr": lr, "train_seconds": train_seconds, "seconds": time.perf_counter() - start})
         payload = {"kind": "vna_recipe", "epoch": current, "model": model.state_dict(),
                    "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "scheduler": scheduler.state_dict(),
                    "rng": rng_state(), "train_loader_generator_state": loader.generator.get_state(),
-                   "splits": [indices, trigger, eval_indices, tuning], "protocol": protocol, "history": history}
+                   "splits": [indices, trigger, eval_indices, tuning], "protocol": protocol, "history": history,
+                   "code_commit": commit, "code_history": code_history}
         atomic_torch_save(payload, output / "latest.pt")
         if current % 10 == 0:
             # Periodic diagnostics need only fp32 model weights, never momentum.
-            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol")},
+            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol", "code_commit", "code_history")},
                               output / f"epoch_{current:03d}.pt")
         atomic_json_save(history, output / "history.json")
         print({"epoch": current, "train_seconds": train_seconds,

@@ -1,0 +1,20 @@
+{
+  "stage": "Stage 2a-fix2",
+  "command": "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -o addopts='' -q --basetemp=/tmp/vna-stage2afix2-final tests/test_vna*.py",
+  "passed": 85,
+  "failed": 0,
+  "errors": 0,
+  "skipped": 0,
+  "warnings": 39,
+  "seconds": 55.55,
+  "test_files": [
+    "tests/test_vna.py",
+    "tests/test_vna_stage2.py",
+    "tests/test_vna_training.py"
+  ],
+  "notebooks_match_builders": true,
+  "notebook_code_cells_parse": true,
+  "changed_python_files_compile": 12,
+  "cuda_measurements": "Not performed: CPU workspace, no attached real Phase-0 checkpoints.",
+  "temporary_outputs": "Removed after validation; counts retained here."
+}

@@ -52,6 +52,7 @@ class TrainingVNA:
         self.generators = {p: dedicated_generator(args.seed, 'training-'+p)
                            for p in ('statistics', 'correction', 'selection', 'hutchinson', 'random_A', 'construction')}
         self.cache, self.factors, self.warm = {}, {}, {}
+        self.spread = {}
         self.controller = {'state': 'active', 'refresh_epoch': 0, 'refreshes': 0}
         self.cfg = GGNConfig(damping_rel=args.damping_rel, cg_iters=args.cg_iters,
                              cg_tol=args.cg_tol, hutchinson_probes=args.hutchinson_probes,
@@ -67,7 +68,7 @@ class TrainingVNA:
 
     def state_dict(self):
         return {'cache': self.cache, 'factors': {s: f.state_dict() for s,f in self.factors.items()},
-                'warm': self.warm, 'controller': self.controller, 'config': asdict(self.cfg),
+                'warm': self.warm, 'spread': self.spread, 'controller': self.controller, 'config': asdict(self.cfg),
                 'generators': {p: g.get_state() for p,g in self.generators.items()}}
 
     def load_state_dict(self, state):
@@ -77,10 +78,32 @@ class TrainingVNA:
             if isinstance(value, list): return [move(v) for v in value]
             return value
         self.cache, self.warm = move(state['cache']), move(state['warm'])
+        self.spread = move(state.get('spread', {}))
         self.controller = state['controller']
         for s, payload in state['factors'].items():
             factor = KFACBlockPreconditioner(); factor.load_state_dict(move(payload)); self.factors[s] = factor
         for p, value in state['generators'].items(): self.generators[p].set_state(value.cpu())
+
+    def queue_spread(self, site, delta, skipped=False):
+        # A rejected replacement must also clear any stale state at this site.
+        self.spread.pop(site, None)
+        if not skipped and delta and all(torch.isfinite(v).all() for v in delta.values()):
+            self.spread[site] = {'delta': {n: v.detach().clone() for n,v in delta.items()},
+                                 'remaining': self.args.vna_every}
+
+    def apply_spread(self, model):
+        from methods.vna import add_vna_grad_
+        refs = dict(model.named_parameters()); ratios = []
+        for site, state in list(self.spread.items()):
+            delta = state['delta']
+            grad_norm = sum(float(refs[n].grad.detach().double().square().sum())
+                            for n in delta if refs[n].grad is not None)**.5
+            ratios.append({'site': site, 'applied_delta_ratio':
+                           abs(self.coefficient)*norm(delta)/max(grad_norm, 1e-30)})
+            if self.coefficient != 0: add_vna_grad_(model, delta, self.coefficient)
+            state['remaining'] -= 1
+            if state['remaining'] == 0: del self.spread[site]
+        return ratios
 
     def inverse(self, op, refs, site, rhs, mu, trace, key=None, records=None):
         if self.args.solver == 'kfac': return self.factors[site].apply(rhs, refs, mu)

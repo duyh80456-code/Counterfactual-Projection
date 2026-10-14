@@ -664,3 +664,122 @@ Open questions, recorded without asking:
 5. Correction records live in JSONL, not checkpoints. An attached latest.pt
    alone resumes numerical state/counters but cannot reconstruct historical
    per-correction records; retain the archive's JSONL for historical analysis.
+
+
+## Stage 2a-fix2
+
+### Branch tracking and provenance
+
+Both notebook builders now accept `--branch` (default `vna-phase0`) and emit
+`REPO_BRANCH`, cloning the branch tip through the existing token/askpass path.
+The pinned-commit preflight and regeneration instructions are removed; required
+module existence checks remain. Each bootstrap prints its resolved HEAD and
+atomically appends a UTC timestamp/branch/commit record to
+`OUTPUT/code_commit.json`. All three notebooks have been regenerated.
+
+Stage-2a `latest.pt`, epoch history, and final records carry `code_commit` and
+`code_history`. A changed-commit resume prints a prominent old/new warning and
+the first new epoch (`checkpoint epoch + 1`), then appends
+`{"from_epoch": e, "commit": c}` and continues. Same-commit resumes do not add
+entries. Even an already completed arm records a changed session boundary
+without reevaluating the official test set. Protocol and split validation stay
+strict. Final notebook results include each arm's commit set. Legacy checkpoints
+without provenance use `unknown`, rather than attributing past work to today's
+commit.
+
+Phase-0 recipe checkpoints/history also record provenance and warn on code
+transitions. Every newly computed diagnostic completion marker records its
+own producing commit. Completed diagnostics retain their original provenance
+when reused across revisions. Source-file hashes are no longer experiment
+identity: legacy `identity.source` is excluded during compatibility/merge checks,
+while all configuration/schema and model-digest checks remain strict.
+
+### Smooth correction and smoke reporting
+
+`--lambda-mode {per_step,time_avg,spread}` now defaults to `spread`. An accepted
+direction computed at step t adds lambda times that same stale direction at
+steps t through t + VNA_EVERY - 1, including across epoch boundaries. The sum of
+these gradient additions equals the former time_avg impulse; this does not
+claim identical model trajectories under momentum or changing gradients.
+The same path serves VNA, norm-matched NGD, and random-A VNA. Pending directions
+and remaining counts are serialized in the VNA resume state. Rejected or
+nonfinite replacements clear their site's state and leave no spread residue.
+Explicit per_step and time_avg behavior remains available.
+
+Compact `steps.jsonl` records loss, scheduled correction-step status, and actual
+per-site applied-delta/gradient ratios, including stale applications. The saved
+previous loss makes these step records identical across CPU resumes. After each
+VNA-type two-epoch smoke, the notebook prints median/p95 applied ratios, skipped
+correction fraction, and maximum train-loss jumps at scheduled correction steps
+versus other steps. The ratio distribution uses actual applications (skipped
+attempts are reported separately); missing samples produce null statistics.
+Thresholds are pre-registered and report-only: p95 > 3 gives IMPULSE_RISK;
+median < 0.05 gives LIKELY_NULL. No configuration changes follow these flags.
+Loss is measured before each update, so the loss-jump comparison is descriptive
+and does not attribute causality to the correction computed at that same step.
+
+### Pre-registered batch choice and total budget
+
+At training damping, real-checkpoint validation measures cos(d16,d128),
+cos(d64,d128), and disjoint-batch cosines for 16/64/128 at the selected sites.
+The smaller comparison batches are nested subsets of the same augmented
+128-example reference, while the disjoint comparison uses a separate sample
+pool. All directions at a site use the same selected A and absolute mu.
+
+Cell A prints and applies the minimum cosine across sites/epochs:
+cos16 >= 0.5 selects (batch 16, every 10); otherwise cos64 >= 0.5 selects
+(64,20); otherwise (128,20). `VNA_BATCH_OVERRIDE` and `VNA_EVERY_OVERRIDE`
+(default None) independently win. Without validation measurements the rule's
+fallback is (128,20); the existing explicit solver-override requirement remains.
+After selecting the batch/every pair, Cell A remeasures validation costs at that
+pair and only then chooses the solver and its total correction overhead. The
+chosen values are also the full training command/protocol values.
+
+The notebook documents 30 GPU-hours as the TOTAL projected full-training cost
+across all arms of one seed. After all smoke measurements, the budget policy
+prints the projection table and drops sgd_cm first, then vna_tiny_U if needed.
+If retained arms still exceed the budget, it raises with the table unless
+ALLOW_OVER_BUDGET=True. The explicit allowance bypasses the final rejection;
+the specified drop order still applies. Dropped arms are excluded from restore,
+launch, and results. Successful smoke outputs are deleted before full training.
+
+### Verification
+
+- Required suite: `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest
+  -o addopts='' -q --basetemp=/tmp/vna-stage2afix2-final tests/test_vna*.py`
+  → **85 passed, 0 failed, 0 errors, 0 skipped, 39 warnings in 55.55 s**.
+  Warnings come from upstream Torch/Gromo deprecations and pseudo-inverse use.
+- New coverage exercises branch session append records; Phase-0 producing
+  commits and cross-commit reuse; strict config rejection; changed/same-commit
+  training resumes and completed-arm transitions; bitwise CPU spread resumes
+  with a pending direction for VNA/NGD/random-A; exact summed gradient effect;
+  skipped/nonfinite residue clearing; threshold boundaries; worst-site/epoch
+  batch choice and independent overrides; executed Cell A command ordering;
+  smoke isolation; ordered budget drops, rejection table, and allowance.
+- All three checked-in notebooks equal default builder output, all code cells
+  parse, and all 12 changed/new Python files compile. `git diff --check` passes.
+  Machine-readable counts: `docs/vna/stage2afix2_test_results.json`.
+- No commit or push was made; `.git` was only read. The pre-existing .DS_Store
+  modification and supplied task file were left untouched. Only this task's
+  scratch directories/logs under /tmp were removed after verification.
+
+Open questions, recorded without asking:
+1. Real CIFAR checkpoint batch agreement, solver convergence/overhead, and the
+   projected total GPU-hours still need T4 measurements. This workspace has no
+   CUDA GPU or attached real Phase-0 checkpoints; mocked notebook execution
+   validates decisions and commands, not GPU timings.
+2. Epoch-2 extrapolation estimates full arm-training costs, excluding validation
+   and smoke calibration itself. Should the 30-hour policy later include those
+   setup costs as well? The requested post-smoke arm-drop policy uses full-run
+   projections; actual per-arm timings remain authoritative.
+3. With changed remote code, existing diagnostic markers intentionally retain
+   the original producing revision. Scientific interpretation of a mixed-commit
+   run must use the per-marker provenance and per-arm code_history.
+4. Kaggle executes the remote branch tip. These local changes are uncommitted as
+   requested, so the remote branch must contain the implementation when those
+   notebooks run; no pinned-hash regeneration is needed afterward.
+5. A latest.pt-only restore preserves numerical spread/provenance state but
+   cannot reconstruct old correction/step JSONL. Retain output archives for
+   complete historical smoke/correction analysis. The unrelated full repository
+   suite was not rerun; the required three VNA files all pass, and previous
+   full-suite disk-exhaustion issues remain outside this task's scope.

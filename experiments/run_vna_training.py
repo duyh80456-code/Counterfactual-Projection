@@ -14,6 +14,7 @@ from experiments.shared_protocol import (atomic_torch_save, atomic_json_save, ma
 from experiments.vna_support import setup_data, build_model, DeviceCIFAR, DeviceTrainLoader, augmented_batch, isolated_rng
 from experiments.vna_training_support import TrainingVNA, sync
 from methods.vna import add_vna_grad_
+from experiments.vna_provenance import code_commit, resume_code_history
 
 
 def official_test(args, evaluation):
@@ -68,11 +69,14 @@ def run(args):
     scaler=torch.cuda.amp.GradScaler(enabled=args.amp)
     engine=TrainingVNA(args,device)
     protocol=training_protocol(args)
-    epoch=step=correction_count=0; history=[]; corrections=[]; loader_state=None; final=None
+    commit=code_commit(); code_history=[{"from_epoch": 1, "commit": commit}]
+    epoch=step=correction_count=0; history=[]; corrections=[]; step_records=[]; previous_loss=None; loader_state=None; final=None
     if args.resume:
         cp=torch.load(args.resume,map_location='cpu',weights_only=False)
         if cp.get('kind')!='vna_training': raise ValueError('not a Stage 2a training checkpoint')
         validate_resume_protocol(cp['protocol'],protocol)
+        code_history=resume_code_history(cp,commit)
+        previous_loss=cp.get('previous_loss')
         if cp['splits']!=[indices,trigger,eval_indices,tuning]: raise ValueError('resume split mismatch')
         model.load_state_dict(cp['model']); optimizer.load_state_dict(cp['optimizer']); scheduler.load_state_dict(cp['scheduler'])
         scaler.load_state_dict(cp['scaler']); engine.load_state_dict(cp['vna'])
@@ -94,7 +98,8 @@ def run(args):
             'optimizer':optimizer.state_dict(),'scheduler':scheduler.state_dict(),'scaler':scaler.state_dict(),
             'rng':rng_state(),'numpy_rng':np.random.get_state(),'train_loader_generator_state':loader.generator.get_state(),
             'splits':[indices,trigger,eval_indices,tuning],'protocol':protocol,'history':history,
-            'correction_count':correction_count,'vna':engine.state_dict(),'final':final}
+            'correction_count':correction_count,'vna':engine.state_dict(),'final':final,
+            'code_commit':commit,'code_history':code_history,'previous_loss':previous_loss}
         # Bound checkpoint replacement and raw + old + new archives before writing.
         from experiments.vna_training_kaggle import check_training_budget
         check_training_budget(Path(args.budget_root) if args.budget_root else output,
@@ -104,6 +109,9 @@ def run(args):
         with (output/'corrections.jsonl').open('a') as log:
             for row in corrections: log.write(json.dumps(row,allow_nan=False)+'\n')
         corrections.clear()
+        with (output/"steps.jsonl").open("a") as log:
+            for row in step_records: log.write(json.dumps(clean_json(row),allow_nan=False)+"\n")
+        step_records.clear()
         atomic_json_save(history,output/'history.json')
     for current in range(epoch+1,min(epochs,args.max_epochs)+1):
         sync(device); start=time.perf_counter(); components={}; applied=skipped=0; diagnostics=[]
@@ -125,12 +133,15 @@ def run(args):
                 scaler.scale(loss).backward(); scaler.unscale_(optimizer)
             else: loss.backward()
             step+=1
+            applied_ratios=[]
+            correction_step=vna_active and step%args.vna_every==0
             if vna_active and step%args.vna_every==0:
                 sync(device); t=time.perf_counter()
                 batch=augmented_batch(statistics_data,indices,args.vna_batch,engine.generators['correction'],device)
                 with isolated_rng(engine.generators['construction']):
                     for site in engine.cache:
                         delta,diag=engine.correction(model,site,batch)
+                        if args.lambda_mode=='spread': engine.queue_spread(site,delta,diag['skipped'])
                         if diag['skipped']: skipped+=1
                         else:
                             # Zero coefficient deliberately performs diagnostics but no gradient write.
@@ -138,12 +149,20 @@ def run(args):
                             refs=dict(model.named_parameters())
                             grad_norm=sum(float(refs[n].grad.detach().double().square().sum()) for n in delta if refs[n].grad is not None)**.5
                             diag['applied_delta_ratio']=abs(coefficient)*diag['correction_norm']/max(grad_norm,1e-30)
-                            if coefficient!=0: add_vna_grad_(model,delta,coefficient)
+                            if args.lambda_mode!='spread':
+                                applied_ratios.append({'site':site,'applied_delta_ratio':diag['applied_delta_ratio']})
+                                if coefficient!=0: add_vna_grad_(model,delta,coefficient)
                             applied+=1
                         correction_count+=1
                         diag.setdefault('applied_delta_ratio',0.)
                         diagnostics.append(diag); corrections.append(clean_json(dict(diag,epoch=current,step=step,arm=args.arm)))
                 sync(device); components['correction']=components.get('correction',0.)+time.perf_counter()-t
+            if vna_active and args.lambda_mode=='spread': applied_ratios=engine.apply_spread(model)
+            current_loss=float(loss.detach())
+            step_records.append({'epoch':current,'step':step,'correction_step':correction_step,
+                'train_loss':current_loss,'loss_jump':None if previous_loss is None else current_loss-previous_loss,
+                'applications':applied_ratios})
+            previous_loss=current_loss
             if args.amp: scaler.step(optimizer); scaler.update()
             else: optimizer.step()
             loss_sum+=loss.detach().double()*targets.numel(); correct+=(logits.argmax(1)==targets).sum(); count+=targets.numel()
@@ -163,6 +182,7 @@ def run(args):
             values=[d[key] for d in diagnostics if math.isfinite(d[key])]
             return sum(values)/len(values) if values else None
         history.append(clean_json({'arm':args.arm,'solver':args.solver,'selection':args.selection,'epoch':epoch,
+            'code_commit':commit,'code_history':copy.deepcopy(code_history),
             'train':{'loss':loss_sum/count,'accuracy':correct/count},'eval':eval_metrics,'lr':lr,
             'epoch_seconds':time.perf_counter()-start,'train_seconds':train_seconds,'vna_seconds':components,
             'corrections_applied':applied,'corrections_skipped':skipped,'mean_rho':mean('rho'),'mean_V':mean('V'),
@@ -185,7 +205,11 @@ def run(args):
             'test':test_metrics,'params':params,'sgd_params':initial_params,'gpu_hours':seconds/3600 if device.type=='cuda' else 0.,
             'wall_hours':seconds/3600,'peak_memory_bytes':max(row['peak_memory_bytes'] for row in history),
             'vna_seconds':sum(sum(v for k,v in row['vna_seconds'].items() if k in ('refresh','factor_refresh','correction')) for row in history),
-            'test_evaluations':1,'test_seconds':test_seconds,'epoch':epoch}
+            'test_evaluations':1,'test_seconds':test_seconds,'epoch':epoch,
+            'code_commit':commit,'code_history':copy.deepcopy(code_history)}
+        save()
+    if args.resume and cp.get('code_commit')!=commit and epoch==cp['epoch']:
+        if final is not None: final=dict(final,code_commit=commit,code_history=copy.deepcopy(code_history))
         save()
     if final is not None: atomic_json_save(final,output/'final.json')
     return output/'latest.pt'

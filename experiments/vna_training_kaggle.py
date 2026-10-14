@@ -116,3 +116,63 @@ def check_training_budget(root, target, payload, budget):
     peak=max(current+estimate,3*projected)
     if peak>budget:
         raise RuntimeError(f'Full-state output/archive peak estimate {peak} exceeds disk budget {budget}; previous latest preserved')
+
+
+def choose_batch(rows, batch_override=None, every_override=None, *, damping_rel=1e-2):
+    """Pre-registered worst-site/epoch batch agreement rule, before solver choice."""
+    import math
+    checks = [r for r in rows if r.get('variant') == 'exact'
+              and math.isclose(r['relative_mu'], damping_rel, rel_tol=1e-9)]
+    cos16 = min((r['cos16'] for r in checks), default=None)
+    cos64 = min((r['cos64'] for r in checks), default=None)
+    batch, every = ((16, 10) if cos16 is not None and cos16 >= .5 else
+                    (64, 20) if cos64 is not None and cos64 >= .5 else (128, 20))
+    if batch_override is not None: batch = batch_override
+    if every_override is not None: every = every_override
+    if batch < 1 or every < 1: raise ValueError('batch/every overrides must be positive')
+    print('Pre-registered batch rule: cos16 >= 0.5 -> (16,10); else cos64 >= 0.5 -> (64,20); else (128,20).',
+          'Minimum cos16:', cos16, 'cos64:', cos64,
+          'overrides:', batch_override, every_override, 'chosen:', batch, every)
+    return batch, every
+
+
+def apply_budget_policy(arms, projections, budget=30, allow_over_budget=False):
+    """The budget is total GPU-hours across all arms of one seed."""
+    import json
+    selected = list(arms); dropped = []
+    def total(): return sum(projections[name] for name, _, _ in selected)
+    for name in ('sgd_cm', 'vna_tiny_U'):
+        if total() > budget and any(arm[0] == name for arm in selected):
+            selected = [arm for arm in selected if arm[0] != name]; dropped.append(name)
+    print('Dropped arms:', dropped, 'Projected total GPU-hours:', total(), 'budget:', budget)
+    table = [{'arm': name, 'GPU-hours': projections[name], 'dropped': name in dropped}
+             for name, _, _ in arms]
+    print('Smoke projection table:', json.dumps(table))
+    if total() > budget and not allow_over_budget:
+        raise RuntimeError(f'Projected {total():.2f} GPU-hours exceeds {budget}; '
+                           'set ALLOW_OVER_BUDGET=True to proceed. Table: ' + json.dumps(table))
+    return selected, total()
+
+
+def smoke_diagnostics(output):
+    """Report-only pre-registered thresholds; applied ratios include stale steps."""
+    import json
+    import numpy as np
+    output = Path(output)
+    def records(name):
+        path = output / name
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    corrections = records('corrections.jsonl'); steps = records('steps.jsonl')
+    ratios = [a['applied_delta_ratio'] for row in steps for a in row['applications']]
+    median, p95 = (float(np.median(ratios)), float(np.percentile(ratios, 95))) if ratios else (None, None)
+    jumps = {label: max((r['loss_jump'] for r in steps
+                        if r['correction_step'] == flag and r['loss_jump'] is not None), default=None)
+             for label, flag in [('correction_steps', True), ('non_correction_steps', False)]}
+    flags = []
+    if p95 is not None and p95 > 3: flags.append('IMPULSE_RISK')
+    if median is not None and median < .05: flags.append('LIKELY_NULL')
+    return {'median_applied_delta_ratio': median, 'p95_applied_delta_ratio': p95,
+            'fraction_corrections_skipped': sum(r['skipped'] for r in corrections)/len(corrections) if corrections else None,
+            'max_train_loss_jump': jumps, 'flags': flags,
+            'thresholds': {'IMPULSE_RISK_p95_gt': 3, 'LIKELY_NULL_median_lt': .05},
+            'loss_jump_note': 'Loss at step t precedes its update; jumps are grouped by scheduled correction steps.'}

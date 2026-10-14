@@ -101,7 +101,7 @@ def test_training_notebooks_and_solver_decision():
     from scripts.build_kaggle_vna_training_notebooks import build
     from experiments.vna_training_kaggle import choose_solver
     for seed in (0,1):
-        notebook=build('a'*40,seed)
+        notebook=build('vna-phase0',seed)
         for cell in notebook['cells']:
             if cell['cell_type']=='code': ast.parse(''.join(cell['source']))
         source=''.join(''.join(c['source']) for c in notebook['cells'])
@@ -215,7 +215,7 @@ def test_train_mode_buffers_and_modes_preserved(tmp_path,solver,cached,mixed_mod
 
 def test_start_epoch_strength_and_compact_logs(tmp_path):
     cp=load(run(arguments(tmp_path,'--arm','ngd','--solver','lite','--epochs','3',
-        '--vna-start-epoch','2','--refresh-epochs','5','--vna-every','2','--lambda-vna','.25')))
+        '--vna-start-epoch','2','--refresh-epochs','5','--vna-every','2','--lambda-vna','.25','--lambda-mode','time_avg')))
     assert cp['history'][0]['selected_sites']=={}
     assert cp['history'][0]['corrections_applied']==0
     assert cp['vna']['controller']['refreshes']==1
@@ -260,10 +260,11 @@ def test_validation_shared_defaults():
 @pytest.mark.parametrize('allow_over_budget',[False,True])
 def test_notebook_smoke_budget_and_queue(tmp_path,allow_over_budget):
     from scripts.build_kaggle_vna_training_notebooks import build
+    from experiments.vna_training_kaggle import apply_budget_policy, smoke_diagnostics
     import shutil
     import sys
     from types import SimpleNamespace
-    notebook=build('a'*40,0)
+    notebook=build('vna-phase0',0)
     source=next(''.join(c['source']) for c in notebook['cells'] if ''.join(c['source']).startswith('# Cell B:'))
     source=source[:source.index('restore_training(Path(')]
     launched=[]
@@ -278,11 +279,172 @@ def test_notebook_smoke_budget_and_queue(tmp_path,allow_over_budget):
         subprocess=SimpleNamespace(run=smoke),json=json,shutil=shutil,training_parser=parser,
         training_protocol=training_protocol,SEED=0,SOLVER='lite',GPU_DATA=False,
         CHANNELS_LAST=False,CUDNN_BENCHMARK=False,AMP=False,shared_arguments=[],test_env={},
-        SMOKE_EPOCHS=2,GPU_HOURS_BUDGET=1,ALLOW_OVER_BUDGET=allow_over_budget)
+        SMOKE_EPOCHS=2,GPU_HOURS_BUDGET=1,ALLOW_OVER_BUDGET=allow_over_budget,
+        apply_budget_policy=apply_budget_policy,smoke_diagnostics=smoke_diagnostics)
     if allow_over_budget: exec(compile(source,'smoke','exec'),scope)
     else:
         with pytest.raises(RuntimeError,match='GPU-hours exceeds'): exec(compile(source,'smoke','exec'),scope)
     assert [a.arm for a in launched]==['sgd','vna','ngd','vna_random','vna','sgd_cm']
     assert not (tmp_path/'real').exists()
-    assert scope['projected_total']==pytest.approx(12.6)
+    if allow_over_budget:
+        assert scope['projected_total']==pytest.approx(8.)
+        assert [arm[0] for arm in scope['arms']]==['sgd','vna_tiny_V','ngd','vna_random']
     assert all(Path(a.output).is_relative_to(scope['SMOKE_ROOT']) for a in launched)
+
+
+@pytest.mark.parametrize('arm', ['vna', 'ngd', 'vna_random'])
+def test_spread_resume_with_pending_direction(tmp_path, arm):
+    extra = ['--arm', arm, '--solver', 'lite', '--vna-every', '3', '--limit-batches', '3',
+             '--lambda-vna', '.01']
+    full = load(run(arguments(tmp_path/'full', *extra)))
+    first = run(arguments(tmp_path/'resume', *extra, '--max-epochs', '1'))
+    pending = load(first)['vna']['spread']
+    assert pending and all(s['remaining'] == 2 for s in pending.values())
+    resumed = load(run(arguments(tmp_path/'resume', *extra, '--resume', str(first))))
+    for key in ('model', 'optimizer', 'scheduler', 'rng', 'numpy_rng',
+                'train_loader_generator_state', 'vna', 'step', 'correction_count', 'previous_loss'):
+        equal(full[key], resumed[key])
+    equal(read_corrections(tmp_path/'full'), read_corrections(tmp_path/'resume'))
+    assert (tmp_path/'full/steps.jsonl').read_text() == (tmp_path/'resume/steps.jsonl').read_text()
+
+
+def test_spread_total_effect_and_rejected_replacement(tmp_path):
+    from experiments.vna_training_support import TrainingVNA
+    args = arguments(tmp_path, '--vna-every', '4', '--lambda-vna', '.25')
+    assert args.lambda_mode == 'spread'
+    engine = TrainingVNA(args, torch.device('cpu'))
+    model = torch.nn.Linear(2, 1, bias=False).double()
+    delta = {'weight': torch.tensor([[2., -3.]], dtype=torch.float64)}
+    engine.queue_spread('site', delta)
+    total = torch.zeros_like(delta['weight'])
+    for _ in range(4):
+        model.weight.grad = torch.zeros_like(model.weight)
+        engine.apply_spread(model)
+        total += model.weight.grad
+    assert torch.equal(total, delta['weight'] * args.lambda_vna * args.vna_every)
+    assert not engine.spread
+    engine.queue_spread('site', delta)
+    engine.queue_spread('site', {}, skipped=True)
+    assert not engine.spread
+    engine.queue_spread('site', delta)
+    engine.queue_spread('site', {'weight': torch.full_like(model.weight, float('nan'))})
+    assert not engine.spread
+    model.weight.grad = torch.zeros_like(model.weight)
+    assert engine.apply_spread(model) == []
+    assert torch.equal(model.weight.grad, torch.zeros_like(model.weight))
+
+
+def test_code_commit_resume_and_strict_config(tmp_path, monkeypatch, capsys):
+    import experiments.run_vna_training as runner
+    monkeypatch.setattr(runner, 'code_commit', lambda: 'a'*40)
+    first = run(arguments(tmp_path, '--max-epochs', '1'))
+    monkeypatch.setattr(runner, 'code_commit', lambda: 'b'*40)
+    resumed = load(run(arguments(tmp_path, '--resume', str(first))))
+    assert resumed['code_commit'] == 'b'*40
+    assert resumed['code_history'] == [{'from_epoch': 1, 'commit': 'a'*40},
+                                       {'from_epoch': 2, 'commit': 'b'*40}]
+    assert [r['code_commit'] for r in resumed['history']] == ['a'*40, 'b'*40]
+    assert resumed['final']['code_history'] == resumed['code_history']
+    warning = capsys.readouterr().out
+    assert 'WARNING: CODE COMMIT CHANGED' in warning and 'epoch boundary 2' in warning
+    assert 'a'*40 in warning and 'b'*40 in warning
+    run(arguments(tmp_path, '--resume', str(first)))
+    assert 'CODE COMMIT CHANGED' not in capsys.readouterr().out
+    with pytest.raises(ValueError, match='protocol mismatch'):
+        run(arguments(tmp_path, '--resume', str(first), '--lambda-vna', '.5'))
+
+
+@pytest.mark.parametrize('cos16,cos64,expected', [(.5,.1,(16,10)),(.49,.5,(64,20)),(.49,.49,(128,20))])
+def test_preregistered_batch_rule_worst_epoch_site(cos16, cos64, expected, capsys):
+    from experiments.vna_training_kaggle import choose_batch
+    rows = [dict(epoch=e, site=s, variant='exact', relative_mu=.01, cos16=.9, cos64=.9)
+            for e in (40,100,160) for s in ('a','b')]
+    rows[-1].update(cos16=cos16, cos64=cos64)
+    rows.append(dict(variant='exact', relative_mu=.001, cos16=-1, cos64=-1))
+    assert choose_batch(rows) == expected
+    assert choose_batch(rows, 32, 7) == (32,7)
+    assert choose_batch(rows, every_override=8) == (expected[0],8)
+    assert 'Minimum cos16:' in capsys.readouterr().out
+    assert choose_batch([]) == (128,20)
+
+
+@pytest.mark.parametrize('budget,dropped,total', [(30,[],30),(29,['sgd_cm'],25),(24,['sgd_cm','vna_tiny_U'],20)])
+def test_budget_drop_order(budget, dropped, total, capsys):
+    from experiments.vna_training_kaggle import apply_budget_policy
+    arms = [(n,'sgd','tiny_V') for n in ['sgd','vna_tiny_V','ngd','vna_random','vna_tiny_U','sgd_cm']]
+    selected, actual = apply_budget_policy(arms, {n:5 for n,_,_ in arms}, budget)
+    assert actual == total
+    assert [n for n,_,_ in arms if n not in {a[0] for a in selected}] == list(reversed(dropped))
+    output = capsys.readouterr().out
+    assert 'Dropped arms: '+str(dropped) in output
+    with pytest.raises(RuntimeError, match='Table:'):
+        apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19)
+    assert apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19, True)[1] == 20
+
+
+def test_smoke_preregistered_flags_and_loss_jumps(tmp_path):
+    from experiments.vna_training_kaggle import smoke_diagnostics
+    (tmp_path/'corrections.jsonl').write_text('\n'.join(json.dumps({'skipped':s}) for s in [False,True]))
+    def steps(ratios):
+        (tmp_path/'steps.jsonl').write_text('\n'.join(json.dumps(dict(applications=[{'applied_delta_ratio':r}],
+            correction_step=i%2==0, loss_jump=float(i))) for i,r in enumerate(ratios)))
+    steps([.01,.02,.03,10])
+    report = smoke_diagnostics(tmp_path)
+    assert report['flags'] == ['IMPULSE_RISK','LIKELY_NULL']
+    assert report['median_applied_delta_ratio'] == pytest.approx(.025)
+    assert report['p95_applied_delta_ratio'] == pytest.approx(8.5045)
+    assert report['fraction_corrections_skipped'] == .5
+    assert report['max_train_loss_jump'] == {'correction_steps':2.,'non_correction_steps':3.}
+    steps([.05,3.])
+    assert smoke_diagnostics(tmp_path)['flags'] == []
+
+
+def test_finished_resume_changed_commit_records_boundary(tmp_path, monkeypatch, capsys):
+    import experiments.run_vna_training as runner
+    monkeypatch.setattr(runner, 'code_commit', lambda: 'a'*40)
+    path = run(arguments(tmp_path))
+    monkeypatch.setattr(runner, 'code_commit', lambda: 'b'*40)
+    monkeypatch.setattr(runner, 'official_test', lambda *a: pytest.fail('must not reevaluate'))
+    resumed = load(run(arguments(tmp_path, '--resume', str(path))))
+    assert resumed['code_history'][-1] == {'from_epoch':3,'commit':'b'*40}
+    assert resumed['final']['code_history'] == resumed['code_history']
+    assert 'epoch boundary 3' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('batch_override,every_override,expected', [(None,None,(64,20)),(16,None,(16,20)),(None,7,(64,7))])
+def test_cell_a_batch_before_solver_cost(tmp_path, monkeypatch, batch_override, every_override, expected):
+    import sys
+    from types import SimpleNamespace
+    import experiments.kaggle_checkpoint_discovery as discovery
+    import experiments.vna_training_kaggle as kaggle
+    from diagnostics.vna_solver_validation import parser as validation_parser
+    from scripts.build_kaggle_vna_training_notebooks import build
+    monkeypatch.setattr(discovery, 'discover_checkpoints', lambda *a,**k: (
+        [{'path':str(tmp_path/f'epoch_{e}.pt'),'payload':{'epoch':e}} for e in (40,100,160)],[]))
+    commands = []
+    def validate(command, **kwargs):
+        args = validation_parser().parse_args(command[4:]); commands.append(args)
+        destination = Path(args.output); destination.mkdir(parents=True,exist_ok=True)
+        rows = [dict(epoch=e,site='a',variant=v,relative_mu=.01,cos16=.4,cos64=.7,
+            cg_converged=True,sgd_units=cost,cosine=cos,realized_gain=1.,cos_W1=cos,cos_W2=cos,cos_BN=cos)
+            for e in [40] for v,cost,cos in [('exact',18,1),('kfac',5,.7),('lite',1,.2)]]
+        (destination/'summary.json').write_text(json.dumps({'rows':rows}))
+    original = kaggle.choose_solver
+    calls = []
+    def choose(rows, override, **kwargs):
+        assert len(commands) == 6  # only choose after measured chosen-batch costs
+        assert all((a.vna_batch,a.vna_every)==expected for a in commands[3:])
+        calls.append(kwargs)
+        return original(rows, override, **kwargs)
+    monkeypatch.setattr(kaggle, 'choose_solver', choose)
+    # Avoid display plumbing while exercising every decision/command in Cell A.
+    source = ''.join(build()['cells'][4]['source'])
+    start = source.index('    import pandas as pd'); end = source.index('    print("SOLVER decision:',start)
+    source = source[:start]+source[end:]
+    scope = dict(Path=Path,RUN_ROOT=tmp_path/'run',DATA_ROOT=tmp_path,REPO=tmp_path,sys=sys,
+        json=json,subprocess=SimpleNamespace(run=validate),test_env={},VALIDATE_SOLVERS=True,
+        SEED=0,SOLVER_OVERRIDE=None,LAMBDA_VNA=1.,VNA_BATCH_OVERRIDE=batch_override,VNA_EVERY_OVERRIDE=every_override)
+    exec(compile(source,'Cell A','exec'),scope)
+    assert (scope['VNA_BATCH'],scope['VNA_EVERY']) == expected
+    assert calls[0]['vna_every'] == expected[1]
+    assert not (tmp_path/'run/_phase0_cache').exists()

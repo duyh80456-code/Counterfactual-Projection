@@ -370,16 +370,17 @@ def test_watch_markers_shards_merge_resume_and_archive(tmp_path, monkeypatch):
             assert not (destination/"_resume_cache").exists()
 
 
-def test_notebook_pinned_setup_and_syntax(tmp_path, monkeypatch):
+def test_notebook_branch_setup_and_syntax(tmp_path, monkeypatch):
     from scripts.build_kaggle_vna_signal_curve_notebook import build
-    commit = "a"*40
-    notebook = build(commit)
+    branch = "vna-phase0"
+    notebook = build(branch)
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
     for cell in notebook["cells"]:
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), "notebook", "exec")
-    assert f'REPO_COMMIT = "{commit}"' in source
-    assert '"--detach", REPO_COMMIT' in source
+    assert f'REPO_BRANCH = "{branch}"' in source
+    assert 'private_clone(MAIN_URL, REPO, REPO_BRANCH)' in source
+    assert "REPO_COMMIT" not in source and "code_commit.json" in source
     assert '"tests/test_vna.py"' in source and '"CUDA_VISIBLE_DEVICES": ""' in source
     assert '{"train", "test", "meta"}' in source
     assert '"--watch"' in source and '"--shards", "2"' in source
@@ -400,7 +401,7 @@ def test_notebook_pinned_setup_and_syntax(tmp_path, monkeypatch):
         assert protocols[0][name] is True
     assert training.amp is False and protocols[0]["amp"] is False
     assert diagnostic.cache_block_input is True
-    with pytest.raises(ValueError): build("main")
+    with pytest.raises(ValueError): build("--invalid")
 
 
 def test_cached_suffix_after_earlier_blocks_and_shared_logits():
@@ -633,3 +634,49 @@ def test_per_rank_criteria_decay_and_epoch_boundaries():
     assert table[1]["excluded_lite_V"] == table[1]["excluded_lite_derivative"] == table[1]["excluded_lite_lr_boost"] == 2
     assert table[1]["excluded_lite_decay"] == 4 and not table[1]["lite_go"]
     assert table[1]["full_go"] and table[1]["lite_decay_by_site"]["block"]["V"] is None
+
+
+def test_branch_tip_session_commit_records(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from scripts.build_kaggle_vna_signal_curve_notebook import build as phase0
+    from scripts.build_kaggle_vna_training_notebooks import build as training
+    for notebook in [phase0(), training(seed=0), training(seed=1)]:
+        bootstrap = ''.join(notebook['cells'][2]['source'])
+        assert 'private_clone(MAIN_URL, REPO, REPO_BRANCH)' in bootstrap
+        source = bootstrap[bootstrap.index('from datetime import datetime, timezone'):]
+        scope = dict(subprocess=SimpleNamespace(check_output=lambda *a,**k:'a'*40+'\n'),
+                     REPO=tmp_path, OUTPUT=tmp_path, REPO_BRANCH='vna-phase0', json=json)
+        exec(compile(source, 'bootstrap-provenance', 'exec'), scope)
+        scope['subprocess'] = SimpleNamespace(check_output=lambda *a,**k:'b'*40+'\n')
+        exec(compile(source, 'bootstrap-provenance', 'exec'), scope)
+        records = json.loads((tmp_path/'code_commit.json').read_text())
+        assert [r['commit'] for r in records[-2:]] == ['a'*40,'b'*40]
+        assert all(r['timestamp'] and r['branch']=='vna-phase0' for r in records)
+        assert scope['CODE_COMMIT'] == 'b'*40
+
+
+def test_phase0_completion_commit_separate_from_config(tmp_path, monkeypatch):
+    import json
+    import diagnostics.signal_curve as signal
+    from experiments.train_recipe_checkpoints import parser as train_parser, run as train_run
+    cp = train_run(train_parser().parse_args(['--fake-data','--limit-batches','1',
+        '--max-epochs','1','--output',str(tmp_path/'recipe')]))
+    payload = torch.load(cp, weights_only=False)
+    torch.save({**payload,'epoch':20}, tmp_path/'recipe/epoch_020.pt')
+    calls = []
+    monkeypatch.setattr(signal, 'compute', lambda a: calls.append(a.checkpoints) or [])
+    monkeypatch.setattr(signal, 'code_commit', lambda: 'a'*40)
+    args = signal.parser().parse_args(['--fake-data','--smoke','--no-merge',
+        '--checkpoint-dir',str(tmp_path/'recipe'),'--output',str(tmp_path/'signal')])
+    signal.run(args)
+    marker = tmp_path/'signal/completed/epoch_020.json'
+    assert json.loads(marker.read_text())['code_commit'] == 'a'*40
+    monkeypatch.setattr(signal, 'code_commit', lambda: 'b'*40)
+    signal.run(args)
+    assert len(calls) == 1
+    torch.save({**payload,'epoch':40}, tmp_path/'recipe/epoch_040.pt')
+    signal.run(args)
+    assert json.loads((tmp_path/'signal/completed/epoch_040.json').read_text())['code_commit'] == 'b'*40
+    args.cache_block_input = not args.cache_block_input
+    with pytest.raises(ValueError, match='protocol mismatch'): signal.run(args)

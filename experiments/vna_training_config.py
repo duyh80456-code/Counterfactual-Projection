@@ -19,7 +19,7 @@ def add_vna_arguments(p):
     p.add_argument('--hutchinson-probes',type=int,default=8)
     p.add_argument('--no-bn-projection',action='store_true')
     p.add_argument('--cache-block-input',action='store_true')
-    p.add_argument('--lambda-mode',choices=['per_step','time_avg'],default='time_avg')
+    p.add_argument('--lambda-mode',choices=['per_step','time_avg','spread'],default='spread')
     p.add_argument('--vna-start-epoch',type=int,default=5)
     p.add_argument('--factor-refresh-epochs',type=int,default=1)
     return p
