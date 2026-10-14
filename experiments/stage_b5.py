@@ -2,7 +2,6 @@
 import argparse
 from contextlib import contextmanager
 import csv
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -300,7 +299,8 @@ def run(args):
     params['examples_per_epoch'] = params.get('fake_train_images_per_class', 600)*params.get('num_classes', 2)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     signature = {'params': params, 'seed': args.seed, 'code_commit': commit,
-                 'fake_data': args.fake_data, 'smoke': args.smoke, 'mu_rel_default': args.mu_rel_default}
+                 'fake_data': args.fake_data, 'smoke': args.smoke, 'mu_rel_default': args.mu_rel_default,
+                 'mu_rel_default_source': args.mu_rel_default_source}
     manifest = run_dir/'manifest.json'
     if args.resume and manifest.exists() and json.loads(manifest.read_text()) != signature:
         raise ValueError('resume configuration/commit mismatch')
@@ -317,6 +317,7 @@ def run(args):
     metadata = {'schema_version': 'stage1d-v1', 'benchmark': args.benchmark, 'arm': arm_name,
                 'null_kind': 'N2', 'n2_centered': args.benchmark != 'regression',
                 'seed': args.seed, 'code_commit': commit, 'device': actual_device, 'fake_data': args.fake_data,
+                'mu_rel_default': args.mu_rel_default, 'mu_rel_default_source': args.mu_rel_default_source,
                 **provenance, 'upstream_commit': UPSTREAM_PIN, 'cfg_values': json.dumps(params, sort_keys=True)}
     from adapters.lop_hooks import LearnHook
     from diagnostics.lop_measure import B5Measurement
@@ -362,6 +363,7 @@ def parser():
     p.add_argument('--resume', action='store_true'); p.add_argument('--out', default='outputs/stageB')
     p.add_argument('--data-dir'); p.add_argument('--device', default='cpu'); p.add_argument('--seed', type=int, default=0)
     p.add_argument('--mu-rel-default', type=float, default=.01)
+    p.add_argument('--mu-rel-default-source', default='cli/default')
     p.add_argument('--replacement-rate', type=float, choices=RATES)
     return p
 

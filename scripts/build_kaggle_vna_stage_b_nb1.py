@@ -16,14 +16,27 @@ GPU_HOURS_BUDGET = 8
 ALLOW_OVER_BUDGET = False
 IMAGENET32_DIR = None  # directory containing per-class <class_id>.npy
 MNIST_DIR = None       # directory containing mnist_ or torchvision MNIST/raw
-MU_REL_DEFAULT = 1e-2 # set from Stage A summary.json if available
+MU_REL_DEFAULT = 1e-2
+MU_REL_DEFAULT_SOURCE = "fallback:1e-2"
 DISK_CAP_BYTES = 5_000_000_000
 '''.replace('__PIN__', commit)
     bootstrap = ''.join(base['cells'][2]['source']).replace('/kaggle/working/vna_phase0_seed0', '/kaggle/working/vna_stage_b5')
     setup = ''.join(base['cells'][3]['source']).split('required_cifar_files =')[0]
     setup = setup.replace('"-q", "tests/test_vna.py", "tests/test_vna_stage_b_upstream.py", "tests/test_vna_stage_b_losses.py"', '"-q"')
     setup = setup.replace('print("Official TEST verified:", DATA_ROOT / "cifar-100-python/test")\n', '')
-    setup += '''\n# Prefer attached input data. ImageNet absence is an explicit skip.
+    setup += '''\n# Read the attached Stage A default before constructing any B5 command.
+import json
+stage_a_summaries = sorted(Path("/kaggle/input").glob("**/stageA/summary.json"))
+if stage_a_summaries:
+    MU_REL_DEFAULT_SOURCE = str(stage_a_summaries[0])
+    summary = json.loads(stage_a_summaries[0].read_text())
+    MU_REL_DEFAULT = summary["mu_rel_default"]
+else:
+    MU_REL_DEFAULT = 1e-2
+    MU_REL_DEFAULT_SOURCE = "fallback:1e-2"
+    print("WARNING: no attached stageA/summary.json; using MU_REL_DEFAULT=1e-2")
+print("B5 mu_rel_default:", MU_REL_DEFAULT, "source:", MU_REL_DEFAULT_SOURCE)
+# Prefer attached input data. ImageNet absence is an explicit skip.
 if IMAGENET32_DIR is None:
     candidates = sorted({p.parent for p in Path("/kaggle/input").rglob("0.npy") if (p.parent / "1.npy").exists()})
     IMAGENET32_DIR = candidates[0] if candidates else None
@@ -68,7 +81,8 @@ def periodic_archive():
 archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.start()
 def command(benchmark, arm, gpu, out, *, smoke=False, rate=None):
     cmd = [sys.executable, "-u", "-m", "experiments.stage_b5", benchmark, "--arm", arm,
-           "--device", f"cuda:{gpu}", "--out", str(out), "--mu-rel-default", str(MU_REL_DEFAULT)]
+           "--device", f"cuda:{gpu}", "--out", str(out), "--mu-rel-default", str(MU_REL_DEFAULT),
+           "--mu-rel-default-source", MU_REL_DEFAULT_SOURCE]
     if smoke: cmd += ["--smoke"]
     else: cmd += ["--resume"]
     if rate is not None: cmd += ["--replacement-rate", str(rate)]
@@ -96,7 +110,7 @@ try:
         full_steps = {"regression": 1000000, "mnist": 12000000, "imagenet": 600000}[benchmark]
         # Training and diagnostics have different scaling: project training
         # per step, then the registered 16/18 measurement points separately.
-        # The maximum smoke point includes a full sliding window (task 2 mid).
+        # Short online smoke tasks measure pure partial windows at midpoints.
         train_seconds = summary["training_seconds"] * full_steps / summary["steps_run"]
         point_seconds = max((p["seconds"] for p in summary["measurement_point_seconds"]), default=0.)
         point_count = 16 if benchmark == "regression" else 18

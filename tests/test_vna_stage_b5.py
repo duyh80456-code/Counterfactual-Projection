@@ -5,7 +5,6 @@ import random
 import numpy as np
 import pytest
 import torch
-from torch import nn
 from adapters.lop_hooks import LearnHook, Prediction, sites_for, learner_state
 from diagnostics.vna_align import _assert_bitwise, MeasurementHook, _global_state
 from experiments.stage_b5 import upstream_imports, recipe, prepare_data, run_native, baseline_gate, RATES
@@ -29,8 +28,8 @@ def fixture(benchmark, arm, path, tasks=2):
     path.mkdir(parents=True, exist_ok=True)
     params['data_file'] = str(path/'logs.pkl'); params['run_idx'] = 0
     params['num_features'] = 5 if benchmark == 'regression' else 4
-    if benchmark == 'regression': params.update(flip_after=50, num_data_points=tasks*50)
-    elif benchmark == 'mnist': params.update(num_tasks=tasks, change_after=50, fixture_rank_padding=True)
+    if benchmark == 'regression': params.update(flip_after=160, num_data_points=tasks*160)
+    elif benchmark == 'mnist': params.update(num_tasks=tasks, change_after=160, fixture_rank_padding=True)
     else: params.update(num_tasks=tasks, num_showings=1, mini_batch_size=100,
                         fake_train_images_per_class=100, fake_test_images_per_class=50, examples_per_epoch=200)
     prepare_data(benchmark, params, path, fake=True, smoke=True)
@@ -53,7 +52,9 @@ def actual_measure(model, batch, spec, ctx, *, generator):
                               GGNConfig(cg_iters=2, hutchinson_probes=1, project_bn=False),
                               loss_spec=spec, ctx=ctx)[3]
     random.random(); np.random.rand(); torch.rand(3); torch.rand(2, generator=generator)
-    return [dict(task=ctx['task'], step=ctx['step'], rho=record['rho'])]
+    return [dict(task=ctx['task'], step=ctx['step'], rho=record['rho'],
+                 point=ctx['point'], within_task_step=ctx['within_task_step'],
+                 buffer_task_purity=ctx['buffer_task_purity'])]
 
 
 @pytest.mark.parametrize('benchmark', ['regression', 'mnist', 'imagenet'])
@@ -87,7 +88,8 @@ def test_native_loops_bit_identical_params_optimizer_cbp_logs(benchmark, arm, tm
                 from methods.vna_losses import CE, MSE
                 spec = MSE(reduction='mean') if benchmark == 'regression' else CE()
                 isolation(Prediction(learner.net), (x, target), spec,
-                          {'targets': target, 'task': task, 'step': step,
+                          {'targets': target, 'task': task, 'step': step, 'point': 'probe',
+                           'within_task_step': (step-1)%hook.task_steps+1, 'buffer_task_purity': 1.0,
                            'loss_fn': lambda z, c: learner.loss_func(z, c['targets'].to(z) if benchmark == 'regression' else c['targets'])})
             hook.observe = observe
         logs = run_native(benchmark, params, tmp_path, hook)
@@ -118,6 +120,12 @@ def test_resume_task_boundary_restores_rng_logs_and_learner(benchmark, arm, tmp_
     _assert_bitwise(expected, learner_state(resumed.last_learner))
     _assert_bitwise(logs, actual)
     _assert_bitwise(full.rows, resumed.rows)
+    assert checkpoint['buffer'] == []
+    if arm == 'bp':
+        # ImageNet's two-step fixture has coincident first/mid points.
+        expected_points = [('first', 1)] if benchmark == 'imagenet' else [('first', 64), ('mid', 80)]
+        assert [(r['point'], r['within_task_step']) for r in full.rows] == expected_points * 3
+        assert all(r['buffer_task_purity'] == 1.0 for r in full.rows)
     _assert_bitwise(full.results.state(), resumed.results.state())
 
 
@@ -130,7 +138,14 @@ def test_first_three_tasks_data_and_permutations_native_stream(benchmark, tmp_pa
         stream = []
         def observe(learner, x, target, task, step):
             stream.append((task, x.detach().clone(), target.detach().clone()))
-        hook = LearnHook(benchmark, 'bp', params, actual_measure if enabled else None, observe=observe)
+        def measure(model, batch, spec, ctx, *, generator):
+            current = [entry for entry in stream if entry[0] == ctx['task']]
+            expected_x = torch.cat([entry[1] for entry in current])[-64 if benchmark != 'imagenet' else -100:]
+            expected_y = torch.cat([entry[2] for entry in current])[-64 if benchmark != 'imagenet' else -100:]
+            _assert_bitwise(batch, (expected_x, expected_y))
+            assert ctx['buffer_task_purity'] == 1.0
+            return actual_measure(model, batch, spec, ctx, generator=generator)
+        hook = LearnHook(benchmark, 'bp', params, measure if enabled else None, observe=observe)
         run_native(benchmark, params, tmp_path, hook)
         streams.append(stream)
     _assert_bitwise(*streams)
@@ -144,7 +159,7 @@ def test_first_three_tasks_data_and_permutations_native_stream(benchmark, tmp_pa
         for task in range(1, 4):
             x = x[:, np.random.permutation(784)]
             order = np.random.permutation(60000); x, y = x[order], y[order]
-            expected.extend((task, x[i:i+1], y[i:i+1]) for i in range(50))
+            expected.extend((task, x[i:i+1], y[i:i+1]) for i in range(160))
         _assert_bitwise(streams[0], expected)
 
 
@@ -197,22 +212,24 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
     from lop.algos.bp import Backprop
     from diagnostics.lop_measure import B5Measurement
     from experiments.stage_b5 import finalize, write_json
-    from methods.vna_select import neuron_norms
     reset()
     native = DeepFFNN(input_size=7, num_features=5, num_outputs=3, num_hidden_layers=2)
     learner = Backprop(native, loss='nll', step_size=.003)
     params, meta = recipe('mnist', 'bp')
-    params.update(num_tasks=2, change_after=2)
+    params.update(num_tasks=2, change_after=160)
     measurement = B5Measurement('mnist', {'schema_version': 'stage1d-v1', 'benchmark': 'mnist',
                                'arm': 'bp', 'code_commit': 'test', 'seed': 13, **meta}, ranks=[1], cg_iters=100)
     hook = LearnHook('mnist', 'bp', params, measurement)
     x, target = torch.randn(2, 7), torch.tensor([0, 1])
-    with hook.install(): learner.learn(x=x[:1], target=target[:1])
+    with hook.install():
+        for _ in range(64): learner.learn(x=x[:1], target=target[:1])
     rows = hook.rows
     assert len(rows) == 2
     for row in rows:
         assert row['schema_version'] == 'stage1d-v1' and row['step_size'] == .003
-        assert row['measurement_m'] == 1 and row['buffer_m'] == 64
+        assert row['measurement_m'] == 64 and row['buffer_m'] == 64
+        assert row['point'] == 'first' and row['within_task_step'] == 64
+        assert row['buffer_task_purity'] == 1.0
         assert len(__import__('json').loads(row['null_lambda_N1'])) == 8
         assert len(__import__('json').loads(row['null_lambda_N2'])) == 8
         assert row['null_kind'] == 'N2' and row['n2_centered'] is True
@@ -230,7 +247,6 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
 
 
 def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
-    import json
     from scripts.build_kaggle_vna_stage_b_nb1 import build
     commit = 'a'*40
     notebook = build(commit)
@@ -241,7 +257,8 @@ def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
     assert 'DATA_ROOT' not in sources and 'cifar-100-python' not in sources
     for text in ['requirements-upstream.txt', 'fetch_third_party.sh', 'REQUIRE_UPSTREAM',
                  'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', '--resume', 'GPU_HOURS_BUDGET',
-                 'ALLOW_OVER_BUDGET', 'archive_stop.wait(3600)', 'IMAGENET32_DIR', 'INVALID MEASUREMENTS']:
+                 'ALLOW_OVER_BUDGET', '**/stageA/summary.json', 'summary["mu_rel_default"]',
+                 '--mu-rel-default-source', 'WARNING: no attached stageA/summary.json', 'archive_stop.wait(3600)', 'IMAGENET32_DIR', 'INVALID MEASUREMENTS']:
         assert text in sources
     assert '"-m", "pytest", "-q"], cwd=REPO' in sources
     for i, c in enumerate(notebook['cells']):
@@ -301,6 +318,8 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
     assert len(full.rows) == 12
     import json
     for row in full.rows:
+        assert row['within_task_step'] == (64 if row['point'] == 'first' else 80)
+        assert row['measurement_m'] == 64 and row['buffer_task_purity'] == 1.0
         assert row['null_kind'] == 'N2' and row['n2_centered'] is False
         assert len(json.loads(row['null_lambda_N2'])) == 8
         assert len(json.loads(row['null_rho_N2'])) == 8
@@ -322,3 +341,23 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
     # Timing is observational, all numerical rows must replay identically.
     numerical = lambda rows: [{k: v for k, v in row.items() if k != 'wall_seconds'} for row in rows]
     _assert_bitwise(numerical(full.rows), numerical(resumed.rows))
+
+
+@pytest.mark.parametrize('k', [0, 1, 2, 4])
+def test_gir_swap_fills_missing_tiny_with_shared_random_rows(k):
+    from diagnostics.lop_measure import swap_directions
+    from methods.vna_select import neuron_norms
+    random = {'weight': torch.tensor([[1., 2.], [2., 1.], [-1., 2.], [2., -1.]]),
+              'bias': torch.zeros(4)}
+    tiny = {'weight': torch.tensor([[-1., -2.], [-2., -1.], [1., -2.], [-2., 1.]])[:k],
+            'bias': torch.zeros(k)}
+    swap, random_arm, selected = swap_directions(tiny, random, 3.)
+    assert selected == k
+    assert len(torch.unique(swap['weight'], dim=0)) == 4
+    torch.testing.assert_close(neuron_norms(swap), torch.full((4,), 3.))
+    torch.testing.assert_close(neuron_norms(random_arm), torch.full((4,), 3.))
+    if k < 4:
+        for name in swap:
+            torch.testing.assert_close(swap[name][k:], random_arm[name][:4-k], rtol=0, atol=0)
+    if k == 0:
+        _assert_bitwise(swap, random_arm)

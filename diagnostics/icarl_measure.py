@@ -11,10 +11,14 @@ from methods.vna_select import tiny_V, tiny_U_from_cotangent, prepare_A, subspac
 
 
 class B3Measurement:
-    def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000):
+    def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000, sites_fn=sites_for,
+                 context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8):
         self.metadata = metadata
         self.mus = sorted({mu_rel_default, .01})
         self.cg_iters = cg_iters
+        self.sites_fn, self.ranks, self.groups = sites_fn, ranks, groups
+        self.context_fn = context_fn or (lambda ctx, batch: loss_context(ctx['learner'], batch))
+        self.null_repeats = null_repeats
 
     def __call__(self, model, batch, loss_spec, ctx, *, generator):
         start = time.monotonic()
@@ -24,17 +28,17 @@ class B3Measurement:
         if not half: raise ValueError('B3 measurement needs at least two buffered samples')
         stat = tuple(t[order[:half]] for t in batch)
         correction = tuple(t[order[half:]] for t in batch)
-        _, stat_ctx = loss_context(ctx['learner'], stat)
-        _, corr_ctx = loss_context(ctx['learner'], correction)
+        _, stat_ctx = self.context_fn(ctx, stat)
+        _, corr_ctx = self.context_fn(ctx, correction)
         names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
-        sites = sites_for(model)
+        sites = self.sites_fn(model)
         rows = []
         with torch.no_grad(): logits = model(stat[0])
         g = loss_spec.residual(logits, stat_ctx)
         for mu_rel in self.mus:
             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6,
                             seed=self.metadata['seed'], damping_norm='outputs', project_bn=False)
-            for rank in (4, 8, 16):
+            for rank in self.ranks:
                 proposals, records = {}, []
                 for site in sites:
                     layer = site.first_layer.layer
@@ -70,7 +74,7 @@ class B3Measurement:
                     null_stats = {}
                     for kind in ('N1', 'N2'):
                         lambdas, rhos = [], []
-                        for _ in range(8):
+                        for _ in range(self.null_repeats):
                             null = null_residual(g, kind, generator, residual_is_zero_sum=loss_spec.residual_is_zero_sum)
                             null_z, _, status = filtered(null)
                             null_A, cap = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
@@ -101,12 +105,12 @@ class B3Measurement:
                                          loss_spec=loss_spec, ctx=corr_ctx)[3]
                 groups = {}
                 for label, mask in (('exemplar', correction[1] < ctx['known_classes']),
-                                    ('new', correction[1] >= ctx['known_classes'])):
+                                    ('new', correction[1] >= ctx['known_classes'])) if self.groups else ():
                     groups[f'{label}_m'] = int(mask.sum())
                     groups[f'rho_{label}'] = None
                     if mask.any():
                         subset = tuple(t[mask] for t in correction)
-                        _, subset_ctx = loss_context(ctx['learner'], subset)
+                        _, subset_ctx = self.context_fn(ctx, subset)
                         record = joint_correction(model, list(proposals), proposals, subset, cfg, names,
                                                   loss_spec=loss_spec, ctx=subset_ctx)[3]
                         groups[f'rho_{label}'] = record['rho']

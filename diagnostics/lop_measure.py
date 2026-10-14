@@ -1,13 +1,11 @@
 """B5 measurements use only the already-seen sliding window."""
 import copy
 import json
-import math
 import time
 import torch
 from adapters.lop_hooks import Prediction, sites_for
 from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
-from methods.vna import block_products
-from methods.vna_ggn import GGNConfig, filtered_cotangent, GGNProducts
+from methods.vna_ggn import GGNConfig, GGNProducts
 from methods.vna_joint import joint_correction, joint_products
 from methods.vna_select import tiny_V, tiny_U_from_cotangent, normalize_A, prepare_A, subspace_sim, neuron_norms
 
@@ -17,6 +15,22 @@ def random_init_A(site, reference, shadow, index, generator):
     value = {'weight': torch.empty_like(reference['weight']).uniform_(-bound, bound, generator=generator),
              'bias': None if reference['bias'] is None else torch.zeros_like(reference['bias'])}
     return normalize_A(site.model, site, value)
+
+
+def swap_directions(tiny, random, target_norm):
+    """Complete TINY with a shared random draw, then match both init norms."""
+    count, k = len(random['weight']), len(tiny['weight'])
+    if k > count:
+        raise ValueError('TINY returned more directions than replacement units')
+    def init_scale(a):
+        scale = target_norm / neuron_norms(a).clamp_min(1e-30)
+        return {name: None if value is None else value * scale.reshape((-1,) + (1,) * (value.ndim-1))
+                for name, value in a.items()}
+    random = init_scale(random)
+    tiny = init_scale(tiny)
+    mixed = {name: None if value is None else torch.cat((tiny[name], value[:count-k]), dim=0)
+             for name, value in random.items()}
+    return mixed, random, k
 
 
 def activity_stats(model, batch):
@@ -152,10 +166,11 @@ class B5Measurement:
                                            f'null_lambda_{kind}': json.dumps(null_lambda),
                                            f'null_rho_{kind}': json.dumps(null_rho)})
                     row = {**self.metadata, 'task': ctx['task'], 'step': ctx['step'], 'point': ctx['point'],
+                           'within_task_step': ctx['within_task_step'], 'buffer_task_purity': ctx['buffer_task_purity'],
                            'site': site.module_name, 'rank': rank, 'mu_rel': mu_rel, 'selection': 'tiny_V',
                            'null_kind': 'N2', 'n2_centered': loss_spec.residual_is_zero_sum,
                            'selected_rank': len(A['weight']),
-                           'measurement_m': len(batch[0]), 'buffer_m': 100 if self.benchmark == 'imagenet' else 64,
+                           'measurement_m': len(batch[0]), 'buffer_m': ctx['buffer_m'],
                            **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_converged', 'cg_iters_used', 'cg_rel_residual')},
                            'damping_norm': 'outputs', 'lambda1': lam,
                            'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
@@ -177,6 +192,7 @@ class B5Measurement:
                     for criterion, shadow, units in candidates:
                         count = len(units)
                         row[f'{criterion}_m'] = count
+                        row[f'{criterion}_tiny_directions'] = 0
                         row[f'{criterion}_fraction'] = count / width
                         if not count:
                             for name in ('V_swap_tiny', 'V_swap_random', 'ratio', 'eta_before', 'eta_after'):
@@ -186,17 +202,11 @@ class B5Measurement:
                                  'bias': None if site.first_layer.layer.bias is None else site.first_layer.layer.bias.detach()[units]}
                         before_swap = correction(old_A)
                         swap_A, _ = tiny_V(model, site, [batch], count, cotangents=[z], cfg=cfg)
-                        # A solve can return fewer directions than requested.
-                        repeat = math.ceil(count/len(swap_A['weight']))
-                        swap_A = {k: None if v is None else v.repeat((repeat,)+(1,)*(v.ndim-1))[:count]
-                                  for k, v in swap_A.items()}
-                        swap_random = random_init_A(site, swap_A, shadow, index, generator)
-                        target_norm = ctx['init_row_norms'][index]
-                        def init_scale(a):
-                            scale = target_norm/neuron_norms(a).clamp_min(1e-30)
-                            return {k: None if v is None else v*scale.reshape((-1,)+(1,)*(v.ndim-1))
-                                    for k, v in a.items()}
-                        swap_A, swap_random = init_scale(swap_A), init_scale(swap_random)
+                        # Draw all m rows once; missing TINY directions use
+                        # the first m-k rows of this same random arm.
+                        swap_random = random_init_A(site, old_A, shadow, index, generator)
+                        swap_A, swap_random, k = swap_directions(swap_A, swap_random, ctx['init_row_norms'][index])
+                        row[f'{criterion}_tiny_directions'] = k
                         gains = []
                         for a in (swap_A, swap_random):
                             clone = Prediction(copy.deepcopy(model.native))
@@ -213,7 +223,7 @@ class B5Measurement:
                             gains.append(joint_correction(clone, [clone_site], {clone_site: a}, batch, cfg,
                                 mu=mu, loss_spec=loss_spec, ctx=loss_ctx)[3])
                         row.update({f'{criterion}_V_swap_tiny': gains[0]['V'], f'{criterion}_V_swap_random': gains[1]['V'],
-                                    f'{criterion}_ratio': diagnostic_ratio(gains[0]['V'], gains[1]['V']),
+                                    f'{criterion}_ratio': 1.0 if k == 0 else diagnostic_ratio(gains[0]['V'], gains[1]['V']),
                                     f'{criterion}_eta_before': before_swap['eta'], f'{criterion}_eta_after': gains[0]['eta']})
                     records[site] = row; controls[site] = (random, incoming)
                 if not proposals: continue

@@ -131,7 +131,7 @@ class LearnHook:
     def __init__(self, benchmark, arm, params, measure=None, *, seed=0, checkpoint=None,
                  resume=None, observe=None):
         self.benchmark, self.arm, self.params = benchmark, arm, params
-        self.buffer = MeasurementBuffer(100 if benchmark == 'imagenet' else 64)
+        self.buffer = MeasurementBuffer(params['mini_batch_size'] if benchmark == 'imagenet' else 64)
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
         self.step, self.rows = 0, []
         self.checkpoint, self.resume, self.observe = checkpoint, resume, observe
@@ -216,13 +216,16 @@ class LearnHook:
                 for rate, values in state['shadows'].items(): vars(self.shadows[rate]).update(values)
             self.resume = None
         if self.step % self.task_steps == 0:
+            self.buffer.samples.clear()
             self._checkpoint(learner, frame)
         if self.init_row_norms is None:
             self.init_row_norms = [float(neuron_norms({'weight': layer.weight.detach(),
                                                       'bias': layer.bias.detach() if layer.bias is not None else None}).mean())
                                    for layer in list(learner.net.layers)[::2][:-1]]
         result = original(learner, x=x, target=target)
+        previous_buffer_size = len(self.buffer)
         self.buffer.update((x, target))
+        first_point = previous_buffer_size < self.buffer.m and len(self.buffer) == self.buffer.m
         self.step += 1
         task = (self.step-1)//self.task_steps + 1
         within = (self.step-1)%self.task_steps + 1
@@ -230,12 +233,13 @@ class LearnHook:
         if self.observe: self.observe(learner, x, target, task, self.step)
         if self.measurement is not None and self.arm == 'bp':
             self._shadow(learner)
-            if task in self.points and within in {1, max(1, self.task_steps//2)}:
+            if task in self.points and (first_point or within == max(1, self.task_steps//2)):
                 model = Prediction(learner.net)
                 spec = MSE(reduction='mean') if self.benchmark == 'regression' else CE()
                 ctx = {'targets': self.buffer.batch()[1],
                        'loss_fn': lambda z, c: learner.loss_func(z, c['targets'].to(z) if self.benchmark == 'regression' else c['targets']),
-                       'task': task, 'step': self.step, 'point': 'first' if within == 1 else 'mid',
+                       'task': task, 'step': self.step, 'point': 'first' if first_point else 'mid',
+                       'within_task_step': within, 'buffer_task_purity': 1.0, 'buffer_m': self.buffer.m,
                        'shadow': self.shadow, 'cbp_units': self.selected, 'learner': learner}
                 ctx['init_row_norms'] = self.init_row_norms
                 ctx['cbp_candidates'] = self.cbp_candidates

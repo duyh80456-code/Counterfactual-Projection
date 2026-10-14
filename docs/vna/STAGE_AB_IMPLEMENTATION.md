@@ -427,3 +427,155 @@ match bit-for-bit; task-boundary resume compares all numerical measurement
 rows, excluding wall-clock timing. The notebook setup no longer refers to
 Phase-0's undefined CIFAR `DATA_ROOT`; regenerated cells compile and the B5
 notebook test rejects CIFAR setup references.
+
+## Stage B0/B1/B2/B4
+
+Implemented the remaining runners in `experiments/stage_b12.py` and
+`experiments/stage_b4.py`, teacher fetch/gate in `scripts/fetch_teachers.py`,
+and notebook builders 2/3. No commit was made. The notebooks currently pin
+`ba7ed583688a98bfeeec6b708b3bb7f2150b2664`, the existing HEAD; it does **not**
+contain these uncommitted changes. Regenerate both notebooks with `--commit`
+set to the eventual published full hash before running Kaggle.
+
+B0 imports `model_dict` from the vendored RepDistiller rather than copying
+architectures into `models/cifar_repdistiller.py`. This is the explicit
+"import, don't copy" override in TASK_STAGE_B_REST, including all five
+architectures. KD likewise imports `distiller_zoo.KD.DistillKL`. Temporary
+module/path isolation prevents RepDistiller's unqualified `models` imports
+from colliding with PyCIL during the Kaggle tests. No upstream files are edited.
+
+B1 invokes `train_teacher.main()` with `--model <student> --trial 0`;
+B2 invokes `train_student.main()` with the fixed pairs
+resnet32x4→resnet8x4 and wrn_40_2→wrn_16_2, `--distill kd -r .1 -a .9 -b 0
+--trial 0`. Both retain upstream's 240 epochs, SGD, momentum .9, WD 5e-4,
+batch 64, LR .05 and decay epochs 150/180/210. In particular, upstream tests
+`epoch > decay_epoch`; this code preserves that comparison. Runtime changes
+are limited to the data split, observational hooks, explicit device selection,
+and checkpoint-loading compatibility with PyTorch's weights-only default.
+Smoke overrides epochs to two; fake data additionally uses tiny batches.
+All upstream outputs live below each setting's working directory.
+
+The loader wrapper first calls the original loader, retaining upstream
+augmentation/normalization and shuffle, then applies `Subset` with the exact
+indices returned by `experiments.vna_support.setup_data(..., seed=0)`.
+That existing "45k/5k" protocol actually contains **44,872 train, 5,000
+holdout, and 128 reserved tuning** examples, with split seed 20260928; the
+training seed is 0. We preserve these existing indices rather than silently
+redefining the split. The full holdout uses the upstream test transform.
+Compared with upstream's 50,000 training images, this is a deliberate recipe
+deviation, recorded in `reproduction.json`. The official test loader is
+consumed once after the last epoch on the final model. Upstream's saved best
+model is never selected for measurement or final reporting.
+
+`RepDistillerHook` wraps entry-point `adjust_learning_rate`, recording the
+previous epoch before its LR update. Measurements are after epochs
+20,40,…,240 and 148/178/208; epoch 240 is handled once after `main()` returns.
+A pass-through iterator feeds `MeasurementBuffer(m=128)` with already-augmented
+training samples, without extra loader consumption. Train accuracy is the
+loop's own final training accuracy, converted from percent to [0,1]. Epoch
+logs contain train/eval loss/accuracy, LR and training seconds.
+
+The resnet8x4 and resnet32 basic-block sites are `conv1 → bn1 → relu → conv2`.
+WRN sites are `conv1 → bn2 → relu2 → conv2`, preserving pre-activation order.
+`HookSite` uses the existing identity-norm convention for virtual channels;
+the native BN path remains intact and outgoing B starts at zero. B2 contexts
+compute teacher logits on the same augmented batch with the loop's own
+teacher in eval/no-grad mode, restoring its modes and RNG. The authoritative
+loss callable is .1 × imported CE + .9 × imported DistillKL(T=4), and the
+metric is `KDRepDistiller(alpha=.1,beta=.9,T=4)`; B1 uses CE.
+
+The existing B3 measurement implementation now accepts site/context/rank
+callbacks, preserving its B3 defaults. B1/B2/B4 use all eligible blocks,
+ranks {4,16,64} capped by hidden width, both the requested μ default and .01,
+stat/correction split, tiny_V/tiny_U/random_frob, split-half similarity,
+eight N1/eight N2 nulls and joint GGN diagnostics. `MeasurementHook` isolates
+student state, gradients, modes and RNG. Outputs retain B3 gate keys and
+`stage1d-v1` provenance. B1/B2 gate windows remain epoch <210; B4 is <150.
+Smoke/fake outputs are always INVALID for G.
+
+Teacher URLs are taken verbatim from RepDistiller's
+[`fetch_pretrained_teachers.sh`](https://github.com/HobbitLong/RepDistiller/blob/b84f547c5db6a35318d4671d7d5c4de74c822403/scripts/fetch_pretrained_teachers.sh).
+Downloads are staged, checked for exact size and SHA256, then renamed; an
+existing bad file also stops the run. Registered values (supervisor verified
+2026-10-15): resnet32x4, 59,554,438 bytes,
+`22aa12e2b632b19ddde155ccf2388671842ddd304824b3095e0a7fff364beb4f`;
+wrn_40_2, 18,113,193 bytes,
+`41100a8e8478b326645eb9aab09c18fc8ed34c1ab4004d658cb652125a81ca18`.
+The teacher gate calls RepDistiller's own `validate` on official CIFAR-100
+test data, requiring ≥79.0/≥75.0%, and writes `teacher_gate.json`. Both
+notebooks run it before B2. No teacher was downloaded or evaluated locally.
+
+Published reference numbers, from the
+[RepDistiller CIFAR-100 table](https://github.com/HobbitLong/RepDistiller/tree/b84f547c5db6a35318d4671d7d5c4de74c822403#benchmark-results-on-cifar-100)
+and [CRD paper](https://arxiv.org/abs/1910.10699): teachers 79.42/75.61%;
+resnet8x4 CE 72.50%, KD 73.33%; wrn_16_2 CE 73.26% (≈73.3), KD 74.92%.
+`reproduction.json` flags absolute deviations >2 percentage points, strictly
+for reference; the reduced split is not a tuned reproduction baseline and
+the flag does not decide G.
+
+B4 imports `dual_growth.adapters.GromoResNet18(start_width=.25,
+use_preactivation=False)`. Reading `hybrid_resnet18.py` shows that its hybrid
+subclass wraps this same adapter with mergeable optimization atoms; the base
+class directly supports our existing Gromo site path and needs no such atoms.
+This upstream architecture narrows the **hidden** block widths; it is not a
+new uniformly narrowed torchvision model. Its T-parameter count is the
+actual imported model count, recorded in metadata and compared against a
+fresh dual_growth instance in the tests. Native post-activation Gromo block
+sites are imported through `HookSite` paths. Training reuses the Phase-0
+recipe (200 epochs, LR .1, decay 100/150, batch 64, existing split). The
+recipe additionally saves epochs 98/148 without changing training math;
+periodic payloads include epoch history for offline accuracy reporting.
+B4 measures checkpoints at 20,…,200 and 98/148, and reports the final official
+test once, separately from G. Training resumes via the recipe's existing
+model/optimizer/scheduler/RNG checkpoint; offline measurement can be restarted.
+
+Notebook 2 runs B3 on GPU0 and gated B2 resnet8x4 → B4 train → B4 measure on
+GPU1. Notebook 3 runs both B1 students on GPU0 and gated B2 WRN on GPU1.
+Shared cells provide pinned setup, the requested CPU tests, real-data smoke
+cost projections, total GPU-hour budget stop, completed-run reuse, hourly
+archives/disk cap, teacher/reproduction/G tables, per-setting rho plots and
+merged `outputs/stageB/gate.json`. B1/B2/B3 training restarts after a crash;
+this limitation is explicit instead of claiming unsupported resume.
+
+Testing policy was **no pytest**. Added, but did not run,
+`tests/test_vna_stage_b12.py` and `tests/test_vna_stage_b4.py`: two-epoch
+CPU hook-on/off model+optimizer alignment for CE/KD, architecture count
+comparison, site order/zero-B/BN/adjoint/finite-difference checks, imported
+KD residual/Hessian, fake-file size/hash failures, and B4 native count/sites.
+`pyflakes` on new Python files and both experiment runners' `--help` passed.
+One fake-data CPU smoke per runner was launched. Both reached two epochs of
+training, but the original full-network GGN diagnostic was too slow and the
+runs were interrupted, so **the <2-minute smoke completion requirement was
+not met**. The fake-data path now performs only loss-curvature and zero-B
+checks (and cannot pass G); real-data smoke still includes full diagnostics
+for budgeting. Per the one-run limit, no second smoke was run. No full local
+test pass or successful smoke completion is claimed; the Kaggle test cell
+must validate the final implementation.
+
+
+### B5 supervisor measurement fixes
+
+The measurement buffer now clears at every declared task boundary, including
+before a boundary checkpoint. “First” is the step at which it fills with the
+current task's m samples (step 64 for online regression/MNIST, step 1 for the
+single-minibatch ImageNet buffer); the midpoint schedule is unchanged. Rows
+record `point`, `within_task_step`, and `buffer_task_purity=1.0`. Short smoke
+tasks that cannot fill the buffer have only a midpoint measurement. Alignment,
+stream-purity, and resume expectations were updated in tests without running them.
+
+GIR swaps keep the k available TINY directions and fill the remaining m−k rows
+with the first m−k rows of the random arm's shared draw, without tiling. Both
+arms use the same initial-row-norm scaling. Each criterion records its m and
+`tiny_directions`; k=0 uses identical arms and records ratio 1. Tests cover
+unique rows, shared filler rows, norm scaling, and k=0.
+
+Notebook 1 searches attached `/kaggle/input/**/stageA/summary.json` for
+`mu_rel_default`, falling back to 1e-2 with a printed warning. Every B5 command
+passes the value and source, which are retained in run summaries and resume
+manifests. Only the notebook builder was edited; the notebook artifact was
+not regenerated because it is outside this fix's allowed file list.
+
+Verification: pyflakes passed on the five touched Python files. The single
+fake-data regression BP CLI smoke completed 100 steps in 34.6 seconds and
+wrote six midpoint rows, each with 25 current-task samples and purity 1.0.
+The synthetic measurements remain INVALID. No pytest invocation or commit.

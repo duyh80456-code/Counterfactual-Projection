@@ -22,7 +22,15 @@ def run(args):
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
     seed_everything(args.seed)
     train, evaluation, indices, trigger, eval_indices, tuning = setup_data(args.data_root, args.fake_data, args.seed)
-    model = build_model(device, args.fake_data)
+    architecture = getattr(args, 'architecture', 'resnet18')
+    if architecture == 'resnet18-quarter':
+        from experiments.stage_b4 import build_model as quarter_model
+        model = quarter_model(device)
+        if args.fake_data:
+            from torch.utils.data import TensorDataset
+            train = evaluation = TensorDataset(torch.nn.functional.interpolate(train.tensors[0], size=32), train.tensors[1])
+    else:
+        model = build_model(device, args.fake_data)
     if args.channels_last:
         model.to(memory_format=torch.channels_last)
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
@@ -31,7 +39,7 @@ def run(args):
     protocol = {"seed": args.seed, "fake_data": args.fake_data, "batch_size": args.batch_size,
                 "workers": args.workers, "limit_batches": args.limit_batches,
                 "gpu_data": args.gpu_data, "amp": args.amp, "channels_last": args.channels_last,
-                "cudnn_benchmark": args.cudnn_benchmark, "epochs": 200, "architecture": "tiny" if args.fake_data else "resnet18"}
+                "cudnn_benchmark": args.cudnn_benchmark, "epochs": 200, "architecture": architecture if architecture == "resnet18-quarter" else "tiny" if args.fake_data else "resnet18"}
     commit = code_commit(); code_history = [{"from_epoch": 1, "commit": commit}]
     epoch, history, loader_state = 0, [], None
     if args.resume:
@@ -76,9 +84,9 @@ def run(args):
                    "splits": [indices, trigger, eval_indices, tuning], "protocol": protocol, "history": history,
                    "code_commit": commit, "code_history": code_history}
         atomic_torch_save(payload, output / "latest.pt")
-        if current % 10 == 0:
+        if current % 10 == 0 or current in (98, 148) or architecture == "resnet18-quarter" and current == args.max_epochs:
             # Periodic diagnostics need only fp32 model weights, never momentum.
-            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol", "code_commit", "code_history")},
+            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol", "code_commit", "code_history", "history")},
                               output / f"epoch_{current:03d}.pt")
         atomic_json_save(history, output / "history.json")
         print({"epoch": current, "train_seconds": train_seconds,
@@ -90,6 +98,7 @@ def run(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--architecture", choices=("resnet18", "resnet18-quarter"), default="resnet18")
     p.add_argument("--data-root", default="data")
     p.add_argument("--output", default="outputs/vna_recipe")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
