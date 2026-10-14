@@ -29,7 +29,7 @@ Attach the extracted `vna_phase0_seed0.tar.gz` and CIFAR-100. Set PHASE0_DIR to
 its root (containing recipe/epoch_*.pt). Enable Internet, T4×2, github_token.
 Only diagnostics run. All VNA tests run first on CPU. Immutable REPO_COMMIT must
 include Stage A; regenerate with --commit after making the code available remotely.
-GPU0 runs A5 first, then the two-checkpoint cost smoke, then A1 and A3.
+GPU0 runs A5 at epochs 90, 100, 110, 160, 200 first, then the two-checkpoint cost smoke, then A1 and A3.
 The smoke prints projected GPU-hours and rejects totals above 3 unless explicitly allowed. GPU1 runs A4 then A2 then A6. Completion markers resume
 per measurement/epoch with schema/config/checkpoint-hash validation. Hourly
 archives use the existing notebook disk cap. Attach prior Stage-A outputs to resume.

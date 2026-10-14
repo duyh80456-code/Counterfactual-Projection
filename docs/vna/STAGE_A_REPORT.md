@@ -179,7 +179,7 @@ checkpoint and raw Phase-0 diagnostics.
 
 ## Review round 1
 
-### Damping decision (pending supervisor confirmation)
+### Damping decision (confirmed by supervisor 2026-10-15)
 
 Stage A and gate defaults now use `damping_norm="outputs"`, namely
 mu=mu_rel*tr(F)/n_out with tr(F)=tr(Hbar K). `GGNConfig` defaults to
@@ -190,20 +190,19 @@ audits explicitly opt into outputs. Every measurement row records `mu`,
 `mu_rel_equiv_params=mu/(trace_F/p)`. Selection aggregates retain per-draw values
 and complete sample records rather than substituting a mean trace into the
 nonlinear conversion. The output convention is the implementation decision
-required by this review and remains pending supervisor confirmation.
+confirmed by the supervisor on 2026-10-15.
 
 A5 and the A6 Euclidean control are explicit historical-path exceptions: their
 mu uses Phase-0 tr(K)/n_out, with `damping_metric="phase0_euclidean_trace_K"`.
 Their actual mu and the GGN trace used for the equivalent-parameter conversion
 are recorded separately; the GGN trace must not be read as their damping trace.
-No historical Phase-0 numeric result or default solver arithmetic changed.
-`signal_curve.py`, its config serialization, and its default CG record fields
-remain unchanged. Breakdown telemetry and RHS normalization are opt-in keyword
-arguments to the Phase-0 correction; generic CG arithmetic remains unchanged.
+Historical Phase-0 results remain historical evidence. Review round 2 makes
+RHS normalization the default in generic CG and Phase-0 corrections; A5 old-path
+columns explicitly disable it. Breakdown telemetry remains selectable.
 
 ### A5 checkpoint evidence
 
-`a5` writes `a5.csv` for epochs 90, 100 and 110, all eight sites, requested rank16.
+`a5` writes `a5.csv` for epochs 90, 100, 110, 160 and 200, all eight sites, requested rank16.
 It uses Phase-0 `VNAConfig` sizes (stat1024/correction128), native `tiny_candidate`
 and `extract_tiny_A` without Stage-A normalization, and `random_A_like` with
 purpose `random-A:{site}:16`. Statistics and corrections use exactly the
@@ -309,3 +308,15 @@ Files changed in this review:
 `tests/test_vna_stage_a.py`, `scripts/build_kaggle_vna_stage_a_notebook.py`,
 `notebooks/kaggle_vna_stage_a.ipynb`, and this report. Supplied task documents,
 other prior Stage-A files, and unrelated user changes are retained.
+
+## Review round 2 — 2026-10-15
+
+The supervisor confirmed the outputs convention: `mu = mu_rel * trace(F) / n_out`.
+`GGNConfig` and training/solver-validation defaults now all select `outputs`;
+`params` remains explicitly selectable for historical comparisons. CG normalizes
+the RHS by default in every solver, scales warm starts with it, and returns
+solutions, residual norms and history in original units. Only A5's `old_`
+columns explicitly disable normalization. A5 now measures epochs
+90, 100, 110, 160 and 200. Stage A schema is `stage1d-v2`, rejecting stale
+completion markers across the solver change; its notebook has been regenerated.
+Historical checkpoint conclusions still require actual checkpoint measurements.

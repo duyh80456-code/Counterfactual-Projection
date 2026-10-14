@@ -141,7 +141,7 @@ flags = [flag for enabled, flag in [(GPU_DATA, "--gpu-data"), (CHANNELS_LAST, "-
 from experiments.vna_compare import save_run_config
 run_config = dict(shared_defaults, seed=SEED, solver=SOLVER, code_commit=REPO_COMMIT,
                   gpu_data=GPU_DATA, channels_last=CHANNELS_LAST,
-                  cudnn_benchmark=CUDNN_BENCHMARK, amp=AMP)
+                  cudnn_benchmark=CUDNN_BENCHMARK, amp=AMP, solver_protocol_version=3)
 config_hash = save_run_config(RUN_ROOT / "run_config.json", run_config)
 print("config_hash:", config_hash)
 commands, protocols = {}, {}

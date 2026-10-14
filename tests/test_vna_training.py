@@ -449,3 +449,22 @@ def test_cell_a_batch_before_solver_cost(tmp_path, monkeypatch, batch_override, 
     assert (scope['VNA_BATCH'],scope['VNA_EVERY']) == expected
     assert calls[0]['vna_every'] == expected[1]
     assert not (tmp_path/'run/_phase0_cache').exists()
+
+
+def test_outputs_damping_refresh_and_resume_fingerprint(tmp_path):
+    from experiments.vna_training_support import TrainingVNA
+    from experiments.vna_compare import hash_config
+    from experiments.shared_protocol import validate_resume_protocol
+    args = parser().parse_args(['--fake-data', '--device', 'cpu', '--arm', 'vna'])
+    assert args.damping_norm == 'outputs'
+    assert TrainingVNA(args, torch.device('cpu')).cfg.damping_norm == 'outputs'
+    protocol = training_protocol(args)
+    assert protocol['format_version'] == 3 and protocol['cg_normalize_rhs']
+    legacy = {k: v for k, v in protocol.items() if k not in ('damping_norm', 'cg_normalize_rhs')}
+    legacy['format_version'] = 2
+    with pytest.raises(ValueError, match='resume protocol mismatch:.*damping_norm'):
+        validate_resume_protocol(legacy, protocol)
+    old = dict(protocol, damping_norm='params')
+    assert hash_config(old) != hash_config(protocol)
+    explicit = parser().parse_args(['--damping-norm', 'params'])
+    assert TrainingVNA(explicit, torch.device('cpu')).cfg.damping_norm == 'params'

@@ -43,7 +43,7 @@ def training_protocol(args):
     scale=args.epochs_scale if args.arm=='sgd_cm' else 1.
     protocol={k:v for k,v in vars(args).items() if k not in ('output','resume','max_epochs','device','data_root','budget_root','disk_budget','run_config')}
     protocol.update(total_epochs=round(args.epochs*scale),milestones=[round(100*scale),round(150*scale)],
-                    architecture='tiny' if args.fake_data else 'resnet18',format_version=2)
+                    architecture='tiny' if args.fake_data else 'resnet18',format_version=3, cg_normalize_rhs=True)
     return protocol
 
 

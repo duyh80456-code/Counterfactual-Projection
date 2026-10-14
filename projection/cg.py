@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import torch
@@ -24,7 +24,23 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
                        x0: Tensor | None = None, max_iter: int = 50,
                        tolerance: float = 1e-6,
                        preconditioner: Callable[[Tensor], Tensor] | None = None,
-                       eps: float = 1e-12) -> CGResult:
+                       eps: float = 1e-12, normalize_rhs: bool = True) -> CGResult:
+    """Solve A x = rhs, normalizing its scale before absolute breakdown guards.
+
+    x0 is scaled with rhs. Returned solutions and absolute residual diagnostics
+    retain the caller's units; relative residuals are scale invariant.
+    normalize_rhs=False preserves the original solver for reproduction audits.
+    """
+    if normalize_rhs:
+        scale = float(torch.linalg.vector_norm(rhs.detach()))
+        if scale > 0:
+            result = conjugate_gradient(
+                matvec, rhs / scale, x0=None if x0 is None else x0 / scale,
+                max_iter=max_iter, tolerance=tolerance,
+                preconditioner=preconditioner, eps=eps, normalize_rhs=False)
+            return replace(result, solution=result.solution * scale,
+                           residual_norm=result.residual_norm * scale,
+                           residual_history=tuple(v * scale for v in result.residual_history))
     if max_iter < 1:
         raise ValueError("max_iter must be positive")
     x = torch.zeros_like(rhs) if x0 is None else x0.clone()

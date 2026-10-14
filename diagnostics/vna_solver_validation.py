@@ -30,7 +30,7 @@ def flatten(delta, refs):
     return torch.cat([delta.get(n, torch.zeros_like(p)).flatten() for n, p in refs]).double()
 
 
-def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
+def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2, damping_norm="outputs"):
     torch.set_num_threads(1)
     generator = dedicated_generator(seed, 'solver-validation')
     with isolated_rng(generator):
@@ -48,7 +48,7 @@ def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
     candidate = tiny_candidate(model, site, stats_batch, 2, seed=seed)
     A,_ = extract_tiny_A(model,candidate)
     A = normalize_A(model,site,A)
-    cfg = GGNConfig(seed=seed, cg_iters=500, cg_tol=1e-5)
+    cfg = GGNConfig(seed=seed, damping_norm=damping_norm, cg_iters=500, cg_tol=1e-5)
     with block_products(model,site,A,batch[0]) as p:
         op=GGNProducts(p,batch[1]); refs=p.parameter_refs
         trace=op.trace(cfg); gradient=op.gradient
@@ -72,7 +72,7 @@ def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
     start=time.perf_counter(); preconditioner.refresh(model,site,batch); refresh=time.perf_counter()-start
     rows=[]; selection=[]
     for relative in sorted({1e-4,1e-3,1e-2,1e-1,damping_rel}):
-        mu=relative*trace/len(gradient)
+        mu=(max(relative*trace/len(gradient),1e-12) if cfg.damping_norm == "params" else relative*trace/len(op.g))
         exact,de=vna_exact_ggn(model,site,A,batch,cfg,mu=mu,trace_F=trace)
         reference=flatten(exact,refs)
         variants={'exact':(exact,de),
@@ -129,7 +129,7 @@ def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
             selection.append({'relative_mu':relative,'selection':name,'rank':len(a['weight']),
                               'V':score_A(model,site,a,batch[0],z)})
     summary={'synthetic':checkpoint is None,'seed':seed,'site':site,'trace_F_hutchinson':trace,
-             'training_damping_rel':damping_rel,
+             'training_damping_rel':damping_rel, 'damping_norm':cfg.damping_norm,
              'exact_converged_at_train_mu':all(r['cg_converged'] for r in rows if r['variant']=='exact' and r['relative_mu']==damping_rel),
              'sgd_seconds':sgd,'sgd_batch':64,'kfac_refresh_seconds':refresh,
              'kfac_refresh_sgd_units':refresh/sgd,'rows':rows,'selection':selection,
@@ -309,7 +309,7 @@ def main():
     if args.mode=='recipe':
         if not args.checkpoint: p.error('--mode recipe requires --checkpoint')
         run_checkpoint(args)
-    else: run(args.output,args.checkpoint,args.seed,args.damping_rel)
+    else: run(args.output,args.checkpoint,args.seed,args.damping_rel,args.damping_norm)
 
 
 if __name__=='__main__':

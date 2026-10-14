@@ -464,7 +464,8 @@ def diagnostic_identity(args):
     identity = {k: getattr(args, k) for k in (
         "seed", "vna_bn", "fake_data", "smoke", "gpu_data", "cache_block_input",
         "channels_last", "cudnn_benchmark", "diagnostic_stride")}
-    identity["schema_version"] = "stage1c-v1"
+    identity["schema_version"] = "stage1c-v2"
+    identity["cg_normalize_rhs"] = True
     identity["amp"] = False  # VNA products and solves always use fp32.
     return identity
 

@@ -8,7 +8,7 @@ added to the matching parameter gradients by the caller.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import hashlib
 import math
 import time
@@ -467,18 +467,8 @@ def _hutchinson_trace_and_diag(products: _Products, n: int, cfg: VNAConfig, devi
     return trace, diagonal
 
 
-def _phase0_cg(action, rhs, *, normalize_rhs=False, **kwargs):
-    if not normalize_rhs:
-        return conjugate_gradient(action, rhs, **kwargs)
-    scale = float(rhs.norm())
-    if not scale:
-        return conjugate_gradient(action, rhs, **kwargs)
-    if kwargs.get('x0') is not None:
-        kwargs['x0'] = kwargs['x0'] / scale
-    result = conjugate_gradient(action, rhs / scale, **kwargs)
-    return replace(result, solution=result.solution * scale,
-                   residual_norm=result.residual_norm * scale,
-                   residual_history=tuple(v * scale for v in result.residual_history))
+def _phase0_cg(action, rhs, *, normalize_rhs=True, **kwargs):
+    return conjugate_gradient(action, rhs, normalize_rhs=normalize_rhs, **kwargs)
 
 
 def _cg_record(result: CGResult, *, include_breakdown=False) -> dict[str, Any]:
@@ -502,7 +492,7 @@ def vna_block_correction(
     *, damping_cache: Mapping[str, Any] | None = None,
     shared_logits: Tensor | None = None, shared_g: Tensor | None = None,
     apply_gain_guard: bool = True, _lite: bool = False, cg_breakdown_flags: bool = False,
-    rhs_normalized_cg: bool = False, loss_spec=None, ctx=None,
+    rhs_normalized_cg: bool = True, loss_spec=None, ctx=None,
 ) -> tuple[dict[str, Tensor], dict[str, Any]]:
     """Return ``lambda_vna * J^T R K_E R K g`` for addition to gradients.
 

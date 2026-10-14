@@ -59,13 +59,9 @@ def joint_products(model, sites, A_by_site, inputs, o_params=None, *, cache_bloc
 
 
 def _inverse(action, rhs, cfg):
-    # Scale-invariant CG: absolute breakdown guards must not erase small CE
-    # residuals at interpolating checkpoints. Solve for a unit-norm RHS.
-    scale = rhs.norm()
-    unit = rhs / scale if scale > 0 else rhs
-    result = conjugate_gradient(action, unit, max_iter=cfg.cg_iters,
+    result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
                                 tolerance=cfg.cg_tol, eps=1e-30)
-    return result.solution * scale, _cg_record(result, include_breakdown=True)
+    return result.solution, _cg_record(result, include_breakdown=True)
 
 
 def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,

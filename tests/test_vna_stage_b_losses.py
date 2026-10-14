@@ -1,5 +1,6 @@
 """Upstream formulas and true output-Hessian finite differences (float64)."""
 import importlib.util
+import os
 from pathlib import Path
 import pytest
 import torch
@@ -99,8 +100,11 @@ def test_mse_upstream_mean_reduction_and_generic_ggn():
 @pytest.mark.parametrize('repo', ['RepDistiller', 'PyCIL'])
 def test_imported_upstream_loss_equality(repo):
     root = Path(__file__).resolve().parents[1] / 'third_party' / repo
-    if not root.is_dir():
-        pytest.skip(f'{repo} pinned clone absent; run scripts/fetch_third_party.sh (network required)')
+    if not (root / ".git").is_dir():
+        message = f'{repo} pinned clone absent; run scripts/fetch_third_party.sh'
+        if os.environ.get('REQUIRE_UPSTREAM') == '1':
+            pytest.fail(message)
+        pytest.skip(message)
     gen = dedicated_generator(8, repo)
     z = torch.randn(4, 5, generator=gen, dtype=torch.float64)
     teacher = torch.randn(4, 5, generator=gen, dtype=torch.float64)

@@ -192,15 +192,14 @@ class FunctionalProjector:
         base = torch.cat([parameter.detach().reshape(-1) for _, parameter in selected])
         target = target_delta.detach().reshape(-1).to(base)
         target_scale = float(torch.linalg.vector_norm(target).clamp_min(1e-12))
-        normalized_target = target / target_scale
         # Keep the expensive network derivatives in the model dtype, but use
         # float64 for the small output-space Krylov vectors. CG recurrence and
         # dot products are otherwise prone to losing conjugacy in float32 on
         # the ill-conditioned real ResNet/Gromo operator.
-        solver_dtype = (torch.float64 if normalized_target.dtype in {
+        solver_dtype = (torch.float64 if target.dtype in {
             torch.float16, torch.bfloat16, torch.float32
-        } else normalized_target.dtype)
-        solver_rhs = normalized_target.to(dtype=solver_dtype)
+        } else target.dtype)
+        solver_rhs = target.to(dtype=solver_dtype)
         jvp_calls = 0
         vjp_calls = 0
 
@@ -225,7 +224,7 @@ class FunctionalProjector:
             return pullback(vector.detach())[0].detach()
 
         def gram_matrix(vector: Tensor) -> Tensor:
-            operator_vector = vector.detach().to(normalized_target)
+            operator_vector = vector.detach().to(target)
             return jacobian_vector(
                 transpose_jacobian(operator_vector)).to(vector).detach()
 
@@ -251,7 +250,7 @@ class FunctionalProjector:
             estimates = []
             for _ in range(self.trace_probes):
                 signs = torch.empty_like(solver_rhs).bernoulli_(.5, generator=generator).mul_(2).sub_(1)
-                image = transpose_jacobian(signs.to(normalized_target)).double()
+                image = transpose_jacobian(signs.to(target)).double()
                 estimates.append(float(image.square().sum()) / solver_rhs.numel())
             trace_mean = sum(estimates) / len(estimates)
             if not math.isfinite(trace_mean) or trace_mean < 0:
@@ -287,17 +286,15 @@ class FunctionalProjector:
             dual_cg = conjugate_gradient(
                 dual_matrix, solver_rhs, max_iter=self.max_iter,
                 tolerance=self.tolerance, preconditioner=preconditioner)
-            normalized_parameter_solution = transpose_jacobian(
-                dual_cg.solution.to(normalized_target)).detach()
+            parameter_solution = transpose_jacobian(
+                dual_cg.solution.to(target)).detach()
             cg = CGResult(
-                solution=normalized_parameter_solution * target_scale,
+                solution=parameter_solution,
                 iterations=dual_cg.iterations,
-                residual_norm=dual_cg.residual_norm * target_scale,
+                residual_norm=dual_cg.residual_norm,
                 converged=dual_cg.converged,
-                residual_history=tuple(
-                    value * target_scale
-                    for value in dual_cg.residual_history),
-                relative_residual=dual_cg.relative_residual)
+                residual_history=dual_cg.residual_history,
+                relative_residual=dual_cg.relative_residual, breakdown=dual_cg.breakdown)
             candidate_fitted = jacobian_vector(cg.solution).reshape_as(
                 target_delta).detach()
             solution_is_finite = bool(
@@ -342,7 +339,7 @@ class FunctionalProjector:
             damping_requested=self.damping, damping_used=damping_used,
             cg_attempts=tuple(cg_attempts), target_scale=target_scale,
             solver_space="dual_output",
-            linear_system_dimension=normalized_target.numel(),
+            linear_system_dimension=target.numel(),
             solver_dtype=str(solver_dtype).removeprefix("torch."),
             preconditioner=("hutchinson_jacobi" if gram_diagonal is not None
                             else "none"),

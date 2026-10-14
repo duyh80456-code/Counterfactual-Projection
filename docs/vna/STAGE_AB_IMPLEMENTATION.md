@@ -5,7 +5,7 @@
 This implements `TASK_STAGE_B_CORE.md` shared infrastructure only. It adds no
 setting-specific runner, applies no VNA direction to baseline training, and
 makes no commit. Stage A continues using `GGNConfig(damping_norm='outputs')`.
-Its schemas, thresholds, damping rule and numerical defaults are unchanged.
+Review round 2 updates solver defaults and resume fingerprints as recorded below.
 
 ### Loss interface and normalization
 
@@ -104,14 +104,22 @@ in `third_party/SOURCES.md`. `scripts/fetch_third_party.sh` is strict and
 idempotent: clone, obtain/check the exact commit, detached checkout, then check
 and apply each sorted patch (already-applied patches are recognized). All three
 new clones are gitignored. **No upstream code was modified and no patches were
-created.** The fetch attempt failed at GitHub DNS resolution; upstream licenses,
-imports, entrypoint help/one-step smoke and actual imported loss equality remain
-pending. Tests skip explicitly per absent clone. Once present, tests verify
-pins/licenses, patch application on a clean disposable clone, imports and
-native entrypoint help or network one-step smoke. PINN was not cloned:
-**blocked: no license, asked supervisor**, as required by the task.
+created.** All three clones were fetched and license-verified on 2026-10-15
+at the listed pins. Tests verify pins/licenses, clean patch application,
+native imports/entrypoint help and network one-step smoke, and loss equality
+against imported PyCIL `_KD_loss` and RepDistiller `DistillKL`.
+`REQUIRE_UPSTREAM=1` makes missing upstream clones fail instead of skip.
+Install `requirements-upstream.txt`: torch, torchvision, numpy, scipy, Pillow,
+tqdm, tensorboard_logger, protobuf and six. RepDistiller imports require
+`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`; notebook environments and
+entrypoint test subprocesses set it. Future RepDistiller runners must set it
+before importing tensorboard_logger.
 
-### Verification
+The Stage B plan covers B1–B5 only. The supervisor dropped B6 from this round.
+The source/license block remains documented in `third_party/SOURCES.md`.
+
+
+### Original Stage B core verification (before review round 2)
 
 Final command: `.venv/bin/python -m pytest -rA`.
 **174 passed, 11 skipped, 0 failures; 185 collected; 126.22 seconds.**
@@ -159,3 +167,89 @@ Modified:
 The pre-existing `.DS_Store` change was left untouched. Temporary test logs are
 removed after verification; test scratch artifacts use pytest-managed temp
 paths, and upstream subprocess fixtures use automatic temporary-directory cleanup.
+
+## Review round 2
+
+Implemented supervisor-approved decisions from `TASK_STAGE_B_R2.md`, dated
+2026-10-15, without committing.
+
+- Outputs damping is now the `GGNConfig` and training/solver-validation default,
+  including K-FAC and both factor/selection refreshes. Explicit `params` remains
+  available through `--damping-norm params` and configuration objects. The
+  supervisor confirmed `mu = mu_rel * trace(F) / n_out` on 2026-10-15.
+- Generic CG normalizes RHS and warm starts by default and rescales solutions,
+  absolute residuals and history; relative residuals stay unchanged. The
+  Phase-0 wrapper delegates, joint correction and functional projection use
+  generic CG directly. Regression checks cover tiny RHS via the default path,
+  original residual units and existing-scale/warm-start agreement within
+  1e-12 relative. Historical audit tests explicitly select their old settings.
+- Training protocol is format 3, including damping_norm and cg_normalize_rhs.
+  Generated run-config hashes also include solver_protocol_version=3. Old
+  resumes fail with named protocol differences. Stage A completion schema is
+  stage1d-v2 and signal-curve identity is stage1c-v2, preventing stale numerical
+  outputs from being resumed across this change.
+- A5 measures epochs {90, 100, 110, 160, 200}; only its old-path columns disable
+  RHS normalization. The Stage A and signal-curve notebook artifacts were
+  regenerated. All Kaggle VNA builders install requirements-upstream.txt,
+  fetch pinned sources before tests, set REQUIRE_UPSTREAM=1 and the protobuf
+  Python implementation, and include upstream tests.
+- Actual pinned upstream imports/help, native LoP predict/optimizer steps,
+  clean patch checks and imported `_KD_loss`/`DistillKL` equality run successfully.
+  PyCIL uses iCaRL; RepDistiller subprocesses use the required protobuf env var.
+  All three upstream licenses were verified on 2026-10-15. B6 was dropped from
+  this round by the supervisor; the blocked-license source note is retained.
+
+The local NumPy/PyTorch bridge was repaired offline using cached NumPy 1.26.4
+and SciPy 1.16.3 wheels. requirements-upstream.txt bounds NumPy below 2 and
+SciPy below 1.18 to keep that pairing compatible with the installed PyTorch 2.2.2.
+No upstream source edits or patches were needed.
+
+### Verification
+
+Full suite command:
+`REQUIRE_UPSTREAM=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -ra`.
+**187 passed, 1 skipped, 0 failures; 188 collected; 229.41 seconds.**
+The sole skip is the pre-existing
+`tests/test_vna_split3.py::test_render_comparison_curves` (optional Matplotlib
+unavailable). There were no upstream skips and no CUDA skips in this run.
+
+The explicitly required targeted command
+`REQUIRE_UPSTREAM=1 .venv/bin/python -m pytest tests/test_vna_stage_b_upstream.py tests/test_vna_stage_b_losses.py -ra`
+also passed: **19 passed, zero skips**. All these cases pass in the final full suite.
+`git diff --check`, `bash -n scripts/fetch_third_party.sh`, and compilation of
+Stage A, signal-curve and all six training notebook variants pass. Notebook setup
+checks verify dependency installation, pinned-source fetch, required upstream
+mode and protobuf environment before tests. No actual checkpoint measurements
+or new training results are claimed.
+
+### Changed files
+
+- `diagnostics/signal_curve.py`
+- `diagnostics/stage_a.py`
+- `diagnostics/vna_solver_validation.py`
+- `docs/vna/STAGE2_REPORT.md`
+- `docs/vna/STAGE_AB_IMPLEMENTATION.md`
+- `docs/vna/STAGE_A_REPORT.md`
+- `experiments/run_vna_training.py`
+- `experiments/vna_training_config.py`
+- `experiments/vna_training_support.py`
+- `methods/vna.py`
+- `methods/vna_ggn.py`
+- `methods/vna_joint.py`
+- `notebooks/kaggle_vna_signal_curve.ipynb`
+- `notebooks/kaggle_vna_stage_a.ipynb`
+- `projection/cg.py`
+- `projection/functional.py`
+- `requirements-upstream.txt`
+- `scripts/build_kaggle_vna_signal_curve_notebook.py`
+- `scripts/build_kaggle_vna_stage_a_notebook.py`
+- `scripts/build_kaggle_vna_training_notebooks.py`
+- `tests/test_cg.py`
+- `tests/test_vna_stage_a.py`
+- `tests/test_vna_stage_b_losses.py`
+- `tests/test_vna_stage_b_upstream.py`
+- `tests/test_vna_training.py`
+- `third_party/SOURCES.md`
+
+The pre-existing `.DS_Store` change and user task files (`TASK_STAGE_B_R2.md`,
+`TASK_STAGE_B5.md`) were left untouched. `.git` was not written; no commit was made.

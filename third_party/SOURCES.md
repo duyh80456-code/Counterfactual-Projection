@@ -12,7 +12,14 @@ vendor-edited. Patches: **none** in Stage B core. Any future patches go under
 
 Fetched and verified on 2026-10-15: each clone is at the pinned commit and its
 LICENSE file reads MIT (loss-of-plasticity, PyCIL) and BSD 2-Clause (RepDistiller).
-Upstream import/smoke and loss-equality tests skip explicitly when clones are absent.
+Install `requirements-upstream.txt` (torch, torchvision, numpy, scipy, Pillow,
+tqdm, tensorboard_logger, protobuf, six). Pinned entrypoint imports were read
+from the real sources. RepDistiller requires
+`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` before importing its entrypoints;
+future runners must set it too. Tests set it in subprocess environments.
+Upstream tests fail on absent clones when `REQUIRE_UPSTREAM=1` (notebook default);
+without that variable an absent clone is an explicit skip.
 
 PINN https://github.com/pratikrathore8/opt_for_pinns:
 **blocked: no license, asked supervisor**. Do not clone.
+B6 dropped from this round (supervisor).

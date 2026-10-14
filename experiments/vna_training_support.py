@@ -10,7 +10,7 @@ import torch
 from experiments.vna_support import augmented_batch, tiny_candidate, isolated_rng
 from methods.vna import (dedicated_generator, block_products, extract_tiny_A,
                          _unflatten, assert_disjoint_scopes)
-from methods.vna_ggn import GGNConfig, GGNProducts, project_bn_tangent, norm_match
+from methods.vna_ggn import GGNConfig, GGNProducts, project_bn_tangent, norm_match, relative_damping
 from methods.vna_kfac import KFACBlockPreconditioner
 from methods.vna_select import tiny_V, greedy_V, normalize_A, score_A, trace_matched_random_A
 from projection.cg import conjugate_gradient
@@ -54,7 +54,7 @@ class TrainingVNA:
         self.cache, self.factors, self.warm = {}, {}, {}
         self.spread = {}
         self.controller = {'state': 'active', 'refresh_epoch': 0, 'refreshes': 0}
-        self.cfg = GGNConfig(damping_rel=args.damping_rel, cg_iters=args.cg_iters,
+        self.cfg = GGNConfig(damping_norm=args.damping_norm, damping_rel=args.damping_rel, cg_iters=args.cg_iters,
                              cg_tol=args.cg_tol, hutchinson_probes=args.hutchinson_probes,
                              seed=args.seed, project_bn=not args.no_bn_projection,
                              cache_block_input=args.cache_block_input)
@@ -155,7 +155,7 @@ class TrainingVNA:
                     from dataclasses import replace
                     with block_products(model,site,A,measurement[0]) as p:
                         op=GGNProducts(p,measurement[1]); trace=op.trace(replace(self.cfg,seed=self.seed('hutchinson')))
-                        mu=max(self.cfg.damping_rel*trace/op.size,1e-12)
+                        mu=relative_damping(self.cfg, trace, op)
                     sync(self.device); components['trace']+=time.perf_counter()-t
                     t=time.perf_counter()
                     zs=[self.cotangent(model,site,A,b,trace,mu) for b in batches]
@@ -214,7 +214,7 @@ class TrainingVNA:
                 with block_products(model,site,entry['A'],batch[0],cache_block_input=self.cfg.cache_block_input) as p:
                     op=GGNProducts(p,batch[1])
                     trace=op.trace(replace(self.cfg,seed=self.seed('hutchinson')))
-                    entry.update(trace_F=trace,mu=max(self.cfg.damping_rel*trace/op.size,1e-12))
+                    entry.update(trace_F=trace,mu=relative_damping(self.cfg, trace, op))
         self.controller['factor_refresh_epoch']=epoch
         sync(self.device)
         return {'factor_refresh':time.perf_counter()-start}

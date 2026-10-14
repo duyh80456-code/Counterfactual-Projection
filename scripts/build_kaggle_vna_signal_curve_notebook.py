@@ -57,10 +57,12 @@ _BOOTSTRAP = (
 _SETUP = (
     'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO)], check=True)\n'
     'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", str(GROMO)], check=True)\n'
+    'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(REPO / "requirements-upstream.txt")], check=True)\n'
+    'subprocess.run(["bash", "scripts/fetch_third_party.sh"], cwd=REPO, check=True)\n'
     'GROMO_SRC = GROMO / "src"\n'
     'RUNTIME_PYTHONPATH = os.pathsep.join(filter(None, (\n'
     '    str(REPO), str(GROMO_SRC), str(REFERENCE), os.environ.get("PYTHONPATH", ""))))\n'
-    'test_env = os.environ.copy(); test_env.update(PYTHONPATH=RUNTIME_PYTHONPATH)\n'
+    'test_env = os.environ.copy(); test_env.update(PYTHONPATH=RUNTIME_PYTHONPATH, REQUIRE_UPSTREAM="1", PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python")\n'
     'subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO,\n'
     '               env=test_env, check=True)\n'
     'import torch\n'
@@ -136,7 +138,7 @@ def build(commit=None):
     ]) + '\n'
     setup = _SETUP
     setup = setup.replace('"-e", str(REPO)', '"-e", str(REPO) + "[test,vision,diagnostics]"')
-    setup = setup.replace('"pytest", "-q"', '"pytest", "-q", "tests/test_vna.py"')
+    setup = setup.replace('"pytest", "-q"', '"pytest", "-q", "tests/test_vna.py", "tests/test_vna_stage_b_upstream.py", "tests/test_vna_stage_b_losses.py"')
     setup = setup.replace('env=test_env, check=True)', 'env={**test_env, "CUDA_VISIBLE_DEVICES": ""}, check=True)')
     setup += '''
 if not (REPO / "experiments/vna_kaggle.py").exists():

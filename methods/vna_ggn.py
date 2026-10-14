@@ -21,7 +21,7 @@ class GGNConfig:
     seed: int = 20261014
     project_bn: bool = True
     cache_block_input: bool = False
-    damping_norm: str = "params"
+    damping_norm: str = "outputs"
 
     def __post_init__(self):
         if self.damping_norm not in ("params", "outputs"):

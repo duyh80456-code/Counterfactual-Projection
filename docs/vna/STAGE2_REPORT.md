@@ -58,7 +58,8 @@ parameter-space CG solves, float64 vectors, configurable iteration cap and
 true-residual convergence diagnostics. Default cap/tolerance are 200/1e-6;
 validation uses 500/1e-5 for fp32 products. Hutchinson uses eight parameter-space
 Rademacher probes with a dedicated generator, and
-`mu=damping_rel*tr(F)/num_block_parameters` (positive floor 1e-12).
+`mu=damping_rel*tr(F)/n_out` (outputs convention confirmed by supervisor
+2026-10-15). Explicit `params` retains `tr(F)/num_block_parameters` with floor 1e-12.
 
 Dense tests independently verify
 
@@ -840,3 +841,15 @@ ZIP/tar discovery and restore with other parts attached. Python compilation and
 `git diff --check` pass. All six notebook files match their builder with the
 recorded pin. Task scratch/log files were removed; no persistent /tmp files were
 created. No commit or push; pre-existing `.DS_Store` and task input are retained.
+
+## Review round 2 — 2026-10-15
+
+The supervisor confirmed outputs damping (`mu_rel * trace(F) / n_out`).
+`GGNConfig`, the training engine (including K-FAC), training arguments and solver
+validation now default to `outputs`; `--damping-norm params` retains the old
+convention explicitly. Training refreshes use the shared relative-damping rule.
+CG normalizes every RHS by default and returns solution/residual diagnostics in
+original units. Training protocol format is 3 and generated run configurations
+include damping_norm and solver_protocol_version=3 in their SHA256 fingerprint.
+Old checkpoints are rejected with a resume protocol mismatch naming the changed
+fields. Numerical training outcomes are not claimed by this implementation review.

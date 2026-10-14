@@ -13,6 +13,7 @@ def add_vna_arguments(p):
     p.add_argument('--stat-batches',type=int,default=4)
     p.add_argument('--gate-boot',type=int,default=4)
     p.add_argument('--vna-batch',type=int,default=16)
+    p.add_argument('--damping-norm',choices=['outputs','params'],default='outputs')
     p.add_argument('--damping-rel',type=float,default=1e-2)
     p.add_argument('--cg-iters',type=int,default=200)
     p.add_argument('--cg-tol',type=float,default=1e-5)

@@ -23,14 +23,14 @@ from methods.vna_joint import joint_correction, joint_products
 from methods.vna_select import (tiny_U_from_cotangent, tiny_V, greedy_V, prepare_A,
                                 subspace_sim, random_A_like)
 
-SCHEMA_VERSION = 'stage1d-v1'
+SCHEMA_VERSION = 'stage1d-v2'
 DAMPING_FIELDS = ('mu', 'mu_rel', 'damping_norm', 'trace_F', 'n_out', 'p', 'mu_rel_equiv_params')
 MU_GRID = (1e-1, 1e-2, 1e-3, 1e-4)
 MU_RATIO = 3.
 MU_FRACTION = .5
 EPOCHS = {'null': tuple(range(20, 201, 20)), 'mu': (40, 80, 100, 120, 140, 160),
           'selection': (40, 80, 120, 140, 160), 'joint': (100, 120, 140, 160),
-          'solver': (40, 100, 160), 'a5': (90, 100, 110)}
+          'solver': (40, 100, 160), 'a5': (90, 100, 110, 160, 200)}
 FILES = {'null': 'null.csv', 'mu': 'mu_sweep.csv', 'selection': 'selection.csv',
          'joint': 'joint.csv', 'solver': 'solver.csv', 'a5': 'a5.csv'}
 SELECTION_KINDS = ('tiny_U', 'tiny_V', 'greedy_V', 'random_trace', 'random_frob')

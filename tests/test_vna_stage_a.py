@@ -167,7 +167,7 @@ def test_a5_tiny_residual_cg_and_guarded_ratio():
     # Old CG's absolute denominator threshold erases a nonzero tiny RHS.
     from projection.cg import conjugate_gradient
     rhs = torch.tensor([1e-20, 2e-20], dtype=torch.float64)
-    old = conjugate_gradient(lambda v: 2*v, rhs, eps=1e-30)
+    old = conjugate_gradient(lambda v: 2*v, rhs, eps=1e-30, normalize_rhs=False)
     assert old.iterations == 0 and not old.converged
     d, record = _inverse(lambda v: 2*v, rhs, GGNConfig())
     assert record['converged'] and torch.allclose(d, rhs/2, rtol=1e-12, atol=0)
@@ -183,7 +183,7 @@ def test_stage_a_smoke_resume_schema_and_identity(tmp_path):
     assert time.perf_counter()-start < 120
     for name in ('a5.csv', 'null.csv', 'mu_sweep.csv', 'selection.csv', 'joint.csv', 'solver.csv'):
         rows = read_csv(tmp_path / name)
-        assert rows and all(r['schema_version'] == 'stage1d-v1' for r in rows)
+        assert rows and all(r['schema_version'] == 'stage1d-v2' for r in rows)
         assert all({'code_commit', 'seed', 'device', 'wall_seconds'} <= r.keys() for r in rows)
     markers = list((tmp_path/'completed').rglob('*.json'))
     assert len(markers) == 6
@@ -202,7 +202,7 @@ def test_stage_a_smoke_resume_schema_and_identity(tmp_path):
 
 def test_summary_preregistered_rules(tmp_path):
     from diagnostics.stage_a import write_csv
-    meta = dict(schema_version='stage1d-v1', code_commit='test', seed=0, device='cpu', wall_seconds=0)
+    meta = dict(schema_version='stage1d-v2', code_commit='test', seed=0, device='cpu', wall_seconds=0)
     rows = [dict(meta, epoch=40, site='joint', mu_rel=mu, rho=rho, cg_converged=True)
             for mu, rho in ((.01, .1), (.001, .3))]
     write_csv(tmp_path/'mu_sweep.csv', rows)
@@ -243,7 +243,7 @@ def test_archive_contains_stage_a_and_safe_restore(tmp_path):
     run_root = tmp_path/'run'
     marker = run_root/'outputs/stageA/completed/null/epoch_020.json'
     marker.parent.mkdir(parents=True)
-    marker.write_text('{"schema_version":"stage1d-v1"}')
+    marker.write_text('{"schema_version":"stage1d-v2"}')
     archive = archive_outputs(run_root, folders=('outputs/stageA',))
     restored = tmp_path/'restored'
     attachments = tmp_path/'attachments'; attachments.mkdir()
@@ -317,7 +317,7 @@ def test_trace_estimator_common_random_numbers(toy):
 
 
 def test_damping_default_and_validation():
-    assert GGNConfig().damping_norm == 'params'
+    assert GGNConfig().damping_norm == 'outputs'
     assert gate.setting_config('B1')['damping_norm'] == 'outputs'
     with pytest.raises(ValueError): GGNConfig(damping_norm='other')
 
@@ -326,8 +326,8 @@ def test_phase0_normalized_cg_regression():
     from methods.vna import _phase0_cg
     rhs = torch.tensor([1e-20, 2e-20], dtype=torch.float64)
     kwargs = dict(eps=1e-30, tolerance=1e-8, preconditioner=lambda v: v/2)
-    old = _phase0_cg(lambda v: 2*v, rhs, **kwargs)
-    fixed = _phase0_cg(lambda v: 2*v, rhs, normalize_rhs=True, **kwargs)
+    old = _phase0_cg(lambda v: 2*v, rhs, normalize_rhs=False, **kwargs)
+    fixed = _phase0_cg(lambda v: 2*v, rhs, **kwargs)
     assert old.breakdown and not old.converged
     assert fixed.converged and not fixed.breakdown
     assert torch.allclose(fixed.solution, rhs/2, rtol=1e-12, atol=0.)
@@ -350,9 +350,9 @@ def test_a5_phase0_oracle_and_state_missing():
     candidate = tiny_candidate(model, site, stat, 1, 0)
     A, _ = extract_tiny_A(model, candidate)
     random = legacy_random(A, generator=dedicated_generator(0, f'random-A:{site}:1'))
-    _, old = vna_block_correction(model, site, A, batch, cfg)
+    _, old = vna_block_correction(model, site, A, batch, cfg, rhs_normalized_cg=False)
     _, control = vna_block_correction(model, site, random, batch, cfg,
-                                     damping_cache=old['damping_cache'], apply_gain_guard=False)
+                                     damping_cache=old['damping_cache'], apply_gain_guard=False, rhs_normalized_cg=False)
     row = rows[0]
     assert row['old_V'] == old['V']
     assert row['old_random_V'] == control['V']
@@ -392,10 +392,10 @@ def test_notebook_cost_budget_and_a5_first(tmp_path):
     exec(source, context)
 
 
-def test_params_default_bitwise_and_gate_convention(toy):
+def test_params_explicit_bitwise_and_gate_convention(toy):
     m, site, batch = toy
     A = {'weight': m.block(site).first_layer.layer.weight.detach()[:1], 'bias': None}
-    cfg = GGNConfig(project_bn=False, cg_iters=100)
+    cfg = GGNConfig(project_bn=False, cg_iters=100, damping_norm='params')
     default, before = vna_exact_ggn(m, site, A, batch, cfg)
     explicit, after = vna_exact_ggn(m, site, A, batch, replace(cfg, damping_norm='params'))
     assert all(torch.equal(default[n], explicit[n]) for n in default)
