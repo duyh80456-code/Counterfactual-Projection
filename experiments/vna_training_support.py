@@ -16,6 +16,27 @@ from methods.vna_select import tiny_V, greedy_V, normalize_A, score_A, trace_mat
 from projection.cg import conjugate_gradient
 
 
+
+def preserve_buffers_and_modes(method):
+    """Undo upstream lazy buffer registration as well as BN value changes."""
+    from functools import wraps
+    @wraps(method)
+    def call(self, model, *args, **kwargs):
+        snapshots=[(m,m.training,dict(m._buffers),
+                    {n:None if b is None else b.detach().clone() for n,b in m._buffers.items()})
+                   for m in model.modules()]
+        try:
+            return method(self,model,*args,**kwargs)
+        finally:
+            with torch.no_grad():
+                for module,mode,buffers,values in snapshots:
+                    module._buffers.clear(); module._buffers.update(buffers)
+                    for name,buffer in buffers.items():
+                        if buffer is not None: buffer.copy_(values[name])
+                    module.training=mode
+    return call
+
+
 def sync(device):
     if torch.device(device).type == 'cuda':
         torch.cuda.synchronize(device)
@@ -36,6 +57,10 @@ class TrainingVNA:
                              cg_tol=args.cg_tol, hutchinson_probes=args.hutchinson_probes,
                              seed=args.seed, project_bn=not args.no_bn_projection,
                              cache_block_input=args.cache_block_input)
+
+    @property
+    def coefficient(self):
+        return self.args.lambda_vna*(self.args.vna_every if self.args.lambda_mode=='time_avg' else 1)
 
     def seed(self, purpose):
         return int(torch.randint(2**31, (), generator=self.generators[purpose]))
@@ -76,6 +101,7 @@ class TrainingVNA:
             u=self.inverse(op,p.parameter_refs,site,op.gradient,mu,trace)
             return op.H(p.Jv(u)).reshape_as(op.probs).detach()
 
+    @preserve_buffers_and_modes
     def refresh(self, model, dataset, indices, epoch):
         sync(self.device); start=time.perf_counter()
         batches=[augmented_batch(dataset, indices, self.args.stat_batch,
@@ -147,11 +173,30 @@ class TrainingVNA:
         assert_disjoint_scopes(model,selected)
         self.cache={s:entries[s] for s in selected}
         self.factors={s:f for s,f in self.factors.items() if s in selected}
-        self.controller.update(refresh_epoch=epoch,refreshes=self.controller['refreshes']+1,
+        self.controller.update(refresh_epoch=epoch,factor_refresh_epoch=epoch,refreshes=self.controller['refreshes']+1,
             candidates={s:{k:v for k,v in e.items() if k!='A'} for s,e in entries.items()})
         sync(self.device); components['refresh']=time.perf_counter()-start
         return components
 
+    @preserve_buffers_and_modes
+    def refresh_factors(self, model, dataset, indices, epoch):
+        """Update curvature without changing selected sites or A."""
+        sync(self.device); start=time.perf_counter()
+        batch=augmented_batch(dataset,indices,self.args.vna_batch,self.generators['statistics'],self.device)
+        self.warm={}
+        with isolated_rng(self.generators['construction']):
+            for site,entry in self.cache.items():
+                if self.args.solver=='kfac': self.factors[site].refresh(model,site,batch)
+                from dataclasses import replace
+                with block_products(model,site,entry['A'],batch[0],cache_block_input=self.cfg.cache_block_input) as p:
+                    op=GGNProducts(p,batch[1])
+                    trace=op.trace(replace(self.cfg,seed=self.seed('hutchinson')))
+                    entry.update(trace_F=trace,mu=max(self.cfg.damping_rel*trace/op.size,1e-12))
+        self.controller['factor_refresh_epoch']=epoch
+        sync(self.device)
+        return {'factor_refresh':time.perf_counter()-start}
+
+    @preserve_buffers_and_modes
     def correction(self, model, site, batch):
         entry=self.cache[site]; A=entry['A']; trace=entry['trace_F']; mu=entry['mu']
         records=[]
@@ -160,19 +205,22 @@ class TrainingVNA:
             u=self.inverse(op,refs,site,op.gradient,mu,trace,'u',records)
             z=op.H(p.Jv(u)); V=float(p.JET(z).double().square().sum())
             d=self.inverse(op,refs,site,op.COE(op.CEO(u)),mu,trace,'vna',records)
+            vna_raw_gain=float(op.gradient.dot(d))
             reference=project_bn_tangent(model,site,_unflatten(d,refs),self.cfg.project_bn)
             delta=reference
             if self.args.arm=='ngd':
                 d=self.inverse(op,refs,site,op.F(u),mu,trace,'ngd',records)
                 delta=project_bn_tangent(model,site,_unflatten(d,refs),self.cfg.project_bn)
                 delta,scale=norm_match(delta,reference)
+            raw_gain=float(op.gradient.dot(d))
+            if self.args.arm=='ngd': raw_gain*=scale
             flat=torch.cat([delta[n].flatten() for n,_ in refs]).double()
             gain=float(op.gradient.dot(flat)); ref_flat=torch.cat([reference[n].flatten() for n,_ in refs]).double()
             ref_gain=float(op.gradient.dot(ref_flat))
-            rho=self.args.lambda_vna*V/max(float(op.gradient.square().sum()),1e-30)
+            rho=self.coefficient*V/max(float(op.gradient.square().sum()),1e-30)
             finite=bool(torch.isfinite(flat).all() and torch.isfinite(ref_flat).all())
             skipped=not finite or not (gain>0 and ref_gain>0)
-            diag={'site':site,'rank':entry['rank'],'rho':rho,'V':V,'realized_gain':gain,
+            diag={'site':site,'rank':entry['rank'],'rho':rho,'V':V,'raw_gain':raw_gain,'realized_gain':gain,'vna_raw_gain':vna_raw_gain,'coefficient':self.coefficient,
                 'vna_realized_gain':ref_gain,'vna_norm':norm(reference),'correction_norm':norm(delta),
                 'cg':records,'G1':entry['G1'],'G2':rho>.3,'G3':self.controller.get('G3'),'state':'active','bn_mode':'eval',
                 'skipped':skipped,'skip_reason':'nonfinite' if not finite else 'nonpositive_gain' if skipped else None}

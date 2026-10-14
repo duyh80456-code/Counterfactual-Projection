@@ -16,6 +16,7 @@ def build(commit,seed):
     base=phase0_build(commit)
     bootstrap=''.join(base['cells'][2]['source']).replace('vna_phase0_seed0',f'vna_training_seed{seed}')
     setup=''.join(base['cells'][3]['source'])
+    setup=setup.replace('"tests/test_vna.py"', '"tests/test_vna.py", "tests/test_vna_stage2.py", "tests/test_vna_training.py"')
     setup=setup.replace('experiments/vna_kaggle.py','experiments/run_vna_training.py').replace("supervisor's committed Stage 1C hash","committed Stage 2a hash")
     return {**base,'cells':[
         cell('markdown',f'''# VNA Stage 2a — seed {seed}, T4×2
@@ -36,12 +37,31 @@ GPU_DATA = True
 CHANNELS_LAST = True
 CUDNN_BENCHMARK = True
 AMP = False
+VNA_BATCH = 16
+VNA_EVERY = 10
+LAMBDA_VNA = 1.0
+SMOKE_EPOCHS = 2
+GPU_HOURS_BUDGET = 30
+ALLOW_OVER_BUDGET = False
 '''),cell('code',bootstrap),cell('code',setup),
         cell('code','''# Cell A: discover model-only recipe checkpoints, including archive members.
 from experiments.kaggle_checkpoint_discovery import discover_checkpoints
 from experiments.vna_training_kaggle import choose_solver, restore_training, archive_training
 from experiments.run_vna_training import parser as training_parser, training_protocol
 import shutil
+# Parser defaults are the shared source for all remaining VNA settings.
+from experiments.vna_training_config import add_vna_arguments
+import argparse
+shared_parser = add_vna_arguments(argparse.ArgumentParser())
+shared_defaults = vars(shared_parser.parse_args([]))
+shared_defaults.update(vna_batch=VNA_BATCH, vna_every=VNA_EVERY, lambda_vna=LAMBDA_VNA,
+                       cache_block_input=True)
+shared_arguments = []
+for key, value in shared_defaults.items():
+    flag = "--" + key.replace("_", "-")
+    if isinstance(value, bool):
+        if value: shared_arguments.append(flag)
+    else: shared_arguments += [flag, str(value)]
 validation_cache = RUN_ROOT / "_phase0_cache"
 attached, rejected = discover_checkpoints(Path("/kaggle/input"), validation_cache,
     kind="vna_recipe", payload_transform=lambda p: {"epoch": p["epoch"]})
@@ -57,18 +77,18 @@ try:
             destination = RUN_ROOT / "validation" / f"epoch_{epoch:03d}"
             command = [sys.executable, "-u", "-m", "diagnostics.vna_solver_validation",
                 "--mode", "recipe", "--checkpoint", str(path), "--data-root", str(DATA_ROOT),
-                "--device", "cuda:0", "--seed", str(SEED), "--output", str(destination)]
+                "--device", "cuda:0", "--seed", str(SEED), "--output", str(destination), *shared_arguments]
             subprocess.run(command, cwd=REPO, env=test_env, check=True)
             validation_rows += json.loads((destination / "summary.json").read_text())["rows"]
-    SOLVER = choose_solver(validation_rows, SOLVER_OVERRIDE)
+    SOLVER = choose_solver(validation_rows, SOLVER_OVERRIDE, damping_rel=shared_defaults["damping_rel"], vna_every=VNA_EVERY)
     import pandas as pd
     from IPython.display import display
     if validation_rows:
         display(pd.DataFrame(validation_rows)[["epoch", "site", "relative_mu", "variant", "cosine",
             "cos_W1", "cos_W2", "cos_BN", "realized_gain", "sgd_units", "cg_converged"]])
     print("SOLVER decision:", SOLVER, "override:", SOLVER_OVERRIDE,
-          "rule: median KFAC cosine >= 0.7; otherwise exact median cost <= 30; otherwise lite")
-    if not enabled: print("Validation disabled/unavailable: conservative exact default unless overridden")
+          "rule: minimum KFAC cosine >= 0.9 with positive gains; otherwise affordable solver by fidelity")
+    print("Training VNA config:", shared_defaults)
 finally:
     shutil.rmtree(validation_cache, ignore_errors=True)
 '''),
@@ -83,10 +103,31 @@ flags = [flag for enabled, flag in [(GPU_DATA, "--gpu-data"), (CHANNELS_LAST, "-
 commands, protocols = {}, {}
 for name, arm, selection in arms:
     arguments = ["--arm", arm, "--solver", SOLVER, "--selection", selection, "--seed", str(SEED),
-        "--data-root", str(DATA_ROOT), "--workers", "2", "--cache-block-input", *flags]
+        "--data-root", str(DATA_ROOT), "--workers", "2", *shared_arguments,
+        "--selection", selection, *flags]
     protocols[name] = training_protocol(training_parser().parse_args(arguments))
     commands[name] = [sys.executable, "-u", "-m", "experiments.run_vna_training", *arguments,
                       "--output", str(RUN_ROOT / name), "--budget-root", str(RUN_ROOT)]
+# Smoke runs use isolated outputs and activate corrections in epoch 1 so that
+# epoch 2 measures the active arm, including scheduled factor refresh.
+SMOKE_ROOT = RUN_ROOT.parent / f"{RUN_ROOT.name}_smoke"
+shutil.rmtree(SMOKE_ROOT, ignore_errors=True)
+SMOKE_ROOT.mkdir(parents=True)
+ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
+projections = {}
+for name, _, _ in arms:
+    smoke_command = commands[name] + ["--output", str(SMOKE_ROOT / name),
+        "--budget-root", str(SMOKE_ROOT), "--max-epochs", str(SMOKE_EPOCHS),
+        "--vna-start-epoch", "1", "--device", "cuda:0"]
+    subprocess.run(smoke_command, cwd=REPO, env=ENV, check=True)
+    smoke_history = json.loads((SMOKE_ROOT / name / "history.json").read_text())
+    seconds = next(row["epoch_seconds"] for row in smoke_history if row["epoch"] == 2)
+    projections[name] = seconds * (260 if name == "sgd_cm" else 200) / 3600
+    print(name, "epoch-2 seconds:", seconds, "projected GPU-hours:", projections[name])
+projected_total = sum(projections.values())
+print("Projected total GPU-hours:", projected_total)
+if projected_total > GPU_HOURS_BUDGET and not ALLOW_OVER_BUDGET:
+    raise RuntimeError(f"Projected {projected_total:.2f} GPU-hours exceeds {GPU_HOURS_BUDGET}; set ALLOW_OVER_BUDGET=True to proceed")
 restore_training(Path("/kaggle/input"), RUN_ROOT, protocols)
 pending = deque(name for name, _, _ in arms if not (RUN_ROOT / name / "final.json").exists())
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}

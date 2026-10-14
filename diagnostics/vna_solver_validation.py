@@ -30,7 +30,7 @@ def flatten(delta, refs):
     return torch.cat([delta.get(n, torch.zeros_like(p)).flatten() for n, p in refs]).double()
 
 
-def run(output, checkpoint=None, seed=20261014):
+def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2):
     torch.set_num_threads(1)
     generator = dedicated_generator(seed, 'solver-validation')
     with isolated_rng(generator):
@@ -71,7 +71,7 @@ def run(output, checkpoint=None, seed=20261014):
     preconditioner=KFACBlockPreconditioner()
     start=time.perf_counter(); preconditioner.refresh(model,site,batch); refresh=time.perf_counter()-start
     rows=[]; selection=[]
-    for relative in (1e-4,1e-3,1e-2,1e-1):
+    for relative in sorted({1e-4,1e-3,1e-2,1e-1,damping_rel}):
         mu=relative*trace/len(gradient)
         exact,de=vna_exact_ggn(model,site,A,batch,cfg,mu=mu,trace_F=trace)
         reference=flatten(exact,refs)
@@ -129,6 +129,8 @@ def run(output, checkpoint=None, seed=20261014):
             selection.append({'relative_mu':relative,'selection':name,'rank':len(a['weight']),
                               'V':score_A(model,site,a,batch[0],z)})
     summary={'synthetic':checkpoint is None,'seed':seed,'site':site,'trace_F_hutchinson':trace,
+             'training_damping_rel':damping_rel,
+             'exact_converged_at_train_mu':all(r['cg_converged'] for r in rows if r['variant']=='exact' and r['relative_mu']==damping_rel),
              'sgd_seconds':sgd,'sgd_batch':64,'kfac_refresh_seconds':refresh,
              'kfac_refresh_sgd_units':refresh/sgd,'rows':rows,'selection':selection,
              'cross_ablation':'Only W1 rows of C dropped on both sides, same KFAC inverse; W1 correction is zero',
@@ -139,6 +141,8 @@ def run(output, checkpoint=None, seed=20261014):
         with (output/filename).open('w',newline='') as f:
             writer=csv.DictWriter(f,fieldnames=list(data[0])); writer.writeheader(); writer.writerows(data)
     print(json.dumps(summary,indent=2))
+    if not summary['exact_converged_at_train_mu']:
+        raise RuntimeError('Exact reference did not converge at training damping; diagnostics saved.')
     return summary
 
 
@@ -158,14 +162,13 @@ def run_checkpoint(args):
     model.load_state_dict(payload.get('model',payload))
     output=Path(args.output); output.mkdir(parents=True,exist_ok=True)
     config=training_parser().parse_args([])
-    config.seed=args.seed; config.solver='exact'; config.selection='tiny_V'
-    config.rank=args.rank; config.stat_batch=args.stat_batch; config.stat_batches=args.stat_batches
-    config.vna_batch=args.vna_batch; config.max_sites=3; config.dorfler_theta=1.
-    config.cg_iters=args.cg_iters; config.cg_tol=args.cg_tol; config.cache_block_input=True
+    for key in vars(config):
+        if hasattr(args,key): setattr(config,key,getattr(args,key))
+    config.solver='exact'
     engine=TrainingVNA(config,device)
     refresh_cost=engine.refresh(model,train,indices,1)
     batch=augmented_batch(train,indices,args.vna_batch,generator,device)
-    baseline_batch=augmented_batch(train,indices,64,generator,device)
+    baseline_batch=augmented_batch(train,indices,args.batch_size,generator,device)
     clone=copy.deepcopy(model); clone.train()
     optimizer=torch.optim.SGD(clone.parameters(),lr=.1,momentum=.9,weight_decay=5e-4)
     state=copy.deepcopy(clone.state_dict()); times=[]
@@ -175,16 +178,16 @@ def run_checkpoint(args):
         torch.nn.functional.cross_entropy(clone(baseline_batch[0]),baseline_batch[1]).backward(); optimizer.step()
         sync(device); times.append(time.perf_counter()-t)
     sgd=statistics.median(times[1:]); del clone,optimizer,state
-    rows=[]; factor_cost={}
-    cfg=GGNConfig(seed=args.seed,cg_iters=args.cg_iters,cg_tol=args.cg_tol,cache_block_input=True)
+    rows=[]; factor_cost={}; batch_checks=[]
+    cfg=engine.cfg
     for site,entry in engine.cache.items():
         A=entry['A']; trace=entry['trace_F']
         kfac=KFACBlockPreconditioner()
         sync(device); t=time.perf_counter(); kfac.refresh(model,site,batch); sync(device)
         factor_cost[site]=time.perf_counter()-t
-        with block_products(model,site,A,batch[0],cache_block_input=True) as p:
+        with block_products(model,site,A,batch[0],cache_block_input=cfg.cache_block_input) as p:
             refs=p.parameter_refs; size=sum(p.numel() for _,p in refs)
-        for relative in (1e-4,1e-3,1e-2,1e-1):
+        for relative in sorted({1e-4,1e-3,1e-2,1e-1,config.damping_rel}):
             mu=max(relative*trace/size,1e-12)
             variants={}
             with isolated_rng(engine.generators['construction']):
@@ -199,7 +202,7 @@ def run_checkpoint(args):
                         d,diag=vna_block_correction(model,site,A,batch,VNAConfig(seed=args.seed,
                             cg_iters=args.cg_iters,cg_tol=args.cg_tol,damping_rel=relative),apply_gain_guard=False)
                         d=project_bn_tangent(model,site,d)
-                        with block_products(model,site,A,batch[0],cache_block_input=True) as p:
+                        with block_products(model,site,A,batch[0],cache_block_input=cfg.cache_block_input) as p:
                             gradient=GGNProducts(p,batch[1]).gradient
                             diag['realized_gain']=float(gradient.dot(flatten(d,refs)))
                     sync(device); diag['seconds']=time.perf_counter()-t
@@ -208,7 +211,7 @@ def run_checkpoint(args):
             for name,(d,diag) in variants.items():
                 value=flatten(d,refs)
                 row={'site':site,'epoch':payload.get('epoch'),'relative_mu':relative,'mu':mu,
-                    'variant':name,'cosine':cosine(value,reference),'realized_gain':diag['realized_gain'],
+                    'variant':name,'cosine':cosine(value,reference),'raw_gain':diag.get('raw_gain'),'realized_gain':diag['realized_gain'],
                     'seconds':diag['seconds'],'sgd_units':diag['seconds']/sgd,
                     'cg_converged':all(r['converged'] for r in diag.get('cg',[])),
                     'cg':diag.get('cg',[]),'rank':entry['rank']}
@@ -216,21 +219,38 @@ def run_checkpoint(args):
                     mask=torch.cat([torch.full((p.numel(),),match in n,device=device,dtype=torch.bool) for n,p in refs])
                     row['cos_'+group]=cosine(value[mask],reference[mask])
                 rows.append(row)
+            if relative==config.damping_rel:
+                # One shuffled sample pool guarantees disjoint correction batches.
+                if len(indices)<2*config.vna_batch:
+                    raise ValueError('not enough samples for disjoint vna_batch audit')
+                order=torch.randperm(len(indices),generator=generator).tolist()
+                pools=[[indices[i] for i in order[j*config.vna_batch:(j+1)*config.vna_batch]] for j in range(2)]
+                small=[augmented_batch(train,pool,config.vna_batch,generator,device) for pool in pools]
+                large=augmented_batch(train,indices,128,generator,device)
+                directions=[flatten(vna_exact_ggn(model,site,A,b,cfg,mu=mu,trace_F=trace)[0],refs) for b in [*small,large]]
+                check={'site':site,'epoch':payload.get('epoch'),'vna_batch':config.vna_batch,
+                    'cos_batch_128':cosine(directions[0],directions[2]),
+                    'cos_disjoint_batches':cosine(directions[0],directions[1])}
+                batch_checks.append(check)
+                for row in rows:
+                    if row['site']==site and row['relative_mu']==relative: row.update(check)
     summary={'checkpoint':str(args.checkpoint),'epoch':payload.get('epoch'),'synthetic':args.fake_data,
         'device':str(device),'seed':args.seed,'sites':list(engine.cache),'sgd_seconds':sgd,
         'refresh_seconds':refresh_cost,'kfac_refresh_seconds':factor_cost,'rows':rows,
+        'training_damping_rel':config.damping_rel,'training_config':vars(config),'batch_checks':batch_checks,
+        'exact_converged_at_train_mu':all(r['cg_converged'] for r in rows if r['variant']=='exact' and r['relative_mu']==config.damping_rel),
         'exact_converged':all(r['cg_converged'] for r in rows if r['variant']=='exact'),
-        'cost_note':'Synchronized correction cost; refresh separately measured; batch-64 recipe SGD units.'}
+        'cost_note':'Synchronized correction cost; refresh separately measured; training-batch recipe SGD units.'}
     atomic_json_save(summary,output/'summary.json')
     with (output/'solvers.csv').open('w',newline='') as f:
-        writer=csv.DictWriter(f,fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
+        writer=csv.DictWriter(f,fieldnames=list(dict.fromkeys(k for row in rows for k in row))); writer.writeheader(); writer.writerows(rows)
     print(json.dumps(summary,indent=2))
-    if not summary['exact_converged']:
+    if not summary['exact_converged_at_train_mu']:
         raise RuntimeError('Exact reference did not converge; residuals saved. Increase --cg-iters or inspect precision.')
     return summary
 
 
-def main():
+def parser():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',default='docs/vna/stage2_validation')
     parser.add_argument('--checkpoint'); parser.add_argument('--seed',type=int,default=20261014)
@@ -238,17 +258,20 @@ def main():
     parser.add_argument('--data-root',default='data')
     parser.add_argument('--device',default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--fake-data',action='store_true')
-    parser.add_argument('--rank',type=int,default=4)
-    parser.add_argument('--vna-batch',type=int,default=8)
-    parser.add_argument('--stat-batch',type=int,default=64)
-    parser.add_argument('--stat-batches',type=int,default=4)
-    parser.add_argument('--cg-iters',type=int,default=1000)
-    parser.add_argument('--cg-tol',type=float,default=1e-5)
-    args=parser.parse_args()
+    from experiments.vna_training_config import add_vna_arguments
+    add_vna_arguments(parser)
+    from experiments.run_vna_training import parser as training_parser
+    parser.add_argument('--batch-size',type=int,default=training_parser().get_default('batch_size'))
+    return parser
+
+
+def main():
+    p=parser()
+    args=p.parse_args()
     if args.mode=='recipe':
-        if not args.checkpoint: parser.error('--mode recipe requires --checkpoint')
+        if not args.checkpoint: p.error('--mode recipe requires --checkpoint')
         run_checkpoint(args)
-    else: run(args.output,args.checkpoint,args.seed)
+    else: run(args.output,args.checkpoint,args.seed,args.damping_rel)
 
 
 if __name__=='__main__':

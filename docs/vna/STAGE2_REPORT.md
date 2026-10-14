@@ -542,3 +542,125 @@ and final metrics, so it is skipped safely.
   all Python cells parse, and all six Python files compile. `git diff --check`
   passes. Protected Phase-0 diffs are empty; HEAD remains
   `2aeb36daff90604a9f550abbf9c64f9cc3957b00`. No commit was made.
+
+## Stage 2a-fix
+
+Date: 2026-10-14. All twelve requested changes are implemented. No commit or
+Git metadata write was made. Protected Phase-0 files have empty diffs; the
+pre-existing `.DS_Store` edit and untracked task input are retained.
+
+### Solver audit and configuration
+
+`experiments/vna_training_config.py` is the single source for VNA arguments.
+Training and recipe validation share rank (16), correction batch (16), relative
+damping (0.01), CG (200 iterations, 1e-5 tolerance), selection (tiny_V), site cap
+(3), statistics, projection, and cache settings. Validation no longer forces
+rank 4, batch 8, CG 1000, three sites with theta=1, or cached inputs. Notebook
+Cell A and training commands receive the same shared argument list; the tiny_U
+control explicitly changes selection. SGD cost uses the training batch size.
+The fixed small dense-oracle toy remains a separate diagnostic fixture.
+
+Recipe validation includes the requested damping in its sweep, saves every CG
+convergence flag, and requires convergence only for exact rows at training mu.
+The summary exposes `exact_converged_at_train_mu`; the older all-sweep
+`exact_converged` remains descriptive. A regression deliberately marks an exact
+nontraining-mu solve unconverged and verifies that validation completes.
+At selected sites and training mu, exact directions additionally report
+`cos_batch_128` and `cos_disjoint_batches`. The two small batches contain
+explicitly disjoint dataset indices; all three directions use the same A and
+mu. These measurements appear in JSON and training-mu CSV rows.
+
+`choose_solver` filters to training mu. K-FAC passes fidelity only when its
+minimum whole-vector cosine over checkpoints/sites is at least 0.9 and every
+projected realized gain is positive. Otherwise affordability uses the maximum
+measured per-correction SGD cost times the selected site count, divided by
+VNA_EVERY; affordable candidates are preferred exact, then kfac, then lite.
+No affordable solver raises with the cost table and requires SOLVER_OVERRIDE.
+No checkpoint evidence without an override also raises. Disjoint cosine below
+0.3 prints a warning recommending VNA_BATCH=64 and larger VNA_EVERY.
+
+### Training state, strength, and logs
+
+The buffer regression found upstream TINY lazily registering
+`second_layer.bordering_weight` during refresh. Stage-2a wrappers now restore
+all original buffer registrations and tensor values, and every module mode,
+including on exceptions. Twelve cases exercise all three solvers, both input
+cache settings, and both fully train-mode and mixed child modes across site/A
+refresh, corrections, and factor/trace refresh. Running means, variances, and
+num_batches_tracked are included. Phase-0 helpers were not edited.
+
+`--lambda-mode time_avg` is default and applies lambda_vna*vna_every to VNA and
+the norm-matched NGD control; `per_step` retains the literal coefficient.
+Corrections log the coefficient, raw and projected realized gains for the
+chosen direction and VNA reference, and the applied correction norm divided
+by the training minibatch block-gradient norm. Epoch JSONL includes its mean
+and maximum and mean raw/projected gains, without assuming gain equality.
+
+No training refresh or correction occurs before `--vna-start-epoch` (5).
+Sites/A first refresh there and then every `--refresh-epochs` (5). Curvature
+factors and mu/trace refresh every `--factor-refresh-epochs` (1) while active,
+without changing A/sites; warm starts are invalidated. Their time is included
+in final VNA cost. Train loss and correct counts accumulate on device and are
+transferred together once per epoch.
+
+Compact correction records append to corrections.jsonl, with CG iteration,
+convergence, and relative-residual summaries only. Epoch aggregates remain in
+epochs.jsonl. latest.pt stores correction_count and numerical resume state,
+not correction records. Resume protocol format is now 2, so older Stage-2a
+checkpoints with different strength/schedule/logging semantics are rejected.
+Uninterrupted and resumed trajectories and correction JSONL records match.
+
+### Notebook delivery
+
+Seed-0 and seed-1 notebooks are regenerated with default HEAD pin
+`3c2e2a0ad430a1d1af47d01680fafd742a58510e`; the supervisor must re-pin after
+committing the fixes. CPU bootstrap tests include all three VNA test files.
+VNA_BATCH, VNA_EVERY, and LAMBDA_VNA are constants shared by validation/training.
+
+Cell B first runs all six arms in a separate smoke directory, with no resume,
+for SMOKE_EPOCHS=2. Smoke activates VNA in epoch 1 so epoch 2 measures the active
+arm rather than warmup SGD. The full run retains start epoch 5. It prints
+second-epoch seconds and projected GPU-hours (200 epochs, 260 for sgd_cm),
+then stops before full restore/launch if the sum exceeds GPU_HOURS_BUDGET=30,
+unless ALLOW_OVER_BUDGET=True. Queue order is sgd, vna_tiny_V, ngd, vna_random,
+vna_tiny_U, sgd_cm. Executed notebook-cell tests check isolated outputs, all
+six smoke arms, epoch-2 projections, budget rejection and explicit override.
+
+### Verification and open questions
+
+- Focused final: `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest
+  -o addopts='' -q --basetemp=/tmp/vna-stage2afix-focused-final tests/test_vna*.py`
+  → **67 passed, 39 warnings in 45.40 s**.
+  Log: `/tmp/stage2afix-focused-delivery.log`.
+- Full final: `PYTHONPATH=/tmp:$PWD OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+  .venv/bin/python -m pytest -p vna_stage2afix_tmp_cleanup -o addopts='' -q
+  --basetemp=/tmp/vna-stage2afix-full`
+  → **292 passed, 2 failed, 5 skipped, 10 errors, 39 warnings in 129.33 s**.
+  Log: `/tmp/stage2afix-full-final.log`. One failure is the previously documented
+  obsolete METHODS-string assertion in test_plateau_fork. The other failure
+  and ten setup/teardown errors are disk exhaustion in existing DeiT
+  checkpoint/export tests (PytorchStreamWriter write failure and Errno 28).
+  Every VNA case passes in the full run. The temporary cleanup plugin deletes
+  only successful function-scoped test scratch after fixture finalization;
+  it does not change assertions, tests, collection, disk guards, or fixtures.
+- Notebook files exactly equal builder output; every code cell parses. All
+  seven changed/new Python files compile; git diff --check passes. Protected
+  Phase-0 diffs are empty. Machine-readable counts are in
+  `stage2afix_test_results.json`.
+
+Open questions, recorded without asking:
+1. Real CIFAR checkpoint agreement, batch sensitivity, solver affordability,
+   factor memory and smoke GPU-hour projections still require T4 evidence.
+   This CPU workspace has no attached Phase-0 checkpoints or CUDA GPU.
+2. If shared CG=200 does not converge at training mu on real checkpoints, the
+   supervisor must increase CG settings for both validation and training, or
+   explicitly choose an override after reviewing saved diagnostics.
+3. Smoke extrapolation uses epoch 2, with active factor refresh but without
+   amortizing later site/A refreshes or changing learning-rate phases. The
+   reported hours are projections; full per-epoch timing remains authoritative.
+4. The full suite needs sufficient free scratch space for the existing DeiT
+   checkpoint exports and a separate resolution of the obsolete plateau source
+   assertion. Neither unrelated code path was changed for this VNA task.
+5. Correction records live in JSONL, not checkpoints. An attached latest.pt
+   alone resumes numerical state/counters but cannot reconstruct historical
+   per-correction records; retain the archive's JSONL for historical analysis.

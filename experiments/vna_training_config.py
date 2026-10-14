@@ -1,0 +1,25 @@
+"""Shared training and solver-validation arguments."""
+
+def add_vna_arguments(p):
+    p.add_argument('--selection',choices=['tiny_U','tiny_V','greedy_V'],default='tiny_V')
+    p.add_argument('--lambda-vna',type=float,default=1.)
+    p.add_argument('--vna-every',type=int,default=10)
+    p.add_argument('--refresh-epochs',type=int,default=5)
+    p.add_argument('--sites',default='auto',help='auto or comma-separated native block names')
+    p.add_argument('--max-sites',type=int,default=3)
+    p.add_argument('--dorfler-theta',type=float,default=.5)
+    p.add_argument('--rank',type=int,default=16)
+    p.add_argument('--stat-batch',type=int,default=64)
+    p.add_argument('--stat-batches',type=int,default=4)
+    p.add_argument('--gate-boot',type=int,default=4)
+    p.add_argument('--vna-batch',type=int,default=16)
+    p.add_argument('--damping-rel',type=float,default=1e-2)
+    p.add_argument('--cg-iters',type=int,default=200)
+    p.add_argument('--cg-tol',type=float,default=1e-5)
+    p.add_argument('--hutchinson-probes',type=int,default=8)
+    p.add_argument('--no-bn-projection',action='store_true')
+    p.add_argument('--cache-block-input',action='store_true')
+    p.add_argument('--lambda-mode',choices=['per_step','time_avg'],default='time_avg')
+    p.add_argument('--vna-start-epoch',type=int,default=5)
+    p.add_argument('--factor-refresh-epochs',type=int,default=1)
+    return p

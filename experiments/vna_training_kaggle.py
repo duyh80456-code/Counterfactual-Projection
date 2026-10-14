@@ -61,17 +61,34 @@ def archive_training(output,budget=5_000_000_000):
     return target
 
 
-def choose_solver(rows,override=None):
-    import statistics
+def choose_solver(rows,override=None,*,damping_rel=1e-2,vna_every=10,n_sites=None):
+    import json
+    import math
+    train=[r for r in rows if math.isclose(r['relative_mu'],damping_rel,rel_tol=1e-9)]
+    checks=[r['cos_disjoint_batches'] for r in train if 'cos_disjoint_batches' in r]
+    if checks and min(checks)<.3:
+        print('WARNING: disjoint-batch cosine < 0.3; recommend VNA_BATCH=64 and larger VNA_EVERY.')
     if override is not None:
         if override not in ('exact','kfac','lite'): raise ValueError('invalid SOLVER_OVERRIDE')
         return override
-    if not rows: return 'exact'
-    exact=[r for r in rows if r['variant']=='exact']
-    if not exact or not all(r['cg_converged'] for r in exact): raise ValueError('unconverged exact reference')
-    if statistics.median(r['cosine'] for r in rows if r['variant']=='kfac')>=.7: return 'kfac'
-    if statistics.median(r['sgd_units'] for r in exact)<=30: return 'exact'
-    return 'lite'
+    if not rows: raise RuntimeError('No Phase-0 validation checkpoint; set SOLVER_OVERRIDE explicitly.')
+    exact=[r for r in train if r['variant']=='exact']
+    if not exact or not all(r['cg_converged'] for r in exact): raise ValueError('unconverged exact reference at training damping')
+    kfac=[r for r in train if r['variant']=='kfac']
+    if kfac and len(kfac)==len(exact) and min(r['cosine'] for r in kfac)>=.9 and all(r['realized_gain']>0 for r in kfac): return 'kfac'
+    table=[]
+    for name in ('exact','kfac','lite'):
+        selected=[r for r in train if r['variant']==name]
+        if not selected or len(selected)!=len(exact): continue
+        counts={epoch:len({r.get('site','site') for r in exact if r.get('epoch')==epoch}) for epoch in {r.get('epoch') for r in exact}}
+        sites=n_sites if n_sites is not None else max(counts.values())
+        cost=max(r['sgd_units'] for r in selected)
+        table.append({'solver':name,'n_sites':sites,'per_correction_sgd_units':cost,'total_overhead':sites*cost/vna_every})
+    print('Solver overhead at training damping:',json.dumps(table))
+    # Within the affordable set, fidelity order is exact > kfac > lite.
+    for row in table:
+        if row['total_overhead']<=1.: return row['solver']
+    raise RuntimeError('No solver fits overhead <= 1.0; set SOLVER_OVERRIDE. Table: '+json.dumps(table))
 
 
 def check_training_budget(root, target, payload, budget):
