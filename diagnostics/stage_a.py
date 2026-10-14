@@ -83,7 +83,7 @@ def measurement_entry(method):
     return call
 
 
-def null_residual(g, kind, generator):
+def null_residual(g, kind, generator, *, residual_is_zero_sum=True):
     """N1 preserves the residual distribution; N2 preserves each sample norm.
 
     N0 needs labels/logits and is computed separately by measure_null.
@@ -92,7 +92,10 @@ def null_residual(g, kind, generator):
         return g[torch.randperm(len(g), generator=generator, device=g.device)].clone()
     if kind == 'N2':
         noise = torch.randn(g.shape, dtype=g.dtype, device=g.device, generator=generator)
-        noise -= noise.mean(-1, keepdim=True)
+        if residual_is_zero_sum:
+            if g.shape[-1] < 2:
+                raise ValueError('zero-sum N2 requires at least two output coordinates')
+            noise -= noise.mean(-1, keepdim=True)
         return noise * (g.norm(dim=-1, keepdim=True) / noise.norm(dim=-1, keepdim=True).clamp_min(1e-30))
     raise ValueError('null_residual supports N1/N2; N0 requires labels')
 

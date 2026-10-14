@@ -19,13 +19,14 @@ from probe.gromo_adapter import _snapshot, _assert_unchanged
 class HookSite:
     def __init__(self, model, first: str, second: str, kind, *, between,
                  o_params=None):
-        if kind not in ('linear', 'conv'):
-            raise ValueError('kind must be linear or conv')
+        if kind not in ('linear', 'conv', 'conv_linear'):
+            raise ValueError('kind must be linear, conv or conv_linear')
         self.model, self.first, self.second, self.kind = model, first, second, kind
         self.between = tuple(between)
         modules = dict(model.named_modules())
         expected = nn.Linear if kind == 'linear' else nn.Conv2d
-        if not isinstance(modules[first], expected) or not isinstance(modules[second], expected):
+        outgoing = nn.Linear if kind == 'conv_linear' else expected
+        if not isinstance(modules[first], expected) or not isinstance(modules[second], outgoing):
             raise TypeError('site layers do not match kind')
         for path in self.between:
             modules[path]  # fail immediately on a misspelled declaration
@@ -65,7 +66,7 @@ class HookSite:
                         value = child(value)
             else:
                 value = module(value)
-        return value
+        return value.flatten(1) if self.kind == 'conv_linear' else value
 
 
 class HookProducts(_Products):
@@ -86,7 +87,13 @@ class HookProducts(_Products):
             devices = [weight.device.index] if weight.is_cuda else []
             with torch.random.fork_rng(devices=devices):
                 a = _make_a_layer(site.first_layer, A)
-                b = _make_matching_b_layer(site.second_layer, len(weight), weight.dtype, weight.device)
+                if site.kind == 'conv_linear':
+                    second = site.second_layer.layer
+                    spatial = second.in_features // site.first_layer.layer.out_channels
+                    b = nn.Linear(len(weight) * spatial, second.out_features,
+                                  bias=second.bias is not None, device=weight.device, dtype=weight.dtype)
+                else:
+                    b = _make_matching_b_layer(site.second_layer, len(weight), weight.dtype, weight.device)
             with torch.no_grad():
                 for parameter in b.parameters():
                     parameter.zero_()
@@ -190,18 +197,45 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
                     output = model(inputs)
                     residual = torch.autograd.grad(output, capture['output'], z.to(output).reshape_as(output))[0]
                 x, y = capture['x'], capture['y']
-                if site.kind == 'conv':
+                if site.kind in ('conv', 'conv_linear'):
                     x = F.unfold(x, first.kernel_size, dilation=first.dilation,
                                  padding=first.padding, stride=first.stride)
                     if first.bias is not None:
                         x = torch.cat((x, torch.ones_like(x[:, :1])), 1)
-                    h, w = capture['y'].shape[-2:]
+                    # TINY linearizes the proposal path. For max pooling use
+                    # the native current-channel switches, averaged across
+                    # channels to define a channel-independent incoming map.
+                    # Never replace max pooling by average pooling. All sign
+                    # scores and JE products run the actual new-unit max pool.
+                    with torch.no_grad():
+                        native = first(capture['x'])
+                    h, w = native.shape[-2:]
                     x = x.reshape(len(inputs), d, h, w)
-                    x = F.unfold(x, second.kernel_size, dilation=second.dilation,
-                                 padding=second.padding, stride=second.stride).transpose(1, 2).reshape(-1, d, second.weight[0, 0].numel())
-                    y = F.unfold(y, second.kernel_size, dilation=second.dilation,
-                                 padding=second.padding, stride=second.stride).transpose(1, 2).reshape(len(x), -1)
-                    residual = residual.permute(0, 2, 3, 1).reshape(len(x), -1)
+                    for path in site.between:
+                        module = model.get_submodule(path)
+                        if isinstance(module, nn.MaxPool2d):
+                            native, switches = F.max_pool2d(native, module.kernel_size, module.stride,
+                                module.padding, module.dilation, module.ceil_mode, return_indices=True)
+                            flat = x.flatten(2)
+                            pooled = torch.zeros((len(inputs), d, switches.shape[-2]*switches.shape[-1]),
+                                                 device=x.device, dtype=x.dtype)
+                            for channel in range(switches.shape[1]):
+                                indices = switches[:, channel].flatten(1).unsqueeze(1).expand(-1, d, -1)
+                                pooled += flat.gather(2, indices)/switches.shape[1]
+                            x = pooled.reshape(len(inputs), d, *switches.shape[-2:])
+                        elif isinstance(module, nn.AvgPool2d):
+                            x, native = module(x), module(native)
+                        elif not isinstance(module, nn.modules.batchnorm._BatchNorm):
+                            with torch.no_grad(): native = module(native)
+                    if site.kind == 'conv_linear':
+                        x = x.flatten(2)
+                        y, residual = y.flatten(1), residual.flatten(1)
+                    else:
+                        x = F.unfold(x, second.kernel_size, dilation=second.dilation,
+                                     padding=second.padding, stride=second.stride).transpose(1, 2).reshape(-1, d, second.weight[0, 0].numel())
+                        y = F.unfold(y, second.kernel_size, dilation=second.dilation,
+                                     padding=second.padding, stride=second.stride).transpose(1, 2).reshape(len(x), -1)
+                        residual = residual.permute(0, 2, 3, 1).reshape(len(x), -1)
                 else:
                     x = x.reshape(-1, first.in_features)
                     if first.bias is not None:

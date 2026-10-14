@@ -29,7 +29,7 @@ BUILTIN_CONFIGS = {s: setting_config(s) for s in ('B1', 'B2', 'B3', 'B4')}
 
 def evaluate_gate(rows, setting_cfg):
     rows = list(rows)
-    eligible = [r for r in rows if r['cg_converged'] and r['rank'] == GATE_RANK
+    eligible = [r for r in rows if r['cg_converged'] and r['rank'] == setting_cfg.get('gate_rank', GATE_RANK)
                 and r.get('damping_norm', 'outputs') == setting_cfg.get('damping_norm', 'outputs')
                 and r['mu_rel'] == setting_cfg.get('mu_rel_default', 1e-2) and setting_cfg['window'](r)]
     n = len(eligible)

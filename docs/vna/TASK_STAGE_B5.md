@@ -80,3 +80,23 @@ If any loop cannot be hooked this way, stop and propose an alternative (do not c
 ## Report
 Append "Stage B5" to STAGE_AB_IMPLEMENTATION.md (hook point per benchmark, sites, m, data rule, any
 paper/code discrepancy found). Full suite with `REQUIRE_UPSTREAM=1`; counts. Changed files.
+
+## 5. Recipe decision (supervisor, 2026-10-15; pre-registered, do not change after seeing data)
+- bp step_size = the step_size the upstream CBP cfg fixes for that benchmark:
+  regression 0.01 (`cfg/sgd/cbp/relu.json`), Permuted MNIST 0.003 (`cfg/cbp.json`),
+  Continual ImageNet 0.01 with momentum 0.9 (`cfg/cbp.json`). All other bp values from the upstream
+  bp cfg of that benchmark (regression `cfg/sgd/bp/relu.json`, MNIST `cfg/bp/std_net.json`,
+  ImageNet `cfg/bp.json`).
+- cbp replacement_rate: ImageNet 3e-4 (fixed upstream); MNIST 1e-4; regression all five values
+  {1e-6,1e-5,1e-4,1e-3,1e-2} (cheap). The baseline gate uses the cbp arm with the lowest mean online
+  error over the run (regression; rule fixed in code), and the single cbp arm elsewhere.
+- VNA measurements only on the bp arm. Record the chosen values and their cfg source in
+  STAGE_AB_IMPLEMENTATION.md and in every output row.
+
+## 6. N2 for non-softmax losses (supervisor decision)
+N2's zero-sum projection exists only because softmax-tangent residuals sum to zero. For losses whose
+residual space is unconstrained (MSE), N2 = per-sample Gaussian **without centering**, rescaled to
+‖g_i‖ (for a scalar output: random sign × |g_i|). Implement it as a property of the LossSpec
+(`residual_is_zero_sum`: True for CE/KD/iCaRL, False for MSE), record `null_kind="N2"` plus
+`n2_centered` in every row, and test both cases (zero-sum preserved for CE; norm preserved and
+nonzero for scalar MSE).

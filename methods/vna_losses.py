@@ -19,6 +19,11 @@ class LossSpec:
     output_dim: int | None = None
     name: str = 'loss'
 
+    @property
+    def residual_is_zero_sum(self):
+        """Whether N2 belongs in the softmax tangent space."""
+        return False
+
     def loss(self, z, ctx):
         raise NotImplementedError
 
@@ -41,6 +46,10 @@ class LossSpec:
 @dataclass
 class CE(LossSpec):
     name: str = 'CE'
+
+    @property
+    def residual_is_zero_sum(self):
+        return True
 
     def loss(self, z, ctx):
         return F.cross_entropy(z, ctx['targets'])

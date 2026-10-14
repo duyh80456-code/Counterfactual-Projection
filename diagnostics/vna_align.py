@@ -74,7 +74,10 @@ class MeasurementHook:
 
 
 def _assert_bitwise(left, right, path='state'):
-    if isinstance(left, torch.Tensor):
+    if isinstance(left, np.ndarray):
+        assert isinstance(right, np.ndarray) and left.dtype == right.dtype and left.shape == right.shape, path
+        assert left.tobytes() == right.tobytes(), path
+    elif isinstance(left, torch.Tensor):
         assert isinstance(right, torch.Tensor) and left.device.type == right.device.type == 'cpu', path
         assert left.dtype == right.dtype and left.shape == right.shape, path
         assert torch.equal(left.contiguous().reshape(-1).view(torch.uint8), right.contiguous().reshape(-1).view(torch.uint8)), path
