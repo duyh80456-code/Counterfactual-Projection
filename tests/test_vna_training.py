@@ -265,7 +265,7 @@ def test_notebook_smoke_budget_and_queue(tmp_path,allow_over_budget):
     import sys
     from types import SimpleNamespace
     notebook=build('a'*40,0)
-    source=next(''.join(c['source']) for c in notebook['cells'] if ''.join(c['source']).startswith('# Cell B:'))
+    source=next(''.join(c['source']) for c in notebook['cells'] if '# Cell B:' in ''.join(c['source']))
     source=source[:source.index('restore_training(Path(')]
     launched=[]
     def smoke(command,**kwargs):
@@ -277,18 +277,19 @@ def test_notebook_smoke_budget_and_queue(tmp_path,allow_over_budget):
                                                      {'epoch':2,'epoch_seconds':36}]))
     scope=dict(RUN_ROOT=tmp_path/'real',DATA_ROOT=tmp_path,REPO=tmp_path,Path=Path,sys=sys,
         subprocess=SimpleNamespace(run=smoke),json=json,shutil=shutil,training_parser=parser,
-        training_protocol=training_protocol,SEED=0,SOLVER='lite',GPU_DATA=False,
+        training_protocol=training_protocol,SEED=0,PART=1,REPO_COMMIT='a'*40,shared_defaults={},SOLVER='lite',GPU_DATA=False,
         CHANNELS_LAST=False,CUDNN_BENCHMARK=False,AMP=False,shared_arguments=[],test_env={},
         SMOKE_EPOCHS=2,GPU_HOURS_BUDGET=1,ALLOW_OVER_BUDGET=allow_over_budget,
         apply_budget_policy=apply_budget_policy,smoke_diagnostics=smoke_diagnostics)
     if allow_over_budget: exec(compile(source,'smoke','exec'),scope)
     else:
         with pytest.raises(RuntimeError,match='GPU-hours exceeds'): exec(compile(source,'smoke','exec'),scope)
-    assert [a.arm for a in launched]==['sgd','vna','ngd','vna_random','vna','sgd_cm']
-    assert not (tmp_path/'real').exists()
+    assert [a.arm for a in launched]==['sgd','vna']
+    assert [a.device for a in launched] == ['cuda:0', 'cuda:1']
+    assert (tmp_path/'real/run_config.json').exists()
     if allow_over_budget:
-        assert scope['projected_total']==pytest.approx(8.)
-        assert [arm[0] for arm in scope['arms']]==['sgd','vna_tiny_V','ngd','vna_random']
+        assert scope['projected_total']==pytest.approx(4.)
+        assert [arm[0] for arm in scope['arms']]==['sgd','vna_tiny_V']
     assert all(Path(a.output).is_relative_to(scope['SMOKE_ROOT']) for a in launched)
 
 
@@ -372,14 +373,14 @@ def test_preregistered_batch_rule_worst_epoch_site(cos16, cos64, expected, capsy
 def test_budget_drop_order(budget, dropped, total, capsys):
     from experiments.vna_training_kaggle import apply_budget_policy
     arms = [(n,'sgd','tiny_V') for n in ['sgd','vna_tiny_V','ngd','vna_random','vna_tiny_U','sgd_cm']]
-    selected, actual = apply_budget_policy(arms, {n:5 for n,_,_ in arms}, budget)
+    selected, actual = apply_budget_policy(arms, {n:5 for n,_,_ in arms}, budget, part=3)
     assert actual == total
     assert [n for n,_,_ in arms if n not in {a[0] for a in selected}] == list(reversed(dropped))
     output = capsys.readouterr().out
     assert 'Dropped arms: '+str(dropped) in output
     with pytest.raises(RuntimeError, match='Table:'):
-        apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19)
-    assert apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19, True)[1] == 20
+        apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19, part=3)
+    assert apply_budget_policy(arms, {n:5 for n,_,_ in arms}, 19, True, part=3)[1] == 20
 
 
 def test_smoke_preregistered_flags_and_loss_jumps(tmp_path):

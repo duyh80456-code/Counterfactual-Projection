@@ -38,7 +38,7 @@ is fine) + CIFAR, pick sites (top-3 by tiny_V V), and report cos(kfac/lite/eucli
 parameter group across the μ sweep, realized gains, and per-correction cost in SGD-step units on GPU.
 Exact must converge (report residuals).
 
-## 3. Notebook `notebooks/kaggle_vna_training_seed{0,1}.ipynb` + builder
+## 3. Notebook `notebooks/kaggle_vna_seed{0,1}_part{1,2,3}.ipynb` + builder
 - Same Kaggle conventions as the Phase 0 builder (pinned REPO_COMMIT, github_token, Gromo pin, CIFAR
   discovery incl. official test, resume from /kaggle/input archives, hourly atomic archive, <5 GB).
 - Cell A (optional, default ON if a Phase 0 checkpoint is attached): GPU solver validation on

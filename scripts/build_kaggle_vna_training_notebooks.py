@@ -1,4 +1,4 @@
-"""Generate seed 0/1 Stage 2a Kaggle notebooks with the Phase-0 bootstrap."""
+"""Generate three two-arm Stage 2a Kaggle notebooks per seed."""
 import argparse
 import json
 from pathlib import Path
@@ -12,17 +12,23 @@ if str(ROOT) not in sys.path:
 from scripts.build_kaggle_vna_signal_curve_notebook import build as phase0_build, cell, ROOT
 
 
-def build(commit=None,seed=0):
+PART_ARMS = {1: [("sgd", "sgd", "tiny_V"), ("vna_tiny_V", "vna", "tiny_V")],
+             2: [("ngd", "ngd", "tiny_V"), ("vna_random", "vna_random", "tiny_V")],
+             3: [("vna_tiny_U", "vna", "tiny_U"), ("sgd_cm", "sgd_cm", "tiny_V")]}
+
+
+def build(commit=None,seed=0,part=1):
+    if seed not in (0, 1) or part not in PART_ARMS: raise ValueError("invalid seed/part")
     if commit is None:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     base=phase0_build(commit)
-    bootstrap=''.join(base['cells'][2]['source']).replace('vna_phase0_seed0',f'vna_training_seed{seed}')
+    bootstrap=''.join(base['cells'][2]['source']).replace('vna_phase0_seed0',f'vna_seed{seed}_part{part}')
     setup=''.join(base['cells'][3]['source'])
-    setup=setup.replace('"tests/test_vna.py"', '"tests/test_vna.py", "tests/test_vna_stage2.py", "tests/test_vna_training.py"')
+    setup=setup.replace('"tests/test_vna.py"', '"tests/test_vna.py", "tests/test_vna_stage2.py", "tests/test_vna_training.py", "tests/test_vna_split3.py"')
     setup=setup.replace('experiments/vna_kaggle.py','experiments/run_vna_training.py')
-    setup += '\nfor module in ("experiments/vna_training_support.py", "experiments/vna_training_config.py", "experiments/vna_training_kaggle.py", "diagnostics/vna_solver_validation.py"):\n    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the pinned commit")\n'
+    setup += '\nfor module in ("experiments/vna_training_support.py", "experiments/vna_training_config.py", "experiments/vna_training_kaggle.py", "diagnostics/vna_solver_validation.py", "experiments/vna_compare.py"):\n    if not (REPO / module).exists(): raise RuntimeError(f"Required module {module} is missing from the pinned commit")\n'
     return {**base,'cells':[
-        cell('markdown',f'''# VNA Stage 2a — seed {seed}, T4×2
+        cell('markdown',f'''# VNA Stage 2a — seed {seed}, part {part}, T4×2
 Enable Internet, T4×2 and `github_token`. Attach official CIFAR-100 train/test/meta.
 Attach Phase-0 checkpoints at epochs 40, 100, 160 to enable validation by default.
 Attach prior Stage 2a directory/zip/tar.gz outputs to resume. Only latest per arm
@@ -31,9 +37,9 @@ Each arm runs in a fresh process. Final official test metrics use the final mode
 Code is pinned to an immutable commit; each session records its resolved commit.
 Regenerate with `python scripts/build_kaggle_vna_training_notebooks.py --commit FULL_HASH`
 to change the pin; the default is current HEAD. The pin must include Stage 2a.
-GPU_HOURS_BUDGET=30 is the TOTAL projected full-training cost across all arms
-of this seed, including sgd_cm. If over budget, drop sgd_cm, then vna_tiny_U;
-raise if the remaining arms still exceed it unless ALLOW_OVER_BUDGET=True.
+GPU_HOURS_BUDGET=15 is per notebook. Parts 1–2 raise if over budget unless
+ALLOW_OVER_BUDGET=True. Only part3 drops sgd_cm, then vna_tiny_U.
+Each arm has a fixed GPU (first GPU0, second GPU1).
 Corrections default to spread: λ·d at each of the next VNA_EVERY steps,
 including the computation step. Smoke thresholds are report-only:
 p95 applied-delta/gradient > 3 → IMPULSE_RISK; median < 0.05 → LIKELY_NULL.
@@ -44,6 +50,7 @@ T4 runtime must be measured by Cell A.
 '''),
         cell('code',f'''REPO_COMMIT = "{commit}"
 SEED = {seed}
+PART = {part}
 SOLVER_OVERRIDE = None  # exact / kfac / lite wins over validation
 VALIDATE_SOLVERS = None  # None = ON when Phase-0 checkpoint attached
 GPU_DATA = True
@@ -54,7 +61,7 @@ VNA_BATCH_OVERRIDE = None
 VNA_EVERY_OVERRIDE = None
 LAMBDA_VNA = 1.0
 SMOKE_EPOCHS = 2
-GPU_HOURS_BUDGET = 30
+GPU_HOURS_BUDGET = 15
 ALLOW_OVER_BUDGET = False
 '''),cell('code',bootstrap),cell('code',setup),
         cell('code','''# Cell A: discover model-only recipe checkpoints, including archive members.
@@ -124,14 +131,19 @@ try:
 finally:
     shutil.rmtree(validation_cache, ignore_errors=True)
 '''),
-        cell('code','''# Cell B: priority queue over two GPUs, one fresh process per arm.
+        cell('code', 'PART_ARMS = ' + repr(PART_ARMS) + '\n' + '''# Cell B: fixed arm pair, one fresh process per GPU.
 import threading
 from collections import deque
-arms = [("sgd", "sgd", "tiny_V"), ("vna_tiny_V", "vna", "tiny_V"),
-        ("ngd", "ngd", "tiny_V"), ("vna_random", "vna_random", "tiny_V"),
-        ("vna_tiny_U", "vna", "tiny_U"), ("sgd_cm", "sgd_cm", "tiny_V")]
+arms = PART_ARMS[PART]
+gpu_by_arm = {name: gpu for gpu, (name, _, _) in enumerate(arms)}
 flags = [flag for enabled, flag in [(GPU_DATA, "--gpu-data"), (CHANNELS_LAST, "--channels-last"),
          (CUDNN_BENCHMARK, "--cudnn-benchmark"), (AMP, "--amp")] if enabled]
+from experiments.vna_compare import save_run_config
+run_config = dict(shared_defaults, seed=SEED, solver=SOLVER, code_commit=REPO_COMMIT,
+                  gpu_data=GPU_DATA, channels_last=CHANNELS_LAST,
+                  cudnn_benchmark=CUDNN_BENCHMARK, amp=AMP)
+config_hash = save_run_config(RUN_ROOT / "run_config.json", run_config)
+print("config_hash:", config_hash)
 commands, protocols = {}, {}
 for name, arm, selection in arms:
     arguments = ["--arm", arm, "--solver", SOLVER, "--selection", selection, "--seed", str(SEED),
@@ -139,7 +151,8 @@ for name, arm, selection in arms:
         "--selection", selection, *flags]
     protocols[name] = training_protocol(training_parser().parse_args(arguments))
     commands[name] = [sys.executable, "-u", "-m", "experiments.run_vna_training", *arguments,
-                      "--output", str(RUN_ROOT / name), "--budget-root", str(RUN_ROOT)]
+                      "--output", str(RUN_ROOT / name), "--budget-root", str(RUN_ROOT),
+                      "--run-config", str(RUN_ROOT / "run_config.json")]
 # Smoke runs use isolated outputs and activate corrections in epoch 1 so that
 # epoch 2 measures the active arm, including scheduled factor refresh.
 SMOKE_ROOT = RUN_ROOT.parent / f"{RUN_ROOT.name}_smoke"
@@ -148,9 +161,9 @@ SMOKE_ROOT.mkdir(parents=True)
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
 projections = {}
 for name, _, _ in arms:
-    smoke_command = commands[name] + ["--output", str(SMOKE_ROOT / name),
+    smoke_command = commands[name][:-2] + ["--output", str(SMOKE_ROOT / name),
         "--budget-root", str(SMOKE_ROOT), "--max-epochs", str(SMOKE_EPOCHS),
-        "--vna-start-epoch", "1", "--device", "cuda:0"]
+        "--vna-start-epoch", "1", "--device", f"cuda:{gpu_by_arm[name]}"]
     subprocess.run(smoke_command, cwd=REPO, env=ENV, check=True)
     smoke_history = json.loads((SMOKE_ROOT / name / "history.json").read_text())
     seconds = next(row["epoch_seconds"] for row in smoke_history if row["epoch"] == 2)
@@ -158,9 +171,9 @@ for name, _, _ in arms:
     print(name, "epoch-2 seconds:", seconds, "projected GPU-hours:", projections[name])
     if name in ("vna_tiny_V", "ngd", "vna_random", "vna_tiny_U"):
         print(name, "smoke diagnostics:", smoke_diagnostics(SMOKE_ROOT / name))
-arms, projected_total = apply_budget_policy(arms, projections, GPU_HOURS_BUDGET, ALLOW_OVER_BUDGET)
+arms, projected_total = apply_budget_policy(arms, projections, GPU_HOURS_BUDGET, ALLOW_OVER_BUDGET, part=PART)
 shutil.rmtree(SMOKE_ROOT, ignore_errors=True)
-restore_training(Path("/kaggle/input"), RUN_ROOT, {name: protocols[name] for name, _, _ in arms})
+restore_training(Path("/kaggle/input"), RUN_ROOT, {name: protocols[name] for name, _, _ in arms}, config_hash=config_hash)
 pending = deque(name for name, _, _ in arms if not (RUN_ROOT / name / "final.json").exists())
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
 running, handles = {}, []
@@ -173,8 +186,9 @@ archiver = threading.Thread(target=hourly_archive, daemon=True); archiver.start(
 try:
     while pending or running:
         for gpu in (0, 1):
-            if gpu not in running and pending:
-                name = pending.popleft(); command = commands[name] + ["--device", f"cuda:{gpu}"]
+            name = next((n for n in pending if gpu_by_arm[n] == gpu), None)
+            if gpu not in running and name is not None:
+                pending.remove(name); command = commands[name] + ["--device", f"cuda:{gpu}"]
                 latest = RUN_ROOT / name / "latest.pt"
                 if latest.exists(): command += ["--resume", str(latest)]
                 log = (RUN_ROOT / f"{name}.log").open("a", buffering=1); handles.append(log)
@@ -196,30 +210,13 @@ finally:
     print("Resumable archive:", archive_training(RUN_ROOT))
 if archive_errors: raise RuntimeError(f"Hourly archive failures: {archive_errors}")
 '''),
-        cell('code','''# Final metrics and curves, including all computation in each arm's cost.
-import matplotlib.pyplot as plt
-results = []
-for name, _, _ in arms:
-    record = json.loads((RUN_ROOT / name / "final.json").read_text())
-    results.append({"arm": name, "test_acc": record["test"]["accuracy"], "test_loss": record["test"]["loss"],
-        "params": record["params"], "GPU-h": record["gpu_hours"], "wall-h": record["wall_hours"],
-        "code_commits": sorted({h["commit"] for h in record["code_history"]}),
-        "VNA_seconds": record["vna_seconds"], "peak_GB": record["peak_memory_bytes"] / 1e9})
-frame = pd.DataFrame(results); baseline = float(frame.loc[frame.arm == "sgd", "test_acc"].iloc[0])
-frame["delta_vs_sgd_pp"] = 100 * (frame.test_acc - baseline)
-assert frame.params.nunique() == 1
-frame["cost_vs_sgd"] = frame["GPU-h"] / float(frame.loc[frame.arm == "sgd", "GPU-h"].iloc[0])
-display(frame); frame.to_csv(RUN_ROOT / "results.csv", index=False)
-fig, axes = plt.subplots(1, 3, figsize=(17, 4))
-for name, _, _ in arms:
-    history = json.loads((RUN_ROOT / name / "history.json").read_text())
-    epochs = [r["epoch"] for r in history]
-    for ax, split, metric in [(axes[0], "train", "loss"), (axes[1], "eval", "accuracy")]:
-        ax.plot(epochs, [r[split][metric] for r in history], label=name)
-    axes[2].plot(epochs, [r["mean_rho"] for r in history], label=name)
-for ax, title in zip(axes, ["Train loss", "Eval accuracy", "rho"]):
-    ax.set(title=title, xlabel="epoch"); ax.grid(alpha=.3)
-axes[0].legend(fontsize=7); plt.tight_layout(); fig.savefig(RUN_ROOT / "curves.png"); plt.show()
+        cell('code','''# Compare finished arms from every part and attached archives.
+from experiments.vna_compare import compare
+frame, missing, fig = compare(RUN_ROOT.parent, SEED, input_root=Path("/kaggle/input"), output=RUN_ROOT)
+display(frame)
+print("Missing arms:", missing)
+plt = __import__("matplotlib.pyplot", fromlist=["show"])
+plt.show()
 print("Final archive:", archive_training(RUN_ROOT))
 ''')]}
 
@@ -230,6 +227,7 @@ if __name__=='__main__':
     p.add_argument('--output-dir',default=str(ROOT/'notebooks'))
     args=p.parse_args()
     for seed in (0,1):
-        path=Path(args.output_dir)/f'kaggle_vna_training_seed{seed}.ipynb'
-        path.parent.mkdir(parents=True,exist_ok=True)
-        path.write_text(json.dumps(build(args.commit,seed),indent=1,ensure_ascii=False)+'\n'); print(path)
+        for part in (1,2,3):
+            path=Path(args.output_dir)/f'kaggle_vna_seed{seed}_part{part}.ipynb'
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_text(json.dumps(build(args.commit,seed,part),indent=1,ensure_ascii=False)+'\n'); print(path)

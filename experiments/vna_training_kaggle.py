@@ -8,13 +8,13 @@ from experiments.kaggle_checkpoint_discovery import discover_checkpoints
 from experiments.shared_protocol import atomic_json_save, validate_resume_protocol
 
 
-def restore_training(input_root, output, protocols):
+def restore_training(input_root, output, protocols, *, config_hash=None):
     output=Path(output); output.mkdir(parents=True,exist_ok=True)
     cache=output/'_resume_cache'
     def identify(payload):
         for name,protocol in protocols.items():
-            if payload.get('protocol')==protocol: return name
-        raise ValueError('no compatible Stage 2a arm protocol')
+            if payload.get('protocol')==protocol and (config_hash is None or payload.get('config_hash') == config_hash): return name
+        return None
     try:
         found,rejected=discover_checkpoints(input_root,cache,kind='vna_training',
             payload_filter=lambda p: bool(identify(p)),
@@ -25,6 +25,8 @@ def restore_training(input_root, output, protocols):
             if target.exists():
                 cp=torch.load(target,map_location='cpu',weights_only=False)
                 validate_resume_protocol(cp['protocol'],protocol)
+                if config_hash is not None and cp.get('config_hash') != config_hash:
+                    raise ValueError('resume config_hash mismatch')
                 local_epoch=cp['epoch']
             else: local_epoch=-1
             if candidates:
@@ -136,12 +138,13 @@ def choose_batch(rows, batch_override=None, every_override=None, *, damping_rel=
     return batch, every
 
 
-def apply_budget_policy(arms, projections, budget=30, allow_over_budget=False):
-    """The budget is total GPU-hours across all arms of one seed."""
+def apply_budget_policy(arms, projections, budget=15, allow_over_budget=False, *, part=1):
+    """Per-notebook budget; only part 3 may drop arms."""
     import json
     selected = list(arms); dropped = []
     def total(): return sum(projections[name] for name, _, _ in selected)
-    for name in ('sgd_cm', 'vna_tiny_U'):
+    if part not in (1, 2, 3): raise ValueError('invalid part')
+    for name in (('sgd_cm', 'vna_tiny_U') if part == 3 else ()):
         if total() > budget and any(arm[0] == name for arm in selected):
             selected = [arm for arm in selected if arm[0] != name]; dropped.append(name)
     print('Dropped arms:', dropped, 'Projected total GPU-hours:', total(), 'budget:', budget)

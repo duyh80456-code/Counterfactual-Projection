@@ -344,7 +344,7 @@ This environment has no CUDA or local CIFAR data; no real-checkpoint GPU audit,
   Nonconverged exact references are saved for inspection and fail validation;
   they cannot silently drive the notebook decision.
 - `scripts/build_kaggle_vna_training_notebooks.py` and
-  `notebooks/kaggle_vna_training_seed{0,1}.ipynb`: reuse Phase-0 bootstrap cells
+  `notebooks/kaggle_vna_seed{0,1}_part{1,2,3}.ipynb`: reuse Phase-0 bootstrap cells
   without editing the Phase-0 builder. They retain the immutable repository
   pin, `github_token`, Gromo pin and official CIFAR train/test/meta discovery.
   Cell A defaults on with attached recipe checkpoints and requires epochs
@@ -785,3 +785,58 @@ Open questions, recorded without asking:
    full-suite disk-exhaustion issues remain outside this task's scope.
 
 - Decision reversal: all three Kaggle notebooks now clone, fetch, detach, and verify an immutable `--commit` pin (default current HEAD); per-arm code_commit/code_history provenance remains unchanged.
+
+
+## Split into 3 notebooks
+
+Each seed now has `kaggle_vna_seed{S}_part{1,2,3}.ipynb`. Run part1 first
+(sgd on GPU0, vna_tiny_V on GPU1), then part2 (ngd on GPU0, vna_random on
+GPU1), then part3 (vna_tiny_U on GPU0, sgd_cm on GPU1). Repeat for seeds 0
+and 1. Attach earlier parts' archives to later parts for cumulative comparisons.
+Every part repeats setup/tests and unchanged Cell A decisions, smokes only its
+own two arms for two epochs, and launches its full arm pair concurrently.
+The 15 GPU-hour budget is per notebook. Parts 1–2 reject overruns unless
+explicitly allowed; only part3 drops sgd_cm first, then vna_tiny_U.
+
+Outputs and atomic archives are `/kaggle/working/vna_seed{S}_part{P}` and
+`vna_seed{S}_part{P}.tar.gz`. Resume accepts only this part's protocols and
+config hash while ignoring other attached arms. `run_config.json` records the
+shared seed, solver, batch/every, lambda, rank, damping, remaining VNA settings,
+performance flags and immutable code pin; SHA256 covers canonical JSON without
+the hash field. Selection is an intentional arm difference, not part identity.
+Checkpoints and final records retain this configuration/hash and recipe protocol.
+The last cell uses `experiments.vna_compare` to scan local/attached directories
+and ZIP/tar archives, reject incompatible VNA hashes or recipe settings with a
+diff, and save a cumulative table, curves and explicit missing-arm list. Missing
+SGD leaves relative accuracy/cost blank. Recipe comparison excludes intentional
+arm/selection/solver differences and validates each arm's derived schedule.
+The new layout supersedes the earlier six-arm queue and 30-hour policy above.
+
+Open questions, recorded without asking:
+1. Real Cell A batch agreement, solver convergence and GPU-hour projections need
+   attached Phase-0 checkpoints and T4 hardware; CPU tests cannot establish them.
+   Independently measured Cell A solver decisions must agree across parts or
+   comparison will reject their hashes; review diagnostics before rerunning.
+2. The budget projects full arm training from epoch 2, excluding setup,
+   validation and smoke costs. Should a later policy include these costs?
+3. Default HEAD pinning is preserved. Current local changes are uncommitted;
+   the supervisor must make the implementation available remotely and regenerate
+   with its immutable commit before Kaggle execution. No commit was made here.
+4. Historical final JSON lacking recipe/config metadata cannot prove compatible
+   settings and is rejected. Keep the new part archives for complete comparisons.
+5. Local Matplotlib is unavailable and network installation failed. Kaggle setup
+   installs Pandas/Matplotlib; actual PNG rendering remains to be verified there.
+   Tables, archive discovery and plotted curve series are verified locally;
+   Pandas 2.2.3 was installed into `.venv` from the existing local runtime cache.
+
+Verification: `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 MPLBACKEND=Agg
+.venv/bin/python -m pytest -o addopts='' -q --basetemp=.split3-test-tmp
+ tests/test_vna*.py` → **101 passed, 1 skipped, 0 failed, 0 errors,
+39 warnings in 54.77 s**. The sole skip is the actual Matplotlib render test;
+curve-series construction is covered separately. Coverage includes six generated
+notebooks, fixed GPUs and executed smoke/full-launch commands, per-part budget
+policies, hash persistence/rejection, recipe differences, partial comparisons,
+ZIP/tar discovery and restore with other parts attached. Python compilation and
+`git diff --check` pass. All six notebook files match their builder with the
+recorded pin. Task scratch/log files were removed; no persistent /tmp files were
+created. No commit or push; pre-existing `.DS_Store` and task input are retained.

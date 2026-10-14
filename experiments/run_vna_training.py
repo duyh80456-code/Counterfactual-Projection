@@ -41,7 +41,7 @@ def clean_json(value):
 
 def training_protocol(args):
     scale=args.epochs_scale if args.arm=='sgd_cm' else 1.
-    protocol={k:v for k,v in vars(args).items() if k not in ('output','resume','max_epochs','device','data_root','budget_root','disk_budget')}
+    protocol={k:v for k,v in vars(args).items() if k not in ('output','resume','max_epochs','device','data_root','budget_root','disk_budget','run_config')}
     protocol.update(total_epochs=round(args.epochs*scale),milestones=[round(100*scale),round(150*scale)],
                     architecture='tiny' if args.fake_data else 'resnet18',format_version=2)
     return protocol
@@ -69,12 +69,21 @@ def run(args):
     scaler=torch.cuda.amp.GradScaler(enabled=args.amp)
     engine=TrainingVNA(args,device)
     protocol=training_protocol(args)
+    run_config = None; config_hash = None
+    if args.run_config:
+        from experiments.vna_compare import load_run_config
+        run_config, config_hash = load_run_config(args.run_config)
+        for key, value in run_config.items():
+            if key in ('selection', 'code_commit'): continue
+            if hasattr(args, key) and getattr(args, key) != value:
+                raise ValueError(f'run_config differs from training arguments: {key}')
     commit=code_commit(); code_history=[{"from_epoch": 1, "commit": commit}]
     epoch=step=correction_count=0; history=[]; corrections=[]; step_records=[]; previous_loss=None; loader_state=None; final=None
     if args.resume:
         cp=torch.load(args.resume,map_location='cpu',weights_only=False)
         if cp.get('kind')!='vna_training': raise ValueError('not a Stage 2a training checkpoint')
         validate_resume_protocol(cp['protocol'],protocol)
+        if cp.get('config_hash') != config_hash: raise ValueError('resume config_hash mismatch')
         code_history=resume_code_history(cp,commit)
         previous_loss=cp.get('previous_loss')
         if cp['splits']!=[indices,trigger,eval_indices,tuning]: raise ValueError('resume split mismatch')
@@ -99,7 +108,7 @@ def run(args):
             'rng':rng_state(),'numpy_rng':np.random.get_state(),'train_loader_generator_state':loader.generator.get_state(),
             'splits':[indices,trigger,eval_indices,tuning],'protocol':protocol,'history':history,
             'correction_count':correction_count,'vna':engine.state_dict(),'final':final,
-            'code_commit':commit,'code_history':code_history,'previous_loss':previous_loss}
+            'code_commit':commit,'code_history':code_history,'previous_loss':previous_loss, 'config_hash':config_hash, 'run_config':run_config}
         # Bound checkpoint replacement and raw + old + new archives before writing.
         from experiments.vna_training_kaggle import check_training_budget
         check_training_budget(Path(args.budget_root) if args.budget_root else output,
@@ -206,6 +215,7 @@ def run(args):
             'wall_hours':seconds/3600,'peak_memory_bytes':max(row['peak_memory_bytes'] for row in history),
             'vna_seconds':sum(sum(v for k,v in row['vna_seconds'].items() if k in ('refresh','factor_refresh','correction')) for row in history),
             'test_evaluations':1,'test_seconds':test_seconds,'epoch':epoch,
+            'protocol':protocol, 'config_hash':config_hash, 'run_config':run_config,
             'code_commit':commit,'code_history':copy.deepcopy(code_history)}
         save()
     if args.resume and cp.get('code_commit')!=commit and epoch==cp['epoch']:
@@ -218,6 +228,7 @@ def run(args):
 def parser():
     from experiments.train_recipe_checkpoints import parser as recipe_parser
     p=recipe_parser(); p.description=__doc__; p.set_defaults(output='outputs/vna_training',max_epochs=10**9)
+    p.add_argument('--run-config', help='shared notebook run_config.json with verified SHA256')
     p.add_argument('--budget-root',help='shared notebook output root for disk accounting')
     p.add_argument('--disk-budget',type=int,default=5_000_000_000)
     p.add_argument('--arm',choices=['sgd','sgd_cm','vna','vna_random','ngd'],default='sgd')
