@@ -1,7 +1,7 @@
-"""CPU-only Stage 2 solver and equal-rank selection audit (no training runner).
+"""Stage 2 toy and matrix-free real-checkpoint solver audits.
 
-Run: .venv/bin/python -m diagnostics.vna_solver_validation --output PATH
-An optional checkpoint must be a tiny_model state dict or {'model': state}.
+Default toy mode accepts a tiny-model checkpoint. Use --mode recipe with a
+Phase-0 checkpoint and CIFAR root for trained-model GPU validation.
 """
 import argparse
 import csv
@@ -142,11 +142,113 @@ def run(output, checkpoint=None, seed=20261014):
     return summary
 
 
+def run_checkpoint(args):
+    """Matrix-free real recipe checkpoint audit; never touches official test."""
+    import copy
+    from experiments.run_vna_training import parser as training_parser
+    from experiments.vna_support import setup_data, build_model, augmented_batch
+    from experiments.vna_training_support import TrainingVNA, sync
+    from experiments.shared_protocol import atomic_json_save
+    device=torch.device(args.device)
+    if args.fake_data: torch.set_num_threads(1)
+    generator=dedicated_generator(args.seed,'real-validation-data')
+    train,_,indices,_,_,_=setup_data(args.data_root,args.fake_data,args.seed)
+    with isolated_rng(generator): model=build_model(device,args.fake_data)
+    payload=torch.load(args.checkpoint,map_location='cpu',weights_only=False)
+    model.load_state_dict(payload.get('model',payload))
+    output=Path(args.output); output.mkdir(parents=True,exist_ok=True)
+    config=training_parser().parse_args([])
+    config.seed=args.seed; config.solver='exact'; config.selection='tiny_V'
+    config.rank=args.rank; config.stat_batch=args.stat_batch; config.stat_batches=args.stat_batches
+    config.vna_batch=args.vna_batch; config.max_sites=3; config.dorfler_theta=1.
+    config.cg_iters=args.cg_iters; config.cg_tol=args.cg_tol; config.cache_block_input=True
+    engine=TrainingVNA(config,device)
+    refresh_cost=engine.refresh(model,train,indices,1)
+    batch=augmented_batch(train,indices,args.vna_batch,generator,device)
+    baseline_batch=augmented_batch(train,indices,64,generator,device)
+    clone=copy.deepcopy(model); clone.train()
+    optimizer=torch.optim.SGD(clone.parameters(),lr=.1,momentum=.9,weight_decay=5e-4)
+    state=copy.deepcopy(clone.state_dict()); times=[]
+    for _ in range(4):
+        clone.load_state_dict(state); optimizer.state.clear()
+        sync(device); t=time.perf_counter(); optimizer.zero_grad(set_to_none=True)
+        torch.nn.functional.cross_entropy(clone(baseline_batch[0]),baseline_batch[1]).backward(); optimizer.step()
+        sync(device); times.append(time.perf_counter()-t)
+    sgd=statistics.median(times[1:]); del clone,optimizer,state
+    rows=[]; factor_cost={}
+    cfg=GGNConfig(seed=args.seed,cg_iters=args.cg_iters,cg_tol=args.cg_tol,cache_block_input=True)
+    for site,entry in engine.cache.items():
+        A=entry['A']; trace=entry['trace_F']
+        kfac=KFACBlockPreconditioner()
+        sync(device); t=time.perf_counter(); kfac.refresh(model,site,batch); sync(device)
+        factor_cost[site]=time.perf_counter()-t
+        with block_products(model,site,A,batch[0],cache_block_input=True) as p:
+            refs=p.parameter_refs; size=sum(p.numel() for _,p in refs)
+        for relative in (1e-4,1e-3,1e-2,1e-1):
+            mu=max(relative*trace/size,1e-12)
+            variants={}
+            with isolated_rng(engine.generators['construction']):
+                for name in ('exact','kfac','lite','euclidean','ngd'):
+                    sync(device); t=time.perf_counter()
+                    kwargs={'mu':mu,'trace_F':trace}
+                    if name=='exact': d,diag=vna_exact_ggn(model,site,A,batch,cfg,**kwargs)
+                    elif name=='kfac': d,diag=vna_kfac(model,site,A,batch,kfac,cfg,**kwargs)
+                    elif name=='lite': d,diag=vna_lite_ggn(model,site,A,batch,cfg,**kwargs)
+                    elif name=='ngd': d,diag=ngd_control(model,site,A,batch,cfg,reference=variants['exact'][0],**kwargs)
+                    else:
+                        d,diag=vna_block_correction(model,site,A,batch,VNAConfig(seed=args.seed,
+                            cg_iters=args.cg_iters,cg_tol=args.cg_tol,damping_rel=relative),apply_gain_guard=False)
+                        d=project_bn_tangent(model,site,d)
+                        with block_products(model,site,A,batch[0],cache_block_input=True) as p:
+                            gradient=GGNProducts(p,batch[1]).gradient
+                            diag['realized_gain']=float(gradient.dot(flatten(d,refs)))
+                    sync(device); diag['seconds']=time.perf_counter()-t
+                    variants[name]=(d,diag)
+            reference=flatten(variants['exact'][0],refs)
+            for name,(d,diag) in variants.items():
+                value=flatten(d,refs)
+                row={'site':site,'epoch':payload.get('epoch'),'relative_mu':relative,'mu':mu,
+                    'variant':name,'cosine':cosine(value,reference),'realized_gain':diag['realized_gain'],
+                    'seconds':diag['seconds'],'sgd_units':diag['seconds']/sgd,
+                    'cg_converged':all(r['converged'] for r in diag.get('cg',[])),
+                    'cg':diag.get('cg',[]),'rank':entry['rank']}
+                for group,match in [('W1','.first_layer.layer.weight'),('W2','.second_layer.layer.weight'),('BN','post_layer_function')]:
+                    mask=torch.cat([torch.full((p.numel(),),match in n,device=device,dtype=torch.bool) for n,p in refs])
+                    row['cos_'+group]=cosine(value[mask],reference[mask])
+                rows.append(row)
+    summary={'checkpoint':str(args.checkpoint),'epoch':payload.get('epoch'),'synthetic':args.fake_data,
+        'device':str(device),'seed':args.seed,'sites':list(engine.cache),'sgd_seconds':sgd,
+        'refresh_seconds':refresh_cost,'kfac_refresh_seconds':factor_cost,'rows':rows,
+        'exact_converged':all(r['cg_converged'] for r in rows if r['variant']=='exact'),
+        'cost_note':'Synchronized correction cost; refresh separately measured; batch-64 recipe SGD units.'}
+    atomic_json_save(summary,output/'summary.json')
+    with (output/'solvers.csv').open('w',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
+    print(json.dumps(summary,indent=2))
+    if not summary['exact_converged']:
+        raise RuntimeError('Exact reference did not converge; residuals saved. Increase --cg-iters or inspect precision.')
+    return summary
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',default='docs/vna/stage2_validation')
     parser.add_argument('--checkpoint'); parser.add_argument('--seed',type=int,default=20261014)
-    args=parser.parse_args(); run(args.output,args.checkpoint,args.seed)
+    parser.add_argument('--mode',choices=['toy','recipe'],default='toy')
+    parser.add_argument('--data-root',default='data')
+    parser.add_argument('--device',default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--fake-data',action='store_true')
+    parser.add_argument('--rank',type=int,default=4)
+    parser.add_argument('--vna-batch',type=int,default=8)
+    parser.add_argument('--stat-batch',type=int,default=64)
+    parser.add_argument('--stat-batches',type=int,default=4)
+    parser.add_argument('--cg-iters',type=int,default=1000)
+    parser.add_argument('--cg-tol',type=float,default=1e-5)
+    args=parser.parse_args()
+    if args.mode=='recipe':
+        if not args.checkpoint: parser.error('--mode recipe requires --checkpoint')
+        run_checkpoint(args)
+    else: run(args.output,args.checkpoint,args.seed)
 
 
 if __name__=='__main__':

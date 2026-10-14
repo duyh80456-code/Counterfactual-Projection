@@ -304,3 +304,241 @@ random-control trace matching. No acceptance thresholds were tuned.
 6. Future library integration, GPU costs, full-scope large-model memory,
    train-BN versus eval-BN discrepancy and statistical generalization remain
    unmeasured. No Stage 2a training or Phase-0 acceptance claim is made.
+
+## Stage 2a
+
+Implemented the solver-agnostic training runner, checkpoint validation mode, and
+seed-0/seed-1 Kaggle training notebooks. No commit was made. The protected Phase-0
+signal diagnostic, resume identity, notebook, builder, and `methods/vna.py` remain
+unchanged. Existing `.DS_Store` changes and the supplied task file are retained.
+This environment has no CUDA or local CIFAR data; no real-checkpoint GPU audit,
+200-epoch CIFAR training result, or measured T4 runtime is claimed.
+
+### Files and behavior
+
+- `experiments/run_vna_training.py`: recipe SGD from random initialization;
+  arms `sgd`, `sgd_cm`, `vna`, `vna_random`, and `ngd`. Recipe splits, optimizer,
+  throughput flags and MultiStep milestones match the recipe runner. `sgd_cm`
+  defaults to 260 epochs and milestones 130/195; its default stop cap permits
+  all 260 epochs. `--max-epochs` permits resumable partial execution without
+  changing run identity. Final official CIFAR test evaluation is saved in
+  `latest.pt` and `final.json`; finished resumes never evaluate it again.
+- `experiments/vna_training_support.py`: periodic always-active corrections,
+  Dörfler site marking on V (minimal descending prefix, capped by `max_sites`),
+  explicit comma-separated sites, rank/selection configuration, cached damping,
+  K-FAC EMA factors and exact-CG warm starts. Refresh occurs at epochs 1, 6,
+  11, ... by default. Statistics use several independently augmented training
+  batches; correction batches have their own stream. Every solver uses eval BN.
+- `experiments/vna_training_kaggle.py`: compatible full-state restore from
+  directories, ZIP/TAR archives and Kaggle-expanded torch archives; hourly
+  immutable atomic archives, a conservative 5 GB peak budget, and the solver
+  decision rule. Incompatible resumes are excluded; stale unfinished completion
+  files are removed. Checkpoint writes also check the shared output budget,
+  preserving the previous latest if the budget would be exceeded.
+- `diagnostics/vna_solver_validation.py`: retains the unchanged callable toy
+  `run()` interface and default CLI mode. `--mode recipe` loads model-only or
+  full recipe checkpoints, uses augmented CIFAR training data, selects the top
+  three tiny-V sites, and performs the four-relative-mu sweep. It reports whole,
+  W1/W2/BN cosines against exact, projected gains, synchronized correction cost
+  in batch-64 recipe-SGD units, refresh costs, and every exact-CG residual.
+  Nonconverged exact references are saved for inspection and fail validation;
+  they cannot silently drive the notebook decision.
+- `scripts/build_kaggle_vna_training_notebooks.py` and
+  `notebooks/kaggle_vna_training_seed{0,1}.ipynb`: reuse Phase-0 bootstrap cells
+  without editing the Phase-0 builder. They retain the immutable repository
+  pin, `github_token`, Gromo pin and official CIFAR train/test/meta discovery.
+  Cell A defaults on with attached recipe checkpoints and requires epochs
+  40/100/160. Across their selected-site/mu rows, median K-FAC whole cosine
+  >=0.7 chooses K-FAC; otherwise median exact correction cost <=30 SGD units
+  chooses exact; otherwise lite. `SOLVER_OVERRIDE` wins. With no checkpoint
+  attached the explicit printed fallback is exact. Cell B queues fresh
+  processes over two GPUs in the prescribed order and skips completed arms.
+  The final cell writes test/delta/parameter/cost columns and training curves.
+- `tests/test_vna_training.py`: bitwise CPU resume including optimizer, model,
+  factors, warm starts, controller, all dedicated generators, NumPy state and
+  correction records; zero-lambda identity for all solvers; final-test reuse;
+  unchanged parameter count; NGD norm matching; other selection/random arms;
+  recipe-validation artifacts and convergence; immutable pin/notebook syntax;
+  archive restore; conservative disk enforcement; forbidden-path checks.
+- `docs/vna/stage2a_validation/{summary.json,solvers.csv}`: CPU integration
+  evidence from a saved tiny recipe-compatible checkpoint, **not CIFAR or T4**.
+  All eight exact solves converge; 20 rows cover four damping values and five
+  methods on its single available site. The test independently repeats this
+  checkpoint-mode path. The toy diagnostic still has its original 24 rows.
+
+Corrections are added to gradients after backward and AMP unscale, before the
+SGD step; momentum and weight decay are untouched. Zero lambda still performs
+refresh and diagnostic work but makes no gradient write. Realized gain is
+measured against mean-CE gradient on the same dedicated correction batch after
+BN tangent projection. Nonfinite or nonpositive gains skip that site and log a
+reason. No activation or acceptance gate is enforced.
+
+For NGD, first compute the full VNA correction at the **same weights, cached A,
+site, damping, solver, and batch**. Apply the same BN tangent projection to
+both directions, then multiply NGD by `||d_VNA_projected||/||d_NGD_projected||`.
+Only the reference norm determines this multiplier; the reference direction is
+not added. Both norms and both projected gains are logged. Exact and K-FAC use
+`M F M h`; lite uses `M=I/(tr(F)/n_f)`, hence `F h/(tr(F)/n_f)^2`. This scalar
+choice reproduces the existing lite VNA formula. Selection consistently uses
+`z=Hbar J M h`; tiny-V/greedy retain native TINY and true-ReLU scoring.
+Random A matches the reference rank and exact extension trace on the refresh
+measurement batch, then uses that cached A until the next refresh.
+
+The saved latest includes model, SGD momentum, scheduler, scaler, splits,
+protocol, global Python/torch/CUDA/NumPy state, training-loader generator,
+private statistics/correction/selection/Hutchinson/random-A/construction streams,
+A/ranks/damping/trace, K-FAC factors, CG warm starts and the always-active
+controller. Hutchinson's private generator is seeded from its checkpointed
+stream each refresh; K-FAC currently uses deterministic true-GGN class sweeps,
+so no MC-label stream is consumed. Refresh invalidates CG starts. They are warm
+between corrections; nonconvergence logs the residual and uses the iterate.
+
+G1 is logged using the native TINY U-spectrum: lambda_1 against mean+2 population
+standard deviations of four disjoint sub-batch lambda_1 values. G2 uses
+`rho=lambda_vna*V/||h||^2 > .3`. G3 logs loss decrease per second against half
+its first available post-refresh rate. G3 is wall-time diagnostic metadata,
+outside numerical controller state. None changes the training schedule or
+selects a checkpoint. JSONL contains epoch metrics, LR, component timings,
+applied/skipped counts, mean rho/V/projected gain, sites/ranks, every weight
+norm and GPU peak allocated memory; correction JSONL adds per-site gates,
+CG residuals, skip reasons and the matched norms. GPU-hours include measured
+epoch compute/evaluation and final-test seconds; filesystem save/archive time
+is excluded. Component refresh total includes selection/factors/trace/gate
+statistics; these subcomponents are not double counted in total cost.
+
+### Run instructions
+
+```bash
+# Normal recipe; same flags across paired arms.
+.venv/bin/python -m experiments.run_vna_training --arm sgd --device cuda:0 \
+  --data-root /path/to/cifar --output outputs/vna_seed0/sgd --seed 0
+.venv/bin/python -m experiments.run_vna_training --arm vna --solver exact \
+  --selection tiny_V --device cuda:0 --data-root /path/to/cifar \
+  --output outputs/vna_seed0/vna_tiny_V --seed 0
+# Resume with exactly the same numerical/configuration flags plus:
+# --resume outputs/vna_seed0/vna_tiny_V/latest.pt
+
+.venv/bin/python -m diagnostics.vna_solver_validation --mode recipe \
+  --checkpoint /path/to/epoch_040.pt --data-root /path/to/cifar \
+  --device cuda:0 --output outputs/validation/epoch_040
+# Repeat at 100/160. Raise --cg-iters if the saved exact residuals do not converge.
+
+# Supervisor must first commit the reviewed changes; this task does not commit.
+.venv/bin/python -m scripts.build_kaggle_vna_training_notebooks --commit FULL_40_HEX_HASH
+```
+
+The delivered notebooks pin the current read-only HEAD
+`2aeb36daff90604a9f550abbf9c64f9cc3957b00`, which precedes these uncommitted
+Stage-2a files. Their setup deliberately requires the Stage-2a runner; regenerate
+with the supervisor's eventual Stage-2a commit before a remote Kaggle run.
+
+### T4 runtime and disk planning (unmeasured)
+
+There are 44,872 training examples, 702 batch-64 steps per epoch, approximately
+140,400 SGD steps and 14,040 correction events in 200 epochs. At three sites,
+there are up to 42,120 per-site corrections. Reuse the earlier **planning
+assumption**, 10–40 seconds per SGD epoch (0.6–2.2 GPU-hours total), rather than
+treating CPU toy timings as T4 measurements. For a solver's measured per-site
+cost `c` in recipe-SGD units and selected count `s`, estimate
+`T_arm = T_sgd*(1+s*c/10) + R_solver`, where `R_solver` is all 40 refreshes,
+including site proposals, Hutchinson, gate statistics and factors. Actual site
+counts and refresh costs are logged. Training uses batch 16 for corrections;
+Cell A's default batch 8 gives an initial screening cost, so revise c from
+training logs rather than treating it as an exact extrapolation.
+
+The following are illustrative capacity ranges for **each arm**, conditional
+on three selected sites. The assumed correction costs are exact 10–30,
+K-FAC 3–10 and lite 2–8 SGD units; they are not GPU observations.
+
+| Arm | exact GPU-h | kfac GPU-h | lite GPU-h |
+|---|---:|---:|---:|
+| sgd | 0.6–2.2 | 0.6–2.2 | 0.6–2.2 |
+| sgd_cm | 0.8–2.9 | 0.8–2.9 | 0.8–2.9 |
+| vna tiny_V | 2.4–22 + R_exact | 1.1–8.8 + R_kfac | 1.0–7.5 + R_lite |
+| vna tiny_U | 2.4–22 + R_exact,U | 1.1–8.8 + R_kfac,U | 1.0–7.5 + R_lite,U |
+| vna_random | 2.4–22 + R_exact,random | 1.1–8.8 + R_kfac,random | 1.0–7.5 + R_lite,random |
+| ngd | 3.3–32 + R_exact | 1.4–12 + R_kfac | 1.1–10 + R_lite |
+
+NGD costs more because the reference correction is also computed; this example
+assumes approximately 1.5 times correction cost with the first inverse reused.
+Random refresh includes exact extension-trace matching. K-FAC refresh uses
+`2*b*C` backward sweeps per proposed site (b=16, C=100 → 3,200), plus expensive
+factor eigensolves. If total refresh is hypothetically 1–10 minutes per
+all-site refresh, add 0.7–6.7 GPU-hours per active arm; actual K-FAC may exceed
+that. These ranges support session/resume planning, not performance claims.
+Two GPUs reduce queue elapsed time, with the longest individual arm still a
+lower bound. No <=30% overhead or accuracy improvement is asserted.
+
+The full-width model-only checkpoint is about 45 MB and model+momentum about
+90 MB. Six plain latest checkpoints start near 0.54 GB; no intervention or
+periodic model checkpoints are retained. Exact adds two warm float64 vectors
+per site (NGD adds a third), A and small metadata. K-FAC can dominate: a
+512-input 3x3 conv has a 4608x4608 input factor and eigenbasis, about 340 MB in
+float64 together, before its other factors. Several late sites across four
+active arms can exceed the 5 GB output/archive budget. The runner and archiver
+**fail before the budgeted write**, keeping the last complete state, rather
+than dropping factors or silently changing sites/precision. Archive accounting
+bounds raw+old+new archives at three times raw bytes; hard-linked snapshots
+avoid duplicate checkpoint data. A completed restored arm keeps its full latest
+and final metrics, so it is skipped safely.
+
+### Open questions recorded without asking
+
+1. What are real epochs-40/100/160 solver cosines, exact residuals, factor refresh
+   costs and training-batch correction costs on T4? Cell A is ready, but this
+   workspace has neither real checkpoints/CIFAR nor a GPU.
+2. If K-FAC validates but its full factors exceed the 5 GB bound, should a later
+   task add lossless factor packing, reduce the configured site cap, or change
+   factor precision with a new numerical validation? This stage preserves the
+   requested full state and halts at the cap; it does not silently alter the
+   selected sites, solver, or precision.
+3. Is the logged native-U spectrum/noise G1 statistic also the desired diagnostic
+   for tiny-V/greedy, or should a future report compare V-specific bootstrapped
+   significance? G1 does not gate Stage 2a. G3 uses a stated half-rate diagnostic
+   because its coefficient was not numerically fixed in the task.
+4. Confirm the documented lite scalar inverse convention for NGD/selection and
+   retain the existing Stage-2 mean-CE normalization. No formula is tuned toward
+   solver cosine thresholds.
+5. Exact validation fails explicitly if 1,000 iterations at tolerance 1e-5 do
+   not converge. Real checkpoint conditioning may require a larger cap or a
+   separately validated higher-precision product path.
+6. GPU nondeterminism from cudnn benchmarking is an explicit shared throughput
+   setting. CPU trajectories are bitwise tested; GPU bitwise identity/resume
+   is not claimed. The official test is cached on normal completed resume;
+   a hard kill between finishing its evaluation and atomic latest publication
+   can repeat that evaluation on recovery.
+
+### Stage 2a verification results
+
+- Focused delivery: `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m
+  pytest -o addopts='' -q tests/test_vna*.py` → **50 passed, 38 warnings in
+  41.87 s**. Log: `/tmp/stage2a-focused-delivery.log`. This comprises the 32
+  previous VNA cases and 18 new Stage-2a cases. The separate training-only run
+  passed all **18 cases in 17.47 s**, including refresh on both epochs and
+  bitwise correction-record/state comparison on resume.
+- Final full suite: `PYTHONPATH=/tmp:$PWD OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+  .venv/bin/python -m pytest -p vna_stage2a_tmp_cleanup -o addopts='' -q
+  --basetemp=/tmp/vna-stage2a-full-clean` → **281 passed, 1 failed, 5 skipped,
+  38 warnings in 124.96 s**. Log: `/tmp/stage2a-full-clean.log`. The one failure
+  is the same pre-existing
+  `tests/test_plateau_fork.py::test_plateau_fork_has_recurrent_e_and_single_shot_o_control`,
+  which asserts an obsolete `METHODS` source string; its runner/test are untouched.
+  The temporary `/tmp/vna_stage2a_tmp_cleanup.py` plugin removes only passed
+  function-scoped `tmp_path` directories after fixture finalization. It changes
+  no assertions, active fixture data, guards, collection, or skip decisions.
+- Standard full-suite attempts were also completed: **259 passed, 2 failed,
+  5 skipped, 32 errors in 135.74 s**, then **267 passed, 3 failed, 5 skipped,
+  14 errors in 107.22 s**. Logs: `/tmp/stage2a-full.log` and
+  `/tmp/stage2a-full-final.log`. Beyond the same source assertion, failures/errors
+  are low-disk scratch/checkpoint-write errors in existing DeiT tests. Only
+  this task's completed scratch directories were cleaned. The final cleanup
+  run eliminates these environmental failures without bypassing disk guards.
+- Standalone checkpoint-mode CPU audit succeeds with all exact references
+  converged. Multi-batch, two-epoch `vna_random`/lite smoke also succeeds with
+  refresh every epoch (`/tmp/stage2a-multi-smoke.log`). Real CIFAR/T4 evidence
+  remains unavailable, as stated above.
+- Direct `python scripts/build_kaggle_vna_training_notebooks.py --output-dir
+  /tmp/stage2a-notebooks` succeeds. Delivered notebooks equal builder output;
+  all Python cells parse, and all six Python files compile. `git diff --check`
+  passes. Protected Phase-0 diffs are empty; HEAD remains
+  `2aeb36daff90604a9f550abbf9c64f9cc3957b00`. No commit was made.

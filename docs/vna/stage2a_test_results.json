@@ -1,0 +1,40 @@
+{
+  "focused": {
+    "passed": 50,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 38,
+    "seconds": 41.87,
+    "log": "/tmp/stage2a-focused-delivery.log"
+  },
+  "full_final": {
+    "passed": 281,
+    "failed": 1,
+    "skipped": 5,
+    "warnings": 38,
+    "seconds": 124.96,
+    "log": "/tmp/stage2a-full-clean.log",
+    "temporary_cleanup_plugin": "/tmp/vna_stage2a_tmp_cleanup.py",
+    "failure": "tests/test_plateau_fork.py::test_plateau_fork_has_recurrent_e_and_single_shot_o_control",
+    "reason": "Pre-existing obsolete METHODS source-string assertion"
+  },
+  "full_standard_attempts": [
+    {
+      "passed": 259,
+      "failed": 2,
+      "skipped": 5,
+      "errors": 32,
+      "seconds": 135.74
+    },
+    {
+      "passed": 267,
+      "failed": 3,
+      "skipped": 5,
+      "errors": 14,
+      "seconds": 107.22
+    }
+  ],
+  "gpu_validation": "Unavailable: no CUDA or local CIFAR/real checkpoint",
+  "head": "2aeb36daff90604a9f550abbf9c64f9cc3957b00",
+  "committed": false
+}

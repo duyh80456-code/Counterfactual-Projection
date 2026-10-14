@@ -1,0 +1,179 @@
+"""Stateful Stage 2a corrections; no persistent model expansion.
+
+Lite uses M = I/(tr(F)/number_of_logits), hence NGD_lite=M F M h.
+Selection uses z=H J M h for all three solvers. CG warm starts are per site
+and per right-hand side; refreshed curvature invalidates the starts.
+"""
+from dataclasses import asdict
+import time
+import torch
+from experiments.vna_support import augmented_batch, tiny_candidate, isolated_rng
+from methods.vna import (dedicated_generator, block_products, extract_tiny_A,
+                         _unflatten, assert_disjoint_scopes)
+from methods.vna_ggn import GGNConfig, GGNProducts, project_bn_tangent, norm_match
+from methods.vna_kfac import KFACBlockPreconditioner
+from methods.vna_select import tiny_V, greedy_V, normalize_A, score_A, trace_matched_random_A
+from projection.cg import conjugate_gradient
+
+
+def sync(device):
+    if torch.device(device).type == 'cuda':
+        torch.cuda.synchronize(device)
+
+
+def norm(delta):
+    return sum(float(v.double().square().sum()) for v in delta.values()) ** .5
+
+
+class TrainingVNA:
+    def __init__(self, args, device):
+        self.args, self.device = args, device
+        self.generators = {p: dedicated_generator(args.seed, 'training-'+p)
+                           for p in ('statistics', 'correction', 'selection', 'hutchinson', 'random_A', 'construction')}
+        self.cache, self.factors, self.warm = {}, {}, {}
+        self.controller = {'state': 'active', 'refresh_epoch': 0, 'refreshes': 0}
+        self.cfg = GGNConfig(damping_rel=args.damping_rel, cg_iters=args.cg_iters,
+                             cg_tol=args.cg_tol, hutchinson_probes=args.hutchinson_probes,
+                             seed=args.seed, project_bn=not args.no_bn_projection,
+                             cache_block_input=args.cache_block_input)
+
+    def seed(self, purpose):
+        return int(torch.randint(2**31, (), generator=self.generators[purpose]))
+
+    def state_dict(self):
+        return {'cache': self.cache, 'factors': {s: f.state_dict() for s,f in self.factors.items()},
+                'warm': self.warm, 'controller': self.controller, 'config': asdict(self.cfg),
+                'generators': {p: g.get_state() for p,g in self.generators.items()}}
+
+    def load_state_dict(self, state):
+        def move(value):
+            if torch.is_tensor(value): return value.to(self.device)
+            if isinstance(value, dict): return {k: move(v) for k,v in value.items()}
+            if isinstance(value, list): return [move(v) for v in value]
+            return value
+        self.cache, self.warm = move(state['cache']), move(state['warm'])
+        self.controller = state['controller']
+        for s, payload in state['factors'].items():
+            factor = KFACBlockPreconditioner(); factor.load_state_dict(move(payload)); self.factors[s] = factor
+        for p, value in state['generators'].items(): self.generators[p].set_state(value.cpu())
+
+    def inverse(self, op, refs, site, rhs, mu, trace, key=None, records=None):
+        if self.args.solver == 'kfac': return self.factors[site].apply(rhs, refs, mu)
+        if self.args.solver == 'lite': return rhs / max(trace/op.g.numel(), 1e-15)
+        result = conjugate_gradient(lambda v: op.F(v)+mu*v, rhs.double(),
+            x0=self.warm.get(site, {}).get(key) if key else None,
+            max_iter=self.cfg.cg_iters, tolerance=self.cfg.cg_tol, eps=1e-30)
+        if key and torch.isfinite(result.solution).all():
+            self.warm.setdefault(site, {})[key] = result.solution.detach().clone()
+        if records is not None:
+            records.append({'iterations': result.iterations, 'converged': result.converged,
+                            'relative_residual': result.relative_residual})
+        return result.solution
+
+    def cotangent(self, model, site, A, batch, trace, mu):
+        with block_products(model, site, A, batch[0], cache_block_input=self.cfg.cache_block_input) as p:
+            op=GGNProducts(p,batch[1])
+            u=self.inverse(op,p.parameter_refs,site,op.gradient,mu,trace)
+            return op.H(p.Jv(u)).reshape_as(op.probs).detach()
+
+    def refresh(self, model, dataset, indices, epoch):
+        sync(self.device); start=time.perf_counter()
+        batches=[augmented_batch(dataset, indices, self.args.stat_batch,
+                  self.generators['statistics'], self.device) for _ in range(self.args.stat_batches)]
+        statistics=(torch.cat([b[0] for b in batches]),torch.cat([b[1] for b in batches]))
+        measurement=augmented_batch(dataset,indices,self.args.vna_batch,self.generators['statistics'],self.device)
+        names=[b.name for b in model.growing_blocks()]
+        if self.args.sites != 'auto':
+            names=self.args.sites.split(',')
+            if not set(names) <= {b.name for b in model.growing_blocks()}: raise ValueError('unknown site')
+        self.warm={}
+        entries={}; components={'factors':0.,'selection':0.,'trace':0.,'gate_statistics':0.}
+        modes={m:m.training for m in model.modules()}; model.eval()
+        try:
+            # Upstream statistics / virtual layer construction have private global RNG.
+            with isolated_rng(self.generators['construction']):
+                for site in names:
+                    sync(self.device); t=time.perf_counter()
+                    candidate=tiny_candidate(model,site,statistics,self.args.rank,seed=self.seed('selection'))
+                    A,_=extract_tiny_A(model,candidate); A=normalize_A(model,site,A)
+                    sync(self.device); components['selection']+=time.perf_counter()-t
+                    t=time.perf_counter()
+                    if self.args.solver=='kfac':
+                        f=self.factors.setdefault(site,KFACBlockPreconditioner())
+                        f.refresh(model,site,measurement)
+                    sync(self.device); components['factors']+=time.perf_counter()-t
+                    t=time.perf_counter()
+                    from dataclasses import replace
+                    with block_products(model,site,A,measurement[0]) as p:
+                        op=GGNProducts(p,measurement[1]); trace=op.trace(replace(self.cfg,seed=self.seed('hutchinson')))
+                        mu=max(self.cfg.damping_rel*trace/op.size,1e-12)
+                    sync(self.device); components['trace']+=time.perf_counter()-t
+                    t=time.perf_counter()
+                    zs=[self.cotangent(model,site,A,b,trace,mu) for b in batches]
+                    selection_stats={}
+                    if self.args.selection!='tiny_U':
+                        A,selection_stats=tiny_V(model,site,batches,self.args.rank,cotangents=zs,cfg=self.cfg)
+                    z=self.cotangent(model,site,A,measurement,trace,mu)
+                    if self.args.selection=='greedy_V':
+                        A,selection_stats=greedy_V(model,site,A,measurement[0],z,
+                            r_max=self.args.rank,seed=self.seed('selection'),theta=self.args.dorfler_theta)
+                    V=score_A(model,site,A,measurement[0],z)
+                    if self.args.arm=='vna_random':
+                        A,random_stats=trace_matched_random_A(model,site,A,measurement[0],seed=self.seed('random_A'))
+                    else: random_stats=None
+                    sync(self.device); components['selection']+=time.perf_counter()-t
+                    # G1 is native TINY U-spectrum significance, diagnostic only.
+                    t=time.perf_counter()
+                    eigen=torch.as_tensor(candidate.payload['tiny_eigenvalues'],dtype=torch.float64).flatten()
+                    boot=[]
+                    x,y=statistics
+                    for xb,yb in zip(x.chunk(self.args.gate_boot),y.chunk(self.args.gate_boot)):
+                        c=tiny_candidate(model,site,(xb,yb),self.args.rank,seed=self.seed('selection'))
+                        e=torch.as_tensor(c.payload['tiny_eigenvalues']); boot.append(float(e.max()) if e.numel() else 0.)
+                    noise=float(torch.tensor(boot,dtype=torch.float64).mean()+2*torch.tensor(boot,dtype=torch.float64).std(unbiased=False))
+                    sync(self.device); components['gate_statistics']+=time.perf_counter()-t
+                    entries[site]={'A':A,'rank':len(A['weight']),'V':V,'trace_F':trace,'mu':mu,
+                        'lambda_1':float(eigen.max()) if eigen.numel() else 0.,'noise':noise,
+                        'G1':bool(eigen.numel() and float(eigen.max())>noise), 'random_trace':random_stats}
+        finally:
+            for m,mode in modes.items(): m.training=mode
+        ordered=sorted(entries,key=lambda s:entries[s]['V'],reverse=True)
+        if self.args.sites=='auto':
+            selected=[]; total=sum(e['V'] for e in entries.values()); captured=0.
+            for s in ordered[:self.args.max_sites]:
+                selected.append(s); captured+=entries[s]['V']
+                if captured>=self.args.dorfler_theta*total: break
+        else: selected=names
+        assert_disjoint_scopes(model,selected)
+        self.cache={s:entries[s] for s in selected}
+        self.factors={s:f for s,f in self.factors.items() if s in selected}
+        self.controller.update(refresh_epoch=epoch,refreshes=self.controller['refreshes']+1,
+            candidates={s:{k:v for k,v in e.items() if k!='A'} for s,e in entries.items()})
+        sync(self.device); components['refresh']=time.perf_counter()-start
+        return components
+
+    def correction(self, model, site, batch):
+        entry=self.cache[site]; A=entry['A']; trace=entry['trace_F']; mu=entry['mu']
+        records=[]
+        with block_products(model,site,A,batch[0],cache_block_input=self.cfg.cache_block_input) as p:
+            op=GGNProducts(p,batch[1]); refs=p.parameter_refs
+            u=self.inverse(op,refs,site,op.gradient,mu,trace,'u',records)
+            z=op.H(p.Jv(u)); V=float(p.JET(z).double().square().sum())
+            d=self.inverse(op,refs,site,op.COE(op.CEO(u)),mu,trace,'vna',records)
+            reference=project_bn_tangent(model,site,_unflatten(d,refs),self.cfg.project_bn)
+            delta=reference
+            if self.args.arm=='ngd':
+                d=self.inverse(op,refs,site,op.F(u),mu,trace,'ngd',records)
+                delta=project_bn_tangent(model,site,_unflatten(d,refs),self.cfg.project_bn)
+                delta,scale=norm_match(delta,reference)
+            flat=torch.cat([delta[n].flatten() for n,_ in refs]).double()
+            gain=float(op.gradient.dot(flat)); ref_flat=torch.cat([reference[n].flatten() for n,_ in refs]).double()
+            ref_gain=float(op.gradient.dot(ref_flat))
+            rho=self.args.lambda_vna*V/max(float(op.gradient.square().sum()),1e-30)
+            finite=bool(torch.isfinite(flat).all() and torch.isfinite(ref_flat).all())
+            skipped=not finite or not (gain>0 and ref_gain>0)
+            diag={'site':site,'rank':entry['rank'],'rho':rho,'V':V,'realized_gain':gain,
+                'vna_realized_gain':ref_gain,'vna_norm':norm(reference),'correction_norm':norm(delta),
+                'cg':records,'G1':entry['G1'],'G2':rho>.3,'G3':self.controller.get('G3'),'state':'active','bn_mode':'eval',
+                'skipped':skipped,'skip_reason':'nonfinite' if not finite else 'nonpositive_gain' if skipped else None}
+        return ({} if skipped else delta),diag
