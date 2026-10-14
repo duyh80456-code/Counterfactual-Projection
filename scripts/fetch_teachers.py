@@ -46,7 +46,7 @@ def fetch(name):
     return path
 
 
-def teacher_gate(name, path, data_dir, device):
+def teacher_gate(name, path, data_dir, device, *, max_batches=None, workers=4):
     size, digest, threshold = TEACHERS[name]
     verify(path, size, digest)
     with upstream() as models:
@@ -55,7 +55,10 @@ def teacher_gate(name, path, data_dir, device):
         original = cifar100.get_data_folder
         try:
             cifar100.get_data_folder = lambda: str(Path(data_dir).resolve())
-            _, loader = cifar100.get_cifar100_dataloaders(batch_size=64, num_workers=4)
+            _, loader = cifar100.get_cifar100_dataloaders(batch_size=64, num_workers=workers)
+            if max_batches:
+                from experiments.cifar_pilot import LimitedLoader
+                loader = LimitedLoader(loader, max_batches)
             model = models[name](num_classes=100)
             model.load_state_dict(torch.load(path, map_location='cpu', weights_only=False)['model'])
             model.to(device).eval()
@@ -66,7 +69,9 @@ def teacher_gate(name, path, data_dir, device):
         finally:
             cifar100.get_data_folder = original
     return {'teacher': name, 'sha256': digest, 'size': size, 'top1': float(acc),
-            'threshold': threshold, 'status': 'PASS' if float(acc) >= threshold else 'FAIL'}
+            'threshold': threshold, 'test_batches': len(loader), 'report_only': bool(max_batches),
+            'status': 'PILOT' if max_batches else 'PASS' if float(acc) >= threshold else 'FAIL',
+            'threshold_met': float(acc) >= threshold}
 
 
 def main():

@@ -15,34 +15,43 @@ from diagnostics.vna_gate import evaluate_gate, setting_config
 from experiments.stage_b5 import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
 from experiments.shared_protocol import seed_everything
-from scripts.fetch_teachers import TEACHERS, verify, UPSTREAM
+from scripts.fetch_teachers import TEACHERS, verify, fetch, teacher_gate, UPSTREAM
+from experiments.cifar_pilot import add_arguments, start_memory, pilot_summary
 
 REFERENCE = {'b1': {'resnet8x4': 72.50, 'wrn_16_2': 73.26},
              'b2': {'resnet8x4': 73.33, 'wrn_16_2': 74.92}}
 SOURCE = 'https://github.com/HobbitLong/RepDistiller#benchmark-results-on-cifar-100'
 
 
-def measurement(metadata, mu, *, fake=False):
+def measurement(metadata, mu, *, fake=False, pilot=False):
     def context(ctx, batch): return loss_context(ctx['teacher'], batch)
-    if fake: return FakeMeasurement(metadata, sites_for, context)
+    if fake and not pilot: return FakeMeasurement(metadata, sites_for, context)
     return B3Measurement(metadata, mu_rel_default=mu, sites_fn=sites_for,
-                         context_fn=context, ranks=(4, 16, 64), groups=False)
+                         context_fn=context, ranks=(4,) if pilot else (4, 16, 64), groups=False,
+                         null_repeats=2 if pilot else 8, cg_iters=200 if pilot else 1000)
 
 
 def run(args, *, measure_override=None, observe=None):
-    out = Path(args.out or f'outputs/stageB/{args.setting}_{args.student}').resolve()
+    out = Path(args.out or f'outputs/{"pilot" if args.pilot else "stageB"}/{args.setting}_{args.student}').resolve()
     out.mkdir(parents=True, exist_ok=True)
     data_dir = str(Path(args.data_dir).resolve())
     if args.fake_data: torch.set_num_threads(1)
     if args.device.startswith('cuda'): torch.cuda.set_device(torch.device(args.device))
+    if args.pilot: start_memory(args.device)
     seed_everything(0)
     np.random.seed(0)
     meta = {'schema_version': 'stage1d-v1', 'setting': args.setting.upper(), 'student': args.student,
             'code_commit': code_commit(), 'seed': 0, 'device': args.device,
-            'smoke': args.smoke, 'fake_data': args.fake_data}
+            'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data}
     def persist(hook):
         write_csv(out/'measurements.csv', hook.rows)
         write_csv(out/'epochs.csv', [{**meta, **r} for r in hook.epochs])
+    if args.pilot and args.setting == 'b2' and not args.fake_data:
+        name = PAIRS[args.student]
+        teacher_path = Path(args.teacher).resolve() if args.teacher else fetch(name)
+        report = teacher_gate(name, teacher_path, data_dir, args.device, max_batches=5,
+                              workers=args.workers)
+        write_json(out/'teacher_gate.json', {**report, 'status': 'PILOT', 'report_only': True})
     with upstream() as models:
         entry = importlib.import_module('train_teacher' if args.setting == 'b1' else 'train_student')
         argv = ['train_teacher.py', '--model', args.student, '--trial', '0']
@@ -59,11 +68,11 @@ def run(args, *, measure_override=None, observe=None):
             argv = ['train_student.py', '--model_s', args.student, '--path_t', str(teacher),
                     '--distill', 'kd', '-r', '.1', '-a', '.9', '-b', '0', '--trial', '0']
         argv += ['--num_workers', str(args.workers)]
-        if args.smoke: argv += ['--epochs', '2']
+        if args.smoke or args.pilot: argv += ['--epochs', '2']
         if args.fake_data: argv += ['--batch_size', '4']
-        measure = measure_override if measure_override is not None else measurement(meta, args.mu_rel_default, fake=args.fake_data)
+        measure = measure_override if measure_override is not None else measurement(meta, args.mu_rel_default, fake=args.fake_data, pilot=args.pilot)
         hook = RepDistillerHook(measure, persist=persist, observe=observe, smoke=args.smoke, fake=args.fake_data,
-                               data_dir=data_dir, batch_size=4 if args.fake_data else 64)
+                               data_dir=data_dir, batch_size=4 if args.fake_data else 64, pilot=args.pilot, pilot_batches=args.pilot_batches)
         # Upstream chooses CUDA by availability; suppress only for an explicit CPU request.
         cuda = patch('torch.cuda.is_available', return_value=False) if args.device == 'cpu' else nullcontext()
         started = time.monotonic()
@@ -93,13 +102,17 @@ def run(args, *, measure_override=None, observe=None):
     cfg['final_train_acc'] = hook.epochs[-1]['train_acc']
     gate = {**meta, **evaluate_gate(hook.rows, cfg)}
     if args.smoke or args.fake_data: gate['status'] = 'INVALID'
+    if args.pilot: gate['status'] = 'PILOT'
     write_json(out/'reproduction.json', reproduction)
     write_json(out/'gate.json', gate)
     diagnostic = sum(p['seconds'] for p in hook.point_seconds)
     write_json(out/'summary.json', {**meta, 'seconds': seconds, 'training_seconds': seconds-diagnostic,
                'epochs_run': len(hook.epochs), 'measurement_point_seconds': hook.point_seconds,
                'final_test_acc': float(acc), 'parameter_count': sum(p.numel() for p in hook.model.parameters()),
-               'gate': gate, 'resume_supported': False})
+               'gate': gate, 'resume_supported': False,
+               **(pilot_summary(hook.epochs, hook.point_seconds, hook.rows, args.device,
+                   full_epochs=240, full_points=15, full_batches=hook.full_batches,
+                   pilot_batches=hook.train_batches) if args.pilot else {})})
     return hook
 
 
@@ -108,6 +121,7 @@ def parser():
     p.add_argument('setting', choices=('b1', 'b2'))
     p.add_argument('--student', choices=PAIRS, required=True)
     p.add_argument('--teacher')
+    add_arguments(p)
     p.add_argument('--smoke', action='store_true')
     p.add_argument('--fake-data', action='store_true')
     p.add_argument('--device', default='cuda:0')

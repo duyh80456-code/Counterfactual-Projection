@@ -1,10 +1,10 @@
 """Plain 200-epoch CIFAR-100 recipe with resumable periodic checkpoints."""
 from __future__ import annotations
 import argparse
-from itertools import islice
 from pathlib import Path
 import time
 
+from experiments.cifar_pilot import LimitedLoader
 from experiments.vna_provenance import code_commit, resume_code_history
 import torch
 from experiments.shared_protocol import (atomic_torch_save, atomic_json_save,
@@ -61,13 +61,15 @@ def run(args):
             raise ValueError("--gpu-data requires uint8 CIFAR, not fake tensors")
         loader = DeviceTrainLoader(DeviceCIFAR(train, device), indices, args.batch_size, args.seed + 1, loader_state)
     eval_loader = make_eval_loader(evaluation, eval_indices, args.batch_size, args.workers)
+    if getattr(args, 'eval_limit_batches', None):
+        eval_loader = LimitedLoader(eval_loader, args.eval_limit_batches)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     for current in range(epoch + 1, min(200, args.max_epochs) + 1):
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         start = time.perf_counter()
-        batches = islice(loader, args.limit_batches) if args.limit_batches else loader
+        batches = LimitedLoader(loader, args.limit_batches) if args.limit_batches else loader
         metrics = fast_train_epoch(model, batches, optimizer, device, amp=args.amp,
                                    scaler=scaler, channels_last=args.channels_last)
         if device.type == "cuda":

@@ -579,3 +579,41 @@ Verification: pyflakes passed on the five touched Python files. The single
 fake-data regression BP CLI smoke completed 100 steps in 34.6 seconds and
 wrote six midpoint rows, each with 25 current-task samples and purity 1.0.
 The synthetic measurements remain INVALID. No pytest invocation or commit.
+
+## CIFAR pilot
+
+`stage_b12`, `stage_b3`, and `stage_b4` accept `--pilot --pilot-batches 20`.
+Real CIFAR and the registered training loops are retained, with two epochs
+(B3: two tasks × two epochs), bounded train iterators, and validation/test
+iterators capped at five batches. Exactly one real diagnostic runs at epoch 2
+(B3: task 2, exercising iCaRL KD), using rank 4, two null repeats and 200 CG
+iterations. Rows retain all gate inputs. Fake pilot checks use four measurement
+samples to keep the CPU check small; real pilots retain the 128-sample buffer.
+B2 fetches/hash-verifies its teacher and reports a five-batch teacher gate;
+full teacher gating remains unchanged. Pilot gate files always report `PILOT`.
+
+Defaults write to `outputs/pilot/<setting>/`. Summaries record individual epoch
+and measurement times, peak allocated GPU memory in bytes, gate-key coverage,
+and projected full GPU-hours: mean epoch seconds × full epochs × full/pilot
+batch ratio + mean measurement seconds × full measurement points, divided by
+3600. The reduced diagnostic cost can underestimate full measurement costs.
+B4 `train --pilot` trains then measures its epoch-2 checkpoint in one process;
+`measure --pilot` can also measure an existing pilot checkpoint.
+
+`scripts/build_kaggle_vna_cifar_pilot.py --commit <40-character SHA>` generates
+`notebooks/kaggle_vna_cifar_pilot.ipynb`, reusing pinned nb2 setup/dependencies
+and Kaggle CIFAR discovery, without pytest or archives. GPU0 runs B3, B1
+resnet8x4, then B1 wrn_16_2; GPU1 runs B2 resnet8x4, B2 wrn_16_2, then B4.
+Each job captures stdout/stderr in its own log and failures leave both queues
+running. The final table includes failure log tails and all cost/schema fields,
+with separate nb2/nb3 projected totals (marked partial when jobs fail).
+Regenerate with the published revision containing the pilot before Kaggle.
+
+Verification: pyflakes passed on all touched Python files and runner/builder
+`--help` passed. One fake-data CPU pilot per runner was attempted with a
+115-second timeout and one training batch per epoch. B2 and B4 completed two
+training epochs but timed out in real diagnostics. B3 hit the sandbox's shared
+memory restriction in PyCIL's hard-coded four-worker exemplar loaders; the
+runtime adapter now applies `--workers` to those loaders too. That fix was
+linted, without another pilot invocation. End-to-end summaries and real T4
+runtime remain unverified locally. No pytest or commit.

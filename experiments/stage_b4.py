@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 import torch
 from experiments import train_recipe_checkpoints as recipe
+from experiments.cifar_pilot import LimitedLoader, add_arguments, start_memory, pilot_summary, batches
 from experiments.vna_support import setup_data, augmented_batch
 from experiments.vna_provenance import code_commit
 from experiments.stage_b5 import write_json, write_csv
@@ -38,24 +39,28 @@ def context(ctx, batch): return CE(), {'targets': batch[1]}
 
 
 def run(args):
-    out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out or ('outputs/pilot/b4' if args.pilot else 'outputs/stageB/b4')).resolve(); out.mkdir(parents=True, exist_ok=True)
     if args.fake_data: torch.set_num_threads(1)
+    if args.pilot: start_memory(args.device)
     if args.mode == 'train':
         params = recipe.parser().parse_args([])
         params.architecture = 'resnet18-quarter'
         params.device, params.fake_data, params.data_root = args.device, args.fake_data, args.data_dir
         params.output, params.workers, params.resume = str(out/'recipe'), args.workers, args.resume
-        if args.smoke: params.max_epochs = 2
+        if args.smoke or args.pilot: params.max_epochs = 2
         if args.fake_data: params.limit_batches = 2; params.batch_size = 4
+        if args.pilot:
+            params.limit_batches = args.pilot_batches
+            params.eval_limit_batches = 5
         latest = recipe.run(params)
         # Report the official test once, using the final model, never a best model.
         final_path = out/'final_test.json'
         saved_final = json.loads(final_path.read_text()) if final_path.exists() else {}
-        if not args.resume or saved_final.get('epoch') != (2 if args.smoke else 200):
+        if not args.resume or saved_final.get('epoch') != (2 if args.smoke or args.pilot else 200):
             from experiments.shared_protocol import evaluate
             from torch.utils.data import DataLoader
             checkpoint = torch.load(latest, map_location='cpu', weights_only=False)
-            if checkpoint['epoch'] != (2 if args.smoke else 200): raise ValueError('incomplete B4 training')
+            if checkpoint['epoch'] != (2 if args.smoke or args.pilot else 200): raise ValueError('incomplete B4 training')
             final_model = build_model(args.device)
             final_model.load_state_dict(checkpoint['model'])
             _, evaluation, _, _, eval_indices, _ = setup_data(args.data_dir, args.fake_data, 0)
@@ -66,13 +71,15 @@ def run(args):
             else:
                 from torchvision.datasets import CIFAR100
                 evaluation = CIFAR100(args.data_dir, train=False, transform=evaluation.transform, download=False)
-            metrics = evaluate(final_model, DataLoader(evaluation, batch_size=64, num_workers=args.workers), args.device)
+            test_loader = DataLoader(evaluation, batch_size=64, num_workers=args.workers)
+            if args.pilot: test_loader = LimitedLoader(test_loader, 5)
+            metrics = evaluate(final_model, test_loader, args.device)
             write_json(final_path, {'final_test_acc': 100*metrics['accuracy'], 'epoch': checkpoint['epoch'],
-                                   'smoke': args.smoke, 'fake_data': args.fake_data})
-        if not args.smoke: return
+                                   'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data})
+        if not args.smoke and not args.pilot: return
     model = build_model(args.device)
     meta = {'schema_version': 'stage1d-v1', 'setting': 'B4', 'code_commit': code_commit(),
-            'seed': 0, 'device': args.device, 'smoke': args.smoke, 'fake_data': args.fake_data,
+            'seed': 0, 'device': args.device, 'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data,
             'parameter_count': sum(p.numel() for p in model.parameters())}
     train, _, indices, _, _, _ = setup_data(args.data_dir, args.fake_data, 0)
     if args.fake_data:
@@ -80,16 +87,19 @@ def run(args):
         train = TensorDataset(torch.nn.functional.interpolate(train.tensors[0], size=32), train.tensors[1])
     g = dedicated_generator(0, 'b4-checkpoint-batch')
     rows, epochs, costs = [], [], []
-    measure = (FakeMeasurement(meta, sites_for, context) if args.fake_data else
+    measure = (FakeMeasurement(meta, sites_for, context) if args.fake_data and not args.pilot else
                B3Measurement(meta, mu_rel_default=args.mu_rel_default, context_fn=context,
-                             sites_fn=sites_for, ranks=(4, 16, 64), groups=False))
+                             sites_fn=sites_for, ranks=(4,) if args.pilot else (4, 16, 64), groups=False,
+                             null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000))
     isolated = MeasurementHook(measure, seed=0)
     started = time.monotonic()
     paths = sorted((out/'recipe').glob('epoch_*.pt'))
     for path in paths:
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         epoch = checkpoint['epoch']
-        if epoch not in POINTS and not (args.smoke and epoch == 2): continue
+        if args.pilot:
+            if epoch != 2: continue
+        elif epoch not in POINTS and not (args.smoke and epoch == 2): continue
         if checkpoint['protocol']['architecture'] != 'resnet18-quarter': raise ValueError('wrong B4 checkpoint')
         if checkpoint['protocol']['fake_data'] != args.fake_data: raise ValueError('B4 data mismatch')
         model.load_state_dict(checkpoint['model'])
@@ -110,6 +120,7 @@ def run(args):
     gate = {**meta, **evaluate_gate(rows, cfg)}
     expected = POINTS if not args.smoke else {2}
     if args.smoke or args.fake_data or not expected <= {r['epoch'] for r in epochs}: gate['status'] = 'INVALID'
+    if args.pilot: gate['status'] = 'PILOT'
     write_json(out/'gate.json', gate)
     history = json.loads((out/'recipe/history.json').read_text())
     write_csv(out/'epochs.csv', [{**meta, 'epoch': h['epoch'], 'train_acc': h['train']['accuracy'],
@@ -118,16 +129,21 @@ def run(args):
     write_json(out/'summary.json', {**meta, 'gate': gate, 'seconds': time.monotonic()-started,
                'training_seconds': sum(r['seconds'] for r in history), 'epochs_run': len(history),
                'measurement_point_seconds': costs, 'resume_supported': True,
-               'final_test': json.loads((out/'final_test.json').read_text()) if (out/'final_test.json').exists() else None})
+               'final_test': json.loads((out/'final_test.json').read_text()) if (out/'final_test.json').exists() else None,
+               **(pilot_summary(history, costs, rows, args.device, full_epochs=200, full_points=12,
+                   full_batches=batches(len(indices), 4 if args.fake_data else 64),
+                   pilot_batches=min(args.pilot_batches, batches(len(indices), 4 if args.fake_data else 64)))
+                   if args.pilot else {})})
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode', choices=('train', 'measure'))
+    add_arguments(p)
     p.add_argument('--smoke', action='store_true')
     p.add_argument('--fake-data', action='store_true')
     p.add_argument('--device', default='cuda:0')
-    p.add_argument('--out', default='outputs/stageB/b4')
+    p.add_argument('--out')
     p.add_argument('--data-dir', default='data')
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--mu-rel-default', type=float, default=.01)

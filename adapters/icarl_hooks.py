@@ -1,6 +1,7 @@
 """Read-only interception of the pinned PyCIL loader and epoch scheduler."""
 from contextlib import contextmanager
 import inspect
+from itertools import islice
 import time
 import numpy as np
 import torch
@@ -50,8 +51,10 @@ def loss_context(learner, batch):
 
 
 class ICaRLHook:
-    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None):
-        self.buffer = MeasurementBuffer(128)
+    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False):
+        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
+        self.pilot, self.pilot_batches = pilot, pilot_batches
+        self.batch_counts = []
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
         self.persist, self.observe = persist, observe
         self.rows, self.epochs, self.tasks, self.point_seconds = [], [], [], []
@@ -66,9 +69,10 @@ class ICaRLHook:
         train_acc = round(float(values['correct']) * 100 / values['total'], 2) / 100
         self.epochs.append({'task': learner._cur_task+1, 'epoch': epoch,
                             'train_loss': values['losses']/len(learner.train_loader),
-                            'train_acc': train_acc})
+                            'train_acc': train_acc, 'seconds': time.monotonic()-self.epoch_started})
         if self.observe: self.observe(learner, optimizer)
-        if self.measurement and epoch in {1, 10, max(1, last//2), last}:
+        point = learner._cur_task == 1 and epoch == 2 if self.pilot else epoch in {1, 10, max(1, last//2), last}
+        if self.measurement and point:
             device = next(learner._network.parameters()).device
             batch = tuple(t.to(device) for t in self.buffer.batch())
             model = Prediction(learner._network)
@@ -109,8 +113,15 @@ class ICaRLHook:
         original_train, original_eval = icarl.iCaRL._train, icarl.iCaRL.eval_task
         hook = self
         class BufferedLoader(original_loader):
+            limit = None
+            def __len__(self):
+                length = super().__len__()
+                return min(length, self.limit) if self.limit else length
             def __iter__(self):
-                for item in super().__iter__():
+                if hook.learner is not None and self is hook.learner.train_loader:
+                    hook.epoch_started = time.monotonic()
+                iterator = super().__iter__()
+                for item in islice(iterator, self.limit) if self.limit else iterator:
                     if hook.learner is not None and self is hook.learner.train_loader:
                         hook.buffer.update((item[1], item[2])); hook.steps += 1
                     yield item
@@ -127,6 +138,11 @@ class ICaRLHook:
         def train(learner, *args, **kwargs):
             hook.learner = learner
             hook.buffer.samples.clear()
+            if hook.pilot:
+                full = len(learner.train_loader)
+                learner.train_loader.limit = hook.pilot_batches
+                learner.test_loader.limit = 5
+                hook.batch_counts.append({'full': full, 'pilot': len(learner.train_loader)})
             try: return original_train(learner, *args, **kwargs)
             finally: hook.learner = None
         def evaluate(learner, *args, **kwargs):

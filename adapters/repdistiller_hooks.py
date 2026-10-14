@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset, TensorDataset
 from diagnostics.vna_align import MeasurementBuffer, MeasurementHook, _global_state
+from experiments.cifar_pilot import LimitedLoader
 from methods.vna_losses import CE, KDRepDistiller
 from methods.vna_sites import HookSite
 
@@ -68,20 +69,21 @@ def loss_context(teacher, batch):
     return KDRepDistiller(alpha=.1, beta=.9, T=4), ctx
 
 
-class BufferedLoader:
-    def __init__(self, loader, hook): self.loader, self.hook = loader, hook
-    def __len__(self): return len(self.loader)
-    def __getattr__(self, name): return getattr(self.loader, name)
+class BufferedLoader(LimitedLoader):
+    def __init__(self, loader, hook, limit=None):
+        super().__init__(loader, limit)
+        self.hook = hook
     def __iter__(self):
-        for batch in self.loader:
+        for batch in super().__iter__():
             self.hook.buffer.update(batch[:2]); self.hook.steps += 1
             yield batch
 
 
 class RepDistillerHook:
     def __init__(self, measure=None, *, persist=None, observe=None, smoke=False, fake=False,
-                 data_dir=None, batch_size=64):
-        self.buffer = MeasurementBuffer(128)
+                 data_dir=None, batch_size=64, pilot=False, pilot_batches=20):
+        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
+        self.pilot, self.pilot_batches = pilot, pilot_batches
         self.measurement = MeasurementHook(measure, seed=0) if measure else None
         self.persist, self.observe = persist, observe
         self.smoke, self.fake, self.data_dir, self.batch_size = smoke, fake, data_dir, batch_size
@@ -113,7 +115,12 @@ class RepDistillerHook:
                                       shuffle=True, num_workers=native.num_workers)
             val = DataLoader(Subset(holdout, trigger+evaluation), batch_size=self.test_loader.batch_size,
                              shuffle=False, num_workers=self.test_loader.num_workers)
-        result = (BufferedLoader(train_loader, self), val)
+        self.full_batches = len(train_loader)
+        self.train_batches = min(len(train_loader), self.pilot_batches) if self.pilot else len(train_loader)
+        if self.pilot:
+            val = LimitedLoader(val, 5)
+            self.test_loader = LimitedLoader(self.test_loader, 5)
+        result = (BufferedLoader(train_loader, self, self.pilot_batches if self.pilot else None), val)
         return (*result, len(train_loader.dataset)) if instance else result
 
     def measure(self, epoch):
@@ -156,5 +163,5 @@ class RepDistillerHook:
                             'eval_loss': float(values['test_loss']), 'lr': self.optimizer.param_groups[0]['lr'],
                             'seconds': values['time2']-values['time1']})
         if self.observe: self.observe(self.model, self.optimizer)
-        if epoch in POINTS or self.smoke and epoch == 2: self.measure(epoch)
+        if (epoch == 2 if self.pilot else epoch in POINTS or self.smoke and epoch == 2): self.measure(epoch)
         if self.persist: self.persist(self)
