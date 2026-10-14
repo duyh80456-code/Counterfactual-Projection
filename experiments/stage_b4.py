@@ -115,12 +115,19 @@ def run(args):
                        'eval_loss': history['eval']['loss'], 'lr': history['lr'], 'seconds': history['seconds']})
         write_csv(out/'measurements.csv', rows); write_csv(out/'epochs.csv', epochs)
     if not epochs: raise ValueError('no B4 measurement checkpoints available')
-    cfg = setting_config('B4', mu_rel_default=args.mu_rel_default)
-    cfg['final_train_acc'] = epochs[-1]['train_acc']
-    gate = {**meta, **evaluate_gate(rows, cfg)}
-    expected = POINTS if not args.smoke else {2}
-    if args.smoke or args.fake_data or not expected <= {r['epoch'] for r in epochs}: gate['status'] = 'INVALID'
-    if args.pilot: gate['status'] = 'PILOT'
+    by_mu = {}
+    for mu in (1e-2, 1e-3):
+        cfg = setting_config('B4', mu_rel_default=mu)
+        cfg['final_train_acc'] = epochs[-1]['train_acc']
+        gate = {**meta, **evaluate_gate(rows, cfg)}
+        expected = POINTS if not args.smoke else {2}
+        if args.smoke or args.fake_data or not expected <= {r['epoch'] for r in epochs}: gate['status'] = 'INVALID'
+        if args.pilot: gate['status'] = 'PILOT'
+        by_mu[str(mu)] = gate
+        write_json(out/f'gate_mu_{mu}.json', gate)
+    official_mu = args.official_mu
+    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+            'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'gate.json', gate)
     history = json.loads((out/'recipe/history.json').read_text())
     write_csv(out/'epochs.csv', [{**meta, 'epoch': h['epoch'], 'train_acc': h['train']['accuracy'],
@@ -148,6 +155,7 @@ def parser():
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--mu-rel-default', type=float, default=.01)
     p.add_argument('--mu-source', default='cli/default')
+    p.add_argument('--official-mu', type=float, choices=(1e-2, 1e-3))
     p.add_argument('--resume')
     return p
 

@@ -98,11 +98,18 @@ def run(args, *, measure_override=None, observe=None):
                     'difference_pp': float(acc)-reference, 'flag_gt_2pp': abs(float(acc)-reference) > 2,
                     'reference_source': SOURCE, 'reference_only': True,
                     'deviation': 'upstream 50k -> existing setup_data indices (44872 train, 5000 holdout, 128 tuning excluded)'}
-    cfg = setting_config(args.setting.upper(), mu_rel_default=args.mu_rel_default)
-    cfg['final_train_acc'] = hook.epochs[-1]['train_acc']
-    gate = {**meta, **evaluate_gate(hook.rows, cfg)}
-    if args.smoke or args.fake_data: gate['status'] = 'INVALID'
-    if args.pilot: gate['status'] = 'PILOT'
+    by_mu = {}
+    for mu in (1e-2, 1e-3):
+        cfg = setting_config(args.setting.upper(), mu_rel_default=mu)
+        cfg['final_train_acc'] = hook.epochs[-1]['train_acc']
+        gate = {**meta, **evaluate_gate(hook.rows, cfg)}
+        if args.smoke or args.fake_data: gate['status'] = 'INVALID'
+        if args.pilot: gate['status'] = 'PILOT'
+        by_mu[str(mu)] = gate
+        write_json(out/f'gate_mu_{mu}.json', gate)
+    official_mu = args.official_mu
+    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+            'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction.json', reproduction)
     write_json(out/'gate.json', gate)
     diagnostic = sum(p['seconds'] for p in hook.point_seconds)
@@ -130,6 +137,7 @@ def parser():
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--mu-rel-default', type=float, default=.01)
     p.add_argument('--mu-source', default='cli/default')
+    p.add_argument('--official-mu', type=float, choices=(1e-2, 1e-3))
     return p
 
 

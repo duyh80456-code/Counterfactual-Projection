@@ -138,14 +138,21 @@ def run(args):
         persist(hook)
     seconds = time.monotonic()-started
     baseline = reproduction_gate(hook.tasks, smoke=args.smoke, fake=args.fake_data)
-    cfg = setting_config('B3', mu_rel_default=args.mu_rel_default)
-    cfg['final_train_acc'] = hook.epochs[-1]['train_acc'] if hook.epochs else None
-    gate = evaluate_gate(hook.rows, cfg)
-    gate.update(reproduction=baseline, measurements_valid=baseline['status'] == 'PASS')
-    if baseline['status'] != 'PASS': gate['status'] = 'INVALID'
-    if args.pilot:
-        baseline['status'] = gate['status'] = 'PILOT'
-        gate['measurements_valid'] = False
+    by_mu = {}
+    for mu in (1e-2, 1e-3):
+        cfg = setting_config('B3', mu_rel_default=mu)
+        cfg['final_train_acc'] = hook.epochs[-1]['train_acc'] if hook.epochs else None
+        gate = evaluate_gate(hook.rows, cfg)
+        gate.update(reproduction=baseline, measurements_valid=baseline['status'] == 'PASS')
+        if baseline['status'] != 'PASS': gate['status'] = 'INVALID'
+        if args.pilot:
+            baseline['status'] = gate['status'] = 'PILOT'
+            gate['measurements_valid'] = False
+        by_mu[str(mu)] = gate
+        write_json(out/f'gate_mu_{mu}.json', gate)
+    official_mu = args.official_mu
+    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+            'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction_gate.json', baseline)
     write_json(out/'gate.json', gate)
     diagnostic_seconds = sum(p['seconds'] for p in hook.point_seconds)
@@ -171,6 +178,7 @@ def main():
     p.add_argument('--data-dir')
     p.add_argument('--mu-rel-default', type=float, default=.01)
     p.add_argument('--mu-source', default='cli/default')
+    p.add_argument('--official-mu', type=float, choices=(1e-2, 1e-3))
     run(p.parse_args())
 
 

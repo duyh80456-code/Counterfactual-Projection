@@ -25,7 +25,8 @@ def build(commit, number):
                    'args': ['b2', '--student', 'wrn_16_2'], 'teacher': 'wrn_40_2', 'epochs': 240, 'points': 15}]]
     return {'cells': [cell('markdown', f'''# VNA Stage B — Notebook {number}
 T4×2, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.
-Run after nb1; attach its Stage A summary for μ (otherwise a warned 1e-2 fallback).
+Both μ candidates (1e-3 and 1e-2) are measured independently of nb1.
+Attach its Stage A summary to select the official μ; otherwise it remains pending.
 Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.
 Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch
 smokes include all measurement sites/ranks/nulls and feed the total GPU-hour
@@ -36,7 +37,7 @@ is uncommitted, regenerate with the eventual published commit before Kaggle.
 '''), cell('code', f'''REPO_COMMIT = "{commit}"
 GPU_HOURS_BUDGET = 8
 ALLOW_OVER_BUDGET = False
-MU_REL_DEFAULT = 1e-2
+MU_REL_DEFAULT = 1e-3
 DISK_CAP_BYTES = 5_000_000_000
 LANES = {repr(lanes)}
 '''), cell('code', bootstrap), cell('code', setup), cell('code', RUNTIME),
@@ -67,6 +68,8 @@ def command(job, out, *, smoke=False, measure=False):
     cmd = [sys.executable, "-u", "-m", job["module"], *args, "--out", str(out),
            "--device", "cuda:0", "--workers", "2", "--data-dir", str(DATA_ROOT),
            "--mu-rel-default", str(MU_REL_DEFAULT), "--mu-source", MU_SOURCE]
+    if OFFICIAL_MU is not None:
+        cmd += ["--official-mu", str(OFFICIAL_MU)]
     if not smoke and job["name"] == "b4" and (out / "recipe/latest.pt").exists() and job["args"] == ["train"] and not measure:
         cmd += ["--resume", str(out / "recipe/latest.pt")]
     return cmd + (["--smoke"] if smoke else [])
@@ -170,11 +173,13 @@ import matplotlib.pyplot as plt
 print("Per-lane seconds:", lane_timings)
 teacher = STAGE_B / "teacher_gate.json"
 print("TEACHER GATE", teacher.read_text() if teacher.exists() else "no teachers in this archive")
-gates = {}; reproduction = []
+gates = {}; reproduction = []; gate_rows = []
 for folder in sorted(STAGE_B.iterdir()):
     if not folder.is_dir() or not (folder / "gate.json").exists(): continue
     gate = json.loads((folder / "gate.json").read_text()); gates[folder.name] = gate
-    print("GATE G", folder.name, gate)
+    for mu, result in gate["by_mu"].items():
+        gate_rows.append({"setting": folder.name, "mu": float(mu),
+                          "status": result["status"], "official": float(mu) == OFFICIAL_MU})
     for filename in ("reproduction.json", "reproduction_gate.json"):
         path = folder / filename
         if path.exists(): reproduction.append({"setting_name": folder.name, **json.loads(path.read_text())})
@@ -194,6 +199,9 @@ for folder in sorted(STAGE_B.iterdir()):
 merged_path = STAGE_B / "gate.json"
 merged = json.loads(merged_path.read_text()) if merged_path.exists() else {}
 merged.update(gates); merged_path.write_text(json.dumps(merged, indent=2))
+if OFFICIAL_MU is None: print("official μ pending Stage A (nb1)")
+gate_table = pd.DataFrame(gate_rows, columns=["setting", "mu", "status", "official"])
+display(gate_table.style.apply(lambda row: ["background-color: #fff2cc" if row["official"] else ""] * len(row), axis=1))
 display(pd.DataFrame(reproduction))
 archive_outputs()
 '''
@@ -207,8 +215,9 @@ def without_pytest(setup):
 
 
 MU_SETUP = '''
-MU_REL_DEFAULT = 1e-2
-MU_SOURCE = "fallback:1e-2"
+MU_REL_DEFAULT = 1e-3
+OFFICIAL_MU = None
+MU_SOURCE = "both-candidates"
 inputs = Path("/kaggle/input")
 candidates = sorted(inputs.glob("**/stageA/summary.json"))
 candidates += [p for p in sorted(inputs.rglob("summary.json")) if p not in candidates]
@@ -216,9 +225,7 @@ for path in candidates:
     try:
         summary = json.loads(path.read_text())
     except (ValueError, OSError): continue
-    if "mu_rel_default" in summary:
-        MU_REL_DEFAULT = summary["mu_rel_default"]; MU_SOURCE = str(path); break
-else:
-    print("*** WARNING: NO ATTACHED STAGE A MU; USING 1e-2 ***", flush=True)
-print("mu_rel_default:", MU_REL_DEFAULT, "mu_source:", MU_SOURCE)
+    if "mu_rel_default" in summary and (path.parent.name == "stageA" or "mu_rule" in summary):
+        OFFICIAL_MU = float(summary["mu_rel_default"]); break
+print("measurement μ candidates:", (1e-3, 1e-2), "official μ:", OFFICIAL_MU)
 '''
