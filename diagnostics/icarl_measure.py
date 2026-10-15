@@ -18,12 +18,16 @@ from experiments.vna_resume import measurement_update
 
 class B3Measurement:
     def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000, sites_fn=sites_for,
-                 context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8, solver="auto", output_exact_max=4096, cg_tol=1e-6):
-        self.metadata = metadata
-        self.mus = [1e-3, 1e-2]
+                 context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8, solver="auto", output_exact_max=4096, cg_tol=1e-6, measure_profile='full'):
+        if measure_profile not in ('full', 'quick'): raise ValueError('unknown measurement profile')
+        self.measure_profile = measure_profile
+        self.metadata = {**metadata, 'measure_profile': measure_profile}
+        self.mus = [1e-2] if measure_profile=='quick' else [1e-3, 1e-2]
         self.cg_iters = cg_iters
         self.solver, self.output_exact_max, self.cg_tol = solver, output_exact_max, cg_tol
-        self.sites_fn, self.ranks, self.groups = sites_fn, ranks, groups
+        self.sites_fn, self.ranks, self.groups = sites_fn, ((16,) if measure_profile=='quick' else ranks), groups
+        self.site_names = ('stage_1.4', 'stage_2.4', 'stage_3.4') if measure_profile=='quick' else None
+        self.verify_first_only = measure_profile=='quick'
         self.context_fn = context_fn or (lambda ctx, batch: loss_context(ctx['learner'], batch))
         self.null_repeats = null_repeats
 
@@ -38,6 +42,11 @@ class B3Measurement:
         _, stat_ctx = self.context_fn(ctx, stat)
         _, eval_ctx = self.context_fn(ctx, evaluation)
         sites = self.sites_fn(model)
+        if self.site_names is not None:
+            sites = [s for s in sites if any(s.first.endswith(name+'.conv_a') for name in self.site_names)]
+        if not sites: raise ValueError('measurement profile selected no sites')
+        from adapters.pilot_icarl import activity_stats
+        stats = activity_stats(model, stat, sites)
         rows = []
         with torch.no_grad():
             g = loss_spec.residual(model(stat[0]), stat_ctx)
@@ -99,7 +108,9 @@ class B3Measurement:
                     measurement_update(solve='tiny_V:correction')
                     checked = joint_correction(model, [site], {site: A}, evaluation, cfg, cache.ctx['names'],
                         mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx,
-                        output_factor=cache.factor(evaluation, eval_ctx))[3]
+                        output_factor=cache.factor(evaluation, eval_ctx))[3] if (first_point or not self.verify_first_only) else {
+                            'cg_converged': cache.converged(), 'cg_iters_used': 0, 'cg_rel_residual': 0.,
+                            'raw_gain': None, 'realized_gain': None, 'finite': True, 'V': real['V']}
                     consistency = verify_energy(real, checked)
                     random, _ = prepare_A(model, site, random_A_like(A, generator=generator), 'random_frob', reference=A)
                     random_record = score(random)
@@ -141,6 +152,7 @@ class B3Measurement:
                            'V_consistency': consistency, **comparison, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
                            'lambda1': lam, 'subspace_sim': similarity,
+                           **{k:v for k,v in stats[site.module_name].items() if k!='dormant_indices'},
                            'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['epoch']}:{ctx['step']}:{mu_rel}",
                            **null_columns(lam, real['rho'], values, real['nu'])}
                     factor = cache.factor(evaluation, eval_ctx)

@@ -49,6 +49,8 @@ def set_locals(frame, values):
 def hook_state(hook):
     state = {k: copy.deepcopy(getattr(hook, k)) for k in
              ('rows', 'epochs', 'point_seconds', 'steps', 'tasks', 'batch_counts') if hasattr(hook, k)}
+    if getattr(hook, 'intervention', None) is not None:
+        state['intervention_state'] = copy.deepcopy(hook.intervention.state_dict())
     state['buffer'] = list(hook.buffer.samples)
     state['generators'] = {} if hook.measurement is None else {
         k: g.get_state() for k, g in hook.measurement.generators.items()}
@@ -57,6 +59,9 @@ def hook_state(hook):
 
 def restore_hook(hook, state):
     for k, value in state.items():
+        if k == 'intervention_state':
+            if hook.intervention is not None: hook.intervention.load_state_dict(value)
+            continue
         if k not in ('buffer', 'generators'): setattr(hook, k, copy.deepcopy(value))
     hook.buffer.samples.clear()
     hook.buffer.samples.extend(state['buffer'])

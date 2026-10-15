@@ -1,0 +1,332 @@
+{
+  "setting": "B3",
+  "seed": 1993,
+  "upstream_commit": "f3509b8ca3f20660ce4aa13f19d5283de81b4b35",
+  "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8",
+  "pilot": false,
+  "smoke": true,
+  "fake_data": true,
+  "measure_profile": "quick",
+  "arm": "icarl_gir",
+  "no_measure": false,
+  "identity": {
+    "setting": "B3",
+    "seed": 1993,
+    "upstream_commit": "f3509b8ca3f20660ce4aa13f19d5283de81b4b35",
+    "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8",
+    "pilot": false,
+    "smoke": true,
+    "fake_data": true,
+    "measure_profile": "quick",
+    "arm": "icarl_gir",
+    "no_measure": false,
+    "student": "resnet32",
+    "teacher_hash": null,
+    "mu_candidates": [
+      0.001,
+      0.01
+    ],
+    "recipe": {
+      "prefix": "reproduce",
+      "dataset": "cifar100",
+      "memory_size": 80,
+      "memory_per_class": 20,
+      "fixed_memory": false,
+      "shuffle": true,
+      "init_cls": 10,
+      "increment": 10,
+      "model_name": "icarl",
+      "convnet_type": "resnet32",
+      "device": [
+        -1
+      ],
+      "seed": [
+        1993
+      ]
+    },
+    "solver": "auto",
+    "output_exact_max": 4096,
+    "workers": 0,
+    "pilot_batches": 20,
+    "intervention": {
+      "seed": 0,
+      "gir": true,
+      "random": false,
+      "upstream_random": false,
+      "coefficient": 0.0,
+      "ngd": false,
+      "every": 100,
+      "pool_size": 8,
+      "refresh": 1000,
+      "rho_min": 0.0,
+      "rank": 4,
+      "task": null
+    },
+    "window": 4,
+    "calibrate": false,
+    "every_epoch": false,
+    "init_seed": 0
+  },
+  "mu_rel_default": 0.01,
+  "mu_source": "cli/default",
+  "seconds": 159.05156202599755,
+  "exact_vs_cg": [],
+  "training_seconds": 69.23063177400036,
+  "intervention_seconds": 89.74389518398675,
+  "epochs_run": 4,
+  "tasks_run": 2,
+  "measurement_point_seconds": [
+    {
+      "task": 1,
+      "epoch": 1,
+      "batch_size": 4,
+      "seconds": 0.031134685006691143
+    },
+    {
+      "task": 2,
+      "epoch": 1,
+      "batch_size": 4,
+      "seconds": 0.04590038300375454
+    }
+  ],
+  "resume_supported": true,
+  "status": "COMPLETED",
+  "reproduction": {
+    "status": "INVALID",
+    "metric": "Average Accuracy (NME)",
+    "average_accuracy": 54.06,
+    "last_task_accuracy": 43.12,
+    "reference_average_accuracy": 64.42,
+    "reference_last_task_accuracy": 49.5,
+    "reference_source": "PyCIL paper, CIFAR-100 B0 Inc10 iCaRL; third_party/PyCIL/resources/cifar100.png",
+    "reference_paper": "https://arxiv.org/abs/2112.12533",
+    "reference_plot": "https://github.com/LAMDA-CL/PyCIL/blob/f3509b8ca3f20660ce4aa13f19d5283de81b4b35/resources/cifar100.png",
+    "tolerance_pp": 1.5,
+    "tasks_run": 2,
+    "smoke": true,
+    "fake_data": true
+  },
+  "gate": {
+    "by_mu": {
+      "0.01": {
+        "status": "INVALID",
+        "eligible_points": 0,
+        "excluded_points": 0,
+        "excluded_fraction": 0.0,
+        "points_in_window": 0,
+        "gate_null_statistic": "nu",
+        "rho_fraction": 0.0,
+        "N1_fraction": 0.0,
+        "tiny_V_fraction": 0.0,
+        "final_train_acc": "n/a",
+        "raw_final_train_acc": 0.10619999999999999,
+        "conditions": {
+          "rho": false,
+          "N1": false,
+          "tiny_V": false,
+          "train_acc": "n/a"
+        },
+        "reproduction": {
+          "status": "INVALID",
+          "metric": "Average Accuracy (NME)",
+          "average_accuracy": 54.06,
+          "last_task_accuracy": 43.12,
+          "reference_average_accuracy": 64.42,
+          "reference_last_task_accuracy": 49.5,
+          "reference_source": "PyCIL paper, CIFAR-100 B0 Inc10 iCaRL; third_party/PyCIL/resources/cifar100.png",
+          "reference_paper": "https://arxiv.org/abs/2112.12533",
+          "reference_plot": "https://github.com/LAMDA-CL/PyCIL/blob/f3509b8ca3f20660ce4aa13f19d5283de81b4b35/resources/cifar100.png",
+          "tolerance_pp": 1.5,
+          "tasks_run": 2,
+          "smoke": true,
+          "fake_data": true
+        },
+        "measurements_valid": false
+      }
+    },
+    "official_mu": 0.01,
+    "gate_null_statistic": "nu",
+    "status": "INVALID",
+    "status_label": "exploratory"
+  },
+  "tasks": [
+    {
+      "task": 1,
+      "cnn_top1": 10.0,
+      "cnn_grouped": {
+        "total": 10.0,
+        "00-09": 10.0,
+        "old": 0,
+        "new": 10.0
+      },
+      "cnn_average_accuracy": 10.0,
+      "cnn_forgetting": 0.0,
+      "nme_top1": 65.0,
+      "nme_grouped": {
+        "total": 65.0,
+        "00-09": 65.0,
+        "old": 0,
+        "new": 65.0
+      },
+      "nme_average_accuracy": 65.0,
+      "nme_forgetting": 0.0,
+      "train_loss": 3.4748053550720215,
+      "train_acc": 0.175,
+      "memory_size": 80,
+      "memory_per_class": 8
+    },
+    {
+      "task": 2,
+      "cnn_top1": 5.62,
+      "cnn_grouped": {
+        "total": 5.62,
+        "00-09": 1.25,
+        "10-19": 10.0,
+        "old": 1.25,
+        "new": 10.0
+      },
+      "cnn_average_accuracy": 7.8100000000000005,
+      "cnn_forgetting": 8.75,
+      "nme_top1": 43.12,
+      "nme_grouped": {
+        "total": 43.12,
+        "00-09": 40.0,
+        "10-19": 46.25,
+        "old": 40.0,
+        "new": 46.25
+      },
+      "nme_average_accuracy": 54.06,
+      "nme_forgetting": 25.0,
+      "train_loss": 6.596675872802734,
+      "train_acc": 0.10619999999999999,
+      "memory_size": 80,
+      "memory_per_class": 4
+    }
+  ],
+  "intervention_events": [
+    {
+      "kind": "gir_task",
+      "task": 1,
+      "seconds": 0.1921199819771573
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 0,
+      "seconds": 89.30443140500574,
+      "directions": {
+        "native.convnet.stage_1.0.conv_a->native.convnet.stage_1.0.conv_b": 8,
+        "native.convnet.stage_1.1.conv_a->native.convnet.stage_1.1.conv_b": 8,
+        "native.convnet.stage_1.2.conv_a->native.convnet.stage_1.2.conv_b": 8,
+        "native.convnet.stage_2.0.conv_a->native.convnet.stage_2.0.conv_b": 8,
+        "native.convnet.stage_2.4.conv_a->native.convnet.stage_2.4.conv_b": 8,
+        "native.convnet.stage_3.0.conv_a->native.convnet.stage_3.0.conv_b": 8,
+        "native.convnet.stage_3.1.conv_a->native.convnet.stage_3.1.conv_b": 8,
+        "native.convnet.stage_3.2.conv_a->native.convnet.stage_3.2.conv_b": 8,
+        "native.convnet.stage_3.3.conv_a->native.convnet.stage_3.3.conv_b": 8,
+        "native.convnet.stage_3.4.conv_a->native.convnet.stage_3.4.conv_b": 8
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_1.0.conv_a->native.convnet.stage_1.0.conv_b",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_1.1.conv_a->native.convnet.stage_1.1.conv_b",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_1.2.conv_a->native.convnet.stage_1.2.conv_b",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_2.0.conv_a->native.convnet.stage_2.0.conv_b",
+      "replaced": 2,
+      "directions_used": 2,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_2.4.conv_a->native.convnet.stage_2.4.conv_b",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_3.0.conv_a->native.convnet.stage_3.0.conv_b",
+      "replaced": 5,
+      "directions_used": 5,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_3.1.conv_a->native.convnet.stage_3.1.conv_b",
+      "replaced": 4,
+      "directions_used": 4,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_3.2.conv_a->native.convnet.stage_3.2.conv_b",
+      "replaced": 4,
+      "directions_used": 4,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_3.3.conv_a->native.convnet.stage_3.3.conv_b",
+      "replaced": 4,
+      "directions_used": 4,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 0,
+      "site": "native.convnet.stage_3.4.conv_a->native.convnet.stage_3.4.conv_b",
+      "replaced": 8,
+      "directions_used": 8,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_task",
+      "task": 2,
+      "seconds": 89.5517752020096
+    }
+  ],
+  "calibration": [],
+  "full_batches": [
+    1,
+    2
+  ],
+  "iteration_seconds": 2.861852384507074
+}

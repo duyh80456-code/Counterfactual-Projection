@@ -58,8 +58,10 @@ class MeasurementHook:
                         rows = self.measure(model, batch_the_loop_already_has, loss_spec, ctx,
                                             generator=self.generators[key])
                         monitor.check_deadline()
-                        for row in rows or []:
-                            row['tiny_V_peak_cuda_bytes'] = monitor.tiny_V_peak_cuda_bytes
+                        if isinstance(rows, list):
+                            for row in rows:
+                                if isinstance(row, dict):
+                                    row['tiny_V_peak_cuda_bytes'] = monitor.tiny_V_peak_cuda_bytes
                         return rows
                     except MeasurementTimeout:
                         return monitor.timeout_rows(self.measure, ctx)

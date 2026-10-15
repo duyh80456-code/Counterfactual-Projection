@@ -1,14 +1,14 @@
-"""Build pinned Notebook 2: GPU0 B3 then B4 measure; GPU1 B2 resnet8x4 then B4 train."""
+"""Build the two-GPU B3 GIR/VNA performance pilot."""
 import argparse
 import json
 from pathlib import Path
 import sys
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
-from scripts.build_kaggle_vna_stage_b_rest import build as build_rest
+from scripts.build_kaggle_pilot_common import notebook
 
 
-def build(commit): return build_rest(commit, 2)
+def build(commit): return notebook(commit)
 
 
 def main():

@@ -1,0 +1,23 @@
+{
+  "K": null,
+  "status": "NO_FEASIBLE_K_SYNTHETIC",
+  "smoke_points": [
+    {
+      "task": 1,
+      "vna_seconds": 52.368175244977465,
+      "n_out": 40,
+      "iteration_seconds": 3.1815962874825345
+    },
+    {
+      "task": 2,
+      "vna_seconds": 57.9974091029726,
+      "n_out": 80,
+      "iteration_seconds": 3.1815962874825345
+    }
+  ],
+  "iterations_per_epoch": 1,
+  "synthetic": true,
+  "arm": "icarl_vna",
+  "authoritative": true,
+  "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8"
+}

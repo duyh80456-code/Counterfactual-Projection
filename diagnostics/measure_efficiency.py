@@ -70,7 +70,7 @@ class SolveCache:
             self.cache[key], self.records[key] = z, record
         return self.cache[key]
 
-    def factor(self, data, context, *, parent=None, mask=None):
+    def factor(self, data, context, *, parent=None, mask=None, prepare=True):
         from methods.vna_output import OutputFactor, choose_solver
         key = data[0]  # tensor identity hash also retains the batch for safe reuse
         if key not in self.factors:
@@ -96,7 +96,7 @@ class SolveCache:
                     log(f"solver={solver} reason={reason} n_out={op.g.numel()} " +
                         (str(factor.metadata()) if factor else 'matrix-free CG'))
         factor = self.factors[key]
-        if factor is not None:
+        if factor is not None and prepare:
             factor.prepare(self.mu)
             from experiments.vna_resume import current_measurement
             monitor = current_measurement.get()

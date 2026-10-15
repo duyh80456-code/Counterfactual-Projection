@@ -1,0 +1,82 @@
+2026-10-16 02:48:18,323 [trainer.py] => prefix: reproduce
+2026-10-16 02:48:18,325 [trainer.py] => dataset: cifar100
+2026-10-16 02:48:18,327 [trainer.py] => memory_size: 80
+2026-10-16 02:48:18,328 [trainer.py] => memory_per_class: 20
+2026-10-16 02:48:18,330 [trainer.py] => fixed_memory: False
+2026-10-16 02:48:18,333 [trainer.py] => shuffle: True
+2026-10-16 02:48:18,335 [trainer.py] => init_cls: 10
+2026-10-16 02:48:18,337 [trainer.py] => increment: 10
+2026-10-16 02:48:18,339 [trainer.py] => model_name: icarl
+2026-10-16 02:48:18,340 [trainer.py] => convnet_type: resnet32
+2026-10-16 02:48:18,342 [trainer.py] => device: [device(type='cpu')]
+2026-10-16 02:48:18,344 [trainer.py] => seed: 1993
+2026-10-16 02:48:18,352 [data_manager.py] => [14, 6, 5, 8, 12, 11, 18, 2, 4, 16, 10, 15, 9, 13, 7, 0, 3, 19, 17, 1]
+2026-10-16 02:48:18,413 [trainer.py] => All params: 464154
+2026-10-16 02:48:18,416 [trainer.py] => Trainable params: 464154
+2026-10-16 02:48:18,484 [icarl.py] => Learning on 0-10
+/Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/optim/lr_scheduler.py:136: UserWarning: Seems like `optimizer.step()` has been overridden after learning rate scheduler initialization. Please, make sure to call `optimizer.step()` before `lr_scheduler.step()`. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  warnings.warn("Seems like `optimizer.step()` has been overridden after learning rate scheduler "
+[CPU b3] task=1 epoch=1 train_loss=4.548253 train_acc=0.100000 eval_loss=None eval_acc=0.1125 lr=0.1 seconds=7.534
+M build n_out=20 seconds=5.478009643004043 peak RSS=432386048
+M build n_out=20 seconds=8.69605756198871 peak RSS=432386048
+M build n_out=20 seconds=0.005187053000554442 peak RSS=432386048
+output factor mu=6.910553723488166 seconds=0.0013121409865561873 peak RSS=432386048
+[CPU b3] measurement task=1 epoch=1 solvers=[{"solver": "output_exact", "reason": "auto uses exact output-space solve", "n_out": 20}] tiny_V_peak_cuda_bytes=0 peak_host_rss_bytes=432386048 M_build_seconds=14.179254 factor_seconds=0.002344 M_max_memory_bytes=3200 solves=35 mean_solve_seconds=0.002052 point_seconds=439.062171
+[CPU b3] measurement task=1 profile=quick seconds=439.226
+[CPU b3] projected total seconds=13912.6 training=13034.2 remaining_points=2
+[CPU b3] task=1 epoch=2 train_loss=3.474805 train_acc=0.175000 eval_loss=None eval_acc=None lr=0.1 seconds=5.103
+2026-10-16 02:55:50,698 [icarl.py] => Task 0, Epoch 2/2 => Loss 3.475, Train_accy 17.50
+2026-10-16 02:55:50,715 [base.py] => Reducing exemplars...(8 per classes)
+2026-10-16 02:55:50,717 [base.py] => Constructing exemplars...(8 per classes)
+2026-10-16 02:56:00,945 [icarl.py] => Exemplar size: 80
+2026-10-16 02:56:03,116 [trainer.py] => CNN: {'total': 10.0, '00-09': 10.0, 'old': 0, 'new': 10.0}
+2026-10-16 02:56:03,119 [trainer.py] => NME: {'total': 65.0, '00-09': 65.0, 'old': 0, 'new': 65.0}
+2026-10-16 02:56:03,122 [trainer.py] => CNN top1 curve: [10.0]
+2026-10-16 02:56:03,126 [trainer.py] => CNN top5 curve: [47.5]
+2026-10-16 02:56:03,129 [trainer.py] => NME top1 curve: [65.0]
+2026-10-16 02:56:03,194 [trainer.py] => NME top5 curve: [96.25]
+
+Average Accuracy (CNN): 10.0
+Average Accuracy (NME): 65.0
+2026-10-16 02:56:03,210 [trainer.py] => Average Accuracy (CNN): 10.0
+2026-10-16 02:56:03,214 [trainer.py] => Average Accuracy (NME): 65.0
+2026-10-16 02:56:03,225 [trainer.py] => All params: 464804
+2026-10-16 02:56:03,228 [trainer.py] => Trainable params: 464804
+2026-10-16 02:56:03,617 [icarl.py] => Learning on 10-20
+[CPU b3] task=2 epoch=1 train_loss=7.196663 train_acc=0.131200 eval_loss=None eval_acc=0.05 lr=0.1 seconds=18.141
+M build n_out=40 seconds=7.081754439976066 peak RSS=482762752
+M build n_out=40 seconds=10.402557749999687 peak RSS=482762752
+M build n_out=20 seconds=0.01403455002582632 peak RSS=482762752
+output factor mu=0.12468547478673253 seconds=0.001958226988790557 peak RSS=482762752
+M build n_out=20 seconds=0.010640437016263604 peak RSS=482762752
+output factor mu=0.12468547478673253 seconds=0.0003172529977746308 peak RSS=482762752
+[CPU b3] measurement task=2 epoch=1 solvers=[{"solver": "output_exact", "reason": "auto uses exact output-space solve", "n_out": 40}, {"solver": "output_exact", "reason": "auto uses exact output-space solve", "n_out": 20}] tiny_V_peak_cuda_bytes=0 peak_host_rss_bytes=482762752 M_build_seconds=17.508987 factor_seconds=0.003395 M_max_memory_bytes=12800 solves=37 mean_solve_seconds=14.935158 point_seconds=884.857445
+[CPU b3] measurement task=2 profile=quick seconds=885.023
+[CPU b3] WARNING: measurement point exceeded 10 minutes; continuing
+[CPU b3] task=2 epoch=2 train_loss=6.578818 train_acc=0.106200 eval_loss=None eval_acc=None lr=0.1 seconds=7.848
+2026-10-16 03:11:15,309 [icarl.py] => Task 1, Epoch 2/2 => Loss 6.579, Train_accy 10.62
+2026-10-16 03:11:15,318 [base.py] => Reducing exemplars...(4 per classes)
+2026-10-16 03:11:16,096 [base.py] => Constructing exemplars...(4 per classes)
+2026-10-16 03:11:22,856 [icarl.py] => Exemplar size: 80
+2026-10-16 03:11:24,052 [trainer.py] => CNN: {'total': 5.0, '00-09': 0.0, '10-19': 10.0, 'old': 0.0, 'new': 10.0}
+2026-10-16 03:11:24,054 [trainer.py] => NME: {'total': 41.25, '00-09': 40.0, '10-19': 42.5, 'old': 40.0, 'new': 42.5}
+2026-10-16 03:11:24,055 [trainer.py] => CNN top1 curve: [10.0, 5.0]
+2026-10-16 03:11:24,057 [trainer.py] => CNN top5 curve: [47.5, 24.38]
+2026-10-16 03:11:24,058 [trainer.py] => NME top1 curve: [65.0, 41.25]
+2026-10-16 03:11:24,060 [trainer.py] => NME top5 curve: [96.25, 63.75]
+
+Average Accuracy (CNN): 7.5
+Average Accuracy (NME): 53.125
+2026-10-16 03:11:24,061 [trainer.py] => Average Accuracy (CNN): 7.5
+2026-10-16 03:11:24,063 [trainer.py] => Average Accuracy (NME): 53.125
+Accuracy Matrix (CNN):
+[[10.  0.]
+ [ 0. 10.]]
+Forgetting (CNN): 10.0
+2026-10-16 03:11:24,086 [trainer.py] => Forgetting (CNN): 10.0
+Accuracy Matrix (NME):
+[[65.  40. ]
+ [ 0.  42.5]]
+Forgetting (NME): 25.0
+2026-10-16 03:11:24,089 [trainer.py] => Forgetting (NME): 25.0
+quick projected total measurement seconds (3 points, linear n_out to 6400): 424810.85293823853

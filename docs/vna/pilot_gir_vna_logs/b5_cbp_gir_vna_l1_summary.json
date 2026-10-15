@@ -1,0 +1,285 @@
+{
+  "identity": {
+    "arm": "cbp_gir_vna_l1",
+    "seed": 0,
+    "params": {
+      "model_version": "",
+      "_comment_1_": "List of problem/experiment parameters",
+      "gen_prob_data": false,
+      "num_runs": 1,
+      "num_inputs": 20,
+      "num_data_points": 1000,
+      "data_dir": "data/sgd/cbp/relu/",
+      "env_data_dir": "data/env_data/scr/",
+      "flip_after": 500,
+      "num_target_features": 100,
+      "num_flipping_bits": 15,
+      "to_log_features": false,
+      "beta": 0.7,
+      "_comment_2_": "Learner parameters",
+      "agent": "cbp",
+      "num_features": 5,
+      "hidden_activation": "relu",
+      "util_type": "adaptable_contribution",
+      "opt": "sgd",
+      "step_size": 0.01,
+      "replacement_rate": 0.001,
+      "decay_rate": 0.99,
+      "maturity_threshold": 100,
+      "gir_replacement_rates": [
+        1e-06,
+        1e-05,
+        0.0001,
+        0.001,
+        0.01
+      ],
+      "gir_maturity": 10,
+      "run_idx": 0,
+      "use_gpu": 0,
+      "data_file": "/private/tmp/vna_pilot_final_cpu/b5/cbp_gir_vna_l1/cbp_gir_vna_l1_rr0.001/seed0/upstream_in_progress.tmp",
+      "env_file": "/private/tmp/vna_pilot_final_cpu/b5/cbp_gir_vna_l1/cbp_gir_vna_l1_rr0.001/seed0/data/regression.pkl"
+    },
+    "fake_data": true,
+    "smoke": true,
+    "gir_pool": 8,
+    "gir_refresh_steps": 1000,
+    "rho_min": 0.0,
+    "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8"
+  },
+  "arm": "cbp_gir_vna_l1",
+  "seed": 0,
+  "replacement_rate": 0.001,
+  "status": "COMPLETED",
+  "tasks": [
+    {
+      "task": 1,
+      "step": 500,
+      "online_error": 0.01624787545486813,
+      "online_accuracy": null
+    },
+    {
+      "task": 2,
+      "step": 1000,
+      "online_error": 0.0025192786970394325,
+      "online_accuracy": null
+    }
+  ],
+  "mean_last50": 0.009383577075953782,
+  "mean_all": 0.009383577075953782,
+  "seconds": 29.110170286003267,
+  "steps": 1000,
+  "seconds_per_step": 0.029110170286003267,
+  "events": [
+    {
+      "kind": "gir_refresh",
+      "task": 1,
+      "step": 51,
+      "seconds": 0.28444271598709747,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 1,
+      "step": 51,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 100,
+      "rho": null,
+      "skipped": true,
+      "reason": "window_warmup",
+      "seconds": 0.0
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 200,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.4431870130065363
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 300,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.7373392409936059
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 400,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 1.3137817390088458
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 500,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.6839206740260124
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 600,
+      "rho": null,
+      "skipped": true,
+      "reason": "window_warmup",
+      "seconds": 0.0
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 647,
+      "seconds": 0.4814167950244155,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 647,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 676,
+      "seconds": 0.5158078980166465,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 676,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 699,
+      "seconds": 0.42467112399754114,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 699,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 700,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.499249170999974
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 790,
+      "seconds": 0.7989076910016593,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 790,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 800,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 1.0428736690082587
+    },
+    {
+      "kind": "gir_refresh",
+      "task": 2,
+      "step": 834,
+      "seconds": 0.713709875009954,
+      "directions": {
+        "native.layers.0->native.layers.2": 1
+      }
+    },
+    {
+      "kind": "gir_replace",
+      "task": 2,
+      "step": 834,
+      "site": "native.layers.0->native.layers.2",
+      "replaced": 1,
+      "directions_used": 1,
+      "gir_random_fill": 0
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 900,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.6698793749965262
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 1000,
+      "rho": 0.0,
+      "skipped": true,
+      "reason": "no unreserved positive directions",
+      "seconds": 0.5051650779787451
+    }
+  ],
+  "activities": [],
+  "estimated_full_seconds": 29110.170286003267,
+  "cfg_source": "lop/slowly_changing_regression/cfg/sgd/cbp/relu.json",
+  "step_size_source": "lop/slowly_changing_regression/cfg/sgd/cbp/relu.json",
+  "recipe_decision": "TASK_STAGE_B5.md \u00a75 (2026-10-15)",
+  "step_size": 0.01,
+  "momentum": 0,
+  "effective_maturity": 10,
+  "correction_seconds": 5.895395960018504,
+  "gir_refresh_seconds": 3.218956099037314,
+  "train_seconds_per_step": 0.01999581822694745,
+  "gir_random_fill": 0,
+  "rho_gate_skips": 0
+}

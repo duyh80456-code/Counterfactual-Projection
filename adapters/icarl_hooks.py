@@ -1,5 +1,6 @@
 """Read-only interception of the pinned PyCIL loader and epoch scheduler."""
 from contextlib import contextmanager
+from functools import wraps
 import copy
 import inspect
 from itertools import islice
@@ -54,8 +55,10 @@ def loss_context(learner, batch):
 
 
 class ICaRLHook:
-    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None):
-        self.buffer = MeasurementBuffer(4 if pilot and fake else 512)
+    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None, intervention=None, measure_profile='full', smoke=False):
+        self.intervention = intervention
+        self.measure_profile, self.smoke = measure_profile, smoke
+        self.buffer = MeasurementBuffer(4 if fake and (pilot or measure_profile=='quick') else (128 if measure_profile=='quick' else 512))
         self.pilot, self.pilot_batches = pilot, pilot_batches
         self.batch_counts = []
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
@@ -65,6 +68,8 @@ class ICaRLHook:
         self.steps = 0
         self.progress = progress
         self.resume = progress.state if progress else None
+        self.elapsed_base = self.resume.get('elapsed_seconds', 0.) if self.resume else 0.
+        self.run_started = time.monotonic()
         self.eval_results = []
         self.completed = 0
         self.replay_task = -1
@@ -99,6 +104,7 @@ class ICaRLHook:
                     for metric in ('top1', 'top5'): curves[label+'_curve'][metric].append(result[metric])
                     curves[label+'_matrix'].append([result['grouped'][k] for k in sorted(result['grouped']) if '-' in k])
         self.progress.save({'completed': self.completed, 'mid': mid,
+            'elapsed_seconds': self.elapsed_base + time.monotonic()-self.run_started,
             'learner': self.learner_state(self.learner), 'task_start': self.task_start,
             'epoch': self.current_epoch, 'loop_info': self.loop_info,
             'optimizer': None if self.optimizer is None else self.optimizer.state_dict(),
@@ -130,7 +136,8 @@ class ICaRLHook:
             f"train_acc={train_acc:.6f} eval_loss={row['eval_loss']} eval_acc={row['eval_acc']} "
             f"lr={row['lr']} seconds={row['seconds']:.3f}")
         if self.observe: self.observe(learner, optimizer)
-        point = learner._cur_task == 1 and epoch == 2 if self.pilot else measurement_epoch(learner._cur_task+1, epoch, last)
+        point = learner._cur_task == 1 and epoch == 2 if self.pilot else measurement_epoch(learner._cur_task+1, epoch, last, self.measure_profile)
+        if self.smoke and self.measure_profile=='quick': point = epoch == 1
         if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and any(p.get('task') == learner._cur_task+1 for p in self.point_seconds):
             point = False
         if self.measurement and point:
@@ -151,12 +158,16 @@ class ICaRLHook:
         ctx = {**loss_ctx, 'learner': learner, 'task': learner._cur_task+1,
                'epoch': epoch, 'step': self.steps, 'end_of_task': epoch == last,
                'train_acc': train_acc,
-               'first_measurement_point': learner._cur_task == 0 and epoch == max(1, last//2)}
+               'first_measurement_point': (learner._cur_task == (1 if self.measure_profile=='quick' else 0) and
+                                           (self.smoke or epoch == max(1, last//2)))}
         started = time.monotonic()
         self.rows.extend(self.measurement(model, batch, spec, ctx) or [])
         self.point_seconds.append({'task': ctx['task'], 'epoch': epoch,
                                    'batch_size': len(batch[0]), 'seconds': time.monotonic()-started})
-        projected(self, 1730, 13)
+        seconds = self.point_seconds[-1]['seconds']
+        log(f'measurement task={ctx["task"]} profile={self.measure_profile} seconds={seconds:.3f}')
+        if seconds > 600: log('WARNING: measurement point exceeded 10 minutes; continuing')
+        projected(self, 1730, 3 if self.measure_profile=='quick' else 13)
 
     def record_task(self, learner, result):
         row = {'task': learner._cur_task+1}
@@ -168,8 +179,9 @@ class ICaRLHook:
             row[f'{label}_average_accuracy'] = float(np.mean(history))
             # PyCIL's grouped class bins are ten classes in the real protocol.
             keys = sorted(k for k in accuracy['grouped'] if '-' in k)
-            drops = [max(r[f'{label}_grouped'].get(k, accuracy['grouped'][k])
-                         for r in self.tasks) - accuracy['grouped'][k] for k in keys[:-1]]
+            drops = [max([accuracy['grouped'][k]] + [
+                         r[f'{label}_grouped'].get(k, accuracy['grouped'][k])
+                         for r in self.tasks]) - accuracy['grouped'][k] for k in keys[:-1]]
             row[f'{label}_forgetting'] = float(np.mean(drops)) if drops else 0.
         row.update({k: self.epochs[-1][k] for k in ('train_loss', 'train_acc')})
         row['memory_size'] = len(learner._data_memory)
@@ -195,15 +207,36 @@ class ICaRLHook:
                 if hook.learner is not None and self is hook.learner.train_loader:
                     hook.epoch_started = time.monotonic()
                     hook.epoch_lr = hook.optimizer.param_groups[0]['lr']
+                    hook.epoch_step = 0
                 iterator = super().__iter__()
                 for item in islice(iterator, self.limit) if self.limit else iterator:
                     if hook.learner is not None and self is hook.learner.train_loader:
                         hook.buffer.update((item[1], item[2])); hook.steps += 1
+                        hook.epoch_step += 1
+                        iteration_started = time.monotonic()
+                        hook.iteration_started = iteration_started
                     yield item
+                    if hook.intervention is not None and hook.learner is not None and self is hook.learner.train_loader:
+                        # Subtract correction time: the K rule uses ordinary training cost.
+                        elapsed = time.monotonic()-iteration_started
+                        events = hook.intervention.engine.events
+                        correction = events[-1] if events else {}
+                        if correction.get('kind')=='correction' and correction.get('step')==hook.steps:
+                            elapsed -= correction['seconds']
+                        hook.intervention.iteration_times.append(max(elapsed, 1e-9))
         class EpochScheduler(original_scheduler):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 hook.optimizer, hook.scheduler = self.optimizer, self
+                if hook.intervention is not None:
+                    original_step = self.optimizer.step
+                    @wraps(original_step)
+                    def step(*a, **kw):
+                        result = original_step(*a, **kw)
+                        hook.intervention.after_step(hook, hook.learner, self.optimizer)
+                        return result
+                    step._wrapped_by_lr_sched = True
+                    self.optimizer.step = step
                 if hook.resume is not None and hook.resume['mid']:
                     self.optimizer.load_state_dict(hook.resume['optimizer'])
                     self.load_state_dict(hook.resume['scheduler'])
@@ -264,6 +297,10 @@ class ICaRLHook:
                 vars(learner).update(copy.deepcopy(hook.resume['learner']))
             else:
                 hook.buffer.samples.clear()
+                if hook.intervention is not None:
+                    learner._network.to(learner._device)
+                    if learner._old_network is not None: learner._old_network.to(learner._device)
+                    hook.intervention.start_task(learner)
             if hook.pilot:
                 full = len(learner.train_loader)
                 learner.train_loader.limit = hook.pilot_batches
@@ -293,6 +330,7 @@ class ICaRLHook:
             icarl.iCaRL._train, icarl.iCaRL.eval_task = original_train, original_eval
 
 
-def measurement_epoch(task, epoch, last):
+def measurement_epoch(task, epoch, last, profile='full'):
     """Ten midpoint observations plus reference endpoints at tasks 2, 5, 10."""
+    if profile == 'quick': return task in {2, 5, 10} and epoch == max(1, last//2)
     return epoch == max(1, last//2) or (epoch == last and task in {2, 5, 10})

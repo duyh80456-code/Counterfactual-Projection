@@ -2,6 +2,7 @@
 import argparse
 from experiments.vna_resume import configure_measurement, measurement_cli
 from contextlib import contextmanager
+import copy
 import json
 import os
 from pathlib import Path
@@ -95,7 +96,8 @@ def reproduction_gate(tasks, *, smoke=False, fake=False):
             'tolerance_pp': 1.5, 'tasks_run': len(tasks), 'smoke': smoke, 'fake_data': fake}
 
 
-def run(args, *, measure_override=None, observe=None):
+def run(args, *, measure_override=None, observe=None, intervention=None):
+    if not hasattr(args, 'measure_profile'): args.measure_profile = 'full'
     os.environ.setdefault('VNA_JOB', 'b3')
     upstream_imports()
     import trainer
@@ -109,23 +111,51 @@ def run(args, *, measure_override=None, observe=None):
     if args.pilot: start_memory(args.device)
     metadata = {'setting': 'B3', 'seed': 1993, 'upstream_commit': UPSTREAM_PIN,
                 'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-                'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data}
+                'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data,
+                'measure_profile': args.measure_profile,
+                'arm': getattr(args, 'arm', 'icarl'), 'no_measure': getattr(args, 'no_measure', False)}
     measure = B3Measurement(metadata, mu_rel_default=args.mu_rel_default,
                             ranks=(4,) if args.pilot else (4, 8, 16),
-                            null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000)
+                            null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000,
+                            measure_profile=args.measure_profile)
     if measure_override is not None: measure = measure_override
     identity = {**metadata, 'student': params['convnet_type'], 'teacher_hash': None,
                 'mu_candidates': [1e-3, 1e-2], 'recipe': params,
-                'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers, 'pilot_batches': args.pilot_batches}
+                'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers, 'pilot_batches': args.pilot_batches,
+                'intervention': None if intervention is None else {k:v for k,v in intervention.engine.state_dict().items()
+                    if k not in ('pools','positions','pool_steps','events','activities','generators')},
+                'window': None if intervention is None else intervention.window,
+                'calibrate': False if intervention is None else intervention.calibrate,
+                'every_epoch': False if intervention is None else intervention.every_epoch,
+                'init_seed': getattr(args, 'init_seed', 1)}
+    identity = copy.deepcopy(identity)
     progress = Progress(out, identity)
     def persist(hook):
         write_csv(out/'measurements.csv', hook.rows)
         write_csv(out/'epochs.csv', hook.epochs)
         write_json(out/'tasks.json', hook.tasks)
+        if intervention is not None:
+            write_json(out/'interventions.json', intervention.engine.events)
+            write_json(out/'activities.json', [{**r, 'sites': {site: {k:v for k,v in a.items() if k!='dormant_indices'}
+                for site,a in r['sites'].items()}} for r in intervention.engine.activities])
     configure_measurement(measure, args, out)
     hook = ICaRLHook(measure, persist=persist, pilot=args.pilot,
-                     pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe)
+                     pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe, intervention=intervention,
+                     measure_profile=args.measure_profile, smoke=args.smoke)
+    summary_path = out/'summary.json'
+    if summary_path.exists():
+        previous = json.loads(summary_path.read_text())
+        expected_tasks = 2 if args.smoke or args.pilot else 10
+        if previous.get('status') == 'COMPLETED':
+            if previous.get('identity') != identity: raise ValueError('completed run identity mismatch')
+            if previous.get('tasks_run') == expected_tasks and hook.completed == expected_tasks:
+                return hook
     original_manager = trainer.DataManager
+    original_random = trainer._set_random
+    def initialization():
+        original_random()
+        torch.manual_seed(args.init_seed)
+        torch.cuda.manual_seed_all(args.init_seed)
     def manager(*a, **kw):
         result = DataManager(*a, **kw)
         write_json(out/'class_order.json', result._class_order)
@@ -133,23 +163,26 @@ def run(args, *, measure_override=None, observe=None):
         return result
     write_json(out/'protocol.json', {**metadata, 'args': params, 'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers,
                'resume': 'task and epoch prefix replay; full state checkpoints every 25 epochs and after_task',
-               'measurement_buffer_m': hook.buffer.m, 'ranks': [4] if args.pilot else [4, 8, 16],
+               'measurement_buffer_m': hook.buffer.m, 'ranks': list(measure.ranks),
                'null_repeats': measure.null_repeats, 'cg_iters': measure.cg_iters,
                'pilot_batches': args.pilot_batches if args.pilot else None})
     started = time.monotonic()
     try:
         trainer.DataManager = manager
+        if hasattr(args, 'init_seed'): trainer._set_random = initialization
         with working_directory(out), runtime(smoke=args.smoke or args.pilot, fake=args.fake_data,
                 workers=args.workers, data_dir=args.data_dir), hook.install():
             trainer.train(params)
     finally:
         trainer.DataManager = original_manager
+        trainer._set_random = original_random
         persist(hook)
-    seconds = time.monotonic()-started
+    seconds = getattr(hook, 'elapsed_base', 0.) + time.monotonic()-started
     baseline = reproduction_gate(hook.tasks, smoke=args.smoke, fake=args.fake_data)
     by_mu = {}
-    for mu in (1e-2, 1e-3):
+    for mu in ((1e-2,) if args.measure_profile=='quick' else (1e-2, 1e-3)):
         cfg = setting_config('B3', mu_rel_default=mu)
+        if args.measure_profile=='quick': cfg['min_points'] = 0
         cfg['final_train_acc'] = hook.epochs[-1]['train_acc'] if hook.epochs else None
         gate = evaluate_gate(hook.rows, cfg)
         gate.update(reproduction=baseline, measurements_valid=baseline['status'] == 'PASS')
@@ -158,18 +191,30 @@ def run(args, *, measure_override=None, observe=None):
             baseline['status'] = gate['status'] = 'PILOT'
             gate['measurements_valid'] = False
         by_mu[str(mu)] = gate
-        write_json(out/f'gate_mu_{mu}.json', gate)
+        if args.measure_profile=='full': write_json(out/f'gate_mu_{mu}.json', gate)
     official_mu = 1e-2
-    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
+    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'nu',
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction_gate.json', baseline)
-    write_json(out/'gate.json', gate)
+    if args.measure_profile=='quick':
+        gate['status_label'] = 'exploratory'
+        write_json(out/'gate_quick.json', gate)
+    else: write_json(out/'gate.json', gate)
     from diagnostics.measure_efficiency import exact_cg_summary
     diagnostic_seconds = sum(p['seconds'] for p in hook.point_seconds)
+    intervention_seconds = 0. if intervention is None else sum(
+        r['seconds'] for r in intervention.engine.events if r['kind'] in ('correction','gir_task'))
     write_json(out/'summary.json', {**metadata, 'identity': identity, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds,
-               'exact_vs_cg': exact_cg_summary(hook.rows), 'training_seconds': seconds-diagnostic_seconds, 'epochs_run': len(hook.epochs),
+               'exact_vs_cg': exact_cg_summary(hook.rows), 'training_seconds': max(0.,seconds-diagnostic_seconds-intervention_seconds),
+               'intervention_seconds': intervention_seconds, 'epochs_run': len(hook.epochs),
                'tasks_run': len(hook.tasks), 'measurement_point_seconds': hook.point_seconds,
                'resume_supported': True, 'status': 'COMPLETED', 'reproduction': baseline, 'gate': gate,
+               'tasks': hook.tasks,
+               'intervention_events': [] if intervention is None else intervention.engine.events,
+               'calibration': [] if intervention is None else intervention.calibration,
+               'full_batches': [] if intervention is None else intervention.full_batches,
+               'iteration_seconds': None if intervention is None or not intervention.iteration_times else
+                   float(np.median(intervention.iteration_times)),
                **(pilot_summary(hook.epochs, hook.point_seconds, hook.rows, args.device,
                    full_epochs=1730, full_points=40,
                    full_batches=sum(c['full'] for c in hook.batch_counts)/len(hook.batch_counts),
@@ -181,6 +226,7 @@ def run(args, *, measure_override=None, observe=None):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     measurement_cli(p)
+    p.add_argument('--measure-profile', choices=('full','quick'), default='full')
     add_arguments(p)
     p.add_argument('--smoke', action='store_true')
     p.add_argument('--fake-data', action='store_true')

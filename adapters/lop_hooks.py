@@ -116,7 +116,9 @@ def restore_learner(learner, state):
 
 class LearnHook:
     def __init__(self, benchmark, arm, params, measure=None, *, seed=0, checkpoint=None,
-                 resume=None, observe=None, time_steps=False, timing_started=None, timing_interval=50, progress=None, status=None, checkpoint_seconds=900):
+                 resume=None, observe=None, time_steps=False, timing_started=None, timing_interval=50, progress=None, status=None, checkpoint_seconds=900, intervention=None):
+        self.intervention = intervention
+        self.elapsed_base = resume.get('elapsed_seconds', 0.) if resume else 0.
         self.benchmark, self.arm, self.params = benchmark, arm, params
         self.progress, self.status = progress, status
         self.checkpoint_seconds = checkpoint_seconds
@@ -197,9 +199,11 @@ class LearnHook:
         if self.benchmark == 'mnist':
             arrays.update({k: frame.f_locals[k].clone() for k in ('x', 'y')})
         state = {'step': self.step, 'learner': learner_state(learner), 'rng': rng_state(),
+                 'elapsed_seconds': self.elapsed_base+time.monotonic()-self.timing_started,
                  'results': self.results.state(), 'rows': self.rows, 'arrays': arrays,
                  'buffer': list(self.buffer.samples), 'shadows': {r: gnt_state(s) for r, s in self.shadows.items()},
                  'init_row_norms': self.init_row_norms,
+                 'intervention': None if self.intervention is None else self.intervention.state_dict(),
                  'measurement_point_seconds': self.measurement_point_seconds,
                  'last_task_ms': self.last_task_ms,
                  'generators': {} if self.measurement is None else
@@ -216,6 +220,7 @@ class LearnHook:
 
     def _restore_resume(self, learner, frame):
         state = self.resume
+        if self.intervention is not None: self.intervention.load_state_dict(state['intervention'])
         restore_learner(learner, state['learner']); restore_rng(state['rng'])
         self.results.restore(state['results']); self.rows = copy.deepcopy(state['rows'])
         self.buffer.samples.extend(state['buffer'])
@@ -271,14 +276,16 @@ class LearnHook:
             self.init_row_norms = [float(neuron_norms({'weight': layer.weight.detach(),
                                                       'bias': layer.bias.detach() if layer.bias is not None else None}).mean())
                                    for layer in list(learner.net.layers)[::2][:-1]]
+        if self.intervention is not None: self.intervention.before(self, learner, x, target)
         result = original(learner, x=x, target=target)
         previous_buffer_size = len(self.buffer)
-        self.buffer.update((x, target))
+        if self.intervention is None: self.buffer.update((x, target))
         first_point = previous_buffer_size < self.buffer.m and len(self.buffer) == self.buffer.m
         self.step += 1
         task = (self.step-1)//self.task_steps + 1
         within = (self.step-1)%self.task_steps + 1
         self.results.append(result, target)
+        if self.intervention is not None: self.intervention.after(self, learner)
         if self.observe: self.observe(learner, x, target, task, self.step)
         if self.measurement is not None:
             self._shadow(learner)

@@ -1,0 +1,69 @@
+2026-10-16 03:20:43,445 [trainer.py] => prefix: reproduce
+2026-10-16 03:20:43,447 [trainer.py] => dataset: cifar100
+2026-10-16 03:20:43,449 [trainer.py] => memory_size: 80
+2026-10-16 03:20:43,452 [trainer.py] => memory_per_class: 20
+2026-10-16 03:20:43,453 [trainer.py] => fixed_memory: False
+2026-10-16 03:20:43,455 [trainer.py] => shuffle: True
+2026-10-16 03:20:43,457 [trainer.py] => init_cls: 10
+2026-10-16 03:20:43,459 [trainer.py] => increment: 10
+2026-10-16 03:20:43,460 [trainer.py] => model_name: icarl
+2026-10-16 03:20:43,462 [trainer.py] => convnet_type: resnet32
+2026-10-16 03:20:43,464 [trainer.py] => device: [device(type='cpu')]
+2026-10-16 03:20:43,466 [trainer.py] => seed: 1993
+2026-10-16 03:20:43,478 [data_manager.py] => [14, 6, 5, 8, 12, 11, 18, 2, 4, 16, 10, 15, 9, 13, 7, 0, 3, 19, 17, 1]
+2026-10-16 03:20:43,533 [trainer.py] => All params: 464154
+2026-10-16 03:20:43,536 [trainer.py] => Trainable params: 464154
+2026-10-16 03:20:43,604 [icarl.py] => Learning on 0-10
+[CPU b3] task=1 epoch=1 train_loss=4.548253 train_acc=0.100000 eval_loss=None eval_acc=0.1125 lr=0.1 seconds=3.794
+[CPU b3] measurement task=1 epoch=1 solvers=[] tiny_V_peak_cuda_bytes=0 peak_host_rss_bytes=0 M_build_seconds=0.000000 factor_seconds=0.000000 M_max_memory_bytes=0 solves=0 mean_solve_seconds=0.000000 point_seconds=0.007293
+[CPU b3] measurement task=1 profile=quick seconds=0.034
+[CPU b3] projected total seconds=6564.0 training=6563.9 remaining_points=2
+[CPU b3] task=1 epoch=2 train_loss=3.474805 train_acc=0.175000 eval_loss=None eval_acc=None lr=0.1 seconds=2.791
+2026-10-16 03:20:50,475 [icarl.py] => Task 0, Epoch 2/2 => Loss 3.475, Train_accy 17.50
+2026-10-16 03:20:50,480 [base.py] => Reducing exemplars...(8 per classes)
+2026-10-16 03:20:50,483 [base.py] => Constructing exemplars...(8 per classes)
+2026-10-16 03:20:56,232 [icarl.py] => Exemplar size: 80
+2026-10-16 03:20:56,908 [trainer.py] => CNN: {'total': 10.0, '00-09': 10.0, 'old': 0, 'new': 10.0}
+2026-10-16 03:20:56,910 [trainer.py] => NME: {'total': 65.0, '00-09': 65.0, 'old': 0, 'new': 65.0}
+2026-10-16 03:20:56,912 [trainer.py] => CNN top1 curve: [10.0]
+2026-10-16 03:20:56,913 [trainer.py] => CNN top5 curve: [47.5]
+2026-10-16 03:20:56,915 [trainer.py] => NME top1 curve: [65.0]
+2026-10-16 03:20:56,917 [trainer.py] => NME top5 curve: [96.25]
+
+Average Accuracy (CNN): 10.0
+Average Accuracy (NME): 65.0
+2026-10-16 03:20:56,920 [trainer.py] => Average Accuracy (CNN): 10.0
+2026-10-16 03:20:56,921 [trainer.py] => Average Accuracy (NME): 65.0
+2026-10-16 03:20:56,923 [trainer.py] => All params: 464804
+2026-10-16 03:20:56,926 [trainer.py] => Trainable params: 464804
+2026-10-16 03:20:57,072 [icarl.py] => Learning on 10-20
+[CPU b3] task=2 epoch=1 train_loss=7.343455 train_acc=0.106200 eval_loss=None eval_acc=0.0438 lr=0.1 seconds=15.114
+[CPU b3] measurement task=2 epoch=1 solvers=[] tiny_V_peak_cuda_bytes=0 peak_host_rss_bytes=0 M_build_seconds=0.000000 factor_seconds=0.000000 M_max_memory_bytes=0 solves=0 mean_solve_seconds=0.000000 point_seconds=0.017691
+[CPU b3] measurement task=2 profile=quick seconds=0.056
+[CPU b3] task=2 epoch=2 train_loss=6.592755 train_acc=0.118800 eval_loss=None eval_acc=None lr=0.1 seconds=11.353
+2026-10-16 03:22:22,674 [icarl.py] => Task 1, Epoch 2/2 => Loss 6.593, Train_accy 11.88
+2026-10-16 03:22:22,703 [base.py] => Reducing exemplars...(4 per classes)
+2026-10-16 03:22:23,766 [base.py] => Constructing exemplars...(4 per classes)
+2026-10-16 03:22:33,478 [icarl.py] => Exemplar size: 80
+2026-10-16 03:22:34,663 [trainer.py] => CNN: {'total': 6.88, '00-09': 5.0, '10-19': 8.75, 'old': 5.0, 'new': 8.75}
+2026-10-16 03:22:34,666 [trainer.py] => NME: {'total': 44.38, '00-09': 42.5, '10-19': 46.25, 'old': 42.5, 'new': 46.25}
+2026-10-16 03:22:34,668 [trainer.py] => CNN top1 curve: [10.0, 6.88]
+2026-10-16 03:22:34,672 [trainer.py] => CNN top5 curve: [47.5, 26.88]
+2026-10-16 03:22:34,674 [trainer.py] => NME top1 curve: [65.0, 44.38]
+2026-10-16 03:22:34,676 [trainer.py] => NME top5 curve: [96.25, 65.0]
+
+Average Accuracy (CNN): 8.44
+Average Accuracy (NME): 54.69
+2026-10-16 03:22:34,678 [trainer.py] => Average Accuracy (CNN): 8.44
+2026-10-16 03:22:34,681 [trainer.py] => Average Accuracy (NME): 54.69
+Accuracy Matrix (CNN):
+[[10.    5.  ]
+ [ 0.    8.75]]
+Forgetting (CNN): 5.0
+2026-10-16 03:22:34,686 [trainer.py] => Forgetting (CNN): 5.0
+Accuracy Matrix (NME):
+[[65.   42.5 ]
+ [ 0.   46.25]]
+Forgetting (NME): 22.5
+2026-10-16 03:22:34,690 [trainer.py] => Forgetting (NME): 22.5
+quick projected total measurement seconds (3 points, linear n_out to 6400): 33.07582559064031

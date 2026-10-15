@@ -1,0 +1,289 @@
+{
+  "setting": "B3",
+  "seed": 1993,
+  "upstream_commit": "f3509b8ca3f20660ce4aa13f19d5283de81b4b35",
+  "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8",
+  "pilot": false,
+  "smoke": true,
+  "fake_data": true,
+  "measure_profile": "quick",
+  "arm": "icarl_vna",
+  "no_measure": false,
+  "identity": {
+    "setting": "B3",
+    "seed": 1993,
+    "upstream_commit": "f3509b8ca3f20660ce4aa13f19d5283de81b4b35",
+    "code_commit": "a77a57bef6a8e5eadf5049dbd00a73f5ee90fae8",
+    "pilot": false,
+    "smoke": true,
+    "fake_data": true,
+    "measure_profile": "quick",
+    "arm": "icarl_vna",
+    "no_measure": false,
+    "student": "resnet32",
+    "teacher_hash": null,
+    "mu_candidates": [
+      0.001,
+      0.01
+    ],
+    "recipe": {
+      "prefix": "reproduce",
+      "dataset": "cifar100",
+      "memory_size": 80,
+      "memory_per_class": 20,
+      "fixed_memory": false,
+      "shuffle": true,
+      "init_cls": 10,
+      "increment": 10,
+      "model_name": "icarl",
+      "convnet_type": "resnet32",
+      "device": [
+        -1
+      ],
+      "seed": [
+        1993
+      ]
+    },
+    "solver": "auto",
+    "output_exact_max": 4096,
+    "workers": 0,
+    "pilot_batches": 20,
+    "intervention": {
+      "seed": 0,
+      "gir": false,
+      "random": false,
+      "upstream_random": false,
+      "coefficient": 1.0,
+      "ngd": false,
+      "every": 100,
+      "pool_size": 8,
+      "refresh": 1000,
+      "rho_min": 0.0,
+      "rank": 4,
+      "task": null
+    },
+    "window": 4,
+    "calibrate": true,
+    "every_epoch": false,
+    "init_seed": 0
+  },
+  "mu_rel_default": 0.01,
+  "mu_source": "cli/default",
+  "seconds": 153.6318242760026,
+  "exact_vs_cg": [],
+  "training_seconds": 42.84253811495728,
+  "intervention_seconds": 110.71243463104474,
+  "epochs_run": 4,
+  "tasks_run": 2,
+  "measurement_point_seconds": [
+    {
+      "task": 1,
+      "epoch": 1,
+      "batch_size": 4,
+      "seconds": 0.04675152100389823
+    },
+    {
+      "task": 2,
+      "epoch": 1,
+      "batch_size": 4,
+      "seconds": 0.030100008996669203
+    }
+  ],
+  "resume_supported": true,
+  "status": "COMPLETED",
+  "reproduction": {
+    "status": "INVALID",
+    "metric": "Average Accuracy (NME)",
+    "average_accuracy": 46.875,
+    "last_task_accuracy": 40.0,
+    "reference_average_accuracy": 64.42,
+    "reference_last_task_accuracy": 49.5,
+    "reference_source": "PyCIL paper, CIFAR-100 B0 Inc10 iCaRL; third_party/PyCIL/resources/cifar100.png",
+    "reference_paper": "https://arxiv.org/abs/2112.12533",
+    "reference_plot": "https://github.com/LAMDA-CL/PyCIL/blob/f3509b8ca3f20660ce4aa13f19d5283de81b4b35/resources/cifar100.png",
+    "tolerance_pp": 1.5,
+    "tasks_run": 2,
+    "smoke": true,
+    "fake_data": true
+  },
+  "gate": {
+    "by_mu": {
+      "0.01": {
+        "status": "INVALID",
+        "eligible_points": 0,
+        "excluded_points": 0,
+        "excluded_fraction": 0.0,
+        "points_in_window": 0,
+        "gate_null_statistic": "nu",
+        "rho_fraction": 0.0,
+        "N1_fraction": 0.0,
+        "tiny_V_fraction": 0.0,
+        "final_train_acc": "n/a",
+        "raw_final_train_acc": 0.1125,
+        "conditions": {
+          "rho": false,
+          "N1": false,
+          "tiny_V": false,
+          "train_acc": "n/a"
+        },
+        "reproduction": {
+          "status": "INVALID",
+          "metric": "Average Accuracy (NME)",
+          "average_accuracy": 46.875,
+          "last_task_accuracy": 40.0,
+          "reference_average_accuracy": 64.42,
+          "reference_last_task_accuracy": 49.5,
+          "reference_source": "PyCIL paper, CIFAR-100 B0 Inc10 iCaRL; third_party/PyCIL/resources/cifar100.png",
+          "reference_paper": "https://arxiv.org/abs/2112.12533",
+          "reference_plot": "https://github.com/LAMDA-CL/PyCIL/blob/f3509b8ca3f20660ce4aa13f19d5283de81b4b35/resources/cifar100.png",
+          "tolerance_pp": 1.5,
+          "tasks_run": 2,
+          "smoke": true,
+          "fake_data": true
+        },
+        "measurements_valid": false
+      }
+    },
+    "official_mu": 0.01,
+    "gate_null_statistic": "nu",
+    "status": "INVALID",
+    "status_label": "exploratory"
+  },
+  "tasks": [
+    {
+      "task": 1,
+      "cnn_top1": 10.0,
+      "cnn_grouped": {
+        "total": 10.0,
+        "00-09": 10.0,
+        "old": 0,
+        "new": 10.0
+      },
+      "cnn_average_accuracy": 10.0,
+      "cnn_forgetting": 0.0,
+      "nme_top1": 53.75,
+      "nme_grouped": {
+        "total": 53.75,
+        "00-09": 53.75,
+        "old": 0,
+        "new": 53.75
+      },
+      "nme_average_accuracy": 53.75,
+      "nme_forgetting": 0.0,
+      "train_loss": 3.505664110183716,
+      "train_acc": 0.1875,
+      "memory_size": 80,
+      "memory_per_class": 8
+    },
+    {
+      "task": 2,
+      "cnn_top1": 5.0,
+      "cnn_grouped": {
+        "total": 5.0,
+        "00-09": 10.0,
+        "10-19": 0.0,
+        "old": 10.0,
+        "new": 0.0
+      },
+      "cnn_average_accuracy": 7.5,
+      "cnn_forgetting": 0.0,
+      "nme_top1": 40.0,
+      "nme_grouped": {
+        "total": 40.0,
+        "00-09": 42.5,
+        "10-19": 37.5,
+        "old": 42.5,
+        "new": 37.5
+      },
+      "nme_average_accuracy": 46.875,
+      "nme_forgetting": 11.25,
+      "train_loss": 6.308277606964111,
+      "train_acc": 0.1125,
+      "memory_size": 80,
+      "memory_per_class": 4
+    }
+  ],
+  "intervention_events": [
+    {
+      "kind": "gir_task",
+      "task": 1,
+      "seconds": 0.2689872050250415
+    },
+    {
+      "kind": "correction",
+      "task": 1,
+      "step": 1,
+      "rho": 0.00565304789709594,
+      "skipped": false,
+      "rho_gate_skip": false,
+      "vna_norm": 2.9155507077373652,
+      "correction_norm": 2.9155507077373652,
+      "gradient_dot_direction": 264.87681814284235,
+      "seconds": 52.32462583101005,
+      "solver": "output_exact",
+      "n_out": 40,
+      "M_build_seconds": 11.058042686025146,
+      "factor_mode": "eigh",
+      "factor_error": null,
+      "peak_rss_bytes": 723935232,
+      "peak_cuda_bytes": 0,
+      "factor_seconds": 0.000710018997779116,
+      "M_device": "cpu",
+      "M_memory_bytes": 12800,
+      "min_eig": -2.8694179007747824e-10,
+      "max_eig": 13724.822054037715,
+      "residual_in_range_H": true,
+      "residual_range_relative_error": 6.621609986050614e-13
+    },
+    {
+      "kind": "gir_task",
+      "task": 2,
+      "seconds": 0.15561808500206098
+    },
+    {
+      "kind": "correction",
+      "task": 2,
+      "step": 3,
+      "rho": 0.07458745852969144,
+      "skipped": false,
+      "rho_gate_skip": false,
+      "vna_norm": 1.0344684633754502,
+      "correction_norm": 1.0344684633754502,
+      "gradient_dot_direction": 10.973703429313755,
+      "seconds": 57.96320351000759,
+      "solver": "output_exact",
+      "n_out": 80,
+      "M_build_seconds": 23.673709709983086,
+      "factor_mode": "eigh",
+      "factor_error": null,
+      "peak_rss_bytes": 723935232,
+      "peak_cuda_bytes": 0,
+      "factor_seconds": 0.0016180120001081377,
+      "M_device": "cpu",
+      "M_memory_bytes": 51200,
+      "min_eig": -7.362779700610761e-12,
+      "max_eig": 151.4980402252463,
+      "residual_in_range_H": true,
+      "residual_range_relative_error": 1.3500951224386433e-15
+    }
+  ],
+  "calibration": [
+    {
+      "task": 1,
+      "vna_seconds": 52.368175244977465,
+      "n_out": 40,
+      "iteration_seconds": 3.2450789590075146
+    },
+    {
+      "task": 2,
+      "vna_seconds": 57.9974091029726,
+      "n_out": 80,
+      "iteration_seconds": 8.593204571021488
+    }
+  ],
+  "full_batches": [
+    1,
+    2
+  ],
+  "iteration_seconds": 3.1815962874825345
+}

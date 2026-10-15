@@ -166,10 +166,25 @@ def vna_exact_ggn(model, site, A, batch, cfg=GGNConfig(), **kwargs):
     return _correction(model, site, A, batch, cfg, 'exact', **kwargs)
 
 
-def ngd_control(model, site, A, batch, cfg=GGNConfig(), *, reference=None, **kwargs):
-    delta, diag = _correction(model, site, A, batch, cfg, 'ngd', **kwargs)
-    if reference is not None:
-        delta, diag['norm_match_scale'] = norm_match(delta, reference)
+_match_delta_norm = norm_match
+
+
+def ngd_control(model, site, A, batch, cfg=GGNConfig(), *, reference=None, norm_match=True, output_factor=None, **kwargs):
+    if output_factor is not None:
+        from methods.vna_joint import joint_products
+        with joint_products(model, [site], {site: A}, batch[0]) as products:
+            op = GGNProducts(products, batch[1], kwargs.get("loss_spec"), kwargs.get("ctx"))
+            mu = kwargs["mu"]
+            # (F+mu I)^-1 J^T e = J^T R (M+mu I)^-1 R^+ e.
+            e = op.g.reshape(output_factor.shape)
+            rhs = torch.einsum("nij,nj->ni", output_factor.pinv, e).flatten()
+            d = products.JT(output_factor.apply_root(output_factor.inverse(rhs, mu))).double()
+            delta = _unflatten(d, products.parameter_refs)
+            diag = {"realized_gain": float(op.gradient.dot(d)), "finite": bool(torch.isfinite(d).all())}
+    else:
+        delta, diag = _correction(model, site, A, batch, cfg, 'ngd', **kwargs)
+    if reference is not None and norm_match:
+        delta, diag['norm_match_scale'] = _match_delta_norm(delta, reference)
         diag['realized_gain'] *= diag['norm_match_scale']
     return delta, diag
 
