@@ -1,58 +1,98 @@
-"""Tiny float64 checks for the output-space Cholesky path."""
+"""Cholesky (n_out > OUTPUT_EXACT_MAX) path of the output-space exact solve.
+
+The threshold is lowered so the small problem takes the large-n path:
+CPU float64 Cholesky per damping value, block symmetrization, disk parking
+of inactive factors, and principal submatrices for groups. Every quantity is
+compared with matrix-free CG at tolerance 1e-12.
+"""
+import types
 import pytest
 import torch
-from torch import nn
-from methods.vna_output import OutputFactor
-from methods.vna_ggn import GGNProducts, GGNConfig, solve_ggn
-from methods.vna_joint import joint_products
+import methods.vna_output as vo
+from diagnostics.measure_efficiency import SolveCache
+from diagnostics.stage_a import null_residual
+from methods.vna_ggn import GGNConfig
+from methods.vna_joint import joint_correction
 from methods.vna_losses import CE, KDRepDistiller, MSE
-from methods.vna_sites import HookSite
+from methods.vna_select import tiny_V
+from tests.test_measure_round2 import problem
+
+CFG = GGNConfig(cg_iters=2000, cg_tol=1e-12, project_bn=False)
 
 
-def relative(actual, expected):
-    assert float((actual-expected).norm()/expected.norm().clamp_min(1e-30)) <= 1e-8
+@pytest.fixture(autouse=True)
+def large_path(monkeypatch):
+    old = torch.get_num_threads()
+    torch.set_num_threads(1)
+    torch.manual_seed(48)
+    monkeypatch.setattr(vo, 'OUTPUT_EXACT_MAX', 4)
+    yield
+    torch.set_num_threads(old)
+
+
+def relative(a, b):
+    return float((a-b).norm()/b.norm().clamp_min(1e-300))
 
 
 @pytest.mark.parametrize('spec', [CE(), KDRepDistiller(), MSE()])
-def test_cholesky_eigh_cg_and_principal_group(spec):
-    old = torch.get_num_threads()
-    torch.set_num_threads(1)
-    try:
-        torch.manual_seed(48)
-        model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 3)).double().eval()
-        site = HookSite(model, '0', '2', 'linear', between=('1',))
-        x = torch.randn(6, 3, dtype=torch.float64)
-        y = torch.randn(6, 3, dtype=torch.float64) if isinstance(spec, MSE) else torch.arange(6)%3
-        teacher = torch.randn(6, 3, dtype=torch.float64)
-        ctx = dict(targets=y, teacher_logits=teacher)
-        a = {'weight': model[0].weight[:2].detach().clone(), 'bias': model[0].bias[:2].detach().clone()}
-        cfg = GGNConfig(cg_iters=2000, cg_tol=1e-12, project_bn=False)
-        with joint_products(model, [site], {site: a}, x) as p:
-            op = GGNProducts(p, y, spec, ctx)
-            chol = OutputFactor(op, factor_mode='cholesky')
-            eigen = OutputFactor(op, factor_mode='eigh')
-            w = p.JET(op.g)
-            for mu in (.001, .01):
-                u = solve_ggn(op, p.JT(op.g), mu, cfg)
-                assert u.converged
-                z = op.H(p.Jv(u.solution))
-                d = solve_ggn(op, p.JT(op.H(p.JEv(w))), mu, cfg)
-                assert d.converged
-                for factor in (chol, eigen):
-                    relative(factor.z(op.g, mu), z)
-                    relative(factor.d(p, w, mu), d.solution)
+@pytest.mark.parametrize('park', [False, True])
+def test_cholesky_matches_cg(spec, park, monkeypatch):
+    if park:  # force every inactive factor to be parked on disk and restored
+        import psutil
+        monkeypatch.setattr(psutil, 'virtual_memory', lambda: types.SimpleNamespace(available=0))
+    model, site, data = problem()
+    if isinstance(spec, MSE): data = data[0], torch.randn(6, 3, dtype=torch.float64)
+    context = {'targets': data[1], 'teacher_logits': torch.randn(6, 3, dtype=torch.float64)}
+    other = (data[0].flip(0), data[1].flip(0)); other_ctx = {**context, 'targets': other[1]}
+    factors = {}
+    for mu in (1e-3, 1e-2):
+        exact = SolveCache(model, site, data, spec, context, CFG, mu=mu, solver='output_exact', factors=factors)
+        cg = SolveCache(model, site, data, spec, context, CFG, mu=mu, solver='cg')
+        e = spec.residual(model(data[0]), context)
+        e_other = spec.residual(model(other[0]), other_ctx)
+        residuals = [e] + [null_residual(e, kind, torch.Generator().manual_seed(i),
+                                         residual_is_zero_sum=spec.residual_is_zero_sum)
+                           for kind in ('N1', 'N2') for i in range(2)]
+        for index, residual in enumerate(residuals):
+            z = exact.solve(str(index), residual, data, context)
+            # Alternate datasets so parking/restoring happens between solves.
+            z_other = exact.solve(f'other{index}', e_other, other, other_ctx)
+            assert exact.factor(data, context).factor_mode == 'cholesky'
+            assert relative(z, cg.solve(str(index), residual, data, context)) <= 1e-8
+            assert relative(z_other, cg.solve(f'other{index}', e_other, other, other_ctx)) <= 1e-8
+            A, _ = tiny_V(model, site, [data], 2, cotangents=[z], cfg=CFG)
+            exact_d = joint_correction(model, [site], {site: A}, data, CFG, mu=mu, loss_spec=spec, ctx=context,
+                                       cotangent=residual, output_factor=exact.factor(data, context))
+            cg_d = joint_correction(model, [site], {site: A}, data, CFG, mu=mu, loss_spec=spec, ctx=context,
+                                    cotangent=residual)
+            flat = lambda d: torch.cat([v.flatten() for v in d.values()])
+            assert relative(flat(exact_d[0]), flat(cg_d[0])) <= 1e-8
+            for key in ('V', 'rho'):
+                assert exact_d[3][key] == pytest.approx(cg_d[3][key], rel=1e-8, abs=1e-25)
+        factor = exact.factor(data, context)
+        assert factor.factor_error is None and factor.range_ok
+
+
+def test_cholesky_matches_eigh(monkeypatch):
+    model, site, data = problem(); context = {'targets': data[1]}
+    e = CE().residual(model(data[0]), context)
+    for mu in (1e-3, 1e-2):
+        chol = SolveCache(model, site, data, CE(), context, CFG, mu=mu, solver='output_exact').solve('e', e, data, context)
+        monkeypatch.setattr(vo, 'OUTPUT_EXACT_MAX', 4096)
+        eigh = SolveCache(model, site, data, CE(), context, CFG, mu=mu, solver='output_exact').solve('e', e, data, context)
+        monkeypatch.setattr(vo, 'OUTPUT_EXACT_MAX', 4)
+        assert relative(chol, eigh) <= 1e-10
+
+
+def test_cholesky_group_submatrix():
+    model, site, data = problem(); context = {'targets': data[1]}
+    for mu in (1e-3, 1e-2):
+        exact = SolveCache(model, site, data, CE(), context, CFG, mu=mu, solver='output_exact')
+        parent = exact.factor(data, context)
         mask = torch.tensor([True, False, True, False, True, False])
-        indices = mask[:, None].expand(-1, 3).flatten().nonzero().flatten()
-        matrix = chol.matrix[indices[:, None], indices[None, :]] * 2
-        subctx = dict(targets=y[mask], teacher_logits=teacher[mask])
-        with joint_products(model, [site], {site: a}, x[mask]) as p:
-            op = GGNProducts(p, y[mask], spec, subctx)
-            group = OutputFactor(op, matrix=matrix, factor_mode='cholesky')
-            fresh = OutputFactor(op, factor_mode='cholesky')
-            torch.testing.assert_close(group.matrix, fresh.matrix, rtol=1e-10, atol=1e-14)
-            w = p.JET(op.g)
-            for mu in (.001, .01):
-                relative(group.z(op.g, mu), fresh.z(op.g, mu))
-                relative(group.d(p, w, mu), fresh.d(p, w, mu))
-    finally:
-        torch.set_num_threads(old)
+        subset = tuple(v[mask] for v in data); sub_ctx = {'targets': subset[1]}
+        exact.factor(subset, sub_ctx, parent=parent, mask=mask)
+        residual = CE().residual(model(subset[0]), sub_ctx)
+        z = exact.solve('group', residual, subset, sub_ctx)
+        reference = SolveCache(model, site, subset, CE(), sub_ctx, CFG, mu=mu, solver='cg').solve('group', residual, subset, sub_ctx)
+        assert relative(z, reference) <= 1e-8
