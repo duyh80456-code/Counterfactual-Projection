@@ -202,4 +202,5 @@ def damping_metadata(cfg, trace, op, mu):
 def relative_damping(cfg, trace, op):
     if cfg.damping_norm == 'params':
         return max(cfg.damping_rel * trace / op.size, 1e-12)
-    return cfg.damping_rel * trace / op.g.numel()
+    # Same positive floor as "params": a saturated softmax gives tr(F) = 0.
+    return max(cfg.damping_rel * trace / op.g.numel(), 1e-12)
