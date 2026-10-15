@@ -142,7 +142,8 @@ class Native(nn.Module):
         return self.layers[2](feature), [feature]
 
 
-def test_53_b5_selection_only_reads_stat(monkeypatch):
+@pytest.mark.parametrize('discrepancy', [0., 1e-3])
+def test_53_b5_selection_only_reads_stat(monkeypatch, discrepancy):
     from adapters.lop_hooks import Prediction
     from diagnostics import lop_measure as mod
     model = Prediction(Native()).double().eval()
@@ -164,6 +165,15 @@ def test_53_b5_selection_only_reads_stat(monkeypatch):
         return original_u(model, site, inputs, *args, **kwargs)
     monkeypatch.setattr(mod, 'tiny_V', check_v)
     monkeypatch.setattr(mod, 'tiny_U_from_cotangent', check_u)
+    original_correction = mod.joint_correction
+    def correction(*args, **kwargs):
+        result = original_correction(*args, **kwargs)
+        result[3]['cg_converged'] = True
+        if discrepancy:
+            result[3]['V'] /= 1 + discrepancy
+        return result
+    monkeypatch.setattr(mod, 'joint_correction', correction)
+    monkeypatch.setattr(mod.SolveCache, 'converged', lambda self, **kwargs: True)
     monkeypatch.setattr(mod, 'spectrum', lambda *a, **k: {})
     original_swap = mod.swap_directions
     def swap(*args):
@@ -180,6 +190,11 @@ def test_53_b5_selection_only_reads_stat(monkeypatch):
     assert counts['swaps'] == 4 # CBP and ReDo, one site, two mu; independent of rank
     assert all(r['stat_m'] == r['eval_m'] == 128 for r in rows)
     assert rows[0]['null_draw_id'] == rows[1]['null_draw_id']
+    if discrepancy:
+        assert all(r['V_consistency'] == pytest.approx(1e-3) for r in rows)
+        assert all(not r['cg_converged_real'] and not r['cg_converged'] for r in rows)
+    else:
+        assert all(r['cg_converged_real'] and r['cg_converged'] for r in rows)
 
 
 def test_54_gate():
@@ -252,3 +267,9 @@ def test_51_old_lop_arms_explicit_residuals(tmp_path):
         from methods.vna_select import tiny_V
         _, new_cap = tiny_V(model, site, [data], 1, cotangents=[z], cfg=cfg)
         torch.testing.assert_close(cap['generalized_eigenvalues'], new_cap['generalized_eigenvalues'], rtol=1e-6, atol=0)
+
+
+def test_verify_energy_returns_discrepancy():
+    from diagnostics.measure_efficiency import verify_energy
+    assert verify_energy({'V': 1.001}, {'V': 1.}) == pytest.approx(1e-3)
+    assert verify_energy({'V': 0.}, {'V': 0.}) == 0.

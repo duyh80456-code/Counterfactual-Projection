@@ -260,13 +260,20 @@ def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
     exec(''.join(notebook['cells'][1]['source']), scope)
     assert scope['REPO_COMMIT'] == commit
     sources = '\n'.join(''.join(c['source']) for c in notebook['cells'])
-    # NB1 now includes Stage A's CIFAR diagnostics; ImageNet was dropped from its lanes.
-    assert 'DATA_ROOT' in sources and 'cifar-100-python' in sources
+    for removed in ('DATA_ROOT', 'cifar-100-python', 'wait_mu', 'discover_phase0',
+                    'STAGE_A', 'stage_a_done', 'stage_command'):
+        assert removed not in sources
     assert 'ImageNet-32 is dropped' in sources
+    assert 'pool.submit(gpu0), pool.submit(gpu1), pool.submit(cpu)' in sources
+    assert 'try: b5_job("mnist", "bp", "GPU0")' in sources
+    assert 'try: b5_job("mnist", "cbp", "GPU1", rate=1e-4)' in sources
+    assert 'for rate in RATES: b5_job("regression", "cbp", "CPU", rate=rate)' in sources
+    assert 'b5_job("regression", "bp", "CPU")' in sources
+    assert 'V_consistency min/median/max' in sources
     for text in ['requirements-upstream.txt', 'fetch_third_party.sh', 'REQUIRE_UPSTREAM',
                  'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', '--resume', 'GPU_HOURS_BUDGET',
-                 'ALLOW_OVER_BUDGET', 'STAGE_A / "summary.json"', 'json.loads(path.read_text())["mu_rel_default"]',
-                 '--mu-rel-default-source', 'WARNING: Stage A failed', 'archive_stop.wait(900)', 'finalize(STAGE_B, benchmark']:
+                 'ALLOW_OVER_BUDGET',
+                 '--mu-rel-default-source', 'B5 fixed candidates', 'archive_stop.wait(900)', 'finalize(STAGE_B, benchmark']:
         assert text in sources
     assert '"-m", "pytest", "-q"], cwd=REPO' in sources
     for i, c in enumerate(notebook['cells']):
@@ -276,6 +283,7 @@ def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
     for number in (2, 3):
         other = build_rest(commit, number)
         assert '"-m", "pytest", "-q"], cwd=REPO' in ''.join(other['cells'][3]['source'])
+        assert 'V_consistency min/median/max' in ''.join(other['cells'][5]['source'])
         for i, cell in enumerate(other['cells']):
             if cell['cell_type'] == 'code': compile(''.join(cell['source']), f'nb{number}-cell-{i}', 'exec')
     from experiments.stage_b5 import restore_archives

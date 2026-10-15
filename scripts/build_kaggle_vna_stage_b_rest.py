@@ -151,6 +151,12 @@ SMOKE = '''def smoke_lane(gpu, jobs):
         solves = list(csv.DictReader((smoke_out / "solves.csv").open()))
         print(job["name"], "CG solves", len(solves), "mean seconds/solve",
               sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
+        import statistics
+        measurement_path = smoke_out / "measurements.csv"
+        measurement_rows = list(csv.DictReader(measurement_path.open())) if measurement_path.exists() else []
+        consistency = [float(r["V_consistency"]) for r in measurement_rows if r.get("V_consistency")]
+        print(job["name"], "V_consistency min/median/max",
+              (min(consistency), statistics.median(consistency), max(consistency)) if consistency else (None, None, None), flush=True)
         training = summary["training_seconds"] * job["epochs"] / summary["epochs_run"]
         point = max(p["seconds"] for p in summary["measurement_point_seconds"])
         full = (training + job["points"]*point*job.get("output_factor", 1))/3600
@@ -250,7 +256,7 @@ for folder in sorted(STAGE_B.iterdir()):
 merged_path = STAGE_B / "gate.json"
 merged = json.loads(merged_path.read_text()) if merged_path.exists() else {}
 merged.update(gates); merged_path.write_text(json.dumps(merged, indent=2))
-if OFFICIAL_MU is None: print("official μ pending Stage A (nb1)")
+if OFFICIAL_MU is None: print("official μ pending standalone Stage A notebook")
 gate_table = pd.DataFrame(gate_rows, columns=["setting", "mu", "status", "official"])
 display(gate_table.style.apply(lambda row: ["background-color: #fff2cc" if row["official"] else ""] * len(row), axis=1))
 display(pd.DataFrame(reproduction))

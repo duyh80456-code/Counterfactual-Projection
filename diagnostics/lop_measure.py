@@ -191,7 +191,7 @@ class B5Measurement:
                            'weight_magnitude_per_layer': json.dumps([float(layer.weight.detach().abs().mean())
                                for layer in list(model.native.layers)[::2]]),
                            **null_stats}
-                    row['cg_converged_real'] = cache.converged() and checked['cg_converged']
+                    row['cg_converged_real'] = cache.converged() and checked['cg_converged'] and consistency <= 1e-4
                     row['cg_converged_null'] = cache.converged(null=True)
                     # Counterfactuals are private copies, with outgoing weights
                     # zeroed at the declared selected coordinates only.

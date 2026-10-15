@@ -1,4 +1,4 @@
-"""Build Notebook 1: Stage A and MNIST GPU lanes plus CPU regression."""
+"""Build Notebook 1: MNIST GPU lanes plus CPU regression."""
 import argparse
 import json
 from pathlib import Path
@@ -7,31 +7,42 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.build_kaggle_vna_stage_a_notebook import build as stage_a_build
+from scripts.build_kaggle_vna_signal_curve_notebook import build as base_build
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
 from scripts.build_kaggle_vna_stage_b_rest import SESSION_RUNTIME
 
 
 def build(commit):
-    base = stage_a_build(commit)
-    constants = ''.join(base['cells'][1]['source'])
-    constants = constants.replace('GPU_HOURS_BUDGET = 3', 'GPU_HOURS_BUDGET = 8')
-    constants += 'MNIST_DIR = None\nDISK_CAP_BYTES = 5_000_000_000\n'
-    bootstrap = ''.join(base['cells'][2]['source']).replace('vna_stage_a', 'vna_stage_b_nb1')
+    base = base_build(commit)
+    constants = f'''from pathlib import Path
+import time
+SESSION_HOURS = 11.5
+SESSION_START = time.time()
+VNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600
+REPO_COMMIT = "{commit}"
+GPU_HOURS_BUDGET = 8
+ALLOW_OVER_BUDGET = False
+MNIST_DIR = None
+DISK_CAP_BYTES = 5_000_000_000
+'''
+    bootstrap = ''.join(base['cells'][2]['source']).replace('vna_phase0_seed0', 'vna_stage_b_nb1')
     setup = ''.join(base['cells'][3]['source'])
-    return {'cells': [cell('markdown', '''# VNA Notebook 1 — Stage A → B5
-Run this notebook first with Internet, T4×2, CIFAR-100 and the extracted Phase-0
-checkpoint dataset. GPU0 runs the cost smoke → a5 → null → selection → joint → mu → solver →
-summary, then measured MNIST BP. GPU1 immediately runs MNIST CBP (rr 1e-4).
-A separate CPU subprocess runs the five regression CBP arms immediately, then
-measured BP when Stage A's summary exists. BP uses the newly produced default μ
-and measures both 1e-3 and 1e-2; Gate G uses 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
+    start = setup.index('required_cifar_files =')
+    end = setup.index('print("CIFAR-100 root:", DATA_ROOT)') + len('print("CIFAR-100 root:", DATA_ROOT)')
+    setup = setup[:start] + setup[end:]
+    setup = setup.replace('print("Official TEST verified:", DATA_ROOT / "cifar-100-python/test")', '')
+    import re
+    setup = re.sub(r'"pytest", "-q"[^\n]*?\], cwd=REPO,', '"pytest", "-q"], cwd=REPO,', setup)
+    return {'cells': [cell('markdown', '''# VNA Notebook 1 — B5 MNIST and regression
+Enable Internet, T4×2 and `github_token`. All three lanes start immediately:
+GPU0 runs measured MNIST BP; GPU1 runs MNIST CBP (rr 1e-4); CPU runs the five
+regression CBP arms, then measured regression BP. No Stage A outputs, Phase-0
+checkpoints or CIFAR data are required. Stage A remains a standalone notebook.
+BP measures both μ=1e-3 and μ=1e-2; Gate G uses μ=1e-2.
 ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as
 fallback. The 11.5-hour deadline pauses with a final archive; attach its output to resume.
-Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two workers; CPU torch threads are limited to two.
-Attach prior archives to resume with the existing Stage A identity rules.
-Keep the standalone Stage A notebook as a fallback. Attach this notebook's
-Stage A summary to nb2/nb3 and run those in separate sessions.
+Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two
+workers; CPU torch threads are limited to two. Attach prior Stage-B archives to resume.
 Regenerate with the published commit containing this implementation before Kaggle.
 '''), cell('code', constants), cell('code', bootstrap), cell('code', setup),
         cell('code', RUNTIME), cell('code', RUN), cell('code', REPORT)],
@@ -41,20 +52,17 @@ Regenerate with the published commit containing this implementation before Kaggl
 RUNTIME = '''from concurrent.futures import ThreadPoolExecutor
 from experiments.vna_kaggle import archive_with_status as _archive_outputs
 from experiments.stage_b5 import restore_archives as restore_b, RATES, finalize, merge_json
-from diagnostics.stage_a import restore_archives as restore_a
-STAGE_A = RUN_ROOT / "outputs/stageA"
 STAGE_B = RUN_ROOT / "outputs/stageB"
-STAGE_A.mkdir(parents=True, exist_ok=True); STAGE_B.mkdir(parents=True, exist_ok=True)
-restore_a(Path("/kaggle/input"), STAGE_A); restore_b(Path("/kaggle/input"), STAGE_B)
+STAGE_B.mkdir(parents=True, exist_ok=True)
+restore_b(Path("/kaggle/input"), STAGE_B)
 merge_json(STAGE_B / "gate.json", "imagenet", "dropped (supervisor 2026-10-15)")
-from experiments.phase0_discovery import discover_phase0
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
        "VNA_DEADLINE": str(VNA_DEADLINE)}
 CPU_ENV = {k: v for k, v in ENV.items() if k != "CUDA_VISIBLE_DEVICES"}
 archive_lock = threading.Lock(); archive_stop = threading.Event(); archive_errors = []
-stage_a_done = threading.Event(); stage_a_errors = []; lane_timings = {}; projections = {}
+lane_timings = {}; projections = {}
 MU_REL_DEFAULT = 1e-2
-MU_SOURCE = "fallback: stage A failed"
+MU_SOURCE = "B5 fixed candidates: 1e-3 and 1e-2; gate 1e-2"
 if MNIST_DIR is None:
     pickles = sorted(Path("/kaggle/input").rglob("mnist_"))
     raw = sorted(Path("/kaggle/input").rglob("train-images-idx3-ubyte"))
@@ -62,28 +70,12 @@ if MNIST_DIR is None:
 def archive_outputs():
     with archive_lock:
         return _archive_outputs(RUN_ROOT, budget=DISK_CAP_BYTES,
-                                folders=("outputs/stageA", "outputs/stageB"), exclude_parts=("data",))
+                                folders=("outputs/stageB",), exclude_parts=("data",))
 def periodic_archive():
     while not archive_stop.wait(900):
         try: archive_outputs()
         except Exception as error: archive_errors.append(str(error)); print("Archive error:", error, flush=True)
 archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.start()
-def stage_command(measurement, *, cost=False):
-    common = ["--checkpoint-dir", str(RECIPE), "--data-root", str(DATA_ROOT),
-              "--output", str(STAGE_A), "--seed", "0"]
-    cmd = [sys.executable, "-u", "-m", "diagnostics.stage_a", measurement, *common, "--device", "cuda:0"]
-    if cost: cmd += ["--checkpoints", str(RECIPE / "epoch_090.pt"), str(RECIPE / "epoch_100.pt")]
-    return cmd
-def wait_mu():
-    path = STAGE_A / "summary.json"
-    # Poll the file, but do not reuse a restored summary before Stage A validates it.
-    while not stage_a_done.is_set() or not path.exists():
-        if pause_due(): return None, "PAUSED"
-        if stage_a_done.wait(2) and stage_a_errors:
-            print("*** WARNING: Stage A failed; BP μ=1e-2 ***", stage_a_errors, flush=True)
-            return 1e-2, "fallback: stage A failed"
-    if stage_a_errors: return 1e-2, "fallback: stage A failed"
-    return json.loads(path.read_text())["mu_rel_default"], str(path)
 def command(benchmark, arm, out, mu, source, *, smoke=False, rate=None, attached=False):
     device = "cpu" if benchmark == "regression" else "cuda:0"
     cmd = [sys.executable, "-u", "-m", "experiments.stage_b5", benchmark, "--arm", arm,
@@ -102,7 +94,7 @@ def run_b5(benchmark, arm, lane, mu, source, *, smoke=False, rate=None):
         return None
     return json.loads((out / "b5" / benchmark / name / "summary.json").read_text())
 def b5_job(benchmark, arm, lane, *, rate=None):
-    mu, source = wait_mu() if arm == "bp" else (1e-2, "cbp: unmeasured; no mu required")
+    mu, source = (MU_REL_DEFAULT, MU_SOURCE) if arm == "bp" else (1e-2, "cbp: unmeasured; no mu required")
     if mu is None or pause_due(): return
     name = arm if rate is None else f"cbp_rr_{rate:g}"
     previous = STAGE_B / "b5" / benchmark / name / "summary.json"
@@ -121,6 +113,12 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     solves = list(csv.DictReader(solve_path.open())) if solve_path.exists() else []
     print(benchmark, name, "CG solves", len(solves), "mean seconds/solve",
           sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
+    import statistics
+    measurement_path = RUN_ROOT / "smoke/outputs/stageB/b5" / benchmark / name / "measurements.csv"
+    measurement_rows = list(csv.DictReader(measurement_path.open())) if measurement_path.exists() else []
+    consistency = [float(r["V_consistency"]) for r in measurement_rows if r.get("V_consistency")]
+    print(benchmark, name, "V_consistency min/median/max",
+          (min(consistency), statistics.median(consistency), max(consistency)) if consistency else (None, None, None), flush=True)
     startup = summary["startup_seconds"]
     steady = summary["steady_step_seconds"]
     points = (16 if benchmark == "regression" else 18) if arm == "bp" else 0
@@ -146,29 +144,8 @@ heartbeat_thread = threading.Thread(target=heartbeat, daemon=True); heartbeat_th
 '''
 
 RUN = '''def gpu0():
-    global MU_REL_DEFAULT, MU_SOURCE
     start = time.monotonic()
-    try:
-        try:
-            global RECIPE
-            RECIPE = discover_phase0()
-            for measurement in ("cost", "a5", "null", "selection", "joint", "mu", "solver", "summary"):
-                if not launch(stage_command(measurement, cost=measurement == "cost"),
-                              "GPU0", "stageA_"+measurement,
-                              RUN_ROOT / f"stage_a_{measurement}_gpu0.log"): return
-                if measurement == "cost":
-                    cost = json.loads((STAGE_A / "cost_projection.json").read_text())
-                    hours = cost["total_projected_gpu_hours"] + cost["smoke_gpu_hours"]
-                    projections.setdefault("GPU0", []).append(hours)
-                    print("GPU0 Stage A:", hours, "projected GPU-hours including smoke", flush=True)
-                    if hours > GPU_HOURS_BUDGET and not ALLOW_OVER_BUDGET:
-                        raise RuntimeError("Stage A projected GPU-hours exceed budget")
-                archive_outputs()
-        except Exception as error:
-            stage_a_errors.append(str(error)); print("Stage A failed:", error, flush=True)
-        finally: stage_a_done.set()
-        MU_REL_DEFAULT, MU_SOURCE = wait_mu()
-        b5_job("mnist", "bp", "GPU0")
+    try: b5_job("mnist", "bp", "GPU0")
     finally: lane_timings["GPU0"] = time.monotonic()-start
 
 def gpu1():
@@ -199,8 +176,6 @@ if archive_errors: raise RuntimeError(archive_errors)
 
 REPORT = '''import pandas as pd
 import matplotlib.pyplot as plt
-summary = STAGE_A / "summary.json"
-print("STAGE A SUMMARY", summary.read_text() if not stage_a_errors and summary.exists() else stage_a_errors)
 for benchmark in (() if session_paused.is_set() else ("regression", "mnist")):
     finalize(STAGE_B, benchmark, mu_rel_default=MU_REL_DEFAULT)
 gate_path = STAGE_B / "gate.json"

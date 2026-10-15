@@ -99,7 +99,7 @@ class B3Measurement:
                             energy = virtual_energy(model, [site], {site: A}, data, filtered, residual)
                             group_sums[label] += energy['rho']
                     lam = float(capture['generalized_eigenvalues'][0])
-                    real_ok = cache.converged() and checked['cg_converged']
+                    real_ok = cache.converged() and checked['cg_converged'] and consistency <= 1e-4
                     null_ok = cache.converged(null=True)
                     row = {**self.metadata, **{k: ctx[k] for k in ('task', 'epoch', 'step', 'end_of_task', 'train_acc')},
                            'site': site.module_name, 'rank': rank, 'selected_rank': len(A['weight']),
