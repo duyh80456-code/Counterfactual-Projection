@@ -125,7 +125,7 @@ class LearnHook:
         self.last_frame = None
         self.last_status = 0.
         self.last_task_ms = None
-        self.buffer = MeasurementBuffer(params['mini_batch_size'] if benchmark == 'imagenet' else 64)
+        self.buffer = MeasurementBuffer(256 if hasattr(measure, 'mus') else (params['mini_batch_size'] if benchmark == 'imagenet' else 64))
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
         self.step, self.rows = 0, []
         self.checkpoint, self.resume, self.observe = checkpoint, resume, observe
@@ -272,7 +272,8 @@ class LearnHook:
         if self.observe: self.observe(learner, x, target, task, self.step)
         if self.measurement is not None and self.arm == 'bp':
             self._shadow(learner)
-            if task in self.points and (first_point or within == max(1, self.task_steps//2)):
+            smoke_done = self.time_steps and bool(self.measurement_point_seconds)
+            if not smoke_done and len(self.buffer) == self.buffer.m and task in self.points and (first_point or within == max(1, self.task_steps//2)):
                 model = Prediction(learner.net)
                 spec = MSE(reduction='mean') if self.benchmark == 'regression' else CE()
                 ctx = {'targets': self.buffer.batch()[1],
@@ -289,6 +290,8 @@ class LearnHook:
                 if self.time_steps and device.type == 'cuda': torch.cuda.synchronize(device)
                 self.measurement_point_seconds.append({'batch_size': len(self.buffer), 'seconds': time.monotonic()-started})
                 self.rows.extend(rows or [])
+                if any(r.get('status') == 'timeout' for r in rows or []):
+                    self._checkpoint(learner, self.last_frame)
         if self.step % 10000 == 0 or within == self.task_steps:
             elapsed = time.monotonic()-self.report_started
             log(f'{self.benchmark} {self.arm} task={task} step={self.step} '

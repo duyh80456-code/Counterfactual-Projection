@@ -135,7 +135,7 @@ def test_joint_full_parameter_dense_oracle_and_invariance(toy):
 
 def gate_rows():
     return [dict(epoch=i*20, rank=16, mu_rel=.01, cg_converged=True,
-                 rho_joint=.3, significant_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
+                 rho_joint=.3, significant_N1=True, significant_rho_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
             for i in range(1, 11)]
 
 
@@ -160,7 +160,7 @@ def test_gate_constants_windows_and_failures():
     result = gate.evaluate_gate(rows, cfg)
     assert result['status'] == 'PASS' and result['conditions']['train_acc'] == 'n/a'
     rows = [dict(r, cg_converged=False) for r in rows]
-    assert gate.evaluate_gate(rows, cfg)['status'] == 'FAIL'
+    assert gate.evaluate_gate(rows, cfg)['status'] == 'INVALID'
 
 
 def test_a5_tiny_residual_cg_and_guarded_ratio():
@@ -186,7 +186,11 @@ def test_stage_a_smoke_resume_schema_and_identity(tmp_path):
         assert rows and all(r['schema_version'] == 'stage1d-v2' for r in rows)
         assert all({'code_commit', 'seed', 'device', 'wall_seconds'} <= r.keys() for r in rows)
     markers = list((tmp_path/'completed').rglob('*.json'))
-    assert len(markers) == 6
+    # Resume markers now cover individual site/rank/kind/μ work units.
+    from collections import Counter
+    from diagnostics.stage_a import MU_GRID, SELECTION_KINDS
+    assert Counter(p.parent.name for p in markers) == dict(
+        a5=1, null=1, selection=len(SELECTION_KINDS), mu=len(MU_GRID), joint=2, solver=1)
     before = {p: p.read_bytes() for p in markers}
     run(args)
     assert all(p.read_bytes() == before[p] for p in markers)
@@ -230,9 +234,10 @@ def test_notebook_pin_order_tests_and_python_cells():
     assert 'REPO_COMMIT = "'+'a'*40+'"' in joined
     assert 'worker, 0, ["null", "selection"]' in joined
     assert 'worker, 1, ["joint", "mu", "solver"]' in joined
-    assert 'glob("test_vna*.py")' in joined
+    assert '"-m", "pytest", "-q"], cwd=REPO' in joined
     assert 'archive_stop.wait(3600)' in joined
-    assert 'PHASE0_DIR' in joined
+    # Phase-0 discovery replaced the manually configured PHASE0_DIR.
+    assert 'RECIPE = discover_phase0()' in joined
 
 
 def test_archive_contains_stage_a_and_safe_restore(tmp_path):
@@ -367,7 +372,7 @@ def test_a5_phase0_oracle_and_state_missing():
                            ('iterations', 'converged', 'relative_residual', 'breakdown'))
 
 
-def test_notebook_cost_budget_and_a5_first(tmp_path):
+def test_notebook_cost_budget_before_a5(tmp_path):
     from scripts.build_kaggle_vna_stage_a_notebook import build
     from types import SimpleNamespace
     notebook = build('a'*40)
@@ -379,17 +384,25 @@ def test_notebook_cost_budget_and_a5_first(tmp_path):
     (stage/'cost_projection.json').write_text(json.dumps(dict(
         cost_projection={'selection': {'projected_gpu_hours': 3.1}},
         total_projected_gpu_hours=3.1, smoke_gpu_hours=.1)))
+    # The session runner now launches cost first so the budget guards A5 too.
+    import threading
     commands = []
-    context = dict(sys=SimpleNamespace(executable='python'),
-        subprocess=SimpleNamespace(run=lambda command, **kwargs: commands.append(command)),
-        common=[], RECIPE=recipe, REPO=tmp_path, ENV={}, STAGE_A=stage,
-        json=json, archive_outputs=lambda root: None, RUN_ROOT=tmp_path,
+    archives = []
+    def launch(measurement, gpu=0, extra=()):
+        commands.append((measurement, gpu, extra)); return True
+    context = dict(stage_launch=launch, RECIPE=recipe, STAGE_A=stage,
+        json=json, archive_outputs=archives.append, RUN_ROOT=tmp_path,
+        archive_stop=threading.Event(), session_paused=threading.Event(),
+        archiver=SimpleNamespace(join=lambda **kwargs: None),
         GPU_HOURS_BUDGET=3, ALLOW_OVER_BUDGET=False)
     with pytest.raises(RuntimeError, match='GPU_HOURS_BUDGET'): exec(source, context)
-    assert commands[0][4] == 'a5' and commands[0][-1] == 'cuda:0'
-    assert commands[1][4] == 'cost'
+    assert [c[0] for c in commands] == ['cost']
+    assert commands[0][2] == ('--checkpoints', str(recipe/'epoch_090.pt'), str(recipe/'epoch_100.pt'))
+    assert context['archive_stop'].is_set() and archives == [tmp_path]
+    commands.clear()
     context['ALLOW_OVER_BUDGET'] = True
     exec(source, context)
+    assert [c[0] for c in commands] == ['cost', 'a5']
 
 
 def test_params_explicit_bitwise_and_gate_convention(toy):

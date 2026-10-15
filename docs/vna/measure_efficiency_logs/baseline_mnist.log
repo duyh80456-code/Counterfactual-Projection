@@ -1,0 +1,234 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______ test_resume_task_boundary_restores_rng_logs_and_learner[bp-mnist] _______
+
+benchmark = 'mnist', arm = 'bp'
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-36/test_resume_task_boundary_rest0')
+
+    @pytest.mark.parametrize('benchmark', ['regression', 'mnist', 'imagenet'])
+    @pytest.mark.parametrize('arm', ['bp', 'cbp'])
+    def test_resume_task_boundary_restores_rng_logs_and_learner(benchmark, arm, tmp_path):
+        params = fixture(benchmark, arm, tmp_path, tasks=3)
+        reset()
+        full = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None)
+        logs = run_native(benchmark, params, tmp_path, full)
+        expected = learner_state(full.last_learner)
+        checkpoint = {}
+        class Stop(Exception): pass
+        def save(state):
+            if state['step'] == full.task_steps:
+                checkpoint.update(copy.deepcopy(state)); raise Stop()
+        reset()
+        partial = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None, checkpoint=save)
+        with pytest.raises(Stop): run_native(benchmark, params, tmp_path, partial)
+        # Scramble all streams before restart, then reproduce native initialization.
+        reset(991); reset()
+        resumed = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None, resume=checkpoint)
+        actual = run_native(benchmark, params, tmp_path, resumed)
+        _assert_bitwise(expected, learner_state(resumed.last_learner))
+        _assert_bitwise(logs, actual)
+        _assert_bitwise(full.rows, resumed.rows)
+>       assert checkpoint['buffer'] == []
+E       assert [(tensor([4.8...nsor(8)), ...] == []
+E         
+E         Left contains 64 more items, first extra item: (tensor([4.8073e-01, 6.1987e-01, 7.4141e-01, 8.4147e-01, 2.0357e-01, 4.3284e-01,\n        7.7774e-01, 1.9854e-02, 8.287...1, 8.3002e-02, 2.7796e-01, 6.7917e-01, 9.5749e-01,\n        8.9683e-02, 6.3557e-01, 4.3815e-01, 4.7696e-01]), tensor(6))
+E         Use -v to get more diff
+
+tests/test_vna_stage_b5.py:123: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.027
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+[CPU stageB] mnist bp task=1 step=160 ms/step=13.105
+[CPU stageB] mnist bp task=1 steps=160 ms/step=13.106 online_accuracy=0.1125 online_error=2.302125062048435
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([3., 1., 1.])
+[CPU stageB] mnist bp task=2 step=320 ms/step=5.599
+[CPU stageB] mnist bp task=2 steps=160 ms/step=5.599 online_accuracy=0.09375 online_error=2.3016755297780036
+recent accuracy tensor(0.0943)
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 3., 4.])
+[CPU stageB] mnist bp task=3 step=480 ms/step=4.955
+[CPU stageB] mnist bp task=3 steps=160 ms/step=4.955 online_accuracy=0.1375 online_error=2.303131364285946
+recent accuracy tensor(0.1384)
+[CPU stageB] mnist bp step=0 checkpoint written (None bytes)
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+[CPU stageB] mnist bp step=0 checkpoint written (None bytes)
+[CPU stageB] mnist bp task=1 step=160 ms/step=6.843
+[CPU stageB] mnist bp task=1 steps=160 ms/step=6.844 online_accuracy=0.1125 online_error=2.302125062048435
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([3., 1., 1.])
+[CPU stageB] mnist bp task=2 step=320 ms/step=2.143
+[CPU stageB] mnist bp task=2 steps=160 ms/step=2.144 online_accuracy=0.09375 online_error=2.3016755297780036
+recent accuracy tensor(0.0943)
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 3., 4.])
+[CPU stageB] mnist bp task=3 step=480 ms/step=4.800
+[CPU stageB] mnist bp task=3 steps=160 ms/step=4.801 online_accuracy=0.1375 online_error=2.303131364285946
+recent accuracy tensor(0.1384)
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/160 [00:00<?, ?it/s] 19%|█▉        | 30/160 [00:00<00:00, 295.90it/s] 40%|████      | 64/160 [00:00<00:00, 265.89it/s] 64%|██████▍   | 102/160 [00:00<00:00, 310.37it/s]100%|██████████| 160/160 [00:00<00:00, 406.11it/s]100%|██████████| 160/160 [00:00<00:00, 362.27it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 31%|███       | 49/160 [00:00<00:00, 485.24it/s] 61%|██████▏   | 98/160 [00:00<00:00, 357.81it/s] 97%|█████████▋| 155/160 [00:00<00:00, 436.47it/s]100%|██████████| 160/160 [00:00<00:00, 428.18it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 34%|███▍      | 55/160 [00:00<00:00, 544.94it/s] 70%|███████   | 112/160 [00:00<00:00, 554.57it/s]100%|██████████| 160/160 [00:00<00:00, 554.63it/s]
+  0%|          | 0/160 [00:00<?, ?it/s]  1%|          | 1/160 [00:00<00:19,  8.36it/s] 36%|███▋      | 58/160 [00:00<00:00, 313.25it/s] 57%|█████▊    | 92/160 [00:00<00:00, 293.25it/s] 95%|█████████▌| 152/160 [00:00<00:00, 402.42it/s]100%|██████████| 160/160 [00:00<00:00, 347.86it/s]
+  0%|          | 0/160 [00:00<?, ?it/s]100%|██████████| 160/160 [00:00<00:00, 4770.59it/s]
+  0%|          | 0/160 [00:00<?, ?it/s]  1%|          | 1/160 [00:00<00:32,  4.86it/s] 38%|███▊      | 60/160 [00:00<00:00, 244.33it/s] 59%|█████▉    | 95/160 [00:00<00:00, 255.82it/s] 96%|█████████▌| 153/160 [00:00<00:00, 360.08it/s]100%|██████████| 160/160 [00:00<00:00, 292.36it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 34%|███▍      | 54/160 [00:00<00:00, 535.67it/s] 68%|██████▊   | 109/160 [00:00<00:00, 539.18it/s]100%|██████████| 160/160 [00:00<00:00, 552.75it/s]
+______ test_resume_task_boundary_restores_rng_logs_and_learner[cbp-mnist] ______
+
+benchmark = 'mnist', arm = 'cbp'
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-36/test_resume_task_boundary_rest1')
+
+    @pytest.mark.parametrize('benchmark', ['regression', 'mnist', 'imagenet'])
+    @pytest.mark.parametrize('arm', ['bp', 'cbp'])
+    def test_resume_task_boundary_restores_rng_logs_and_learner(benchmark, arm, tmp_path):
+        params = fixture(benchmark, arm, tmp_path, tasks=3)
+        reset()
+        full = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None)
+        logs = run_native(benchmark, params, tmp_path, full)
+        expected = learner_state(full.last_learner)
+        checkpoint = {}
+        class Stop(Exception): pass
+        def save(state):
+            if state['step'] == full.task_steps:
+                checkpoint.update(copy.deepcopy(state)); raise Stop()
+        reset()
+        partial = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None, checkpoint=save)
+        with pytest.raises(Stop): run_native(benchmark, params, tmp_path, partial)
+        # Scramble all streams before restart, then reproduce native initialization.
+        reset(991); reset()
+        resumed = LearnHook(benchmark, arm, params, actual_measure if arm == 'bp' else None, resume=checkpoint)
+        actual = run_native(benchmark, params, tmp_path, resumed)
+        _assert_bitwise(expected, learner_state(resumed.last_learner))
+        _assert_bitwise(logs, actual)
+        _assert_bitwise(full.rows, resumed.rows)
+>       assert checkpoint['buffer'] == []
+E       assert [(tensor([4.8...nsor(8)), ...] == []
+E         
+E         Left contains 64 more items, first extra item: (tensor([4.8073e-01, 6.1987e-01, 7.4141e-01, 8.4147e-01, 2.0357e-01, 4.3284e-01,\n        7.7774e-01, 1.9854e-02, 8.287...1, 8.3002e-02, 2.7796e-01, 6.7917e-01, 9.5749e-01,\n        8.9683e-02, 6.3557e-01, 4.3815e-01, 4.7696e-01]), tensor(6))
+E         Use -v to get more diff
+
+tests/test_vna_stage_b5.py:123: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+[CPU stageB] mnist cbp task=1 step=160 ms/step=4.236
+[CPU stageB] mnist cbp task=1 steps=160 ms/step=4.237 online_accuracy=0.1125 online_error=2.302125062048435
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([3., 1., 1.])
+[CPU stageB] mnist cbp task=2 step=320 ms/step=4.828
+[CPU stageB] mnist cbp task=2 steps=160 ms/step=4.828 online_accuracy=0.09375 online_error=2.3016755297780036
+recent accuracy tensor(0.0943)
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 3., 4.])
+[CPU stageB] mnist cbp task=3 step=480 ms/step=5.178
+[CPU stageB] mnist cbp task=3 steps=160 ms/step=5.178 online_accuracy=0.1375 online_error=2.303131364285946
+recent accuracy tensor(0.1384)
+[CPU stageB] mnist cbp step=0 checkpoint written (None bytes)
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+[CPU stageB] mnist cbp step=0 checkpoint written (None bytes)
+[CPU stageB] mnist cbp task=1 step=160 ms/step=5.655
+[CPU stageB] mnist cbp task=1 steps=160 ms/step=5.656 online_accuracy=0.1125 online_error=2.302125062048435
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.312
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=1 upstream rank SVD start
+[CPU stageB] MNIST task=1 upstream rank SVD seconds=0.001
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 4., 4.])
+recent accuracy tensor(0.1132)
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.000
+[CPU stageB] MNIST task=2 upstream rank SVD start
+[CPU stageB] MNIST task=2 upstream rank SVD seconds=0.000
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([3., 1., 1.])
+[CPU stageB] mnist cbp task=2 step=320 ms/step=1.593
+[CPU stageB] mnist cbp task=2 steps=160 ms/step=1.594 online_accuracy=0.09375 online_error=2.3016755297780036
+recent accuracy tensor(0.0943)
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.002
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+[CPU stageB] MNIST task=3 upstream rank SVD start
+[CPU stageB] MNIST task=3 upstream rank SVD seconds=0.001
+approximate rank:  tensor([1., 1., 1.]) , dead neurons:  tensor([4., 3., 4.])
+[CPU stageB] mnist cbp task=3 step=480 ms/step=4.801
+[CPU stageB] mnist cbp task=3 steps=160 ms/step=4.802 online_accuracy=0.1375 online_error=2.303131364285946
+recent accuracy tensor(0.1384)
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/160 [00:00<?, ?it/s] 41%|████      | 65/160 [00:00<00:00, 644.46it/s] 82%|████████▏ | 131/160 [00:00<00:00, 653.26it/s]100%|██████████| 160/160 [00:00<00:00, 651.25it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 42%|████▏     | 67/160 [00:00<00:00, 660.61it/s] 84%|████████▍ | 134/160 [00:00<00:00, 653.17it/s]100%|██████████| 160/160 [00:00<00:00, 654.92it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 41%|████▏     | 66/160 [00:00<00:00, 651.09it/s] 82%|████████▎ | 132/160 [00:00<00:00, 646.15it/s]100%|██████████| 160/160 [00:00<00:00, 648.63it/s]
+  0%|          | 0/160 [00:00<?, ?it/s]  1%|          | 1/160 [00:00<00:18,  8.79it/s] 42%|████▏     | 67/160 [00:00<00:00, 370.41it/s] 84%|████████▍ | 134/160 [00:00<00:00, 501.44it/s]100%|██████████| 160/160 [00:00<00:00, 449.81it/s]
+  0%|          | 0/160 [00:00<?, ?it/s]100%|██████████| 160/160 [00:00<00:00, 3675.04it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 12%|█▎        | 20/160 [00:00<00:00, 197.30it/s] 50%|█████     | 80/160 [00:00<00:00, 431.60it/s] 92%|█████████▏| 147/160 [00:00<00:00, 537.18it/s]100%|██████████| 160/160 [00:00<00:00, 494.83it/s]
+  0%|          | 0/160 [00:00<?, ?it/s] 31%|███       | 49/160 [00:00<00:00, 484.21it/s] 72%|███████▎  | 116/160 [00:00<00:00, 587.62it/s]100%|██████████| 160/160 [00:00<00:00, 592.59it/s]
+=========================== short test summary info ============================
+FAILED tests/test_vna_stage_b5.py::test_resume_task_boundary_restores_rng_logs_and_learner[bp-mnist]
+FAILED tests/test_vna_stage_b5.py::test_resume_task_boundary_restores_rng_logs_and_learner[cbp-mnist]
+2 failed in 17.47s

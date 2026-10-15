@@ -24,7 +24,8 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
                        x0: Tensor | None = None, max_iter: int = 50,
                        tolerance: float = 1e-6,
                        preconditioner: Callable[[Tensor], Tensor] | None = None,
-                       eps: float = 1e-12, normalize_rhs: bool = True) -> CGResult:
+                       eps: float = 1e-12, normalize_rhs: bool = True,
+                       callback: Callable[[int], None] | None = None) -> CGResult:
     """Solve A x = rhs, normalizing its scale before absolute breakdown guards.
 
     x0 is scaled with rhs. Returned solutions and absolute residual diagnostics
@@ -37,10 +38,11 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
             result = conjugate_gradient(
                 matvec, rhs / scale, x0=None if x0 is None else x0 / scale,
                 max_iter=max_iter, tolerance=tolerance,
-                preconditioner=preconditioner, eps=eps, normalize_rhs=False)
+                preconditioner=preconditioner, eps=eps, normalize_rhs=False, callback=callback)
             return replace(result, solution=result.solution * scale,
                            residual_norm=result.residual_norm * scale,
                            residual_history=tuple(v * scale for v in result.residual_history))
+    if callback is not None: callback(0)
     if max_iter < 1:
         raise ValueError("max_iter must be positive")
     x = torch.zeros_like(rhs) if x0 is None else x0.clone()
@@ -62,6 +64,7 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
     completed_iterations = 0
     breakdown = False
     for iteration in range(1, max_iter + 1):
+        if callback is not None: callback(iteration)
         image = matvec(direction).detach()
         denominator = torch.dot(direction, image)
         if abs(float(denominator)) <= eps:

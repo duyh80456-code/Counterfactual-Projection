@@ -1,5 +1,6 @@
 """Run the pinned LoP experiment functions unchanged, with read-only hooks."""
 import argparse
+from experiments.vna_resume import configure_measurement, measurement_cli
 from contextlib import contextmanager
 import csv
 import json
@@ -260,7 +261,7 @@ def finalize(output, benchmark, *, mu_rel_default=.01):
         baseline.update(status='FAIL', reason='synthetic/smoke runs cannot establish the baseline')
     baseline_path = output/'b5_baseline_gate.json'
     merge_json(baseline_path, benchmark, baseline)
-    config = setting_config('B5', tasks_run=tasks, mu_rel_default=mu_rel_default)
+    config = setting_config('B5', tasks_run=tasks, mu_rel_default=1e-2)
     # Regression's registered maximum rank is four, never sixteen.
     config['gate_rank'] = 4 if benchmark == 'regression' else 16
     gate = evaluate_gate(measurements, config)
@@ -370,7 +371,7 @@ def _run(args, status):
         write_csv(run_dir/'measurements.csv', state['rows'])
         return checkpoint_path.stat().st_size
     hook = LearnHook(args.benchmark, args.arm, params,
-                     B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default) if args.arm == 'bp' else None,
+                     configure_measurement(B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default), args, run_dir) if args.arm == 'bp' else None,
                      seed=args.seed, checkpoint=checkpoint, resume=resumed,
                      time_steps=args.smoke, timing_started=timing_started, progress=progress, status=status)
     start = time.monotonic()
@@ -430,6 +431,7 @@ def _run(args, status):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    measurement_cli(p)
     p.add_argument('benchmark', choices=CFG)
     p.add_argument('--arm', required=True, choices=['bp', 'cbp'])
     p.add_argument('--smoke', action='store_true'); p.add_argument('--fake-data', action='store_true')

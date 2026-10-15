@@ -31,9 +31,38 @@ def check_site(model, site, x):
             u = torch.randn(expected.numel(), dtype=x.dtype)
             torch.testing.assert_close(u @ p.JEv(w), w @ p.JET(u), rtol=1e-8, atol=1e-10)
             pieces = w.split([t.numel() for _, t in p.extension_refs])
-            def perturbed(sign):
-                return p._call({n: t+sign*1e-5*v.reshape_as(t) for (n, t), v in zip(p.extension_refs, pieces)})
-            torch.testing.assert_close(p.JEv(w), (perturbed(1)-perturbed(-1))/2e-5, rtol=1e-5, atol=1e-7)
+            def perturbed(sign, eps):
+                return p._call({n: t+sign*eps*v.reshape_as(t) for (n, t), v in zip(p.extension_refs, pieces)})
+            # A fixed 1e-5 crosses downstream ReLU kinks; shrink by branch masks, never by derivative agreement.
+            from torch.utils._python_dispatch import TorchDispatchMode
+            class ReLUMasks(TorchDispatchMode):
+                def __init__(self):
+                    super().__init__()
+                    self.masks = []
+                def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+                    out = func(*args, **(kwargs or {}))
+                    if func in (torch.ops.aten.relu.default, torch.ops.aten.relu_.default):
+                        self.masks.append((out.detach() > 0).clone())
+                    return out
+            # Capture functional ReLUs as well as modules (RepDistiller residual outputs use F.relu).
+            with ReLUMasks() as capture:
+                p._call({})
+            base_masks = capture.masks
+            assert base_masks
+            eps = 1e-5
+            for _ in range(12):
+                with ReLUMasks() as capture_plus:
+                    plus = perturbed(1, eps)
+                with ReLUMasks() as capture_minus:
+                    minus = perturbed(-1, eps)
+                assert len(base_masks) == len(capture_plus.masks) == len(capture_minus.masks)
+                if all(torch.equal(a, b) and torch.equal(a, c)
+                       for a, b, c in zip(base_masks, capture_plus.masks, capture_minus.masks)):
+                    break
+                eps /= 2
+            else:
+                pytest.fail('could not find a smooth finite-difference neighborhood')
+            torch.testing.assert_close(p.JEv(w), (plus-minus)/(2*eps), rtol=1e-5, atol=1e-7)
         for m, mode in zip(model.modules(), modes): m.training = mode
     _assert_bitwise(saved, model.state_dict())
     assert modes == [m.training for m in model.modules()]
@@ -50,8 +79,10 @@ def test_architecture_counts(name):
         assert actual == sum(p.numel() for p in direct[name](num_classes=100).parameters())
 
 
+@pytest.mark.parametrize('seed', [0, 1])
 @pytest.mark.parametrize('name', ['resnet8x4', 'wrn_16_2', 'resnet32'])
-def test_sites_zero_b_order_adjoint_and_buffers(name):
+def test_sites_zero_b_order_adjoint_and_buffers(name, seed):
+    torch.manual_seed(seed)
     with upstream() as models:
         model = models[name](num_classes=100).double()
         sites = sites_for(model)

@@ -1,5 +1,6 @@
 """B4: Phase-0 SGD on imported quarter-width Gromo ResNet-18, offline measures."""
 import argparse
+from experiments.vna_resume import configure_measurement, measurement_cli
 import json
 import os
 from pathlib import Path
@@ -46,7 +47,7 @@ def run(args):
     if args.fake_data: torch.set_num_threads(1)
     if args.pilot: start_memory(args.device)
     identity = {'setting': 'B4', 'student': 'resnet18-quarter', 'teacher_hash': None,
-                'code_commit': code_commit(), 'upstream_commit': '8d19107b61a9459a9021065a329b699adcb0f25b', 'mu_candidates': sorted({args.mu_rel_default, .01}),
+                'code_commit': code_commit(), 'upstream_commit': '8d19107b61a9459a9021065a329b699adcb0f25b', 'mu_candidates': [1e-3, 1e-2],
                 'seed': 0, 'device': args.device, 'fake_data': args.fake_data,
                 'smoke': args.smoke, 'pilot': args.pilot, 'workers': args.workers,
                 'pilot_batches': args.pilot_batches}
@@ -103,6 +104,7 @@ def run(args):
                B3Measurement(meta, mu_rel_default=args.mu_rel_default, context_fn=context,
                              sites_fn=sites_for, ranks=(4,) if args.pilot else (4, 16, 64), groups=False,
                              null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000))
+    configure_measurement(measure, args, out)
     isolated = MeasurementHook(measure, seed=0)
     progress = Progress(out, identity, name='measurement_latest.pt')
     if progress.state:
@@ -141,7 +143,7 @@ def run(args):
         history = checkpoint['history'][-1]
         ctx = {'epoch': epoch, 'task': 0, 'step': epoch, 'end_of_task': False, 'known_classes': 0,
                'train_acc': history['train']['accuracy']}
-        batch = augmented_batch(train, indices, 4 if args.fake_data else 128, g, args.device)
+        batch = augmented_batch(train, indices, 4 if args.fake_data else 512, g, args.device)
         t = time.monotonic()
         rows.extend(isolated(model, batch, CE(), ctx))
         costs.append({'epoch': epoch, 'seconds': time.monotonic()-t})
@@ -166,8 +168,8 @@ def run(args):
         if args.pilot: gate['status'] = 'PILOT'
         by_mu[str(mu)] = gate
         write_json(out/f'gate_mu_{mu}.json', gate)
-    official_mu = args.official_mu
-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+    official_mu = 1e-2
+    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'gate.json', gate)
     history = json.loads((out/'recipe/history.json').read_text())
@@ -186,6 +188,7 @@ def run(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    measurement_cli(p)
     p.add_argument('mode', choices=('train', 'measure'))
     add_arguments(p)
     p.add_argument('--smoke', action='store_true')

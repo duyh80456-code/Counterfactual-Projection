@@ -1,5 +1,6 @@
 """Pinned PyCIL iCaRL training, with measure-only Stage B3 interception."""
 import argparse
+from experiments.vna_resume import configure_measurement, measurement_cli
 from contextlib import contextmanager
 import json
 import os
@@ -114,13 +115,14 @@ def run(args, *, measure_override=None, observe=None):
                             null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000)
     if measure_override is not None: measure = measure_override
     identity = {**metadata, 'student': params['convnet_type'], 'teacher_hash': None,
-                'mu_candidates': sorted({args.mu_rel_default, .01}), 'recipe': params,
+                'mu_candidates': [1e-3, 1e-2], 'recipe': params,
                 'workers': args.workers, 'pilot_batches': args.pilot_batches}
     progress = Progress(out, identity)
     def persist(hook):
         write_csv(out/'measurements.csv', hook.rows)
         write_csv(out/'epochs.csv', hook.epochs)
         write_json(out/'tasks.json', hook.tasks)
+    configure_measurement(measure, args, out)
     hook = ICaRLHook(measure, persist=persist, pilot=args.pilot,
                      pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe)
     original_manager = trainer.DataManager
@@ -157,8 +159,8 @@ def run(args, *, measure_override=None, observe=None):
             gate['measurements_valid'] = False
         by_mu[str(mu)] = gate
         write_json(out/f'gate_mu_{mu}.json', gate)
-    official_mu = args.official_mu
-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+    official_mu = 1e-2
+    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction_gate.json', baseline)
     write_json(out/'gate.json', gate)
@@ -177,6 +179,7 @@ def run(args, *, measure_override=None, observe=None):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    measurement_cli(p)
     add_arguments(p)
     p.add_argument('--smoke', action='store_true')
     p.add_argument('--fake-data', action='store_true')

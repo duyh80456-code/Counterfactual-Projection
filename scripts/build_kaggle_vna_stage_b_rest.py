@@ -6,7 +6,9 @@ def build(commit, number):
     base = base_build(commit)
     bootstrap = ''.join(base['cells'][2]['source']).replace('vna_phase0_seed0', f'vna_stage_b_nb{number}')
     setup = ''.join(base['cells'][3]['source'])
-    setup = without_pytest(setup) + MU_SETUP
+    # Base setup names a subset; every Stage B lane requires the full suite.
+    import re
+    setup = re.sub(r'"pytest", "-q"[^\n]*?\], cwd=REPO,', '"pytest", "-q"], cwd=REPO,', setup) + MU_SETUP
     if number == 2:
         lanes = [[{'name': 'b3', 'module': 'experiments.stage_b3', 'args': [], 'epochs': 1730,
                    'points': 40, 'output_factor': 5},
@@ -26,7 +28,7 @@ def build(commit, number):
     return {'cells': [cell('markdown', f'''# VNA Stage B — Notebook {number}
 T4×2, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.
 Both μ candidates (1e-3 and 1e-2) are measured independently of nb1.
-Attach its Stage A summary to select the official μ; otherwise it remains pending.
+Gate G always reads μ=1e-2. Attach the Stage A summary for its provenance.
 Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.
 Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch
 smokes include all measurement sites/ranks/nulls and feed the total GPU-hour
@@ -77,7 +79,7 @@ def finished(out, job):
             raise ValueError(f"completed job teacher identity mismatch: {out}")
     if identity.get("code_commit") != REPO_COMMIT:
         raise ValueError(f"completed job code identity mismatch: {out}")
-    candidates = identity.get("mu_candidates") or sorted({summary.get("mu_rel_default", MU_REL_DEFAULT), .01})
+    candidates = identity.get("mu_candidates") or [1e-3, 1e-2]
     if candidates != sorted({MU_REL_DEFAULT, .01}):
         raise ValueError(f"completed job μ identity mismatch: {out}")
     return True
@@ -145,6 +147,10 @@ SMOKE = '''def smoke_lane(gpu, jobs):
         if not launch(command(job, smoke_out, smoke=True), gpu, job["name"]+"_smoke",
                       RUN_ROOT / f'{job["name"]}_smoke_gpu{gpu}.log'): break
         summary = json.loads((smoke_out / "summary.json").read_text())
+        import csv
+        solves = list(csv.DictReader((smoke_out / "solves.csv").open()))
+        print(job["name"], "CG solves", len(solves), "mean seconds/solve",
+              sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
         training = summary["training_seconds"] * job["epochs"] / summary["epochs_run"]
         point = max(p["seconds"] for p in summary["measurement_point_seconds"])
         full = (training + job["points"]*point*job.get("output_factor", 1))/3600
@@ -252,17 +258,10 @@ archive_outputs()
 '''
 
 
-def without_pytest(setup):
-    lines = setup.splitlines(keepends=True)
-    start = next((i for i, line in enumerate(lines) if '"pytest"' in line), None)
-    if start is None: return setup
-    del lines[start:start+2]
-    return ''.join(lines)
-
 
 MU_SETUP = '''
 MU_REL_DEFAULT = 1e-3
-OFFICIAL_MU = None
+OFFICIAL_MU = 1e-2
 MU_SOURCE = "both-candidates"
 inputs = Path("/kaggle/input")
 candidates = sorted(inputs.glob("**/stageA/summary.json"))
@@ -272,7 +271,7 @@ for path in candidates:
         summary = json.loads(path.read_text())
     except (ValueError, OSError): continue
     if "mu_rel_default" in summary and (path.parent.name == "stageA" or "mu_rule" in summary):
-        OFFICIAL_MU = float(summary["mu_rel_default"]); break
+        break
 print("measurement μ candidates:", (1e-3, 1e-2), "official μ:", OFFICIAL_MU)
 '''
 

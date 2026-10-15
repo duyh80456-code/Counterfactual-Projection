@@ -85,7 +85,7 @@ class BufferedLoader(LimitedLoader):
 class RepDistillerHook:
     def __init__(self, measure=None, *, persist=None, observe=None, smoke=False, fake=False,
                  data_dir=None, batch_size=64, pilot=False, pilot_batches=20, progress=None):
-        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
+        self.buffer = MeasurementBuffer(4 if pilot and fake else 512)
         self.pilot, self.pilot_batches = pilot, pilot_batches
         self.measurement = MeasurementHook(measure, seed=0) if measure else None
         self.persist, self.observe = persist, observe
@@ -140,6 +140,7 @@ class RepDistillerHook:
 
     def measure(self, epoch):
         if not self.measurement: return
+        if self.smoke and self.point_seconds: return
         batch = tuple(t.to(next(self.model.parameters()).device) for t in self.buffer.batch())
         spec, ctx = loss_context(self.teacher, batch)
         ctx.update(teacher=self.teacher, epoch=epoch, step=self.steps, task=0, end_of_task=False,

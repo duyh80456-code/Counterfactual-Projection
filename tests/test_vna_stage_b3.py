@@ -63,7 +63,7 @@ def tiny_run(monkeypatch, enabled):
         return optimizer
     monkeypatch.setattr(icarl.optim, 'SGD', sgd)
     def measure(model, batch, spec, ctx, *, generator):
-        assert len(batch[0]) <= 128
+        assert len(batch[0]) <= 512
         assert (spec.known_classes == 2) if ctx['task'] == 2 else spec.name == 'CE'
         assert len(sites_for(model)) == 15
         model.eval()

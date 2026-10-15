@@ -1,21 +1,26 @@
-"""B3 GGN diagnostics on disjoint draws from already-seen training samples."""
-import json
+"""Disjoint Stage-B diagnostics with shared solves.
+
+Each row's null p-value is valid; p-values across sites/ranks of a point are
+correlated because they reuse the same null residuals.
+"""
 import time
 import torch
-from experiments.vna_resume import log
 from adapters.icarl_hooks import sites_for, loss_context
-from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
+from diagnostics.stage_a import diagnostic_ratio
+from diagnostics.measure_efficiency import (SolveCache, draw_nulls, virtual_energy,
+                                             solve_z, null_columns, verify_energy)
 from methods.vna import random_A_like
-from methods.vna_ggn import GGNConfig, GGNProducts, relative_damping
-from methods.vna_joint import joint_products, joint_correction, _inverse
+from methods.vna_ggn import GGNConfig
+from methods.vna_joint import joint_correction
 from methods.vna_select import tiny_V, tiny_U_from_cotangent, prepare_A, subspace_sim
+from experiments.vna_resume import measurement_update
 
 
 class B3Measurement:
     def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000, sites_fn=sites_for,
                  context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8):
         self.metadata = metadata
-        self.mus = sorted({mu_rel_default, .01})
+        self.mus = [1e-3, 1e-2]
         self.cg_iters = cg_iters
         self.sites_fn, self.ranks, self.groups = sites_fn, ranks, groups
         self.context_fn = context_fn or (lambda ctx, batch: loss_context(ctx['learner'], batch))
@@ -26,40 +31,48 @@ class B3Measurement:
         model.eval()
         order = torch.randperm(len(batch[0]), device=batch[0].device, generator=generator)
         half = len(order)//2
-        if not half: raise ValueError('B3 measurement needs at least two buffered samples')
+        if not half: raise ValueError('measurement needs at least two buffered samples')
         stat = tuple(t[order[:half]] for t in batch)
-        correction = tuple(t[order[half:]] for t in batch)
+        evaluation = tuple(t[order[half:]] for t in batch)
         _, stat_ctx = self.context_fn(ctx, stat)
-        _, corr_ctx = self.context_fn(ctx, correction)
-        names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
+        _, eval_ctx = self.context_fn(ctx, evaluation)
         sites = self.sites_fn(model)
         rows = []
-        with torch.no_grad(): logits = model(stat[0])
-        g = loss_spec.residual(logits, stat_ctx)
+        with torch.no_grad():
+            g = loss_spec.residual(model(stat[0]), stat_ctx)
+            e = loss_spec.residual(model(evaluation[0]), eval_ctx)
         for mu_rel in self.mus:
             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6,
                             seed=self.metadata['seed'], damping_norm='outputs', project_bn=False)
+            cache = SolveCache(model, sites[0], stat, loss_spec, stat_ctx, cfg)
+            z = cache.solve('real:stat', g, stat, stat_ctx)
+            ze = cache.solve('real:eval', e, evaluation, eval_ctx)
+            cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
+            nulls = draw_nulls(cache, g, e, stat, evaluation, stat_ctx, eval_ctx, generator, self.null_repeats)
+            groups = {}
+            for label, mask in (('exemplar', evaluation[1] < ctx['known_classes']),
+                                ('new', evaluation[1] >= ctx['known_classes'])) if self.groups else ():
+                subset = tuple(t[mask] for t in evaluation)
+                if mask.any():
+                    _, context = self.context_fn(ctx, subset)
+                    with torch.no_grad(): residual = loss_spec.residual(model(subset[0]), context)
+                    zg = cache.solve('real:'+label, residual, subset, context)
+                    groups[label] = (subset, residual, zg)
+                else: groups[label] = None
             for rank in self.ranks:
-                proposals, records = {}, []
+                records = []
+                group_sums = {label: 0. for label in groups}
                 for site in sites:
-                    site_started = time.monotonic()
-                    layer = site.first_layer.layer
-                    if rank > layer.out_channels: continue
-                    seed = {'weight': layer.weight[:1].detach(), 'bias': None}
-                    def filtered(residual=None):
-                        with joint_products(model, [site], {site: seed}, stat[0], names) as p:
-                            op = GGNProducts(p, stat[1], loss_spec, stat_ctx)
-                            mu = relative_damping(cfg, op.trace(cfg), op)
-                            gradient = op.gradient if residual is None else p.JT(residual.flatten()).double()
-                            u, status = _inverse(lambda v: op.F(v)+mu*v, gradient, cfg)
-                            return op.H(p.Jv(u)).reshape_as(logits), mu, status
-                    z, mu, solved = filtered()
+                    if rank > site.first_layer.layer.out_channels: continue
+                    measurement_update(mu=cache.mu, mu_rel=mu_rel, site=site.module_name, rank=rank)
                     A, capture = tiny_V(model, site, [stat], rank, cotangents=[z], cfg=cfg)
-                    proposals[site] = A
-                    def score(a, cotangent=None, data=correction, context=corr_ctx):
-                        return joint_correction(model, [site], {site: a}, data, cfg, names,
-                            mu=mu, cotangent=cotangent, loss_spec=loss_spec, ctx=context)[3]
+                    def score(a, cotangent=e, filtered=ze):
+                        return virtual_energy(model, [site], {site: a}, evaluation, filtered, cotangent)
                     real = score(A)
+                    measurement_update(solve='tiny_V:correction')
+                    checked = joint_correction(model, [site], {site: A}, evaluation, cfg, cache.ctx['names'],
+                        mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx)[3]
+                    consistency = verify_energy(real, checked)
                     random, _ = prepare_A(model, site, random_A_like(A, generator=generator), 'random_frob', reference=A)
                     random_record = score(random)
                     incoming, _ = tiny_U_from_cotangent(model, site, stat[0], g, rank, cfg)
@@ -68,63 +81,46 @@ class B3Measurement:
                     split = len(stat[0])//2
                     similarity = None
                     if split:
-                        pieces = [tiny_V(model, site, [(stat[0][s], stat[1][s])], rank,
+                        pieces = [tiny_V(model, site, [tuple(t[s] for t in stat)], rank,
                                   cotangents=[z[s]], cfg=cfg)[0]
                                   for s in (slice(None, split), slice(split, None))]
                         similarity = subspace_sim(*pieces)
-                    converged = solved['converged'] and all(r['cg_converged'] for r in (real, random_record, u_record))
-                    null_stats = {}
-                    for kind in ('N1', 'N2'):
+                    values = {}
+                    for kind, draws in nulls.items():
                         lambdas, rhos = [], []
-                        for repeat in range(self.null_repeats):
-                            null_started = time.monotonic()
-                            null = null_residual(g, kind, generator, residual_is_zero_sum=loss_spec.residual_is_zero_sum)
-                            null_z, _, status = filtered(null)
+                        for null_z, null_ze, null_e in draws:
                             null_A, cap = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
-                            # Null correction residual has the correction batch's own shape/scaling.
-                            with torch.no_grad(): corr_logits = model(correction[0])
-                            corr_g = loss_spec.residual(corr_logits, corr_ctx)
-                            null_record = score(null_A, null_residual(corr_g, kind, generator,
-                                                residual_is_zero_sum=loss_spec.residual_is_zero_sum))
-                            converged &= status['converged'] and null_record['cg_converged']
                             lambdas.append(float(cap['generalized_eigenvalues'][0]))
-                            rhos.append(null_record['rho'])
-                            log(f'mu={mu_rel} rank={rank} site={site.module_name} null={kind} '
-                                f'done={repeat+1}/{self.null_repeats} seconds={time.monotonic()-null_started:.3f}')
-                        p_lam = empirical_p(float(capture['generalized_eigenvalues'][0]), lambdas)
-                        null_stats.update({f'p_lambda_{kind}': p_lam, f'significant_{kind}': p_lam <= 1/9,
-                                           f'p_rho_{kind}': empirical_p(real['rho'], rhos),
-                                           f'significant_rho_{kind}': empirical_p(real['rho'], rhos) <= 1/9,
-                                           f'null_lambda_{kind}': json.dumps(lambdas),
-                                           f'null_rho_{kind}': json.dumps(rhos)})
+                            rhos.append(score(null_A, null_e, null_ze)['rho'])
+                        values[kind] = lambdas, rhos
+                    for label, group in groups.items():
+                        if group:
+                            data, residual, filtered = group
+                            energy = virtual_energy(model, [site], {site: A}, data, filtered, residual)
+                            group_sums[label] += energy['rho']
+                    lam = float(capture['generalized_eigenvalues'][0])
+                    real_ok = cache.converged() and checked['cg_converged']
+                    null_ok = cache.converged(null=True)
                     row = {**self.metadata, **{k: ctx[k] for k in ('task', 'epoch', 'step', 'end_of_task', 'train_acc')},
                            'site': site.module_name, 'rank': rank, 'selected_rank': len(A['weight']),
-                           'mu_rel': mu_rel, 'damping_norm': 'outputs', 'buffer_m': 128,
-                           'measurement_m': len(batch[0]), 'stat_m': len(stat[0]), 'correction_m': len(correction[0]),
-                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_iters_used', 'cg_rel_residual')},
-                           'cg_converged': converged, 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                           'mu_rel': mu_rel, 'mu': cache.mu, 'trace': cache.trace, 'damping_norm': 'outputs',
+                           'buffer_m': len(batch[0]), 'measurement_m': len(batch[0]),
+                           'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'correction_m': len(evaluation[0]),
+                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho')},
+                           **{k: checked[k] for k in ('cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
+                           'cg_converged_real': real_ok, 'cg_converged_null': null_ok, 'cg_converged': real_ok and null_ok,
+                           'V_consistency': consistency, 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
-                           'lambda1': float(capture['generalized_eigenvalues'][0]), 'subspace_sim': similarity, **null_stats}
+                           'lambda1': lam, 'subspace_sim': similarity,
+                           'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['epoch']}:{ctx['step']}:{mu_rel}",
+                           **null_columns(lam, real['rho'], values)}
                     records.append(row)
-                    log(f'mu={mu_rel} rank={rank} site={site.module_name} '
-                        f'seconds={time.monotonic()-site_started:.3f} cg_iters={real["cg_iters_used"]} converged={converged}')
-                joint = joint_correction(model, list(proposals), proposals, correction, cfg, names,
-                                         loss_spec=loss_spec, ctx=corr_ctx)[3]
-                groups = {}
-                for label, mask in (('exemplar', correction[1] < ctx['known_classes']),
-                                    ('new', correction[1] >= ctx['known_classes'])) if self.groups else ():
-                    groups[f'{label}_m'] = int(mask.sum())
-                    groups[f'rho_{label}'] = None
-                    if mask.any():
-                        subset = tuple(t[mask] for t in correction)
-                        _, subset_ctx = self.context_fn(ctx, subset)
-                        record = joint_correction(model, list(proposals), proposals, subset, cfg, names,
-                                                  loss_spec=loss_spec, ctx=subset_ctx)[3]
-                        groups[f'rho_{label}'] = record['rho']
-                        joint['cg_converged'] &= record['cg_converged']
+                joint_rho = sum(row['rho'] for row in records)
                 for row in records:
-                    row.update(rho_joint=joint['rho'], **groups)
-                    row['cg_converged'] &= joint['cg_converged']
+                    row.update(rho_joint=joint_rho)
+                    for label, group in groups.items():
+                        row[f'{label}_m'] = len(group[0][0]) if group else 0
+                        row[f'rho_{label}'] = group_sums[label] if group else None
                     rows.append(row)
         for row in rows: row['wall_seconds'] = time.monotonic()-start
         return rows

@@ -155,7 +155,7 @@ def print_heartbeat(root, started, deadline, lanes):
     import json
     import subprocess
     statuses = {}
-    for path in Path(root).rglob('status.json'):
+    for path in [*Path(root).rglob('status.json'), *Path(root).rglob('heartbeat.json')]:
         try: statuses[str(path.relative_to(root))] = json.loads(path.read_text())
         except (OSError, ValueError): pass
     gpu = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
@@ -187,3 +187,115 @@ def launch_logged(cmd, *, cwd, env, log_path, lane, job, lanes, paused, deadline
         return False
     if code: raise subprocess.CalledProcessError(code, cmd)
     return True
+
+
+# Measurement instrumentation shares Status's daemon/writer and Progress's
+# boundary checkpoints; it never interrupts or replaces the training deadline.
+from contextvars import ContextVar
+import csv
+import faulthandler
+import json
+
+current_measurement = ContextVar('vna_measurement', default=None)
+
+
+class MeasurementTimeout(TimeoutError):
+    pass
+
+
+def measurement_update(**values):
+    monitor = current_measurement.get()
+    if monitor:
+        monitor.check_deadline()
+        monitor.update(**values)
+
+
+def measurement_cli(parser):
+    parser.add_argument('--measurement-timeout-s', type=float, default=7200.)
+    parser.add_argument('--faulthandler-timeout-s', type=float, default=3600.)
+
+
+def configure_measurement(measure, args, out):
+    if measure:
+        measure.runtime = {'out': str(out),
+                           'timeout_s': getattr(args, 'measurement_timeout_s', 7200.),
+                           'traceback_s': getattr(args, 'faulthandler_timeout_s', 3600.)}
+    return measure
+
+
+class MeasurementMonitor(Status):
+    def __init__(self, metadata, ctx, *, out=None, timeout_s=7200., traceback_s=3600.):
+        self.started = time.monotonic()
+        self.timeout_s, self.traceback_s = timeout_s, traceback_s
+        self.out = Path(out) if out else None
+        if self.out: self.out.mkdir(parents=True, exist_ok=True)
+        self.path = self.out/'heartbeat.json' if self.out else None
+        self.values = {**metadata, **{k: ctx.get(k) for k in ('task', 'epoch', 'step', 'point')},
+                       'mu': None, 'mu_rel': None, 'site': None, 'rank': None, 'solve': None, 'cg_iteration': 0}
+        self.lock, self.stop = threading.Lock(), threading.Event()
+        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
+        self.solves = []
+        self.traceback_file = None
+
+    def _write(self):
+        self.values['point_elapsed_seconds'] = time.monotonic()-self.started
+        if self.path: atomic_json_save({**self.values, 'last_update_time': time.time()}, self.path)
+
+    def _heartbeat(self):
+        while not self.stop.wait(60):
+            with self.lock: self._write()
+
+    def check_deadline(self):
+        if time.monotonic()-self.started > self.timeout_s:
+            raise MeasurementTimeout('measurement soft deadline exceeded')
+
+    def begin_solve(self):
+        self.check_deadline()
+        self.update(cg_iteration=0, solve_index=len(self.solves)+1)
+
+    def iteration(self, iteration):
+        self.check_deadline()
+        with self.lock: self.values['cg_iteration'] = iteration
+
+    def end_solve(self, record):
+        keys = ('setting', 'benchmark', 'seed', 'task', 'epoch', 'step', 'point',
+                'mu', 'mu_rel', 'site', 'rank', 'solve', 'solve_index')
+        row = {**{k: self.values.get(k) for k in keys},
+               'seconds': record['seconds'], 'cg_iters_used': record['iterations'],
+               'converged': record['converged']}
+        self.solves.append(row)
+        if self.out:
+            path = self.out/'solves.csv'
+            with path.open('a', newline='') as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(row))
+                if stream.tell() == 0: writer.writeheader()
+                writer.writerow(row)
+
+    def __enter__(self):
+        self.token = current_measurement.set(self)
+        self.update(phase='measurement')
+        self.thread.start()
+        if self.out and self.traceback_s > 0:
+            self.traceback_file = (self.out/'measurement_tracebacks.log').open('a')
+            faulthandler.dump_traceback_later(self.traceback_s, repeat=True, file=self.traceback_file)
+        return self
+
+    def __exit__(self, *exc):
+        if self.traceback_file:
+            faulthandler.cancel_dump_traceback_later()
+            self.traceback_file.close()
+        self.close()
+        with self.lock: self._write()
+        current_measurement.reset(self.token)
+        seconds = sum(r['seconds'] for r in self.solves)
+        log(f'measurement CG solves={len(self.solves)} mean_solve_seconds={seconds/max(1, len(self.solves)):.6f} '
+            f'point_seconds={time.monotonic()-self.started:.6f}')
+
+    def timeout_rows(self, measure, ctx):
+        snapshot = json.dumps(self.values)
+        return [{**measure.metadata,
+                 **{k: ctx[k] for k in ('task', 'epoch', 'step', 'point', 'end_of_task', 'train_acc') if k in ctx},
+                 'mu_rel': mu, 'rank': rank, 'damping_norm': 'outputs', 'status': 'timeout',
+                 'cg_converged_real': False, 'cg_converged_null': False, 'cg_converged': False,
+                 'last_heartbeat': snapshot, 'wall_seconds': time.monotonic()-self.started}
+                for mu in measure.mus for rank in measure.ranks]

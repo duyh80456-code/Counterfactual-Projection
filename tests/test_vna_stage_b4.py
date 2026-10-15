@@ -1,10 +1,13 @@
 """Quarter-width imported Gromo counts and zero-B/adjoint checks; Kaggle only."""
+import pytest
 import torch
 from experiments.stage_b4 import build_model, sites_for
 from tests.test_vna_stage_b12 import check_site
 
 
-def test_b4_parameter_count_and_sites():
+@pytest.mark.parametrize('seed', [0, 1])
+def test_b4_parameter_count_and_sites(seed):
+    torch.manual_seed(seed)
     from dual_growth.adapters import GromoResNet18
     old = torch.get_num_threads(); torch.set_num_threads(1)
     try:

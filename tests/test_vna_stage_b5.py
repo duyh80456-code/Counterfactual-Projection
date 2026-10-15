@@ -120,11 +120,15 @@ def test_resume_task_boundary_restores_rng_logs_and_learner(benchmark, arm, tmp_
     _assert_bitwise(expected, learner_state(resumed.last_learner))
     _assert_bitwise(logs, actual)
     _assert_bitwise(full.rows, resumed.rows)
-    assert checkpoint['buffer'] == []
+    # MNIST checkpoints at the next task's pre-training SVD, before learn clears the previous task buffer.
+    assert len(checkpoint['buffer']) == (64 if benchmark == 'mnist' else 0)
     if arm == 'bp':
-        # ImageNet's two-step fixture has coincident first/mid points.
+        # The production schedule measures tasks 1, 2, 5, ...; task 3 is
+        # deliberately unmeasured. ImageNet fills its 100-example fixture
+        # buffer on step 1, where its two-step first/mid points coincide.
         expected_points = [('first', 1)] if benchmark == 'imagenet' else [('first', 64), ('mid', 80)]
-        assert [(r['point'], r['within_task_step']) for r in full.rows] == expected_points * 3
+        assert [(r['task'], r['point'], r['within_task_step']) for r in full.rows] == [
+            (task, point, step) for task in (1, 2) for point, step in expected_points]
         assert all(r['buffer_task_purity'] == 1.0 for r in full.rows)
     _assert_bitwise(full.results.state(), resumed.results.state())
 
@@ -220,11 +224,13 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
     measurement = B5Measurement('mnist', {'schema_version': 'stage1d-v1', 'benchmark': 'mnist',
                                'arm': 'bp', 'code_commit': 'test', 'seed': 13, **meta}, ranks=[1], cg_iters=100)
     hook = LearnHook('mnist', 'bp', params, measurement)
+    from diagnostics.vna_align import MeasurementBuffer
+    hook.buffer = MeasurementBuffer(64)
     x, target = torch.randn(2, 7), torch.tensor([0, 1])
     with hook.install():
         for _ in range(64): learner.learn(x=x[:1], target=target[:1])
     rows = hook.rows
-    assert len(rows) == 2
+    assert len(rows) == 4
     for row in rows:
         assert row['schema_version'] == 'stage1d-v1' and row['step_size'] == .003
         assert row['measurement_m'] == 64 and row['buffer_m'] == 64
@@ -234,7 +240,7 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
         assert len(__import__('json').loads(row['null_lambda_N2'])) == 8
         assert row['null_kind'] == 'N2' and row['n2_centered'] is True
         assert row['damping_norm'] == 'outputs' and 'K_top_eigenvalues' in row
-        assert row['rho_joint'] == rows[0]['rho_joint']
+        assert row['rho_joint'] == next(r['rho_joint'] for r in rows if r['mu_rel'] == row['mu_rel'])
         assert row['cg_converged']
     path = tmp_path/'b5/mnist/bp'; path.mkdir(parents=True)
     tasks = [dict(task=i+1, online_accuracy=.9 if i < 10 else .5, online_error=1.) for i in range(20)]
@@ -254,15 +260,24 @@ def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
     exec(''.join(notebook['cells'][1]['source']), scope)
     assert scope['REPO_COMMIT'] == commit
     sources = '\n'.join(''.join(c['source']) for c in notebook['cells'])
-    assert 'DATA_ROOT' not in sources and 'cifar-100-python' not in sources
+    # NB1 now includes Stage A's CIFAR diagnostics; ImageNet was dropped from its lanes.
+    assert 'DATA_ROOT' in sources and 'cifar-100-python' in sources
+    assert 'ImageNet-32 is dropped' in sources
     for text in ['requirements-upstream.txt', 'fetch_third_party.sh', 'REQUIRE_UPSTREAM',
                  'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', '--resume', 'GPU_HOURS_BUDGET',
-                 'ALLOW_OVER_BUDGET', '**/stageA/summary.json', 'summary["mu_rel_default"]',
-                 '--mu-rel-default-source', 'WARNING: no attached stageA/summary.json', 'archive_stop.wait(3600)', 'IMAGENET32_DIR', 'INVALID MEASUREMENTS']:
+                 'ALLOW_OVER_BUDGET', 'STAGE_A / "summary.json"', 'json.loads(path.read_text())["mu_rel_default"]',
+                 '--mu-rel-default-source', 'WARNING: Stage A failed', 'archive_stop.wait(900)', 'finalize(STAGE_B, benchmark']:
         assert text in sources
     assert '"-m", "pytest", "-q"], cwd=REPO' in sources
     for i, c in enumerate(notebook['cells']):
         if c['cell_type'] == 'code': compile(''.join(c['source']), f'cell-{i}', 'exec')
+    # All three Stage B notebooks must stop on a failing full-suite setup.
+    from scripts.build_kaggle_vna_stage_b_rest import build as build_rest
+    for number in (2, 3):
+        other = build_rest(commit, number)
+        assert '"-m", "pytest", "-q"], cwd=REPO' in ''.join(other['cells'][3]['source'])
+        for i, cell in enumerate(other['cells']):
+            if cell['cell_type'] == 'code': compile(''.join(cell['source']), f'nb{number}-cell-{i}', 'exec')
     from experiments.stage_b5 import restore_archives
     import tarfile
     import io
@@ -310,12 +325,14 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
     expected_state = learner_state(plain.last_learner)
     reset()
     full = LearnHook('regression', 'bp', params, measurement, seed=13)
+    from diagnostics.vna_align import MeasurementBuffer
+    full.buffer = MeasurementBuffer(64)
     logs = run_native('regression', params, tmp_path, full)
     _assert_bitwise(expected_logs, logs)
     _assert_bitwise(expected_state, learner_state(full.last_learner))
     assert {(r['task'], r['point']) for r in full.rows} == {(1, 'first'), (1, 'mid'), (2, 'first'), (2, 'mid')}
     assert {r['rank'] for r in full.rows} == {1, 2, 4}
-    assert len(full.rows) == 12
+    assert len(full.rows) == 24
     import json
     for row in full.rows:
         assert row['within_task_step'] == (64 if row['point'] == 'first' else 80)
@@ -332,9 +349,11 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
             checkpoint.update(copy.deepcopy(state)); raise Stop()
     reset()
     partial = LearnHook('regression', 'bp', params, measurement, seed=13, checkpoint=save)
+    partial.buffer = MeasurementBuffer(64)
     with pytest.raises(Stop): run_native('regression', params, tmp_path, partial)
     reset()
     resumed = LearnHook('regression', 'bp', params, measurement, seed=13, resume=checkpoint)
+    resumed.buffer = MeasurementBuffer(64)
     resumed_logs = run_native('regression', params, tmp_path, resumed)
     _assert_bitwise(logs, resumed_logs)
     _assert_bitwise(expected_state, learner_state(resumed.last_learner))

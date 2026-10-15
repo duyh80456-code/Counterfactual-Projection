@@ -1,0 +1,1786 @@
+diff --git a/adapters/icarl_hooks.py b/adapters/icarl_hooks.py
+index 4367f0f..c598287 100644
+--- a/adapters/icarl_hooks.py
++++ b/adapters/icarl_hooks.py
+@@ -55,7 +55,7 @@ def loss_context(learner, batch):
+ 
+ class ICaRLHook:
+     def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None):
+-        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
++        self.buffer = MeasurementBuffer(4 if pilot and fake else 512)
+         self.pilot, self.pilot_batches = pilot, pilot_batches
+         self.batch_counts = []
+         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
+@@ -131,10 +131,13 @@ class ICaRLHook:
+             f"lr={row['lr']} seconds={row['seconds']:.3f}")
+         if self.observe: self.observe(learner, optimizer)
+         point = learner._cur_task == 1 and epoch == 2 if self.pilot else epoch in {1, 10, max(1, last//2), last}
++        if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and self.point_seconds:
++            point = False
+         if self.measurement and point:
+             self.pending_measure = epoch
+             self.measure_point(learner, epoch, train_acc, last)
+             self.pending_measure = None
++            if any(r.get('status') == 'timeout' for r in self.rows): self.checkpoint()
+         if self.persist: self.persist(self)
+         if epoch % 25 == 0: self.checkpoint()
+         self.boundary()
+diff --git a/adapters/lop_hooks.py b/adapters/lop_hooks.py
+index c1ef56f..c4c258e 100644
+--- a/adapters/lop_hooks.py
++++ b/adapters/lop_hooks.py
+@@ -125,7 +125,7 @@ class LearnHook:
+         self.last_frame = None
+         self.last_status = 0.
+         self.last_task_ms = None
+-        self.buffer = MeasurementBuffer(params['mini_batch_size'] if benchmark == 'imagenet' else 64)
++        self.buffer = MeasurementBuffer(256 if hasattr(measure, 'mus') else (params['mini_batch_size'] if benchmark == 'imagenet' else 64))
+         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
+         self.step, self.rows = 0, []
+         self.checkpoint, self.resume, self.observe = checkpoint, resume, observe
+@@ -272,7 +272,8 @@ class LearnHook:
+         if self.observe: self.observe(learner, x, target, task, self.step)
+         if self.measurement is not None and self.arm == 'bp':
+             self._shadow(learner)
+-            if task in self.points and (first_point or within == max(1, self.task_steps//2)):
++            smoke_done = self.time_steps and bool(self.measurement_point_seconds)
++            if not smoke_done and len(self.buffer) == self.buffer.m and task in self.points and (first_point or within == max(1, self.task_steps//2)):
+                 model = Prediction(learner.net)
+                 spec = MSE(reduction='mean') if self.benchmark == 'regression' else CE()
+                 ctx = {'targets': self.buffer.batch()[1],
+@@ -289,6 +290,8 @@ class LearnHook:
+                 if self.time_steps and device.type == 'cuda': torch.cuda.synchronize(device)
+                 self.measurement_point_seconds.append({'batch_size': len(self.buffer), 'seconds': time.monotonic()-started})
+                 self.rows.extend(rows or [])
++                if any(r.get('status') == 'timeout' for r in rows or []):
++                    self._checkpoint(learner, self.last_frame)
+         if self.step % 10000 == 0 or within == self.task_steps:
+             elapsed = time.monotonic()-self.report_started
+             log(f'{self.benchmark} {self.arm} task={task} step={self.step} '
+diff --git a/adapters/repdistiller_hooks.py b/adapters/repdistiller_hooks.py
+index 4b41559..f9b7bce 100644
+--- a/adapters/repdistiller_hooks.py
++++ b/adapters/repdistiller_hooks.py
+@@ -85,7 +85,7 @@ class BufferedLoader(LimitedLoader):
+ class RepDistillerHook:
+     def __init__(self, measure=None, *, persist=None, observe=None, smoke=False, fake=False,
+                  data_dir=None, batch_size=64, pilot=False, pilot_batches=20, progress=None):
+-        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
++        self.buffer = MeasurementBuffer(4 if pilot and fake else 512)
+         self.pilot, self.pilot_batches = pilot, pilot_batches
+         self.measurement = MeasurementHook(measure, seed=0) if measure else None
+         self.persist, self.observe = persist, observe
+@@ -140,6 +140,7 @@ class RepDistillerHook:
+ 
+     def measure(self, epoch):
+         if not self.measurement: return
++        if self.smoke and self.point_seconds: return
+         batch = tuple(t.to(next(self.model.parameters()).device) for t in self.buffer.batch())
+         spec, ctx = loss_context(self.teacher, batch)
+         ctx.update(teacher=self.teacher, epoch=epoch, step=self.steps, task=0, end_of_task=False,
+diff --git a/diagnostics/icarl_measure.py b/diagnostics/icarl_measure.py
+index f416ca3..4d548f0 100644
+--- a/diagnostics/icarl_measure.py
++++ b/diagnostics/icarl_measure.py
+@@ -1,21 +1,26 @@
+-"""B3 GGN diagnostics on disjoint draws from already-seen training samples."""
+-import json
++"""Disjoint Stage-B diagnostics with shared solves.
++
++Each row's null p-value is valid; p-values across sites/ranks of a point are
++correlated because they reuse the same null residuals.
++"""
+ import time
+ import torch
+-from experiments.vna_resume import log
+ from adapters.icarl_hooks import sites_for, loss_context
+-from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
++from diagnostics.stage_a import diagnostic_ratio
++from diagnostics.measure_efficiency import (SolveCache, draw_nulls, virtual_energy,
++                                             solve_z, null_columns, verify_energy)
+ from methods.vna import random_A_like
+-from methods.vna_ggn import GGNConfig, GGNProducts, relative_damping
+-from methods.vna_joint import joint_products, joint_correction, _inverse
++from methods.vna_ggn import GGNConfig
++from methods.vna_joint import joint_correction
+ from methods.vna_select import tiny_V, tiny_U_from_cotangent, prepare_A, subspace_sim
++from experiments.vna_resume import measurement_update
+ 
+ 
+ class B3Measurement:
+     def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000, sites_fn=sites_for,
+                  context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8):
+         self.metadata = metadata
+-        self.mus = sorted({mu_rel_default, .01})
++        self.mus = [1e-3, 1e-2]
+         self.cg_iters = cg_iters
+         self.sites_fn, self.ranks, self.groups = sites_fn, ranks, groups
+         self.context_fn = context_fn or (lambda ctx, batch: loss_context(ctx['learner'], batch))
+@@ -26,40 +31,48 @@ class B3Measurement:
+         model.eval()
+         order = torch.randperm(len(batch[0]), device=batch[0].device, generator=generator)
+         half = len(order)//2
+-        if not half: raise ValueError('B3 measurement needs at least two buffered samples')
++        if not half: raise ValueError('measurement needs at least two buffered samples')
+         stat = tuple(t[order[:half]] for t in batch)
+-        correction = tuple(t[order[half:]] for t in batch)
++        evaluation = tuple(t[order[half:]] for t in batch)
+         _, stat_ctx = self.context_fn(ctx, stat)
+-        _, corr_ctx = self.context_fn(ctx, correction)
+-        names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
++        _, eval_ctx = self.context_fn(ctx, evaluation)
+         sites = self.sites_fn(model)
+         rows = []
+-        with torch.no_grad(): logits = model(stat[0])
+-        g = loss_spec.residual(logits, stat_ctx)
++        with torch.no_grad():
++            g = loss_spec.residual(model(stat[0]), stat_ctx)
++            e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+         for mu_rel in self.mus:
+             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6,
+                             seed=self.metadata['seed'], damping_norm='outputs', project_bn=False)
++            cache = SolveCache(model, sites[0], stat, loss_spec, stat_ctx, cfg)
++            z = cache.solve('real:stat', g, stat, stat_ctx)
++            ze = cache.solve('real:eval', e, evaluation, eval_ctx)
++            cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
++            nulls = draw_nulls(cache, g, e, stat, evaluation, stat_ctx, eval_ctx, generator, self.null_repeats)
++            groups = {}
++            for label, mask in (('exemplar', evaluation[1] < ctx['known_classes']),
++                                ('new', evaluation[1] >= ctx['known_classes'])) if self.groups else ():
++                subset = tuple(t[mask] for t in evaluation)
++                if mask.any():
++                    _, context = self.context_fn(ctx, subset)
++                    with torch.no_grad(): residual = loss_spec.residual(model(subset[0]), context)
++                    zg = cache.solve('real:'+label, residual, subset, context)
++                    groups[label] = (subset, residual, zg)
++                else: groups[label] = None
+             for rank in self.ranks:
+-                proposals, records = {}, []
++                records = []
++                group_sums = {label: 0. for label in groups}
+                 for site in sites:
+-                    site_started = time.monotonic()
+-                    layer = site.first_layer.layer
+-                    if rank > layer.out_channels: continue
+-                    seed = {'weight': layer.weight[:1].detach(), 'bias': None}
+-                    def filtered(residual=None):
+-                        with joint_products(model, [site], {site: seed}, stat[0], names) as p:
+-                            op = GGNProducts(p, stat[1], loss_spec, stat_ctx)
+-                            mu = relative_damping(cfg, op.trace(cfg), op)
+-                            gradient = op.gradient if residual is None else p.JT(residual.flatten()).double()
+-                            u, status = _inverse(lambda v: op.F(v)+mu*v, gradient, cfg)
+-                            return op.H(p.Jv(u)).reshape_as(logits), mu, status
+-                    z, mu, solved = filtered()
++                    if rank > site.first_layer.layer.out_channels: continue
++                    measurement_update(mu=cache.mu, mu_rel=mu_rel, site=site.module_name, rank=rank)
+                     A, capture = tiny_V(model, site, [stat], rank, cotangents=[z], cfg=cfg)
+-                    proposals[site] = A
+-                    def score(a, cotangent=None, data=correction, context=corr_ctx):
+-                        return joint_correction(model, [site], {site: a}, data, cfg, names,
+-                            mu=mu, cotangent=cotangent, loss_spec=loss_spec, ctx=context)[3]
++                    def score(a, cotangent=e, filtered=ze):
++                        return virtual_energy(model, [site], {site: a}, evaluation, filtered, cotangent)
+                     real = score(A)
++                    measurement_update(solve='tiny_V:correction')
++                    checked = joint_correction(model, [site], {site: A}, evaluation, cfg, cache.ctx['names'],
++                        mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx)[3]
++                    consistency = verify_energy(real, checked)
+                     random, _ = prepare_A(model, site, random_A_like(A, generator=generator), 'random_frob', reference=A)
+                     random_record = score(random)
+                     incoming, _ = tiny_U_from_cotangent(model, site, stat[0], g, rank, cfg)
+@@ -68,63 +81,46 @@ class B3Measurement:
+                     split = len(stat[0])//2
+                     similarity = None
+                     if split:
+-                        pieces = [tiny_V(model, site, [(stat[0][s], stat[1][s])], rank,
++                        pieces = [tiny_V(model, site, [tuple(t[s] for t in stat)], rank,
+                                   cotangents=[z[s]], cfg=cfg)[0]
+                                   for s in (slice(None, split), slice(split, None))]
+                         similarity = subspace_sim(*pieces)
+-                    converged = solved['converged'] and all(r['cg_converged'] for r in (real, random_record, u_record))
+-                    null_stats = {}
+-                    for kind in ('N1', 'N2'):
++                    values = {}
++                    for kind, draws in nulls.items():
+                         lambdas, rhos = [], []
+-                        for repeat in range(self.null_repeats):
+-                            null_started = time.monotonic()
+-                            null = null_residual(g, kind, generator, residual_is_zero_sum=loss_spec.residual_is_zero_sum)
+-                            null_z, _, status = filtered(null)
++                        for null_z, null_ze, null_e in draws:
+                             null_A, cap = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
+-                            # Null correction residual has the correction batch's own shape/scaling.
+-                            with torch.no_grad(): corr_logits = model(correction[0])
+-                            corr_g = loss_spec.residual(corr_logits, corr_ctx)
+-                            null_record = score(null_A, null_residual(corr_g, kind, generator,
+-                                                residual_is_zero_sum=loss_spec.residual_is_zero_sum))
+-                            converged &= status['converged'] and null_record['cg_converged']
+                             lambdas.append(float(cap['generalized_eigenvalues'][0]))
+-                            rhos.append(null_record['rho'])
+-                            log(f'mu={mu_rel} rank={rank} site={site.module_name} null={kind} '
+-                                f'done={repeat+1}/{self.null_repeats} seconds={time.monotonic()-null_started:.3f}')
+-                        p_lam = empirical_p(float(capture['generalized_eigenvalues'][0]), lambdas)
+-                        null_stats.update({f'p_lambda_{kind}': p_lam, f'significant_{kind}': p_lam <= 1/9,
+-                                           f'p_rho_{kind}': empirical_p(real['rho'], rhos),
+-                                           f'significant_rho_{kind}': empirical_p(real['rho'], rhos) <= 1/9,
+-                                           f'null_lambda_{kind}': json.dumps(lambdas),
+-                                           f'null_rho_{kind}': json.dumps(rhos)})
++                            rhos.append(score(null_A, null_e, null_ze)['rho'])
++                        values[kind] = lambdas, rhos
++                    for label, group in groups.items():
++                        if group:
++                            data, residual, filtered = group
++                            energy = virtual_energy(model, [site], {site: A}, data, filtered, residual)
++                            group_sums[label] += energy['rho']
++                    lam = float(capture['generalized_eigenvalues'][0])
++                    real_ok = cache.converged() and checked['cg_converged']
++                    null_ok = cache.converged(null=True)
+                     row = {**self.metadata, **{k: ctx[k] for k in ('task', 'epoch', 'step', 'end_of_task', 'train_acc')},
+                            'site': site.module_name, 'rank': rank, 'selected_rank': len(A['weight']),
+-                           'mu_rel': mu_rel, 'damping_norm': 'outputs', 'buffer_m': 128,
+-                           'measurement_m': len(batch[0]), 'stat_m': len(stat[0]), 'correction_m': len(correction[0]),
+-                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_iters_used', 'cg_rel_residual')},
+-                           'cg_converged': converged, 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
++                           'mu_rel': mu_rel, 'mu': cache.mu, 'trace': cache.trace, 'damping_norm': 'outputs',
++                           'buffer_m': len(batch[0]), 'measurement_m': len(batch[0]),
++                           'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'correction_m': len(evaluation[0]),
++                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho')},
++                           **{k: checked[k] for k in ('cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
++                           'cg_converged_real': real_ok, 'cg_converged_null': null_ok, 'cg_converged': real_ok and null_ok,
++                           'V_consistency': consistency, 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
+-                           'lambda1': float(capture['generalized_eigenvalues'][0]), 'subspace_sim': similarity, **null_stats}
++                           'lambda1': lam, 'subspace_sim': similarity,
++                           'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['epoch']}:{ctx['step']}:{mu_rel}",
++                           **null_columns(lam, real['rho'], values)}
+                     records.append(row)
+-                    log(f'mu={mu_rel} rank={rank} site={site.module_name} '
+-                        f'seconds={time.monotonic()-site_started:.3f} cg_iters={real["cg_iters_used"]} converged={converged}')
+-                joint = joint_correction(model, list(proposals), proposals, correction, cfg, names,
+-                                         loss_spec=loss_spec, ctx=corr_ctx)[3]
+-                groups = {}
+-                for label, mask in (('exemplar', correction[1] < ctx['known_classes']),
+-                                    ('new', correction[1] >= ctx['known_classes'])) if self.groups else ():
+-                    groups[f'{label}_m'] = int(mask.sum())
+-                    groups[f'rho_{label}'] = None
+-                    if mask.any():
+-                        subset = tuple(t[mask] for t in correction)
+-                        _, subset_ctx = self.context_fn(ctx, subset)
+-                        record = joint_correction(model, list(proposals), proposals, subset, cfg, names,
+-                                                  loss_spec=loss_spec, ctx=subset_ctx)[3]
+-                        groups[f'rho_{label}'] = record['rho']
+-                        joint['cg_converged'] &= record['cg_converged']
++                joint_rho = sum(row['rho'] for row in records)
+                 for row in records:
+-                    row.update(rho_joint=joint['rho'], **groups)
+-                    row['cg_converged'] &= joint['cg_converged']
++                    row.update(rho_joint=joint_rho)
++                    for label, group in groups.items():
++                        row[f'{label}_m'] = len(group[0][0]) if group else 0
++                        row[f'rho_{label}'] = group_sums[label] if group else None
+                     rows.append(row)
+         for row in rows: row['wall_seconds'] = time.monotonic()-start
+         return rows
+diff --git a/diagnostics/lop_measure.py b/diagnostics/lop_measure.py
+index 725a710..901a59a 100644
+--- a/diagnostics/lop_measure.py
++++ b/diagnostics/lop_measure.py
+@@ -1,4 +1,6 @@
+-"""B5 measurements use only the already-seen sliding window."""
++"""B5 uses disjoint stat/eval windows. Shared nulls preserve row p-values;
++p-values across sites/ranks of one point are correlated.
++"""
+ import copy
+ import json
+ import time
+@@ -7,6 +9,8 @@ from adapters.lop_hooks import Prediction, sites_for
+ from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
+ from methods.vna_ggn import GGNConfig, GGNProducts
+ from methods.vna_joint import joint_correction, joint_products
++from diagnostics.measure_efficiency import SolveCache, draw_nulls, virtual_energy, solve_z, verify_energy
++from experiments.vna_resume import measurement_update
+ from methods.vna_select import tiny_V, tiny_U_from_cotangent, normalize_A, prepare_A, subspace_sim, neuron_norms
+ 
+ 
+@@ -81,78 +85,78 @@ def spectrum(model, sites, A, batch, spec, ctx, mu, *, top_k=20):
+ 
+ class B5Measurement:
+     def __init__(self, benchmark, metadata, *, mu_rel_default=.01, ranks=None, cg_iters=1000):
+-        self.benchmark, self.metadata = benchmark, metadata
+-        self.mus = sorted({mu_rel_default, .01})
++        self.benchmark, self.metadata = benchmark, {'setting': 'B5', **metadata}
++        self.mus = [1e-3, 1e-2]
+         self.ranks = ranks or ([1, 2, 4] if benchmark == 'regression' else [4, 16, 64])
+         self.cg_iters = cg_iters
+ 
+     def __call__(self, model, batch, loss_spec, ctx, *, generator):
+         start = time.monotonic()
++        model.eval()
++        order = torch.randperm(len(batch[0]), device=batch[0].device, generator=generator)
++        half = len(order)//2
++        if not half: raise ValueError('B5 measurement needs at least two samples')
++        stat = tuple(t[order[:half]] for t in batch)
++        evaluation = tuple(t[order[half:]] for t in batch)
+         sites = sites_for(model)
+-        stats = activity_stats(model, batch)
++        stats = activity_stats(model, stat)
+         rows = []
+         all_names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
+-        loss_ctx = {'targets': batch[1], 'loss_fn': ctx['loss_fn']}
+-        with torch.no_grad(): logits = model(batch[0])
++        loss_ctx = {'targets': stat[1], 'loss_fn': ctx['loss_fn']}
++        eval_ctx = {'targets': evaluation[1], 'loss_fn': ctx['loss_fn']}
++        with torch.no_grad(): logits = model(stat[0])
+         g = loss_spec.residual(logits, loss_ctx)
++        with torch.no_grad(): e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+         for mu_rel in self.mus:
+             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6, project_bn=False,
+                             seed=self.metadata['seed'], damping_norm='outputs')
++            cache = SolveCache(model, sites[0], stat, loss_spec, loss_ctx, cfg)
++            mu, trace = cache.mu, cache.trace
++            z = cache.solve('real:stat', g, stat, loss_ctx)
++            ze = cache.solve('real:eval', e, evaluation, eval_ctx)
++            cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
++            nulls = draw_nulls(cache, g, e, stat, evaluation, loss_ctx, eval_ctx, generator, 8)
++            swaps = {}
+             spectral = None
+             for rank in self.ranks:
+                 proposals, records, controls = {}, {}, {}
+                 for index, site in enumerate(sites):
+                     width = site.first_layer.layer.weight.shape[0]
+                     if rank > width: continue
+-                    seed = {'weight': site.first_layer.layer.weight[:1].detach(),
+-                            'bias': None if site.first_layer.layer.bias is None else site.first_layer.layer.bias[:1].detach()}
+-                    # Whole-network K for both selection and all corrections.
+-                    with joint_products(model, [site], {site: seed}, batch[0], all_names) as p:
+-                        op = GGNProducts(p, batch[1], loss_spec, loss_ctx)
+-                        from methods.vna_joint import _inverse
+-                        from methods.vna_ggn import relative_damping
+-                        trace = op.trace(cfg)
+-                        mu = relative_damping(cfg, trace, op)
+-                        u, solve = _inverse(lambda v: op.F(v)+mu*v, op.gradient, cfg)
+-                        z = op.H(p.Jv(u)).reshape_as(logits)
+-                    A, cap = tiny_V(model, site, [batch], rank, cotangents=[z], cfg=cfg)
++                    measurement_update(mu=mu, mu_rel=mu_rel, site=site.module_name, rank=rank)
++                    A, cap = tiny_V(model, site, [stat], rank, cotangents=[z], cfg=cfg)
+                     proposals[site] = A
+-                    def correction(a, cotangent=None):
+-                        return joint_correction(model, [site], {site: a}, batch, cfg, all_names,
+-                                                mu=mu, cotangent=cotangent, loss_spec=loss_spec, ctx=loss_ctx)[3]
++                    def correction(a, cotangent=e, filtered=ze):
++                        return virtual_energy(model, [site], {site: a}, evaluation, filtered, cotangent)
+                     real = correction(A)
+-                    real['cg_converged'] &= solve['converged']
++                    measurement_update(solve='tiny_V:correction')
++                    checked = joint_correction(model, [site], {site: A}, evaluation, cfg, all_names,
++                        mu=mu, trace_F=trace, loss_spec=loss_spec, ctx=eval_ctx)[3]
++                    consistency = verify_energy(real, checked)
++                    real.update({k: checked[k] for k in ('cg_converged', 'cg_iters_used', 'cg_rel_residual',
++                                                        'raw_gain', 'realized_gain', 'finite')}, mu=mu)
+                     random = random_init_A(site, A, ctx['shadow'], index, generator)
+                     random, random_normalization = prepare_A(model, site, random, 'random_frob', reference=A)
+                     # normalize_A makes every row match the same init row norm;
+                     # hence this random draw has exactly the same Frobenius norm.
+                     random_record = correction(random)
+-                    incoming, _ = tiny_U_from_cotangent(model, site, batch[0], g, rank, cfg)
++                    incoming, _ = tiny_U_from_cotangent(model, site, stat[0], g, rank, cfg)
+                     incoming, _ = prepare_A(model, site, incoming, 'tiny_U')
+                     u_record = correction(incoming)
+-                    half = len(batch[0])//2
++                    half = len(stat[0])//2
+                     similarity = None
+                     if half:
+-                        first, _ = tiny_V(model, site, [(batch[0][:half], batch[1][:half])], rank,
++                        first, _ = tiny_V(model, site, [(stat[0][:half], stat[1][:half])], rank,
+                                           cotangents=[z[:half]], cfg=cfg)
+-                        second, _ = tiny_V(model, site, [(batch[0][half:], batch[1][half:])], rank,
++                        second, _ = tiny_V(model, site, [(stat[0][half:], stat[1][half:])], rank,
+                                            cotangents=[z[half:]], cfg=cfg)
+                         similarity = subspace_sim(first, second)
+                     null_stats = {}
+-                    null_converged = True
+                     for kind in ('N1', 'N2'):
+                         null_lambda, null_rho = [], []
+-                        for _ in range(8):
+-                            null = null_residual(g, kind, generator,
+-                                                 residual_is_zero_sum=loss_spec.residual_is_zero_sum)
+-                            with joint_products(model, [site], {site: seed}, batch[0], all_names) as p:
+-                                op = GGNProducts(p, batch[1], loss_spec, loss_ctx)
+-                                gradient = p.JT(null.flatten()).double()
+-                                u, status = _inverse(lambda v: op.F(v)+mu*v, gradient, cfg)
+-                                null_z = op.H(p.Jv(u)).reshape_as(logits)
+-                            null_A, capture = tiny_V(model, site, [batch], rank, cotangents=[null_z], cfg=cfg)
+-                            record = correction(null_A, null)
+-                            null_converged &= status['converged'] and record['cg_converged']
++                        for null_z, null_ze, null_e in nulls[kind]:
++                            null_A, capture = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
++                            record = correction(null_A, null_e, null_ze)
+                             null_lambda.append(float(capture['generalized_eigenvalues'][0]))
+                             null_rho.append(record['rho'])
+                         lam = float(cap['generalized_eigenvalues'][0])
+@@ -170,8 +174,11 @@ class B5Measurement:
+                            'site': site.module_name, 'rank': rank, 'mu_rel': mu_rel, 'selection': 'tiny_V',
+                            'null_kind': 'N2', 'n2_centered': loss_spec.residual_is_zero_sum,
+                            'selected_rank': len(A['weight']),
+-                           'measurement_m': len(batch[0]), 'buffer_m': ctx['buffer_m'],
+-                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_converged', 'cg_iters_used', 'cg_rel_residual')},
++                           'measurement_m': len(batch[0]), 'buffer_m': len(batch[0]),
++                           'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'trace': trace,
++                           'V_consistency': consistency,
++                           'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['step']}:{mu_rel}",
++                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
+                            'damping_norm': 'outputs', 'lambda1': lam,
+                            'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
+@@ -184,56 +191,66 @@ class B5Measurement:
+                            'weight_magnitude_per_layer': json.dumps([float(layer.weight.detach().abs().mean())
+                                for layer in list(model.native.layers)[::2]]),
+                            **null_stats}
+-                    row['cg_converged'] &= random_record['cg_converged'] and u_record['cg_converged'] and null_converged
++                    row['cg_converged_real'] = cache.converged() and checked['cg_converged']
++                    row['cg_converged_null'] = cache.converged(null=True)
+                     # Counterfactuals are private copies, with outgoing weights
+                     # zeroed at the declared selected coordinates only.
+-                    candidates = [(label, shadow, selected[index]) for label, shadow, selected in ctx['cbp_candidates']]
+-                    candidates.append(('redo', ctx['shadow'], stats[index]['dormant_indices']))
+-                    for criterion, shadow, units in candidates:
+-                        count = len(units)
+-                        row[f'{criterion}_m'] = count
+-                        row[f'{criterion}_tiny_directions'] = 0
+-                        row[f'{criterion}_fraction'] = count / width
+-                        if not count:
+-                            for name in ('V_swap_tiny', 'V_swap_random', 'ratio', 'eta_before', 'eta_after'):
+-                                row[f'{criterion}_{name}'] = None
+-                            continue
+-                        old_A = {'weight': site.first_layer.layer.weight.detach()[units],
+-                                 'bias': None if site.first_layer.layer.bias is None else site.first_layer.layer.bias.detach()[units]}
+-                        before_swap = correction(old_A)
+-                        swap_A, _ = tiny_V(model, site, [batch], count, cotangents=[z], cfg=cfg)
+-                        # Draw all m rows once; missing TINY directions use
+-                        # the first m-k rows of this same random arm.
+-                        swap_random = random_init_A(site, old_A, shadow, index, generator)
+-                        swap_A, swap_random, k = swap_directions(swap_A, swap_random, ctx['init_row_norms'][index])
+-                        row[f'{criterion}_tiny_directions'] = k
+-                        gains = []
+-                        for a in (swap_A, swap_random):
+-                            clone = Prediction(copy.deepcopy(model.native))
+-                            clone_site = sites_for(clone)[index]
+-                            first, second = clone_site.first_layer.layer, clone_site.second_layer.layer
+-                            with torch.no_grad():
+-                                first.weight[units] = a['weight']
+-                                if first.bias is not None: first.bias[units] = a['bias']
+-                                outgoing_units = units
+-                                if site.kind == 'conv_linear':
+-                                    spatial = second.in_features//first.out_channels
+-                                    outgoing_units = (units[:, None]*spatial+torch.arange(spatial, device=units.device)).flatten()
+-                                second.weight[:, outgoing_units] = 0
+-                            gains.append(joint_correction(clone, [clone_site], {clone_site: a}, batch, cfg,
+-                                mu=mu, loss_spec=loss_spec, ctx=loss_ctx)[3])
+-                        row.update({f'{criterion}_V_swap_tiny': gains[0]['V'], f'{criterion}_V_swap_random': gains[1]['V'],
+-                                    f'{criterion}_ratio': 1.0 if k == 0 else diagnostic_ratio(gains[0]['V'], gains[1]['V']),
+-                                    f'{criterion}_eta_before': before_swap['eta'], f'{criterion}_eta_after': gains[0]['eta']})
++                    if site not in swaps:
++                        swap_row = {'cg_converged_real': True}
++                        candidates = [(label, shadow, selected[index]) for label, shadow, selected in ctx['cbp_candidates']]
++                        candidates.append(('redo', ctx['shadow'], stats[index]['dormant_indices']))
++                        for criterion, shadow, units in candidates:
++                            count = len(units)
++                            swap_row[f'{criterion}_m'] = count
++                            swap_row[f'{criterion}_tiny_directions'] = 0
++                            swap_row[f'{criterion}_fraction'] = count / width
++                            if not count:
++                                for name in ('V_swap_tiny', 'V_swap_random', 'ratio', 'eta_before', 'eta_after'):
++                                    swap_row[f'{criterion}_{name}'] = None
++                                continue
++                            old_A = {'weight': site.first_layer.layer.weight.detach()[units],
++                                     'bias': None if site.first_layer.layer.bias is None else site.first_layer.layer.bias.detach()[units]}
++                            before_swap = correction(old_A)
++                            swap_A, _ = tiny_V(model, site, [stat], count, cotangents=[z], cfg=cfg)
++                            # Draw all m rows once; missing TINY directions use
++                            # the first m-k rows of this same random arm.
++                            swap_random = random_init_A(site, old_A, shadow, index, generator)
++                            swap_A, swap_random, k = swap_directions(swap_A, swap_random, ctx['init_row_norms'][index])
++                            swap_row[f'{criterion}_tiny_directions'] = k
++                            gains = []
++                            for a in (swap_A, swap_random):
++                                clone = Prediction(copy.deepcopy(model.native))
++                                clone_site = sites_for(clone)[index]
++                                first, second = clone_site.first_layer.layer, clone_site.second_layer.layer
++                                with torch.no_grad():
++                                    first.weight[units] = a['weight']
++                                    if first.bias is not None: first.bias[units] = a['bias']
++                                    outgoing_units = units
++                                    if site.kind == 'conv_linear':
++                                        spatial = second.in_features//first.out_channels
++                                        outgoing_units = (units[:, None]*spatial+torch.arange(spatial, device=units.device)).flatten()
++                                    second.weight[:, outgoing_units] = 0
++                                clone_cache = SolveCache(clone, clone_site, stat, loss_spec, loss_ctx, cfg, mu=mu, trace=trace)
++                                with torch.no_grad(): clone_e = loss_spec.residual(clone(evaluation[0]), eval_ctx)
++                                clone_z = clone_cache.solve(f'real:swap:{criterion}:{len(gains)}', clone_e, evaluation, eval_ctx)
++                                gains.append(virtual_energy(clone, [clone_site], {clone_site: a}, evaluation, clone_z, clone_e))
++                                swap_row['cg_converged_real'] &= clone_cache.converged()
++                            swap_row.update({f'{criterion}_V_swap_tiny': gains[0]['V'], f'{criterion}_V_swap_random': gains[1]['V'],
++                                        f'{criterion}_ratio': 1.0 if k == 0 else diagnostic_ratio(gains[0]['V'], gains[1]['V']),
++                                        f'{criterion}_eta_before': before_swap['eta'], f'{criterion}_eta_after': gains[0]['eta']})
++                        swaps[site] = swap_row
++                    swap_fields = swaps[site]
++                    real_ok = row['cg_converged_real'] and swap_fields['cg_converged_real']
++                    row.update({k: v for k, v in swap_fields.items() if k != 'cg_converged_real'})
++                    row['cg_converged_real'] = real_ok
++                    row['cg_converged'] = real_ok and row['cg_converged_null']
+                     records[site] = row; controls[site] = (random, incoming)
+                 if not proposals: continue
+-                joint = joint_correction(model, list(proposals), proposals, batch, cfg, all_names,
+-                                          loss_spec=loss_spec, ctx=loss_ctx)[3]
++                joint_rho = sum(row['rho'] for row in records.values())
+                 if spectral is None:
+-                    spectral = spectrum(model, list(proposals), proposals, batch, loss_spec, loss_ctx, joint['mu'])
++                    spectral = spectrum(model, list(proposals), proposals, evaluation, loss_spec, eval_ctx, mu)
+                 for site, row in records.items():
+-                    row.update(rho_joint=joint['rho'], **spectral)
+-                    row['cg_converged'] &= joint['cg_converged']
++                    row.update(rho_joint=joint_rho, **spectral)
+                     rows.append(row)
+         for row in rows: row['wall_seconds'] = time.monotonic()-start
+         return rows
+diff --git a/diagnostics/vna_align.py b/diagnostics/vna_align.py
+index 09a98a3..91adcca 100644
+--- a/diagnostics/vna_align.py
++++ b/diagnostics/vna_align.py
+@@ -51,8 +51,16 @@ class MeasurementHook:
+         changed_count = False
+         with _global_state():
+             try:
+-                return self.measure(model, batch_the_loop_already_has, loss_spec, ctx,
+-                                    generator=self.generators[key])
++                from experiments.vna_resume import MeasurementMonitor, MeasurementTimeout
++                with MeasurementMonitor(getattr(self.measure, 'metadata', {}), ctx,
++                                        **getattr(self.measure, 'runtime', {})) as monitor:
++                    try:
++                        rows = self.measure(model, batch_the_loop_already_has, loss_spec, ctx,
++                                            generator=self.generators[key])
++                        monitor.check_deadline()
++                        return rows
++                    except MeasurementTimeout:
++                        return monitor.timeout_rows(self.measure, ctx)
+             finally:
+                 changed_count = count != sum(p.numel() for p in model.parameters())
+                 for module, params, buffers, children in registrations:
+diff --git a/diagnostics/vna_gate.py b/diagnostics/vna_gate.py
+index 90c3b83..03c3608 100644
+--- a/diagnostics/vna_gate.py
++++ b/diagnostics/vna_gate.py
+@@ -29,13 +29,20 @@ BUILTIN_CONFIGS = {s: setting_config(s) for s in ('B1', 'B2', 'B3', 'B4')}
+ 
+ def evaluate_gate(rows, setting_cfg):
+     rows = list(rows)
+-    eligible = [r for r in rows if r['cg_converged'] and r['rank'] == setting_cfg.get('gate_rank', GATE_RANK)
+-                and r.get('damping_norm', 'outputs') == setting_cfg.get('damping_norm', 'outputs')
+-                and r['mu_rel'] == setting_cfg.get('mu_rel_default', 1e-2) and setting_cfg['window'](r)]
++    candidates = [r for r in rows if r['rank'] == setting_cfg.get('gate_rank', GATE_RANK)
++                  and r.get('damping_norm', 'outputs') == setting_cfg.get('damping_norm', 'outputs')
++                  and r['mu_rel'] == setting_cfg.get('mu_rel_default', 1e-2) and setting_cfg['window'](r)]
++    # The unit of exclusion is a measurement point, including all its sites.
++    point_key = lambda r: tuple(r.get(k) for k in ('setting', 'benchmark', 'seed', 'task', 'epoch', 'step', 'point'))
++    points = {point_key(r) for r in candidates}
++    excluded = {point_key(r) for r in candidates
++                if not r.get('cg_converged', False) or r.get('status') == 'timeout'}
++    excluded_fraction = len(excluded)/len(points) if points else 0.
++    eligible = [r for r in candidates if point_key(r) not in excluded]
+     n = len(eligible)
+     frac = lambda fn: sum(bool(fn(r)) for r in eligible) / n if n else 0.
+     rho = frac(lambda r: r['rho_joint'] >= RHO_MIN)
+-    n1 = frac(lambda r: r['significant_N1'])
++    n1 = frac(lambda r: r['significant_rho_N1'])
+     tiny = frac(lambda r: r['V_tiny_V'] > r['V_random_frob'])
+     applicable = setting_cfg['train_acc_applicable']
+     final = setting_cfg.get('final_train_acc')
+@@ -44,7 +51,8 @@ def evaluate_gate(rows, setting_cfg):
+     conditions = {'rho': rho >= RHO_FRAC, 'N1': n1 >= N1_FRAC,
+                   'tiny_V': tiny >= TINYV_FRAC,
+                   'train_acc': (final is not None and final < TRAIN_ACC_MAX) if applicable else 'n/a'}
+-    return {'status': 'PASS' if n and all(v is True or v == 'n/a' for v in conditions.values()) else 'FAIL',
+-            'eligible_points': n, 'rho_fraction': rho, 'N1_fraction': n1,
++    return {'status': 'INVALID' if excluded_fraction > .10 else 'PASS' if n and all(v is True or v == 'n/a' for v in conditions.values()) else 'FAIL',
++            'eligible_points': n, 'excluded_points': len(excluded),
++            'excluded_fraction': excluded_fraction, 'gate_null_statistic': 'rho', 'rho_fraction': rho, 'N1_fraction': n1,
+             'tiny_V_fraction': tiny, 'final_train_acc': final if applicable else 'n/a',
+             'raw_final_train_acc': final, 'conditions': conditions}
+diff --git a/experiments/stage_b12.py b/experiments/stage_b12.py
+index 228b897..7fe1922 100644
+--- a/experiments/stage_b12.py
++++ b/experiments/stage_b12.py
+@@ -1,5 +1,6 @@
+ """B1 CE / B2 KD: RepDistiller main(), unchanged optimizer and training loops."""
+ import argparse
++from experiments.vna_resume import configure_measurement, measurement_cli
+ from contextlib import nullcontext
+ import importlib
+ import os
+@@ -70,7 +71,7 @@ def run(args, *, measure_override=None, observe=None):
+                 torch.save({'model': models[name](num_classes=100).state_dict()}, teacher)
+             argv = ['train_student.py', '--model_s', args.student, '--path_t', str(teacher),
+                     '--distill', 'kd', '-r', '.1', '-a', '.9', '-b', '0', '--trial', '0']
+-        identity = {**meta, 'mu_candidates': sorted({args.mu_rel_default, .01}),
++        identity = {**meta, 'mu_candidates': [1e-3, 1e-2],
+                     'teacher_hash': file_hash(teacher) if args.setting == 'b2' else None,
+                     'upstream_commit': __import__('subprocess').check_output(
+                         ['git', '-C', str(UPSTREAM), 'rev-parse', 'HEAD'], text=True).strip(),
+@@ -80,6 +81,7 @@ def run(args, *, measure_override=None, observe=None):
+         if args.smoke or args.pilot: argv += ['--epochs', '2']
+         if args.fake_data: argv += ['--batch_size', '4']
+         measure = measure_override if measure_override is not None else measurement(meta, args.mu_rel_default, fake=args.fake_data, pilot=args.pilot)
++        configure_measurement(measure, args, out)
+         hook = RepDistillerHook(measure, persist=persist, observe=observe, smoke=args.smoke, fake=args.fake_data,
+                                data_dir=data_dir, batch_size=4 if args.fake_data else 64, pilot=args.pilot, pilot_batches=args.pilot_batches, progress=progress)
+         # Upstream chooses CUDA by availability; suppress only for an explicit CPU request.
+@@ -120,8 +122,8 @@ def run(args, *, measure_override=None, observe=None):
+         if args.pilot: gate['status'] = 'PILOT'
+         by_mu[str(mu)] = gate
+         write_json(out/f'gate_mu_{mu}.json', gate)
+-    official_mu = args.official_mu
+-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
++    official_mu = 1e-2
++    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
+             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
+     write_json(out/'reproduction.json', reproduction)
+     write_json(out/'gate.json', gate)
+@@ -138,6 +140,7 @@ def run(args, *, measure_override=None, observe=None):
+ 
+ def parser():
+     p = argparse.ArgumentParser(description=__doc__)
++    measurement_cli(p)
+     p.add_argument('setting', choices=('b1', 'b2'))
+     p.add_argument('--student', choices=PAIRS, required=True)
+     p.add_argument('--teacher')
+diff --git a/experiments/stage_b3.py b/experiments/stage_b3.py
+index d7064df..a1a143c 100644
+--- a/experiments/stage_b3.py
++++ b/experiments/stage_b3.py
+@@ -1,5 +1,6 @@
+ """Pinned PyCIL iCaRL training, with measure-only Stage B3 interception."""
+ import argparse
++from experiments.vna_resume import configure_measurement, measurement_cli
+ from contextlib import contextmanager
+ import json
+ import os
+@@ -114,13 +115,14 @@ def run(args, *, measure_override=None, observe=None):
+                             null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000)
+     if measure_override is not None: measure = measure_override
+     identity = {**metadata, 'student': params['convnet_type'], 'teacher_hash': None,
+-                'mu_candidates': sorted({args.mu_rel_default, .01}), 'recipe': params,
++                'mu_candidates': [1e-3, 1e-2], 'recipe': params,
+                 'workers': args.workers, 'pilot_batches': args.pilot_batches}
+     progress = Progress(out, identity)
+     def persist(hook):
+         write_csv(out/'measurements.csv', hook.rows)
+         write_csv(out/'epochs.csv', hook.epochs)
+         write_json(out/'tasks.json', hook.tasks)
++    configure_measurement(measure, args, out)
+     hook = ICaRLHook(measure, persist=persist, pilot=args.pilot,
+                      pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe)
+     original_manager = trainer.DataManager
+@@ -157,8 +159,8 @@ def run(args, *, measure_override=None, observe=None):
+             gate['measurements_valid'] = False
+         by_mu[str(mu)] = gate
+         write_json(out/f'gate_mu_{mu}.json', gate)
+-    official_mu = args.official_mu
+-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
++    official_mu = 1e-2
++    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
+             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
+     write_json(out/'reproduction_gate.json', baseline)
+     write_json(out/'gate.json', gate)
+@@ -177,6 +179,7 @@ def run(args, *, measure_override=None, observe=None):
+ 
+ def parser():
+     p = argparse.ArgumentParser(description=__doc__)
++    measurement_cli(p)
+     add_arguments(p)
+     p.add_argument('--smoke', action='store_true')
+     p.add_argument('--fake-data', action='store_true')
+diff --git a/experiments/stage_b4.py b/experiments/stage_b4.py
+index 5ef80d2..bf4cfc2 100644
+--- a/experiments/stage_b4.py
++++ b/experiments/stage_b4.py
+@@ -1,5 +1,6 @@
+ """B4: Phase-0 SGD on imported quarter-width Gromo ResNet-18, offline measures."""
+ import argparse
++from experiments.vna_resume import configure_measurement, measurement_cli
+ import json
+ import os
+ from pathlib import Path
+@@ -46,7 +47,7 @@ def run(args):
+     if args.fake_data: torch.set_num_threads(1)
+     if args.pilot: start_memory(args.device)
+     identity = {'setting': 'B4', 'student': 'resnet18-quarter', 'teacher_hash': None,
+-                'code_commit': code_commit(), 'upstream_commit': '8d19107b61a9459a9021065a329b699adcb0f25b', 'mu_candidates': sorted({args.mu_rel_default, .01}),
++                'code_commit': code_commit(), 'upstream_commit': '8d19107b61a9459a9021065a329b699adcb0f25b', 'mu_candidates': [1e-3, 1e-2],
+                 'seed': 0, 'device': args.device, 'fake_data': args.fake_data,
+                 'smoke': args.smoke, 'pilot': args.pilot, 'workers': args.workers,
+                 'pilot_batches': args.pilot_batches}
+@@ -103,6 +104,7 @@ def run(args):
+                B3Measurement(meta, mu_rel_default=args.mu_rel_default, context_fn=context,
+                              sites_fn=sites_for, ranks=(4,) if args.pilot else (4, 16, 64), groups=False,
+                              null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000))
++    configure_measurement(measure, args, out)
+     isolated = MeasurementHook(measure, seed=0)
+     progress = Progress(out, identity, name='measurement_latest.pt')
+     if progress.state:
+@@ -141,7 +143,7 @@ def run(args):
+         history = checkpoint['history'][-1]
+         ctx = {'epoch': epoch, 'task': 0, 'step': epoch, 'end_of_task': False, 'known_classes': 0,
+                'train_acc': history['train']['accuracy']}
+-        batch = augmented_batch(train, indices, 4 if args.fake_data else 128, g, args.device)
++        batch = augmented_batch(train, indices, 4 if args.fake_data else 512, g, args.device)
+         t = time.monotonic()
+         rows.extend(isolated(model, batch, CE(), ctx))
+         costs.append({'epoch': epoch, 'seconds': time.monotonic()-t})
+@@ -166,8 +168,8 @@ def run(args):
+         if args.pilot: gate['status'] = 'PILOT'
+         by_mu[str(mu)] = gate
+         write_json(out/f'gate_mu_{mu}.json', gate)
+-    official_mu = args.official_mu
+-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
++    official_mu = 1e-2
++    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
+             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
+     write_json(out/'gate.json', gate)
+     history = json.loads((out/'recipe/history.json').read_text())
+@@ -186,6 +188,7 @@ def run(args):
+ 
+ def parser():
+     p = argparse.ArgumentParser(description=__doc__)
++    measurement_cli(p)
+     p.add_argument('mode', choices=('train', 'measure'))
+     add_arguments(p)
+     p.add_argument('--smoke', action='store_true')
+diff --git a/experiments/stage_b5.py b/experiments/stage_b5.py
+index 747b1ae..a987d27 100644
+--- a/experiments/stage_b5.py
++++ b/experiments/stage_b5.py
+@@ -1,5 +1,6 @@
+ """Run the pinned LoP experiment functions unchanged, with read-only hooks."""
+ import argparse
++from experiments.vna_resume import configure_measurement, measurement_cli
+ from contextlib import contextmanager
+ import csv
+ import json
+@@ -260,7 +261,7 @@ def finalize(output, benchmark, *, mu_rel_default=.01):
+         baseline.update(status='FAIL', reason='synthetic/smoke runs cannot establish the baseline')
+     baseline_path = output/'b5_baseline_gate.json'
+     merge_json(baseline_path, benchmark, baseline)
+-    config = setting_config('B5', tasks_run=tasks, mu_rel_default=mu_rel_default)
++    config = setting_config('B5', tasks_run=tasks, mu_rel_default=1e-2)
+     # Regression's registered maximum rank is four, never sixteen.
+     config['gate_rank'] = 4 if benchmark == 'regression' else 16
+     gate = evaluate_gate(measurements, config)
+@@ -370,7 +371,7 @@ def _run(args, status):
+         write_csv(run_dir/'measurements.csv', state['rows'])
+         return checkpoint_path.stat().st_size
+     hook = LearnHook(args.benchmark, args.arm, params,
+-                     B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default) if args.arm == 'bp' else None,
++                     configure_measurement(B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default), args, run_dir) if args.arm == 'bp' else None,
+                      seed=args.seed, checkpoint=checkpoint, resume=resumed,
+                      time_steps=args.smoke, timing_started=timing_started, progress=progress, status=status)
+     start = time.monotonic()
+@@ -430,6 +431,7 @@ def _run(args, status):
+ 
+ def parser():
+     p = argparse.ArgumentParser(description=__doc__)
++    measurement_cli(p)
+     p.add_argument('benchmark', choices=CFG)
+     p.add_argument('--arm', required=True, choices=['bp', 'cbp'])
+     p.add_argument('--smoke', action='store_true'); p.add_argument('--fake-data', action='store_true')
+diff --git a/experiments/vna_resume.py b/experiments/vna_resume.py
+index 9b4cb58..81d6ff4 100644
+--- a/experiments/vna_resume.py
++++ b/experiments/vna_resume.py
+@@ -155,7 +155,7 @@ def print_heartbeat(root, started, deadline, lanes):
+     import json
+     import subprocess
+     statuses = {}
+-    for path in Path(root).rglob('status.json'):
++    for path in [*Path(root).rglob('status.json'), *Path(root).rglob('heartbeat.json')]:
+         try: statuses[str(path.relative_to(root))] = json.loads(path.read_text())
+         except (OSError, ValueError): pass
+     gpu = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+@@ -187,3 +187,115 @@ def launch_logged(cmd, *, cwd, env, log_path, lane, job, lanes, paused, deadline
+         return False
+     if code: raise subprocess.CalledProcessError(code, cmd)
+     return True
++
++
++# Measurement instrumentation shares Status's daemon/writer and Progress's
++# boundary checkpoints; it never interrupts or replaces the training deadline.
++from contextvars import ContextVar
++import csv
++import faulthandler
++import json
++
++current_measurement = ContextVar('vna_measurement', default=None)
++
++
++class MeasurementTimeout(TimeoutError):
++    pass
++
++
++def measurement_update(**values):
++    monitor = current_measurement.get()
++    if monitor:
++        monitor.check_deadline()
++        monitor.update(**values)
++
++
++def measurement_cli(parser):
++    parser.add_argument('--measurement-timeout-s', type=float, default=7200.)
++    parser.add_argument('--faulthandler-timeout-s', type=float, default=3600.)
++
++
++def configure_measurement(measure, args, out):
++    if measure:
++        measure.runtime = {'out': str(out),
++                           'timeout_s': getattr(args, 'measurement_timeout_s', 7200.),
++                           'traceback_s': getattr(args, 'faulthandler_timeout_s', 3600.)}
++    return measure
++
++
++class MeasurementMonitor(Status):
++    def __init__(self, metadata, ctx, *, out=None, timeout_s=7200., traceback_s=3600.):
++        self.started = time.monotonic()
++        self.timeout_s, self.traceback_s = timeout_s, traceback_s
++        self.out = Path(out) if out else None
++        if self.out: self.out.mkdir(parents=True, exist_ok=True)
++        self.path = self.out/'heartbeat.json' if self.out else None
++        self.values = {**metadata, **{k: ctx.get(k) for k in ('task', 'epoch', 'step', 'point')},
++                       'mu': None, 'mu_rel': None, 'site': None, 'rank': None, 'solve': None, 'cg_iteration': 0}
++        self.lock, self.stop = threading.Lock(), threading.Event()
++        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
++        self.solves = []
++        self.traceback_file = None
++
++    def _write(self):
++        self.values['point_elapsed_seconds'] = time.monotonic()-self.started
++        if self.path: atomic_json_save({**self.values, 'last_update_time': time.time()}, self.path)
++
++    def _heartbeat(self):
++        while not self.stop.wait(60):
++            with self.lock: self._write()
++
++    def check_deadline(self):
++        if time.monotonic()-self.started > self.timeout_s:
++            raise MeasurementTimeout('measurement soft deadline exceeded')
++
++    def begin_solve(self):
++        self.check_deadline()
++        self.update(cg_iteration=0, solve_index=len(self.solves)+1)
++
++    def iteration(self, iteration):
++        self.check_deadline()
++        with self.lock: self.values['cg_iteration'] = iteration
++
++    def end_solve(self, record):
++        keys = ('setting', 'benchmark', 'seed', 'task', 'epoch', 'step', 'point',
++                'mu', 'mu_rel', 'site', 'rank', 'solve', 'solve_index')
++        row = {**{k: self.values.get(k) for k in keys},
++               'seconds': record['seconds'], 'cg_iters_used': record['iterations'],
++               'converged': record['converged']}
++        self.solves.append(row)
++        if self.out:
++            path = self.out/'solves.csv'
++            with path.open('a', newline='') as stream:
++                writer = csv.DictWriter(stream, fieldnames=list(row))
++                if stream.tell() == 0: writer.writeheader()
++                writer.writerow(row)
++
++    def __enter__(self):
++        self.token = current_measurement.set(self)
++        self.update(phase='measurement')
++        self.thread.start()
++        if self.out and self.traceback_s > 0:
++            self.traceback_file = (self.out/'measurement_tracebacks.log').open('a')
++            faulthandler.dump_traceback_later(self.traceback_s, repeat=True, file=self.traceback_file)
++        return self
++
++    def __exit__(self, *exc):
++        if self.traceback_file:
++            faulthandler.cancel_dump_traceback_later()
++            self.traceback_file.close()
++        self.close()
++        with self.lock: self._write()
++        current_measurement.reset(self.token)
++        seconds = sum(r['seconds'] for r in self.solves)
++        log(f'measurement CG solves={len(self.solves)} mean_solve_seconds={seconds/max(1, len(self.solves)):.6f} '
++            f'point_seconds={time.monotonic()-self.started:.6f}')
++
++    def timeout_rows(self, measure, ctx):
++        snapshot = json.dumps(self.values)
++        return [{**measure.metadata,
++                 **{k: ctx[k] for k in ('task', 'epoch', 'step', 'point', 'end_of_task', 'train_acc') if k in ctx},
++                 'mu_rel': mu, 'rank': rank, 'damping_norm': 'outputs', 'status': 'timeout',
++                 'cg_converged_real': False, 'cg_converged_null': False, 'cg_converged': False,
++                 'last_heartbeat': snapshot, 'wall_seconds': time.monotonic()-self.started}
++                for mu in measure.mus for rank in measure.ranks]
+diff --git a/methods/vna_joint.py b/methods/vna_joint.py
+index 89edf05..a439ce9 100644
+--- a/methods/vna_joint.py
++++ b/methods/vna_joint.py
+@@ -59,13 +59,26 @@ def joint_products(model, sites, A_by_site, inputs, o_params=None, *, cache_bloc
+ 
+ 
+ def _inverse(action, rhs, cfg):
+-    result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
+-                                tolerance=cfg.cg_tol, eps=1e-30)
+-    return result.solution, _cg_record(result, include_breakdown=True)
++    from experiments.vna_resume import current_measurement
++    monitor = current_measurement.get()
++    started = time.monotonic()
++    if monitor: monitor.begin_solve()
++    try:
++        result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
++                                    tolerance=cfg.cg_tol, eps=1e-30,
++                                    callback=monitor.iteration if monitor else None)
++    except TimeoutError:
++        if monitor:
++            monitor.end_solve({'iterations': monitor.values['cg_iteration'], 'converged': False,
++                               'seconds': time.monotonic()-started})
++        raise
++    record = _cg_record(result, include_breakdown=True)
++    if monitor: monitor.end_solve({**record, 'seconds': time.monotonic()-started})
++    return result.solution, record
+ 
+ 
+ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,
+-                     *, mu=None, cotangent=None, loss_spec=None, ctx=None):
++                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None):
+     """Return (d, V, rho, record), without installing or applying neurons.
+ 
+     GGNConfig selects trace(F)/p or trace(F)/n_out via damping_norm.
+@@ -87,11 +100,14 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
+             q, second = _inverse(action, p.KE(z).double(), cfg)
+             d = p.JT(q).double() * cfg.lambda_vna
+         else:
+-            trace = op.trace(cfg)
++            trace = op.trace(cfg) if trace_F is None else trace_F
+             damping = relative_damping(cfg, trace, op) if mu is None else mu
+             action = lambda v: op.F(v) + damping * v
++            from experiments.vna_resume import measurement_update
++            measurement_update(solve='tiny_V:correction:z')
+             u, first = _inverse(action, op.gradient, cfg)
+             z = op.H(p.Jv(u))
++            measurement_update(solve='tiny_V:correction:d')
+             d, second = _inverse(action, op.COE(p.JET(z).double()), cfg)
+         V = float(p.JET(z).double().square().sum())
+         U = float(p.JET(op.g).double().square().sum())
+diff --git a/notebooks/kaggle_vna_stage_b_nb1.ipynb b/notebooks/kaggle_vna_stage_b_nb1.ipynb
+index a2a68fa..00a8a60 100644
+--- a/notebooks/kaggle_vna_stage_b_nb1.ipynb
++++ b/notebooks/kaggle_vna_stage_b_nb1.ipynb
+@@ -10,7 +10,7 @@
+     "summary, then measured MNIST BP. GPU1 immediately runs MNIST CBP (rr 1e-4).\n",
+     "A separate CPU subprocess runs the five regression CBP arms immediately, then\n",
+     "measured BP when Stage A's summary exists. BP uses the newly produced default \u03bc\n",
+-    "and also measures 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.\n",
++    "and measures both 1e-3 and 1e-2; Gate G uses 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.\n",
+     "ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as\n",
+     "fallback. The 11.5-hour deadline pauses with a final archive; attach its output to resume.\n",
+     "Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two workers; CPU torch threads are limited to two.\n",
+@@ -26,7 +26,7 @@
+    "source": [
+     "from pathlib import Path\n",
+     "import time\n",
+-    "REPO_COMMIT = \"98ad44d381e0a3af06116f21a30bfcf6fc14ce39\"  # immutable, builder --commit; default current HEAD\n",
++    "REPO_COMMIT = \"566eafc3c1b6f81968f6ea6c277a4787c3f0ff66\"  # immutable, builder --commit; default current HEAD\n",
+     "GPU_HOURS_BUDGET = 8\n",
+     "ALLOW_OVER_BUDGET = False\n",
+     "SESSION_HOURS = 11.5\n",
+@@ -243,6 +243,11 @@
+     "    steps = 1000000 if benchmark == \"regression\" else 12000000\n",
+     "    point_seconds = (sum(p[\"seconds\"] for p in summary[\"measurement_point_seconds\"]) /\n",
+     "                     len(summary[\"measurement_point_seconds\"])) if summary[\"measurement_point_seconds\"] else 0\n",
++    "    import csv\n",
++    "    solve_path = RUN_ROOT / \"smoke/outputs/stageB/b5\" / benchmark / name / \"solves.csv\"\n",
++    "    solves = list(csv.DictReader(solve_path.open())) if solve_path.exists() else []\n",
++    "    print(benchmark, name, \"CG solves\", len(solves), \"mean seconds/solve\",\n",
++    "          sum(float(r[\"seconds\"]) for r in solves)/max(1, len(solves)), flush=True)\n",
+     "    startup = summary[\"startup_seconds\"]\n",
+     "    steady = summary[\"steady_step_seconds\"]\n",
+     "    points = (16 if benchmark == \"regression\" else 18) if arm == \"bp\" else 0\n",
+diff --git a/notebooks/kaggle_vna_stage_b_nb2.ipynb b/notebooks/kaggle_vna_stage_b_nb2.ipynb
+index 9e4daeb..d583778 100644
+--- a/notebooks/kaggle_vna_stage_b_nb2.ipynb
++++ b/notebooks/kaggle_vna_stage_b_nb2.ipynb
+@@ -7,7 +7,7 @@
+     "# VNA Stage B \u2014 Notebook 2\n",
+     "T4\u00d72, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.\n",
+     "Both \u03bc candidates (1e-3 and 1e-2) are measured independently of nb1.\n",
+-    "Attach its Stage A summary to select the official \u03bc; otherwise it remains pending.\n",
++    "Gate G always reads \u03bc=1e-2. Attach the Stage A summary for its provenance.\n",
+     "Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.\n",
+     "Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch\n",
+     "smokes include all measurement sites/ranks/nulls and feed the total GPU-hour\n",
+@@ -25,7 +25,7 @@
+     "SESSION_HOURS = 11.5\n",
+     "SESSION_START = time.time()\n",
+     "VNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600\n",
+-    "REPO_COMMIT = \"98ad44d381e0a3af06116f21a30bfcf6fc14ce39\"\n",
++    "REPO_COMMIT = \"566eafc3c1b6f81968f6ea6c277a4787c3f0ff66\"\n",
+     "GPU_HOURS_BUDGET = 8\n",
+     "ALLOW_OVER_BUDGET = False\n",
+     "MU_REL_DEFAULT = 1e-3\n",
+@@ -153,7 +153,7 @@
+     "print(\"Official TEST verified:\", DATA_ROOT / \"cifar-100-python/test\")\n",
+     "\n",
+     "MU_REL_DEFAULT = 1e-3\n",
+-    "OFFICIAL_MU = None\n",
++    "OFFICIAL_MU = 1e-2\n",
+     "MU_SOURCE = \"both-candidates\"\n",
+     "inputs = Path(\"/kaggle/input\")\n",
+     "candidates = sorted(inputs.glob(\"**/stageA/summary.json\"))\n",
+@@ -163,7 +163,7 @@
+     "        summary = json.loads(path.read_text())\n",
+     "    except (ValueError, OSError): continue\n",
+     "    if \"mu_rel_default\" in summary and (path.parent.name == \"stageA\" or \"mu_rule\" in summary):\n",
+-    "        OFFICIAL_MU = float(summary[\"mu_rel_default\"]); break\n",
++    "        break\n",
+     "print(\"measurement \u03bc candidates:\", (1e-3, 1e-2), \"official \u03bc:\", OFFICIAL_MU)\n"
+    ],
+    "execution_count": null,
+@@ -201,7 +201,7 @@
+     "            raise ValueError(f\"completed job teacher identity mismatch: {out}\")\n",
+     "    if identity.get(\"code_commit\") != REPO_COMMIT:\n",
+     "        raise ValueError(f\"completed job code identity mismatch: {out}\")\n",
+-    "    candidates = identity.get(\"mu_candidates\") or sorted({summary.get(\"mu_rel_default\", MU_REL_DEFAULT), .01})\n",
++    "    candidates = identity.get(\"mu_candidates\") or [1e-3, 1e-2]\n",
+     "    if candidates != sorted({MU_REL_DEFAULT, .01}):\n",
+     "        raise ValueError(f\"completed job \u03bc identity mismatch: {out}\")\n",
+     "    return True\n",
+@@ -275,6 +275,10 @@
+     "        if not launch(command(job, smoke_out, smoke=True), gpu, job[\"name\"]+\"_smoke\",\n",
+     "                      RUN_ROOT / f'{job[\"name\"]}_smoke_gpu{gpu}.log'): break\n",
+     "        summary = json.loads((smoke_out / \"summary.json\").read_text())\n",
++    "        import csv\n",
++    "        solves = list(csv.DictReader((smoke_out / \"solves.csv\").open()))\n",
++    "        print(job[\"name\"], \"CG solves\", len(solves), \"mean seconds/solve\",\n",
++    "              sum(float(r[\"seconds\"]) for r in solves)/max(1, len(solves)), flush=True)\n",
+     "        training = summary[\"training_seconds\"] * job[\"epochs\"] / summary[\"epochs_run\"]\n",
+     "        point = max(p[\"seconds\"] for p in summary[\"measurement_point_seconds\"])\n",
+     "        full = (training + job[\"points\"]*point*job.get(\"output_factor\", 1))/3600\n",
+diff --git a/notebooks/kaggle_vna_stage_b_nb3.ipynb b/notebooks/kaggle_vna_stage_b_nb3.ipynb
+index 782532c..452c69c 100644
+--- a/notebooks/kaggle_vna_stage_b_nb3.ipynb
++++ b/notebooks/kaggle_vna_stage_b_nb3.ipynb
+@@ -7,7 +7,7 @@
+     "# VNA Stage B \u2014 Notebook 3\n",
+     "T4\u00d72, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.\n",
+     "Both \u03bc candidates (1e-3 and 1e-2) are measured independently of nb1.\n",
+-    "Attach its Stage A summary to select the official \u03bc; otherwise it remains pending.\n",
++    "Gate G always reads \u03bc=1e-2. Attach the Stage A summary for its provenance.\n",
+     "Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.\n",
+     "Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch\n",
+     "smokes include all measurement sites/ranks/nulls and feed the total GPU-hour\n",
+@@ -25,7 +25,7 @@
+     "SESSION_HOURS = 11.5\n",
+     "SESSION_START = time.time()\n",
+     "VNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600\n",
+-    "REPO_COMMIT = \"98ad44d381e0a3af06116f21a30bfcf6fc14ce39\"\n",
++    "REPO_COMMIT = \"566eafc3c1b6f81968f6ea6c277a4787c3f0ff66\"\n",
+     "GPU_HOURS_BUDGET = 8\n",
+     "ALLOW_OVER_BUDGET = False\n",
+     "MU_REL_DEFAULT = 1e-3\n",
+@@ -153,7 +153,7 @@
+     "print(\"Official TEST verified:\", DATA_ROOT / \"cifar-100-python/test\")\n",
+     "\n",
+     "MU_REL_DEFAULT = 1e-3\n",
+-    "OFFICIAL_MU = None\n",
++    "OFFICIAL_MU = 1e-2\n",
+     "MU_SOURCE = \"both-candidates\"\n",
+     "inputs = Path(\"/kaggle/input\")\n",
+     "candidates = sorted(inputs.glob(\"**/stageA/summary.json\"))\n",
+@@ -163,7 +163,7 @@
+     "        summary = json.loads(path.read_text())\n",
+     "    except (ValueError, OSError): continue\n",
+     "    if \"mu_rel_default\" in summary and (path.parent.name == \"stageA\" or \"mu_rule\" in summary):\n",
+-    "        OFFICIAL_MU = float(summary[\"mu_rel_default\"]); break\n",
++    "        break\n",
+     "print(\"measurement \u03bc candidates:\", (1e-3, 1e-2), \"official \u03bc:\", OFFICIAL_MU)\n"
+    ],
+    "execution_count": null,
+@@ -201,7 +201,7 @@
+     "            raise ValueError(f\"completed job teacher identity mismatch: {out}\")\n",
+     "    if identity.get(\"code_commit\") != REPO_COMMIT:\n",
+     "        raise ValueError(f\"completed job code identity mismatch: {out}\")\n",
+-    "    candidates = identity.get(\"mu_candidates\") or sorted({summary.get(\"mu_rel_default\", MU_REL_DEFAULT), .01})\n",
++    "    candidates = identity.get(\"mu_candidates\") or [1e-3, 1e-2]\n",
+     "    if candidates != sorted({MU_REL_DEFAULT, .01}):\n",
+     "        raise ValueError(f\"completed job \u03bc identity mismatch: {out}\")\n",
+     "    return True\n",
+@@ -275,6 +275,10 @@
+     "        if not launch(command(job, smoke_out, smoke=True), gpu, job[\"name\"]+\"_smoke\",\n",
+     "                      RUN_ROOT / f'{job[\"name\"]}_smoke_gpu{gpu}.log'): break\n",
+     "        summary = json.loads((smoke_out / \"summary.json\").read_text())\n",
++    "        import csv\n",
++    "        solves = list(csv.DictReader((smoke_out / \"solves.csv\").open()))\n",
++    "        print(job[\"name\"], \"CG solves\", len(solves), \"mean seconds/solve\",\n",
++    "              sum(float(r[\"seconds\"]) for r in solves)/max(1, len(solves)), flush=True)\n",
+     "        training = summary[\"training_seconds\"] * job[\"epochs\"] / summary[\"epochs_run\"]\n",
+     "        point = max(p[\"seconds\"] for p in summary[\"measurement_point_seconds\"])\n",
+     "        full = (training + job[\"points\"]*point*job.get(\"output_factor\", 1))/3600\n",
+diff --git a/projection/cg.py b/projection/cg.py
+index 3efec7e..8d4f1e7 100644
+--- a/projection/cg.py
++++ b/projection/cg.py
+@@ -24,7 +24,8 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
+                        x0: Tensor | None = None, max_iter: int = 50,
+                        tolerance: float = 1e-6,
+                        preconditioner: Callable[[Tensor], Tensor] | None = None,
+-                       eps: float = 1e-12, normalize_rhs: bool = True) -> CGResult:
++                       eps: float = 1e-12, normalize_rhs: bool = True,
++                       callback: Callable[[int], None] | None = None) -> CGResult:
+     """Solve A x = rhs, normalizing its scale before absolute breakdown guards.
+ 
+     x0 is scaled with rhs. Returned solutions and absolute residual diagnostics
+@@ -37,10 +38,11 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
+             result = conjugate_gradient(
+                 matvec, rhs / scale, x0=None if x0 is None else x0 / scale,
+                 max_iter=max_iter, tolerance=tolerance,
+-                preconditioner=preconditioner, eps=eps, normalize_rhs=False)
++                preconditioner=preconditioner, eps=eps, normalize_rhs=False, callback=callback)
+             return replace(result, solution=result.solution * scale,
+                            residual_norm=result.residual_norm * scale,
+                            residual_history=tuple(v * scale for v in result.residual_history))
++    if callback is not None: callback(0)
+     if max_iter < 1:
+         raise ValueError("max_iter must be positive")
+     x = torch.zeros_like(rhs) if x0 is None else x0.clone()
+@@ -62,6 +64,7 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
+     completed_iterations = 0
+     breakdown = False
+     for iteration in range(1, max_iter + 1):
++        if callback is not None: callback(iteration)
+         image = matvec(direction).detach()
+         denominator = torch.dot(direction, image)
+         if abs(float(denominator)) <= eps:
+diff --git a/scripts/build_kaggle_vna_stage_b_nb1.py b/scripts/build_kaggle_vna_stage_b_nb1.py
+index 7a450ff..6c45cb0 100644
+--- a/scripts/build_kaggle_vna_stage_b_nb1.py
++++ b/scripts/build_kaggle_vna_stage_b_nb1.py
+@@ -25,7 +25,7 @@ checkpoint dataset. GPU0 runs the cost smoke → a5 → null → selection → j
+ summary, then measured MNIST BP. GPU1 immediately runs MNIST CBP (rr 1e-4).
+ A separate CPU subprocess runs the five regression CBP arms immediately, then
+ measured BP when Stage A's summary exists. BP uses the newly produced default μ
+-and also measures 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
++and measures both 1e-3 and 1e-2; Gate G uses 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
+ ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as
+ fallback. The 11.5-hour deadline pauses with a final archive; attach its output to resume.
+ Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two workers; CPU torch threads are limited to two.
+@@ -116,6 +116,11 @@ def b5_job(benchmark, arm, lane, *, rate=None):
+     steps = 1000000 if benchmark == "regression" else 12000000
+     point_seconds = (sum(p["seconds"] for p in summary["measurement_point_seconds"]) /
+                      len(summary["measurement_point_seconds"])) if summary["measurement_point_seconds"] else 0
++    import csv
++    solve_path = RUN_ROOT / "smoke/outputs/stageB/b5" / benchmark / name / "solves.csv"
++    solves = list(csv.DictReader(solve_path.open())) if solve_path.exists() else []
++    print(benchmark, name, "CG solves", len(solves), "mean seconds/solve",
++          sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
+     startup = summary["startup_seconds"]
+     steady = summary["steady_step_seconds"]
+     points = (16 if benchmark == "regression" else 18) if arm == "bp" else 0
+diff --git a/scripts/build_kaggle_vna_stage_b_rest.py b/scripts/build_kaggle_vna_stage_b_rest.py
+index 1111b80..05a1942 100644
+--- a/scripts/build_kaggle_vna_stage_b_rest.py
++++ b/scripts/build_kaggle_vna_stage_b_rest.py
+@@ -26,7 +26,7 @@ def build(commit, number):
+     return {'cells': [cell('markdown', f'''# VNA Stage B — Notebook {number}
+ T4×2, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.
+ Both μ candidates (1e-3 and 1e-2) are measured independently of nb1.
+-Attach its Stage A summary to select the official μ; otherwise it remains pending.
++Gate G always reads μ=1e-2. Attach the Stage A summary for its provenance.
+ Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.
+ Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch
+ smokes include all measurement sites/ranks/nulls and feed the total GPU-hour
+@@ -77,7 +77,7 @@ def finished(out, job):
+             raise ValueError(f"completed job teacher identity mismatch: {out}")
+     if identity.get("code_commit") != REPO_COMMIT:
+         raise ValueError(f"completed job code identity mismatch: {out}")
+-    candidates = identity.get("mu_candidates") or sorted({summary.get("mu_rel_default", MU_REL_DEFAULT), .01})
++    candidates = identity.get("mu_candidates") or [1e-3, 1e-2]
+     if candidates != sorted({MU_REL_DEFAULT, .01}):
+         raise ValueError(f"completed job μ identity mismatch: {out}")
+     return True
+@@ -145,6 +145,10 @@ SMOKE = '''def smoke_lane(gpu, jobs):
+         if not launch(command(job, smoke_out, smoke=True), gpu, job["name"]+"_smoke",
+                       RUN_ROOT / f'{job["name"]}_smoke_gpu{gpu}.log'): break
+         summary = json.loads((smoke_out / "summary.json").read_text())
++        import csv
++        solves = list(csv.DictReader((smoke_out / "solves.csv").open()))
++        print(job["name"], "CG solves", len(solves), "mean seconds/solve",
++              sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
+         training = summary["training_seconds"] * job["epochs"] / summary["epochs_run"]
+         point = max(p["seconds"] for p in summary["measurement_point_seconds"])
+         full = (training + job["points"]*point*job.get("output_factor", 1))/3600
+@@ -262,7 +266,7 @@ def without_pytest(setup):
+ 
+ MU_SETUP = '''
+ MU_REL_DEFAULT = 1e-3
+-OFFICIAL_MU = None
++OFFICIAL_MU = 1e-2
+ MU_SOURCE = "both-candidates"
+ inputs = Path("/kaggle/input")
+ candidates = sorted(inputs.glob("**/stageA/summary.json"))
+@@ -272,7 +276,7 @@ for path in candidates:
+         summary = json.loads(path.read_text())
+     except (ValueError, OSError): continue
+     if "mu_rel_default" in summary and (path.parent.name == "stageA" or "mu_rule" in summary):
+-        OFFICIAL_MU = float(summary["mu_rel_default"]); break
++        break
+ print("measurement μ candidates:", (1e-3, 1e-2), "official μ:", OFFICIAL_MU)
+ '''
+ 
+diff --git a/tests/test_vna_stage_a.py b/tests/test_vna_stage_a.py
+index 844a357..fdbe471 100644
+--- a/tests/test_vna_stage_a.py
++++ b/tests/test_vna_stage_a.py
+@@ -135,7 +135,7 @@ def test_joint_full_parameter_dense_oracle_and_invariance(toy):
+ 
+ def gate_rows():
+     return [dict(epoch=i*20, rank=16, mu_rel=.01, cg_converged=True,
+-                 rho_joint=.3, significant_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
++                 rho_joint=.3, significant_N1=True, significant_rho_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
+             for i in range(1, 11)]
+ 
+ 
+@@ -160,7 +160,7 @@ def test_gate_constants_windows_and_failures():
+     result = gate.evaluate_gate(rows, cfg)
+     assert result['status'] == 'PASS' and result['conditions']['train_acc'] == 'n/a'
+     rows = [dict(r, cg_converged=False) for r in rows]
+-    assert gate.evaluate_gate(rows, cfg)['status'] == 'FAIL'
++    assert gate.evaluate_gate(rows, cfg)['status'] == 'INVALID'
+ 
+ 
+ def test_a5_tiny_residual_cg_and_guarded_ratio():
+diff --git a/tests/test_vna_stage_b3.py b/tests/test_vna_stage_b3.py
+index 3ee9e75..b8f7e97 100644
+--- a/tests/test_vna_stage_b3.py
++++ b/tests/test_vna_stage_b3.py
+@@ -63,7 +63,7 @@ def tiny_run(monkeypatch, enabled):
+         return optimizer
+     monkeypatch.setattr(icarl.optim, 'SGD', sgd)
+     def measure(model, batch, spec, ctx, *, generator):
+-        assert len(batch[0]) <= 128
++        assert len(batch[0]) <= 512
+         assert (spec.known_classes == 2) if ctx['task'] == 2 else spec.name == 'CE'
+         assert len(sites_for(model)) == 15
+         model.eval()
+diff --git a/tests/test_vna_stage_b5.py b/tests/test_vna_stage_b5.py
+index 97bcac7..4d64e3b 100644
+--- a/tests/test_vna_stage_b5.py
++++ b/tests/test_vna_stage_b5.py
+@@ -220,11 +220,13 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
+     measurement = B5Measurement('mnist', {'schema_version': 'stage1d-v1', 'benchmark': 'mnist',
+                                'arm': 'bp', 'code_commit': 'test', 'seed': 13, **meta}, ranks=[1], cg_iters=100)
+     hook = LearnHook('mnist', 'bp', params, measurement)
++    from diagnostics.vna_align import MeasurementBuffer
++    hook.buffer = MeasurementBuffer(64)
+     x, target = torch.randn(2, 7), torch.tensor([0, 1])
+     with hook.install():
+         for _ in range(64): learner.learn(x=x[:1], target=target[:1])
+     rows = hook.rows
+-    assert len(rows) == 2
++    assert len(rows) == 4
+     for row in rows:
+         assert row['schema_version'] == 'stage1d-v1' and row['step_size'] == .003
+         assert row['measurement_m'] == 64 and row['buffer_m'] == 64
+@@ -234,7 +236,7 @@ def test_full_classification_measurement_rows_and_baseline_invalidation(tmp_path
+         assert len(__import__('json').loads(row['null_lambda_N2'])) == 8
+         assert row['null_kind'] == 'N2' and row['n2_centered'] is True
+         assert row['damping_norm'] == 'outputs' and 'K_top_eigenvalues' in row
+-        assert row['rho_joint'] == rows[0]['rho_joint']
++        assert row['rho_joint'] == next(r['rho_joint'] for r in rows if r['mu_rel'] == row['mu_rel'])
+         assert row['cg_converged']
+     path = tmp_path/'b5/mnist/bp'; path.mkdir(parents=True)
+     tasks = [dict(task=i+1, online_accuracy=.9 if i < 10 else .5, online_error=1.) for i in range(20)]
+@@ -310,12 +312,14 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
+     expected_state = learner_state(plain.last_learner)
+     reset()
+     full = LearnHook('regression', 'bp', params, measurement, seed=13)
++    from diagnostics.vna_align import MeasurementBuffer
++    full.buffer = MeasurementBuffer(64)
+     logs = run_native('regression', params, tmp_path, full)
+     _assert_bitwise(expected_logs, logs)
+     _assert_bitwise(expected_state, learner_state(full.last_learner))
+     assert {(r['task'], r['point']) for r in full.rows} == {(1, 'first'), (1, 'mid'), (2, 'first'), (2, 'mid')}
+     assert {r['rank'] for r in full.rows} == {1, 2, 4}
+-    assert len(full.rows) == 12
++    assert len(full.rows) == 24
+     import json
+     for row in full.rows:
+         assert row['within_task_step'] == (64 if row['point'] == 'first' else 80)
+@@ -332,9 +336,11 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
+             checkpoint.update(copy.deepcopy(state)); raise Stop()
+     reset()
+     partial = LearnHook('regression', 'bp', params, measurement, seed=13, checkpoint=save)
++    partial.buffer = MeasurementBuffer(64)
+     with pytest.raises(Stop): run_native('regression', params, tmp_path, partial)
+     reset()
+     resumed = LearnHook('regression', 'bp', params, measurement, seed=13, resume=checkpoint)
++    resumed.buffer = MeasurementBuffer(64)
+     resumed_logs = run_native('regression', params, tmp_path, resumed)
+     _assert_bitwise(logs, resumed_logs)
+     _assert_bitwise(expected_state, learner_state(resumed.last_learner))
+diff --git a/diagnostics/measure_efficiency.py b/diagnostics/measure_efficiency.py
+new file mode 100644
+index 0000000..8645b5c
+--- /dev/null
++++ b/diagnostics/measure_efficiency.py
+@@ -0,0 +1,93 @@
++"""Shared whole-network solves; null row p-values remain valid but correlated
++across sites/ranks of a measurement point because their null draws are shared.
++"""
++import json
++import torch
++from diagnostics.stage_a import null_residual, empirical_p
++from methods.vna_joint import joint_products, _inverse
++from methods.vna_ggn import GGNProducts, relative_damping
++
++
++def virtual_energy(model, sites, A_by_site, data, z, e):
++    """Compute V and U with VJPs only, using the original gradient denominator."""
++    with joint_products(model, sites, A_by_site, data[0]) as p:
++        V = float(p.JET(z.flatten()).double().square().sum())
++        U = float(p.JET(e.flatten()).double().square().sum())
++        norm = float(p.JT(e.flatten()).double().square().sum())
++    return {'V': V, 'U': U, 'eta': V/U if U else 0., 'rho': V/norm if norm else 0.,
++            'gradient_norm2': norm}
++
++
++def solve_z(residual, data, ctx):
++    """One whole-network solve; ctx supplies model, scope, damping and loss."""
++    with joint_products(ctx['model'], [ctx['site']], {ctx['site']: ctx['seed']},
++                        data[0], ctx['names']) as p:
++        op = GGNProducts(p, data[1], ctx['loss_spec'], ctx['loss_ctx'])
++        gradient = p.JT(residual.flatten()).double()
++        u, record = _inverse(lambda v: op.F(v)+ctx['mu']*v, gradient, ctx['cfg'])
++        return op.H(p.Jv(u)).reshape_as(residual), record
++
++
++class SolveCache:
++    def __init__(self, model, site, stat, loss_spec, loss_ctx, cfg, *, mu=None, trace=None):
++        layer = site.first_layer.layer
++        seed = {'weight': layer.weight[:1].detach(),
++                'bias': None if layer.bias is None else layer.bias[:1].detach()}
++        names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
++        with joint_products(model, [site], {site: seed}, stat[0], names) as p:
++            op = GGNProducts(p, stat[1], loss_spec, loss_ctx)
++            self.trace = op.trace(cfg) if trace is None else trace
++            self.mu = relative_damping(cfg, self.trace, op) if mu is None else mu
++        self.ctx = dict(model=model, site=site, seed=seed, names=names,
++                        loss_spec=loss_spec, cfg=cfg, mu=self.mu)
++        self.null_draw_id = 'null'
++        self.cache = {}
++        self.records = {}
++
++    def solve(self, residual_id, residual, data, context):
++        key = (self.mu, residual_id)
++        if key not in self.cache:
++            from experiments.vna_resume import measurement_update
++            measurement_update(solve=str(residual_id), mu=self.mu)
++            z, record = solve_z(residual, data, {**self.ctx, 'loss_ctx': context})
++            self.cache[key], self.records[key] = z, record
++        return self.cache[key]
++
++    def converged(self, *, null=False):
++        return all(r['converged'] for (_, key), r in self.records.items()
++                   if str(key).startswith('null') == null)
++
++
++def draw_nulls(cache, g, e, stat, evaluation, stat_ctx, eval_ctx, generator, repeats):
++    from methods.vna import dedicated_generator
++    generator = dedicated_generator(cache.ctx['cfg'].seed, cache.null_draw_id, g.device)
++    result = {}
++    for kind in ('N1', 'N2'):
++        draws = []
++        for repeat in range(repeats):
++            a = null_residual(g, kind, generator,
++                             residual_is_zero_sum=cache.ctx['loss_spec'].residual_is_zero_sum)
++            b = null_residual(e, kind, generator,
++                             residual_is_zero_sum=cache.ctx['loss_spec'].residual_is_zero_sum)
++            label = f'null:{kind}:{repeat}'
++            za = cache.solve(label+':stat', a, stat, stat_ctx)
++            zb = cache.solve(label+':eval', b, evaluation, eval_ctx)
++            draws.append((za, zb, b))
++        result[kind] = draws
++    return result
++
++
++def null_columns(lambda1, rho, values):
++    result = {}
++    for kind, (lambdas, rhos) in values.items():
++        pl, pr = empirical_p(lambda1, lambdas), empirical_p(rho, rhos)
++        result.update({f'p_lambda_{kind}': pl, f'p_rho_{kind}': pr,
++                       f'significant_{kind}': pl <= 1/9, f'significant_rho_{kind}': pr <= 1/9,
++                       f'null_lambda_{kind}': json.dumps(lambdas), f'null_rho_{kind}': json.dumps(rhos)})
++    return result
++
++
++def verify_energy(energy, correction):
++    relative = abs(energy['V']-correction['V']) / max(abs(correction['V']), 1e-300)
++    assert relative <= 1e-6, f'V consistency failed: {relative}'
++    return relative
+diff --git a/scripts/smoke_measure_efficiency.py b/scripts/smoke_measure_efficiency.py
+new file mode 100644
+index 0000000..6363719
+--- /dev/null
++++ b/scripts/smoke_measure_efficiency.py
+@@ -0,0 +1,93 @@
++"""One fake-data CPU point per setting; no training, downloads, or GPU estimate."""
++import csv
++import json
++from pathlib import Path
++import time
++from types import SimpleNamespace
++import torch
++from torch import nn
++from adapters.lop_hooks import Prediction
++from diagnostics.icarl_measure import B3Measurement
++from diagnostics.lop_measure import B5Measurement
++from diagnostics.vna_align import MeasurementHook
++from experiments.vna_resume import MeasurementMonitor
++from methods.vna_losses import CE
++from methods.vna_sites import HookSite
++
++
++class FakeResNet(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.pool = nn.AvgPool2d(16)
++        self.stem = nn.Conv2d(3, 4, 1)
++        self.a = nn.Conv2d(4, 4, 1)
++        self.relu = nn.ReLU()
++        self.b = nn.Conv2d(4, 4, 1)
++        self.head = nn.Linear(4, 3)
++    def forward(self, x):
++        x = self.stem(self.pool(x))
++        return self.head((x+self.b(self.relu(self.a(x)))).mean((2,3)))
++
++
++class FakeNative(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.layers = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 3))
++    def predict(self, x):
++        features = self.layers[:2](x)
++        return self.layers[2](features), [features]
++
++
++def main():
++    import argparse
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--out', default='outputs/measure_efficiency_smoke')
++    args = p.parse_args()
++    out = Path(args.out)
++    torch.set_num_threads(1)
++    torch.manual_seed(45)
++    results = []
++    for setting in ('B1', 'B2', 'B3', 'B4', 'B5'):
++        meta = dict(seed=45, setting=setting)
++        ctx = dict(task=2, epoch=1, step=512, end_of_task=False, train_acc=.5, known_classes=1)
++        if setting == 'B5':
++            model = Prediction(FakeNative()).double().eval()
++            batch = torch.randn(256, 3, dtype=torch.float64), torch.arange(256)%3
++            shadow = SimpleNamespace(bounds=[.1])
++            ctx.update(point='first', within_task_step=256, buffer_task_purity=1., buffer_m=256,
++                       shadow=shadow, cbp_candidates=[('cbp',shadow,[torch.tensor([0])])], init_row_norms=[1.],
++                       loss_fn=lambda z,c: nn.functional.cross_entropy(z,c['targets']))
++            measure = B5Measurement('regression', meta)
++            groups = 0
++        else:
++            model = FakeResNet().double().eval()
++            batch = torch.randn(512, 3, 32, 32, dtype=torch.float64), torch.arange(512)%3
++            def sites(m): return [HookSite(m, 'a', 'b', 'conv', between=('relu',))]
++            def context(c,b): return CE(), {'targets': b[1]}
++            measure = B3Measurement(meta, sites_fn=sites, context_fn=context,
++                                    ranks=(4,8,16) if setting == 'B3' else (4,16,64), groups=setting=='B3')
++            groups = 2 if setting == 'B3' else 0
++        path = out/setting
++        path.mkdir(parents=True, exist_ok=True)
++        (path/'solves.csv').unlink(missing_ok=True)
++        measure.runtime = dict(out=path, traceback_s=0)
++        started = time.monotonic()
++        rows = MeasurementHook(measure)(model, batch, CE(), ctx)
++        elapsed = time.monotonic()-started
++        solves = list(csv.DictReader((path/'solves.csv').open()))
++        rank_sites = len(rows)//2
++        ranks = len({r['rank'] for r in rows})
++        # Compare at the same two mu values, eight N1+N2 nulls and valid ranks.
++        criteria = sum(rows[0].get(k, 0)>0 for k in ('cbp_m','redo_m')) if setting=='B5' else 0
++        before = 2*(55*rank_sites + 2*ranks + (6*rank_sites*criteria if setting=='B5' else 2*ranks*groups))
++        expected_after = 2*(34+groups+2*rank_sites+2*criteria)
++        assert len(solves) == expected_after, (setting, len(solves), expected_after)
++        record = dict(setting=setting, fake_data=True, sites=1, valid_ranks=sorted({r['rank'] for r in rows}),
++                      old_cg_solves=before, new_cg_solves=len(solves), point_seconds=elapsed,
++                      mean_solve_seconds=sum(float(r['seconds']) for r in solves)/len(solves))
++        results.append(record)
++        print(json.dumps(record), flush=True)
++    (out/'costs.json').write_text(json.dumps(results, indent=2)+'\n')
++
++
++if __name__ == '__main__': main()
+diff --git a/tests/test_measure_efficiency.py b/tests/test_measure_efficiency.py
+new file mode 100644
+index 0000000..c9da674
+--- /dev/null
++++ b/tests/test_measure_efficiency.py
+@@ -0,0 +1,252 @@
++"""TASK_MEASURE_EFFICIENCY 5.1–5.4: numerical oracles and isolation."""
++import importlib.util
++import json
++import subprocess
++from types import SimpleNamespace
++from unittest.mock import patch
++import pytest
++import torch
++from torch import nn
++from diagnostics.icarl_measure import B3Measurement
++from diagnostics.measure_efficiency import SolveCache, virtual_energy
++from diagnostics.stage_a import null_residual
++from methods.vna import random_A_like
++from methods.vna_ggn import GGNConfig
++from methods.vna_joint import joint_correction
++from methods.vna_losses import CE
++from methods.vna_sites import HookSite
++
++
++@pytest.fixture(autouse=True)
++def cpu():
++    old = torch.get_num_threads()
++    torch.set_num_threads(1)
++    torch.manual_seed(45)
++    yield
++    torch.set_num_threads(old)
++
++
++class SmallResNet(nn.Module):
++    """CIFAR-shaped residual model with two independently virtualizable sites."""
++    def __init__(self):
++        super().__init__()
++        self.pool = nn.AvgPool2d(16)
++        self.stem = nn.Conv2d(3, 2, 1)
++        self.a = nn.Conv2d(2, 2, 1)
++        self.relu = nn.ReLU()
++        self.b = nn.Conv2d(2, 2, 1)
++        self.c = nn.Conv2d(2, 2, 1)
++        self.relu2 = nn.ReLU()
++        self.d = nn.Conv2d(2, 2, 1)
++        self.head = nn.Linear(2, 3)
++    def forward(self, x):
++        x = self.stem(self.pool(x))
++        x = x + self.b(self.relu(self.a(x)))
++        x = x + self.d(self.relu2(self.c(x)))
++        return self.head(x.mean((2, 3)))
++
++
++def sites(model):
++    return [HookSite(model, 'a', 'b', 'conv', between=('relu',)),
++            HookSite(model, 'c', 'd', 'conv', between=('relu2',))]
++
++
++def context(ctx, batch): return CE(), {'targets': batch[1]}
++
++
++def legacy(tmp_path, path):
++    """Load baseline into a temporary module, never touching the checkout."""
++    file = tmp_path/PathName(path)
++    file.write_bytes(subprocess.check_output(['git', 'show', f'688b61d:{path}']))
++    spec = importlib.util.spec_from_file_location(file.stem, file)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def PathName(path): return path.replace('/', '_')
++
++
++def explicit_nulls():
++    # Test-only hook: same explicit residuals at every site/rank in old/new code.
++    draws = {}
++    counters = {}
++    def draw(g, kind, generator, **kwargs):
++        index = counters.get(kind, 0) % 16
++        counters[kind] = index+1
++        key = kind, index
++        if key not in draws:
++            draws[key] = null_residual(g, kind, torch.Generator().manual_seed(700+index), **kwargs)
++        return draws[key].clone()
++    return draw
++
++
++def test_51_old_measurement_numerical_equivalence(tmp_path):
++    old = legacy(tmp_path, 'diagnostics/icarl_measure.py')
++    old_joint = legacy(tmp_path, 'methods/vna_joint.py')
++    model = SmallResNet().double().eval()
++    batch = torch.randn(32, 3, 32, 32, dtype=torch.float64), torch.arange(32)%3
++    ctx = dict(task=2, epoch=1, step=1, end_of_task=False, train_acc=.5, known_classes=1)
++    meta = dict(seed=45, setting='B3')
++    new = B3Measurement(meta, sites_fn=sites, context_fn=context, ranks=(1,), groups=False)
++    baseline = old.B3Measurement(meta, sites_fn=sites, context_fn=context, ranks=(1,), groups=False)
++    baseline.mus = new.mus
++    # Baseline's redundant joint call inferred damping on eval. Explicitly pin
++    # the stat-derived mu to compare the identity under exactly the same mu.
++    pinned = {}
++    def correction(*args, **kwargs):
++        mu_rel = args[4].damping_rel
++        if kwargs.get('mu') is not None: pinned[mu_rel] = kwargs['mu']
++        kwargs['mu'] = pinned[mu_rel]
++        return old_joint.joint_correction(*args, **kwargs)
++    def random(a, **kwargs): return random_A_like(a, generator=torch.Generator().manual_seed(19))
++    with patch.object(old, 'null_residual', explicit_nulls()), patch.object(old, 'random_A_like', random), patch.object(old, 'joint_correction', correction):
++        expected = baseline(model, batch, CE(), ctx, generator=torch.Generator().manual_seed(83))
++    with patch('diagnostics.measure_efficiency.null_residual', explicit_nulls()), patch('diagnostics.icarl_measure.random_A_like', random):
++        actual = new(model, batch, CE(), ctx, generator=torch.Generator().manual_seed(83))
++    assert len(expected) == len(actual)
++    for a, b in zip(actual, expected):
++        for key in ('V', 'U', 'rho', 'eta', 'V_tiny_V', 'V_random_frob', 'V_tiny_U', 'rho_joint'):
++            assert a[key] == pytest.approx(b[key], rel=1e-6, abs=1e-25), key
++        for kind in ('N1', 'N2'):
++            for key in (f'null_rho_{kind}', f'null_lambda_{kind}'):
++                torch.testing.assert_close(torch.tensor(json.loads(a[key])), torch.tensor(json.loads(b[key])), rtol=1e-6, atol=1e-25)
++        assert a['V_consistency'] <= 1e-6
++        assert a['stat_m'] == a['eval_m'] == 16
++
++
++def test_52_joint_sum_identity(tmp_path):
++    old = legacy(tmp_path, 'methods/vna_joint.py')
++    model = SmallResNet().double().eval()
++    data = torch.randn(32, 3, 32, 32, dtype=torch.float64), torch.arange(32)%3
++    scope = sites(model)
++    cfg = GGNConfig(cg_iters=1000, cg_tol=1e-6, project_bn=False)
++    cache = SolveCache(model, scope[0], data, CE(), {'targets': data[1]}, cfg)
++    e = CE().residual(model(data[0]), {'targets': data[1]})
++    z = cache.solve('real', e, data, {'targets': data[1]})
++    A = {s: {'weight': s.first_layer.layer.weight[:1].detach(), 'bias': s.first_layer.layer.bias[:1].detach()} for s in scope}
++    energies = [virtual_energy(model, [s], {s: A[s]}, data, z, e) for s in scope]
++    reference = old.joint_correction(model, scope, A, data, cfg, mu=cache.mu)[3]
++    assert sum(v['rho'] for v in energies) == pytest.approx(reference['rho'], rel=1e-6)
++    assert sum(v['V'] for v in energies) == pytest.approx(reference['V'], rel=1e-6)
++
++
++class Native(nn.Module):
++    def __init__(self):
++        super().__init__()
++        self.layers = nn.Sequential(nn.Linear(3, 2), nn.ReLU(), nn.Linear(2, 3))
++    def predict(self, x):
++        feature = self.layers[:2](x)
++        return self.layers[2](feature), [feature]
++
++
++def test_53_b5_selection_only_reads_stat(monkeypatch):
++    from adapters.lop_hooks import Prediction
++    from diagnostics import lop_measure as mod
++    model = Prediction(Native()).double().eval()
++    x = torch.randn(256, 3, dtype=torch.float64)
++    x[:, 0] = torch.arange(256) # sample identities survive slicing
++    batch = x, torch.arange(256)%3
++    generator = torch.Generator().manual_seed(9)
++    order = torch.randperm(256, generator=torch.Generator().manual_seed(9))
++    expected_stat = set(order[:128].tolist())
++    counts = {'tiny_V': 0, 'tiny_U': 0, 'swaps': 0}
++    original_v, original_u = mod.tiny_V, mod.tiny_U_from_cotangent
++    def check_v(model, site, batches, *args, **kwargs):
++        counts['tiny_V'] += 1
++        for data in batches: assert set(data[0][:, 0].int().tolist()) <= expected_stat
++        return original_v(model, site, batches, *args, **kwargs)
++    def check_u(model, site, inputs, *args, **kwargs):
++        counts['tiny_U'] += 1
++        assert set(inputs[:, 0].int().tolist()) == expected_stat
++        return original_u(model, site, inputs, *args, **kwargs)
++    monkeypatch.setattr(mod, 'tiny_V', check_v)
++    monkeypatch.setattr(mod, 'tiny_U_from_cotangent', check_u)
++    monkeypatch.setattr(mod, 'spectrum', lambda *a, **k: {})
++    original_swap = mod.swap_directions
++    def swap(*args):
++        counts['swaps'] += 1
++        return original_swap(*args)
++    monkeypatch.setattr(mod, 'swap_directions', swap)
++    measure = mod.B5Measurement('mnist', {'seed': 3}, ranks=[1, 2])
++    shadow = SimpleNamespace(bounds=[.1])
++    ctx = dict(task=1, step=256, point='first', within_task_step=256, buffer_task_purity=1.,
++               buffer_m=256, loss_fn=lambda z,c: nn.functional.cross_entropy(z,c['targets']),
++               shadow=shadow, cbp_candidates=[('cbp', shadow, [torch.tensor([0])])], init_row_norms=[1.])
++    rows = measure(model, batch, CE(), ctx, generator=generator)
++    assert len(rows) == 4 and counts['tiny_U'] == 4
++    assert counts['swaps'] == 4 # CBP and ReDo, one site, two mu; independent of rank
++    assert all(r['stat_m'] == r['eval_m'] == 128 for r in rows)
++    assert rows[0]['null_draw_id'] == rows[1]['null_draw_id']
++
++
++def test_54_gate():
++    from diagnostics.vna_gate import evaluate_gate, setting_config
++    rows = [dict(task=2, epoch=i, step=i, end_of_task=False, rank=16, mu_rel=.01,
++                 cg_converged=True, rho_joint=.4, significant_N1=False, significant_rho_N1=True,
++                 V_tiny_V=2., V_random_frob=1., train_acc=1.) for i in range(10)]
++    cfg = setting_config('B3')
++    result = evaluate_gate(rows, cfg)
++    assert result['status'] == 'PASS' and result['conditions']['train_acc'] == 'n/a'
++    assert result['gate_null_statistic'] == 'rho'
++    rows[0].update(cg_converged=False, status='timeout')
++    assert evaluate_gate(rows, cfg)['excluded_fraction'] == .1
++    assert evaluate_gate(rows, cfg)['status'] == 'PASS'
++    rows[1]['cg_converged'] = False
++    result = evaluate_gate(rows, cfg)
++    assert result['status'] == 'INVALID' and result['excluded_points'] == 2
++    # A duplicate site must neither dilute nor inflate point exclusions.
++    assert evaluate_gate(rows+[dict(rows[0], site='second')], cfg)['excluded_fraction'] == .2
++
++
++def test_runtime_timeout_heartbeat_solves_and_restoration(tmp_path):
++    from diagnostics.vna_align import MeasurementHook
++    from experiments.vna_resume import MeasurementMonitor
++    from methods.vna_joint import _inverse
++    from projection.cg import conjugate_gradient
++    callbacks = []
++    result = conjugate_gradient(lambda v: 2*v, torch.ones(3), callback=callbacks.append)
++    assert callbacks == [0, 1] and result.converged
++    with MeasurementMonitor({'setting': 'B1'}, {'epoch': 1}, out=tmp_path, traceback_s=0) as monitor:
++        _inverse(lambda v: 2*v, torch.ones(3, dtype=torch.float64), GGNConfig())
++    import csv
++    rows = list(csv.DictReader((tmp_path/'solves.csv').open()))
++    assert len(rows) == 1 and int(rows[0]['cg_iters_used']) == 1
++    assert float(rows[0]['seconds']) >= 0
++    heartbeat = json.loads((tmp_path/'heartbeat.json').read_text())
++    assert heartbeat['cg_iteration'] == 1 and heartbeat['epoch'] == 1
++    model = SmallResNet().double().train()
++    measure = B3Measurement({'seed': 45, 'setting': 'B1'}, sites_fn=sites, context_fn=context,
++                            ranks=(1,), groups=False)
++    measure.runtime = dict(out=tmp_path, timeout_s=-1, traceback_s=0)
++    before = {k: v.clone() for k,v in model.state_dict().items()}
++    batch = torch.randn(4, 3, 32, 32, dtype=torch.float64), torch.arange(4)%3
++    ctx = dict(task=0, epoch=1, step=1, end_of_task=False, train_acc=.2)
++    timed = MeasurementHook(measure)(model, batch, CE(), ctx)
++    assert len(timed) == 2 and all(r['status'] == 'timeout' for r in timed)
++    assert model.training and all(torch.equal(v,before[k]) for k,v in model.state_dict().items())
++
++
++def test_51_old_lop_arms_explicit_residuals(tmp_path):
++    old = legacy(tmp_path, 'diagnostics/lop_measure.py')
++    original_joint = legacy(tmp_path, 'methods/vna_joint.py')
++    model = SmallResNet().double().eval()
++    data = torch.randn(32, 3, 32, 32, dtype=torch.float64), torch.arange(32)%3
++    site = sites(model)[0]
++    cfg = GGNConfig(cg_iters=1000, cg_tol=1e-6, project_bn=False)
++    cache = SolveCache(model, site, data, CE(), {'targets': data[1]}, cfg)
++    e = CE().residual(model(data[0]), {'targets': data[1]})
++    for index, residual in enumerate((e, null_residual(e, 'N1', torch.Generator().manual_seed(2)),
++                                      null_residual(e, 'N2', torch.Generator().manual_seed(3)))):
++        z = cache.solve(str(index), residual, data, {'targets': data[1]})
++        A, cap = old.tiny_V(model, site, [data], 1, cotangents=[z], cfg=cfg)
++        incoming, _ = old.tiny_U_from_cotangent(model, site, data[0], residual, 1, cfg)
++        for arm in (A, incoming, random_A_like(A, generator=torch.Generator().manual_seed(4))):
++            expected = original_joint.joint_correction(model, [site], {site: arm}, data, cfg,
++                mu=cache.mu, cotangent=residual)[3]
++            actual = virtual_energy(model, [site], {site: arm}, data, z, residual)
++            for key in ('V', 'U', 'eta', 'rho'):
++                assert actual[key] == pytest.approx(expected[key], rel=1e-6, abs=1e-25)
++        from methods.vna_select import tiny_V
++        _, new_cap = tiny_V(model, site, [data], 1, cotangents=[z], cfg=cfg)
++        torch.testing.assert_close(cap['generalized_eigenvalues'], new_cap['generalized_eigenvalues'], rtol=1e-6, atol=0)

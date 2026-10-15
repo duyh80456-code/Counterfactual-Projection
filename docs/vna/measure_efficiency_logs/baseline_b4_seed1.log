@@ -1,0 +1,6 @@
+Baseline B4 finite-difference failure with seed 1
+Tensor-likes are not close!
+
+Mismatched elements: 100 / 100 (100.0%)
+Greatest absolute difference: 0.00028877850782813713 at index (1,) (up to 1e-07 allowed)
+Greatest relative difference: 0.6777905966027826 at index (53,) (up to 1e-05 allowed)

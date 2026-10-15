@@ -59,13 +59,26 @@ def joint_products(model, sites, A_by_site, inputs, o_params=None, *, cache_bloc
 
 
 def _inverse(action, rhs, cfg):
-    result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
-                                tolerance=cfg.cg_tol, eps=1e-30)
-    return result.solution, _cg_record(result, include_breakdown=True)
+    from experiments.vna_resume import current_measurement
+    monitor = current_measurement.get()
+    started = time.monotonic()
+    if monitor: monitor.begin_solve()
+    try:
+        result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
+                                    tolerance=cfg.cg_tol, eps=1e-30,
+                                    callback=monitor.iteration if monitor else None)
+    except TimeoutError:
+        if monitor:
+            monitor.end_solve({'iterations': monitor.values['cg_iteration'], 'converged': False,
+                               'seconds': time.monotonic()-started})
+        raise
+    record = _cg_record(result, include_breakdown=True)
+    if monitor: monitor.end_solve({**record, 'seconds': time.monotonic()-started})
+    return result.solution, record
 
 
 def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,
-                     *, mu=None, cotangent=None, loss_spec=None, ctx=None):
+                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None):
     """Return (d, V, rho, record), without installing or applying neurons.
 
     GGNConfig selects trace(F)/p or trace(F)/n_out via damping_norm.
@@ -87,11 +100,14 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
             q, second = _inverse(action, p.KE(z).double(), cfg)
             d = p.JT(q).double() * cfg.lambda_vna
         else:
-            trace = op.trace(cfg)
+            trace = op.trace(cfg) if trace_F is None else trace_F
             damping = relative_damping(cfg, trace, op) if mu is None else mu
             action = lambda v: op.F(v) + damping * v
+            from experiments.vna_resume import measurement_update
+            measurement_update(solve='tiny_V:correction:z')
             u, first = _inverse(action, op.gradient, cfg)
             z = op.H(p.Jv(u))
+            measurement_update(solve='tiny_V:correction:d')
             d, second = _inverse(action, op.COE(p.JET(z).double()), cfg)
         V = float(p.JET(z).double().square().sum())
         U = float(p.JET(op.g).double().square().sum())

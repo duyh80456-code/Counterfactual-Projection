@@ -55,7 +55,7 @@ def loss_context(learner, batch):
 
 class ICaRLHook:
     def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None):
-        self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
+        self.buffer = MeasurementBuffer(4 if pilot and fake else 512)
         self.pilot, self.pilot_batches = pilot, pilot_batches
         self.batch_counts = []
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
@@ -131,10 +131,13 @@ class ICaRLHook:
             f"lr={row['lr']} seconds={row['seconds']:.3f}")
         if self.observe: self.observe(learner, optimizer)
         point = learner._cur_task == 1 and epoch == 2 if self.pilot else epoch in {1, 10, max(1, last//2), last}
+        if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and self.point_seconds:
+            point = False
         if self.measurement and point:
             self.pending_measure = epoch
             self.measure_point(learner, epoch, train_acc, last)
             self.pending_measure = None
+            if any(r.get('status') == 'timeout' for r in self.rows): self.checkpoint()
         if self.persist: self.persist(self)
         if epoch % 25 == 0: self.checkpoint()
         self.boundary()

@@ -1,5 +1,6 @@
 """B1 CE / B2 KD: RepDistiller main(), unchanged optimizer and training loops."""
 import argparse
+from experiments.vna_resume import configure_measurement, measurement_cli
 from contextlib import nullcontext
 import importlib
 import os
@@ -70,7 +71,7 @@ def run(args, *, measure_override=None, observe=None):
                 torch.save({'model': models[name](num_classes=100).state_dict()}, teacher)
             argv = ['train_student.py', '--model_s', args.student, '--path_t', str(teacher),
                     '--distill', 'kd', '-r', '.1', '-a', '.9', '-b', '0', '--trial', '0']
-        identity = {**meta, 'mu_candidates': sorted({args.mu_rel_default, .01}),
+        identity = {**meta, 'mu_candidates': [1e-3, 1e-2],
                     'teacher_hash': file_hash(teacher) if args.setting == 'b2' else None,
                     'upstream_commit': __import__('subprocess').check_output(
                         ['git', '-C', str(UPSTREAM), 'rev-parse', 'HEAD'], text=True).strip(),
@@ -80,6 +81,7 @@ def run(args, *, measure_override=None, observe=None):
         if args.smoke or args.pilot: argv += ['--epochs', '2']
         if args.fake_data: argv += ['--batch_size', '4']
         measure = measure_override if measure_override is not None else measurement(meta, args.mu_rel_default, fake=args.fake_data, pilot=args.pilot)
+        configure_measurement(measure, args, out)
         hook = RepDistillerHook(measure, persist=persist, observe=observe, smoke=args.smoke, fake=args.fake_data,
                                data_dir=data_dir, batch_size=4 if args.fake_data else 64, pilot=args.pilot, pilot_batches=args.pilot_batches, progress=progress)
         # Upstream chooses CUDA by availability; suppress only for an explicit CPU request.
@@ -120,8 +122,8 @@ def run(args, *, measure_override=None, observe=None):
         if args.pilot: gate['status'] = 'PILOT'
         by_mu[str(mu)] = gate
         write_json(out/f'gate_mu_{mu}.json', gate)
-    official_mu = args.official_mu
-    gate = {'by_mu': by_mu, 'official_mu': official_mu,
+    official_mu = 1e-2
+    gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'rho',
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction.json', reproduction)
     write_json(out/'gate.json', gate)
@@ -138,6 +140,7 @@ def run(args, *, measure_override=None, observe=None):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    measurement_cli(p)
     p.add_argument('setting', choices=('b1', 'b2'))
     p.add_argument('--student', choices=PAIRS, required=True)
     p.add_argument('--teacher')

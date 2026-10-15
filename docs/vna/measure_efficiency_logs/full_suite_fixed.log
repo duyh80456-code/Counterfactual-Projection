@@ -1,0 +1,294 @@
+...................................................................s.... [ 29%]
+........................................................................ [ 58%]
+........................................................................ [ 87%]
+..............................                                           [100%]
+=============================== warnings summary ===============================
+tests/test_functional.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_functional.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_functional.py::test_functional_projection_recovers_tangent_direction
+tests/test_functional.py::test_functional_projection_recovers_tangent_direction
+tests/test_functional.py::test_functional_projection_recovers_tangent_direction
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tensorboard_logger.py:12: DeprecationWarning: scipy.misc is deprecated and will be removed in 2.0.0
+    import scipy.misc
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:18: DeprecationWarning: Call to deprecated create function FileDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    DESCRIPTOR = _descriptor.FileDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:36: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:43: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:50: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:57: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:64: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:71: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:78: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:29: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _HISTOGRAMPROTO = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:109: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:116: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:123: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:130: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:102: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SUMMARY_IMAGE = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:160: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:167: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:174: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:181: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:188: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:153: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SUMMARY_AUDIO = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:218: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:225: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:232: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:239: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:246: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:253: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:260: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:278: DeprecationWarning: Call to deprecated create function OneofDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.OneofDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:211: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SUMMARY_VALUE = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:293: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/summary_pb2.py:286: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SUMMARY = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:19: DeprecationWarning: Call to deprecated create function FileDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    DESCRIPTOR = _descriptor.FileDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:36: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:40: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:44: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:48: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:52: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:56: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:30: DeprecationWarning: Call to deprecated create function EnumDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _LOGMESSAGE_LEVEL = _descriptor.EnumDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:74: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:78: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:82: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:86: DeprecationWarning: Call to deprecated create function EnumValueDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.EnumValueDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:68: DeprecationWarning: Call to deprecated create function EnumDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SESSIONLOG_SESSIONSTATUS = _descriptor.EnumDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:106: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:113: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:120: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:127: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:134: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:141: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:148: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:155: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:173: DeprecationWarning: Call to deprecated create function OneofDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.OneofDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:99: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _EVENT = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:189: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:196: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:182: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _LOGMESSAGE = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:228: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:235: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:242: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:221: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _SESSIONLOG = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:274: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:281: DeprecationWarning: Call to deprecated create function FieldDescriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _descriptor.FieldDescriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b1]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/tensorboard_logger/tf_protobuf/event_pb2.py:267: DeprecationWarning: Call to deprecated create function Descriptor(), use get/find descriptors from generated code or query the descriptor_pool instead.
+    _TAGGEDRUNMETADATA = _descriptor.Descriptor(
+
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b2]
+tests/test_vna_stage_b12.py::test_t_align_two_epochs[b2]
+tests/test_vna_stage_b12.py::test_kd_residual_and_hessian_imported_loss
+tests/test_vna_stage_b_losses.py::test_imported_upstream_loss_equality[RepDistiller]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/nn/_reduction.py:42: UserWarning: size_average and reduce args will be deprecated, please use reduction='sum' instead.
+    warnings.warn(warning.format(ret))
+
+tests/test_vna_training.py::test_training_resume_bitwise[kfac]
+tests/test_vna_training.py::test_training_resume_bitwise[kfac]
+tests/test_vna_training.py::test_training_ngd_norm_matching[kfac]
+tests/test_vna_training.py::test_train_mode_buffers_and_modes_preserved[False-True-exact]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/gromo/utils/tools.py:119: UserWarning: Using the pseudo-inverse for the computation of the optimal delta.
+    warn("Using the pseudo-inverse for the computation of the optimal delta.")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.build_kaggle_vna_stage_a_notebook import build as stage_a_build
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
-from scripts.build_kaggle_vna_stage_b_rest import without_pytest, SESSION_RUNTIME
+from scripts.build_kaggle_vna_stage_b_rest import SESSION_RUNTIME
 
 
 def build(commit):
@@ -18,14 +18,14 @@ def build(commit):
     constants = constants.replace('GPU_HOURS_BUDGET = 3', 'GPU_HOURS_BUDGET = 8')
     constants += 'MNIST_DIR = None\nDISK_CAP_BYTES = 5_000_000_000\n'
     bootstrap = ''.join(base['cells'][2]['source']).replace('vna_stage_a', 'vna_stage_b_nb1')
-    setup = without_pytest(''.join(base['cells'][3]['source']))
+    setup = ''.join(base['cells'][3]['source'])
     return {'cells': [cell('markdown', '''# VNA Notebook 1 — Stage A → B5
 Run this notebook first with Internet, T4×2, CIFAR-100 and the extracted Phase-0
 checkpoint dataset. GPU0 runs the cost smoke → a5 → null → selection → joint → mu → solver →
 summary, then measured MNIST BP. GPU1 immediately runs MNIST CBP (rr 1e-4).
 A separate CPU subprocess runs the five regression CBP arms immediately, then
 measured BP when Stage A's summary exists. BP uses the newly produced default μ
-and also measures 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
+and measures both 1e-3 and 1e-2; Gate G uses 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
 ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as
 fallback. The 11.5-hour deadline pauses with a final archive; attach its output to resume.
 Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two workers; CPU torch threads are limited to two.
@@ -116,6 +116,11 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     steps = 1000000 if benchmark == "regression" else 12000000
     point_seconds = (sum(p["seconds"] for p in summary["measurement_point_seconds"]) /
                      len(summary["measurement_point_seconds"])) if summary["measurement_point_seconds"] else 0
+    import csv
+    solve_path = RUN_ROOT / "smoke/outputs/stageB/b5" / benchmark / name / "solves.csv"
+    solves = list(csv.DictReader(solve_path.open())) if solve_path.exists() else []
+    print(benchmark, name, "CG solves", len(solves), "mean seconds/solve",
+          sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
     startup = summary["startup_seconds"]
     steady = summary["steady_step_seconds"]
     points = (16 if benchmark == "regression" else 18) if arm == "bp" else 0

@@ -19,16 +19,16 @@ ALLOW_OVER_BUDGET = False
     # Path is imported explicitly so the configuration cell runs standalone.
     constants = 'from pathlib import Path\nimport time\n' + constants
     bootstrap = ''.join(base['cells'][2]['source']).replace('/kaggle/working/vna_phase0_seed0', '/kaggle/working/vna_stage_a')
-    setup = ''.join(base['cells'][3]['source']).replace('"tests/test_vna.py"', '*sorted(str(p.relative_to(REPO)) for p in (REPO / "tests").glob("test_vna*.py"))')
+    setup = ''.join(base['cells'][3]['source'])
     setup += '''\nfor module in ("diagnostics/stage_a.py", "methods/vna_joint.py", "diagnostics/vna_gate.py"):
     if not (REPO / module).exists(): raise RuntimeError(f"Missing Stage-A module: {module}")
 '''
     cells = [cell('markdown', '''# VNA Stage A — Phase-0 checkpoints, T4×2
 Attach Phase-0 notebook outputs (extracted recipe or tar/zip) and CIFAR-100.
 Phase-0 checkpoints are discovered automatically. Enable Internet, T4×2, github_token.
-Only diagnostics run. No pytest is run. Immutable REPO_COMMIT must
+The full pytest suite must pass before diagnostics run. Immutable REPO_COMMIT must
 include Stage A; regenerate with --commit after making the code available remotely.
-GPU0 runs A5 at epochs 90, 100, 110, 160, 200 first, then the two-checkpoint cost smoke, then A1 and A3.
+GPU0 runs the two-checkpoint cost smoke first, then A5 at epochs 90, 100, 110, 160, 200, then A1 and A3.
 The smoke prints projected GPU-hours and rejects totals above 3 unless explicitly allowed. GPU1 runs A4 then A2 then A6. Completion markers resume
 per measurement/epoch/site (selection also rank/kind) with schema/config/checkpoint-hash validation. Hourly
 archives use the existing notebook disk cap. Attach prior Stage-A outputs to resume.
@@ -123,11 +123,14 @@ archive_outputs(RUN_ROOT)
 print("Archive:", RUN_ROOT.with_suffix(".tar.gz"), "includes outputs/stageA/")
 ''')]
     # Reuse nb1's session orchestration without importing it during module load.
-    from scripts.build_kaggle_vna_stage_b_rest import SESSION_RUNTIME, without_pytest
+    from scripts.build_kaggle_vna_stage_b_rest import SESSION_RUNTIME
     constants = ''.join(cells[1]['source'])
     constants += 'SESSION_HOURS = 11.5\nSESSION_START = time.time()\nVNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600\n'
     cells[1] = cell('code', constants)
-    cells[3] = cell('code', without_pytest(''.join(cells[3]['source'])))
+    # Require the entire suite before starting any diagnostic/training lane.
+    import re
+    setup = re.sub(r'"pytest", "-q"[^\n]*?\], cwd=REPO,', '"pytest", "-q"], cwd=REPO,', setup)
+    cells[3] = cell('code', setup)
     runtime = ''.join(cells[4]['source'])
     runtime = runtime.replace('"MKL_NUM_THREADS": "2"}',
         '"MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2", "VNA_DEADLINE": str(VNA_DEADLINE)}')
