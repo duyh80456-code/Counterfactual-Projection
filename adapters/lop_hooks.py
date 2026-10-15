@@ -2,7 +2,6 @@
 from contextlib import contextmanager
 import copy
 import inspect
-import random
 import time
 import numpy as np
 import torch
@@ -11,6 +10,7 @@ from diagnostics.vna_align import MeasurementBuffer, MeasurementHook, _global_st
 from methods.vna_sites import HookSite
 from methods.vna_losses import CE, MSE
 from methods.vna_select import neuron_norms
+from experiments.vna_resume import rng_state, restore_rng, log
 
 
 def detached(value):
@@ -94,19 +94,6 @@ def sites_for(model):
                      between=(f'native.layers.{i+1}',)) for i in range(0, len(native.layers)-2, 2)]
 
 
-def rng_state():
-    return {'python': random.getstate(), 'numpy': np.random.get_state(),
-            'torch': torch.get_rng_state(),
-            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
-
-
-def restore_rng(state):
-    random.setstate(state['python']); np.random.set_state(state['numpy'])
-    torch.set_rng_state(state['torch'].cpu())
-    if state['cuda'] is not None:
-        torch.cuda.set_rng_state_all(state['cuda'])
-
-
 def gnt_state(gnt):
     if gnt is None:
         return None
@@ -129,8 +116,15 @@ def restore_learner(learner, state):
 
 class LearnHook:
     def __init__(self, benchmark, arm, params, measure=None, *, seed=0, checkpoint=None,
-                 resume=None, observe=None, time_steps=False, timing_started=None, timing_interval=50):
+                 resume=None, observe=None, time_steps=False, timing_started=None, timing_interval=50, progress=None, status=None, checkpoint_seconds=900):
         self.benchmark, self.arm, self.params = benchmark, arm, params
+        self.progress, self.status = progress, status
+        self.checkpoint_seconds = checkpoint_seconds
+        self.last_checkpoint = self.task_started = self.report_started = time.monotonic()
+        self.report_step = 0
+        self.last_frame = None
+        self.last_status = 0.
+        self.last_task_ms = None
         self.buffer = MeasurementBuffer(params['mini_batch_size'] if benchmark == 'imagenet' else 64)
         self.measurement = MeasurementHook(measure, seed=seed) if measure else None
         self.step, self.rows = 0, []
@@ -188,43 +182,80 @@ class LearnHook:
                   for k, v in frame.f_locals.items() if isinstance(v, (torch.Tensor, np.ndarray))
                   and k not in ('x', 'y', 'inputs', 'outputs', 'x_train', 'y_train', 'x_test', 'y_test',
                                 'batch_x', 'batch_y', 'pixel_permutation', 'data_permutation', 'example_order')}
+        # Preserve the cumulatively permuted MNIST data: skipped CBP RNG draws
+        # make the replayed permutation prefix unsuitable for live training.
+        if self.benchmark == 'mnist':
+            arrays.update({k: frame.f_locals[k].clone() for k in ('x', 'y')})
         state = {'step': self.step, 'learner': learner_state(learner), 'rng': rng_state(),
                  'results': self.results.state(), 'rows': self.rows, 'arrays': arrays,
                  'buffer': list(self.buffer.samples), 'shadows': {r: gnt_state(s) for r, s in self.shadows.items()},
                  'init_row_norms': self.init_row_norms,
+                 'measurement_point_seconds': self.measurement_point_seconds,
+                 'last_task_ms': self.last_task_ms,
                  'generators': {} if self.measurement is None else
                      {k: g.get_state() for k, g in self.measurement.generators.items()}}
-        self.checkpoint(copy.deepcopy(state))
+        size = self.checkpoint(state)
+        self.last_checkpoint = time.monotonic()
+        detail = ''
+        if self.step and self.step % self.task_steps == 0:
+            row = list(self.results.tasks())[-1]
+            detail = (f' task={row["task"]} steps={self.task_steps} '
+                      f'ms/step={self.last_task_ms} '
+                      f'online_accuracy={row["online_accuracy"]} online_error={row["online_error"]}')
+        log(f'{self.benchmark} {self.arm} step={self.step}{detail} checkpoint written ({size} bytes)')
+
+    def _restore_resume(self, learner, frame):
+        state = self.resume
+        restore_learner(learner, state['learner']); restore_rng(state['rng'])
+        self.results.restore(state['results']); self.rows = copy.deepcopy(state['rows'])
+        self.buffer.samples.extend(state['buffer'])
+        self.init_row_norms = state['init_row_norms']
+        self.last_task_ms = state.get('last_task_ms')
+        self.measurement_point_seconds = copy.deepcopy(state.get('measurement_point_seconds', []))
+        for k, v in state['arrays'].items():
+            current = frame.f_locals.get(k)
+            if isinstance(current, torch.Tensor): current.copy_(v)
+            elif isinstance(current, np.ndarray): np.copyto(current, v)
+        if self.measurement is not None:
+            from methods.vna import dedicated_generator
+            for k, v in state['generators'].items():
+                g = dedicated_generator(self.measurement.seed, self.measurement.purpose, torch.device(k))
+                g.set_state(v.cpu()); self.measurement.generators[k] = g
+        if state['shadows']:
+            self._shadow(learner)
+            for rate, values in state['shadows'].items(): vars(self.shadows[rate]).update(values)
+        self.resume = None
+        self.task_started = self.report_started = time.monotonic()
+        self.report_step = self.step
 
     def after_or_replay(self, original, learner, x, target):
-        frame = inspect.currentframe().f_back.f_back
+        frame = inspect.currentframe().f_back
+        while frame and frame.f_code.co_name not in ('expr', 'online_expr', 'repeat_expr'):
+            frame = frame.f_back
+        if frame is None:
+            frame = inspect.currentframe().f_back
+        self.last_frame = frame
         self.last_learner = learner
         if self.resume is not None and self.step < self.resume['step']:
             if self.step == 0: self.results.restore(self.resume['results'])
             result = self.results.replay(self.step, learner)
             self.step += 1
+            if self.step == len(self.results.losses):
+                self._restore_resume(learner, frame)
             return result
         if self.resume is not None:
-            state = self.resume
-            restore_learner(learner, state['learner']); restore_rng(state['rng'])
-            self.results.restore(state['results']); self.rows = copy.deepcopy(state['rows'])
-            self.buffer.samples.extend(state['buffer'])
-            self.init_row_norms = state['init_row_norms']
-            for k, v in state['arrays'].items():
-                current = frame.f_locals.get(k)
-                if isinstance(current, torch.Tensor): current.copy_(v)
-                elif isinstance(current, np.ndarray): np.copyto(current, v)
-            if self.measurement is not None:
-                from methods.vna import dedicated_generator
-                for k, v in state['generators'].items():
-                    g = dedicated_generator(self.measurement.seed, self.measurement.purpose, torch.device(k))
-                    g.set_state(v.cpu()); self.measurement.generators[k] = g
-            if state['shadows']:
-                self._shadow(learner)
-                for rate, values in state['shadows'].items(): vars(self.shadows[rate]).update(values)
-            self.resume = None
+            self._restore_resume(learner, frame)
+        now = time.monotonic()
+        if self.status and (self.step % self.task_steps == 0 or now-self.last_status >= 30):
+            self.status.update(task=self.step//self.task_steps+1, step=self.step, phase='training')
+            self.last_status = now
+        if self.progress:
+            self.progress.boundary(lambda: self._checkpoint(learner, frame),
+                                   point_seconds=max((p['seconds'] for p in self.measurement_point_seconds), default=0))
         if self.step % self.task_steps == 0:
             self.buffer.samples.clear()
+            self._checkpoint(learner, frame)
+        elif now-self.last_checkpoint >= self.checkpoint_seconds:
             self._checkpoint(learner, frame)
         if self.init_row_norms is None:
             self.init_row_norms = [float(neuron_norms({'weight': layer.weight.detach(),
@@ -258,6 +289,18 @@ class LearnHook:
                 if self.time_steps and device.type == 'cuda': torch.cuda.synchronize(device)
                 self.measurement_point_seconds.append({'batch_size': len(self.buffer), 'seconds': time.monotonic()-started})
                 self.rows.extend(rows or [])
+        if self.step % 10000 == 0 or within == self.task_steps:
+            elapsed = time.monotonic()-self.report_started
+            log(f'{self.benchmark} {self.arm} task={task} step={self.step} '
+                f'ms/step={1000*elapsed/max(1, self.step-self.report_step):.3f}')
+            self.report_started, self.report_step = time.monotonic(), self.step
+        if within == self.task_steps:
+            self.last_task_ms = 1000*(time.monotonic()-self.task_started)/within
+            row = list(self.results.tasks())[-1]
+            log(f'{self.benchmark} {self.arm} task={task} steps={within} '
+                f'ms/step={1000*(time.monotonic()-self.task_started)/within:.3f} '
+                f'online_accuracy={row["online_accuracy"]} online_error={row["online_error"]}')
+            self.task_started = time.monotonic()
         return result
 
     def timed_learn(self, original, learner, x, target):

@@ -2,6 +2,7 @@
 import argparse
 from contextlib import nullcontext
 import importlib
+import os
 from pathlib import Path
 import sys
 import time
@@ -15,6 +16,7 @@ from diagnostics.vna_gate import evaluate_gate, setting_config
 from experiments.stage_b5 import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
 from experiments.shared_protocol import seed_everything
+from experiments.vna_resume import Progress, file_hash
 from scripts.fetch_teachers import TEACHERS, verify, fetch, teacher_gate, UPSTREAM
 from experiments.cifar_pilot import add_arguments, start_memory, pilot_summary
 
@@ -32,6 +34,7 @@ def measurement(metadata, mu, *, fake=False, pilot=False):
 
 
 def run(args, *, measure_override=None, observe=None):
+    os.environ.setdefault('VNA_JOB', f'{args.setting}_{args.student}')
     out = Path(args.out or f'outputs/{"pilot" if args.pilot else "stageB"}/{args.setting}_{args.student}').resolve()
     out.mkdir(parents=True, exist_ok=True)
     data_dir = str(Path(args.data_dir).resolve())
@@ -67,12 +70,18 @@ def run(args, *, measure_override=None, observe=None):
                 torch.save({'model': models[name](num_classes=100).state_dict()}, teacher)
             argv = ['train_student.py', '--model_s', args.student, '--path_t', str(teacher),
                     '--distill', 'kd', '-r', '.1', '-a', '.9', '-b', '0', '--trial', '0']
+        identity = {**meta, 'mu_candidates': sorted({args.mu_rel_default, .01}),
+                    'teacher_hash': file_hash(teacher) if args.setting == 'b2' else None,
+                    'upstream_commit': __import__('subprocess').check_output(
+                        ['git', '-C', str(UPSTREAM), 'rev-parse', 'HEAD'], text=True).strip(),
+                    'workers': args.workers, 'pilot_batches': args.pilot_batches}
+        progress = Progress(out, identity)
         argv += ['--num_workers', str(args.workers)]
         if args.smoke or args.pilot: argv += ['--epochs', '2']
         if args.fake_data: argv += ['--batch_size', '4']
         measure = measure_override if measure_override is not None else measurement(meta, args.mu_rel_default, fake=args.fake_data, pilot=args.pilot)
         hook = RepDistillerHook(measure, persist=persist, observe=observe, smoke=args.smoke, fake=args.fake_data,
-                               data_dir=data_dir, batch_size=4 if args.fake_data else 64, pilot=args.pilot, pilot_batches=args.pilot_batches)
+                               data_dir=data_dir, batch_size=4 if args.fake_data else 64, pilot=args.pilot, pilot_batches=args.pilot_batches, progress=progress)
         # Upstream chooses CUDA by availability; suppress only for an explicit CPU request.
         cuda = patch('torch.cuda.is_available', return_value=False) if args.device == 'cpu' else nullcontext()
         started = time.monotonic()
@@ -88,7 +97,11 @@ def run(args, *, measure_override=None, observe=None):
             with cuda, patch('torch.load', new=checkpoint_load), working_directory(out), hook.install(entry):
                 entry.main()
                 hook.finish_epoch(hook.opt.epochs, hook.last_frame.f_locals)
-                acc, _, _ = entry.validate(hook.test_loader, hook.model, torch.nn.CrossEntropyLoss(), hook.opt)
+                if hook.final_test is None:
+                    hook.boundary()
+                    hook.final_test = entry.validate(hook.test_loader, hook.model, torch.nn.CrossEntropyLoss(), hook.opt)[0]
+                    hook.checkpoint()
+                acc = hook.final_test
         finally:
             sys.argv = old_argv
             persist(hook)
@@ -113,10 +126,10 @@ def run(args, *, measure_override=None, observe=None):
     write_json(out/'reproduction.json', reproduction)
     write_json(out/'gate.json', gate)
     diagnostic = sum(p['seconds'] for p in hook.point_seconds)
-    write_json(out/'summary.json', {**meta, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds, 'training_seconds': seconds-diagnostic,
+    write_json(out/'summary.json', {**meta, 'identity': identity, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds, 'training_seconds': seconds-diagnostic,
                'epochs_run': len(hook.epochs), 'measurement_point_seconds': hook.point_seconds,
                'final_test_acc': float(acc), 'parameter_count': sum(p.numel() for p in hook.model.parameters()),
-               'gate': gate, 'resume_supported': False,
+               'gate': gate, 'resume_supported': True, 'status': 'COMPLETED',
                **(pilot_summary(hook.epochs, hook.point_seconds, hook.rows, args.device,
                    full_epochs=240, full_points=15, full_batches=hook.full_batches,
                    pilot_batches=hook.train_batches) if args.pilot else {})})

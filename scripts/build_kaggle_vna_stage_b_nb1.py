@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.build_kaggle_vna_stage_a_notebook import build as stage_a_build
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
-from scripts.build_kaggle_vna_stage_b_rest import without_pytest
+from scripts.build_kaggle_vna_stage_b_rest import without_pytest, SESSION_RUNTIME
 
 
 def build(commit):
@@ -21,13 +21,14 @@ def build(commit):
     setup = without_pytest(''.join(base['cells'][3]['source']))
     return {'cells': [cell('markdown', '''# VNA Notebook 1 — Stage A → B5
 Run this notebook first with Internet, T4×2, CIFAR-100 and the extracted Phase-0
-checkpoint dataset. GPU0 runs a5 → null → selection → joint → mu → solver →
+checkpoint dataset. GPU0 runs the cost smoke → a5 → null → selection → joint → mu → solver →
 summary, then measured MNIST BP. GPU1 immediately runs MNIST CBP (rr 1e-4).
 A separate CPU subprocess runs the five regression CBP arms immediately, then
 measured BP when Stage A's summary exists. BP uses the newly produced default μ
 and also measures 1e-2. A failed Stage A permits BP with a recorded 1e-2 fallback.
 ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as
-fallback. Every loader uses two workers; CPU torch threads are limited to two.
+fallback. The 11.5-hour deadline pauses with a final archive; attach its output to resume.
+Task and mid-task checkpoints are archived every 15 minutes. Every loader uses two workers; CPU torch threads are limited to two.
 Attach prior archives to resume with the existing Stage A identity rules.
 Keep the standalone Stage A notebook as a fallback. Attach this notebook's
 Stage A summary to nb2/nb3 and run those in separate sessions.
@@ -38,7 +39,7 @@ Regenerate with the published commit containing this implementation before Kaggl
 
 
 RUNTIME = '''from concurrent.futures import ThreadPoolExecutor
-from experiments.vna_kaggle import archive_outputs as _archive_outputs
+from experiments.vna_kaggle import archive_with_status as _archive_outputs
 from experiments.stage_b5 import restore_archives as restore_b, RATES, finalize, merge_json
 from diagnostics.stage_a import restore_archives as restore_a
 STAGE_A = RUN_ROOT / "outputs/stageA"
@@ -47,7 +48,8 @@ STAGE_A.mkdir(parents=True, exist_ok=True); STAGE_B.mkdir(parents=True, exist_ok
 restore_a(Path("/kaggle/input"), STAGE_A); restore_b(Path("/kaggle/input"), STAGE_B)
 merge_json(STAGE_B / "gate.json", "imagenet", "dropped (supervisor 2026-10-15)")
 from experiments.phase0_discovery import discover_phase0
-ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}
+ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+       "VNA_DEADLINE": str(VNA_DEADLINE)}
 CPU_ENV = {k: v for k, v in ENV.items() if k != "CUDA_VISIBLE_DEVICES"}
 archive_lock = threading.Lock(); archive_stop = threading.Event(); archive_errors = []
 stage_a_done = threading.Event(); stage_a_errors = []; lane_timings = {}; projections = {}
@@ -62,9 +64,9 @@ def archive_outputs():
         return _archive_outputs(RUN_ROOT, budget=DISK_CAP_BYTES,
                                 folders=("outputs/stageA", "outputs/stageB"), exclude_parts=("data",))
 def periodic_archive():
-    while not archive_stop.wait(3600):
+    while not archive_stop.wait(900):
         try: archive_outputs()
-        except Exception as error: archive_errors.append(str(error)); print(error, flush=True)
+        except Exception as error: archive_errors.append(str(error)); print("Archive error:", error, flush=True)
 archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.start()
 def stage_command(measurement, *, cost=False):
     common = ["--checkpoint-dir", str(RECIPE), "--data-root", str(DATA_ROOT),
@@ -76,6 +78,7 @@ def wait_mu():
     path = STAGE_A / "summary.json"
     # Poll the file, but do not reuse a restored summary before Stage A validates it.
     while not stage_a_done.is_set() or not path.exists():
+        if pause_due(): return None, "PAUSED"
         if stage_a_done.wait(2) and stage_a_errors:
             print("*** WARNING: Stage A failed; BP μ=1e-2 ***", stage_a_errors, flush=True)
             return 1e-2, "fallback: stage A failed"
@@ -92,22 +95,24 @@ def command(benchmark, arm, out, mu, source, *, smoke=False, rate=None, attached
     return cmd
 def run_b5(benchmark, arm, lane, mu, source, *, smoke=False, rate=None):
     out = RUN_ROOT / "smoke/outputs/stageB" if smoke else STAGE_B
-    env = CPU_ENV if lane == "CPU" else {**ENV, "CUDA_VISIBLE_DEVICES": lane[-1]}
     name = arm if rate is None else f"cbp_rr_{rate:g}"
-    with (RUN_ROOT / f"{benchmark}_{name}_{lane}.log").open("a", buffering=1) as log:
-        try:
-            subprocess.run(command(benchmark, arm, out, mu, source, smoke=smoke, rate=rate),
-                           cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-        except subprocess.CalledProcessError:
-            if benchmark != "mnist" or MNIST_DIR is None: raise
-            print("Upstream MNIST download failed; using attached dataset", MNIST_DIR, flush=True)
-            subprocess.run(command(benchmark, arm, out, mu, source, smoke=smoke, rate=rate, attached=True),
-                           cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+    if not launch(command(benchmark, arm, out, mu, source, smoke=smoke, rate=rate,
+                          attached=bool(MNIST_DIR)), lane, f"{benchmark}_{name}",
+                  RUN_ROOT / f"{benchmark}_{name}_{lane}.log"):
+        return None
     return json.loads((out / "b5" / benchmark / name / "summary.json").read_text())
 def b5_job(benchmark, arm, lane, *, rate=None):
     mu, source = wait_mu() if arm == "bp" else (1e-2, "cbp: unmeasured; no mu required")
+    if mu is None or pause_due(): return
+    name = arm if rate is None else f"cbp_rr_{rate:g}"
+    previous = STAGE_B / "b5" / benchmark / name / "summary.json"
+    if previous.exists() and json.loads(previous.read_text()).get("status") != "PAUSED":
+        run_b5(benchmark, arm, lane, mu, source, rate=rate)
+        print("Reusing completed", benchmark, name, flush=True)
+        return
     start = time.monotonic()
     summary = run_b5(benchmark, arm, lane, mu, source, smoke=True, rate=rate)
+    if summary is None: return
     steps = 1000000 if benchmark == "regression" else 12000000
     point_seconds = (sum(p["seconds"] for p in summary["measurement_point_seconds"]) /
                      len(summary["measurement_point_seconds"])) if summary["measurement_point_seconds"] else 0
@@ -128,6 +133,13 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     archive_outputs()
 '''
 
+RUNTIME += SESSION_RUNTIME + '''
+lane_state = {lane: {"job": "idle", "last": ""} for lane in ("CPU", "GPU0", "GPU1")}
+def gpu_env(lane):
+    return CPU_ENV if lane == "CPU" else {**ENV, "CUDA_VISIBLE_DEVICES": lane[-1]}
+heartbeat_thread = threading.Thread(target=heartbeat, daemon=True); heartbeat_thread.start()
+'''
+
 RUN = '''def gpu0():
     global MU_REL_DEFAULT, MU_SOURCE
     start = time.monotonic()
@@ -135,11 +147,10 @@ RUN = '''def gpu0():
         try:
             global RECIPE
             RECIPE = discover_phase0()
-            for measurement in ("a5", "cost", "null", "selection", "joint", "mu", "solver", "summary"):
-                with (RUN_ROOT / f"stage_a_{measurement}_gpu0.log").open("a", buffering=1) as log:
-                    subprocess.run(stage_command(measurement, cost=measurement == "cost"), cwd=REPO,
-                                   env={**ENV, "CUDA_VISIBLE_DEVICES": "0"}, stdout=log,
-                                   stderr=subprocess.STDOUT, check=True)
+            for measurement in ("cost", "a5", "null", "selection", "joint", "mu", "solver", "summary"):
+                if not launch(stage_command(measurement, cost=measurement == "cost"),
+                              "GPU0", "stageA_"+measurement,
+                              RUN_ROOT / f"stage_a_{measurement}_gpu0.log"): return
                 if measurement == "cost":
                     cost = json.loads((STAGE_A / "cost_projection.json").read_text())
                     hours = cost["total_projected_gpu_hours"] + cost["smoke_gpu_hours"]
@@ -172,11 +183,12 @@ try:
         futures = [pool.submit(gpu0), pool.submit(gpu1), pool.submit(cpu)]
         for future in futures: future.result()
 finally:
-    archive_stop.set(); archiver.join(timeout=10)
+    archive_stop.set(); archiver.join(timeout=10); heartbeat_thread.join(timeout=2)
     costs = {lane: sum(values) for lane, values in projections.items()}
     (STAGE_B / "cost_projection.json").write_text(json.dumps({"per_lane_hours": costs}, indent=2))
     (STAGE_B / "lane_timings.json").write_text(json.dumps(lane_timings, indent=2))
     archive_outputs()
+if session_paused.is_set(): print("PAUSED — rerun with this version's output attached", flush=True)
 if archive_errors: raise RuntimeError(archive_errors)
 '''
 
@@ -184,13 +196,13 @@ REPORT = '''import pandas as pd
 import matplotlib.pyplot as plt
 summary = STAGE_A / "summary.json"
 print("STAGE A SUMMARY", summary.read_text() if not stage_a_errors and summary.exists() else stage_a_errors)
-for benchmark in ("regression", "mnist"):
+for benchmark in (() if session_paused.is_set() else ("regression", "mnist")):
     finalize(STAGE_B, benchmark, mu_rel_default=MU_REL_DEFAULT)
 gate_path = STAGE_B / "gate.json"
 gates = json.loads(gate_path.read_text()) if gate_path.exists() else {}
 gates["imagenet"] = "dropped (supervisor 2026-10-15)"
 gate_path.write_text(json.dumps(gates, indent=2))
-print("B5 BASELINE GATE", (STAGE_B / "b5_baseline_gate.json").read_text())
+if (STAGE_B / "b5_baseline_gate.json").exists(): print("B5 BASELINE GATE", (STAGE_B / "b5_baseline_gate.json").read_text())
 print("GATE G (B5 rows)", gates)
 for path in (STAGE_B / "b5").glob("*/bp/measurements.csv"):
     rows = pd.read_csv(path); display(rows)

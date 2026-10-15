@@ -17,7 +17,7 @@ def build(commit=None):
 ALLOW_OVER_BUDGET = False
 '''
     # Path is imported explicitly so the configuration cell runs standalone.
-    constants = 'from pathlib import Path\n' + constants
+    constants = 'from pathlib import Path\nimport time\n' + constants
     bootstrap = ''.join(base['cells'][2]['source']).replace('/kaggle/working/vna_phase0_seed0', '/kaggle/working/vna_stage_a')
     setup = ''.join(base['cells'][3]['source']).replace('"tests/test_vna.py"', '*sorted(str(p.relative_to(REPO)) for p in (REPO / "tests").glob("test_vna*.py"))')
     setup += '''\nfor module in ("diagnostics/stage_a.py", "methods/vna_joint.py", "diagnostics/vna_gate.py"):
@@ -26,14 +26,14 @@ ALLOW_OVER_BUDGET = False
     cells = [cell('markdown', '''# VNA Stage A — Phase-0 checkpoints, T4×2
 Attach Phase-0 notebook outputs (extracted recipe or tar/zip) and CIFAR-100.
 Phase-0 checkpoints are discovered automatically. Enable Internet, T4×2, github_token.
-Only diagnostics run. All VNA tests run first on CPU. Immutable REPO_COMMIT must
+Only diagnostics run. No pytest is run. Immutable REPO_COMMIT must
 include Stage A; regenerate with --commit after making the code available remotely.
 GPU0 runs A5 at epochs 90, 100, 110, 160, 200 first, then the two-checkpoint cost smoke, then A1 and A3.
 The smoke prints projected GPU-hours and rejects totals above 3 unless explicitly allowed. GPU1 runs A4 then A2 then A6. Completion markers resume
-per measurement/epoch with schema/config/checkpoint-hash validation. Hourly
+per measurement/epoch/site (selection also rank/kind) with schema/config/checkpoint-hash validation. Hourly
 archives use the existing notebook disk cap. Attach prior Stage-A outputs to resume.
 '''), cell('code', constants), cell('code', bootstrap), cell('code', setup),
-        cell('code', '''from experiments.vna_kaggle import archive_outputs as _archive_outputs
+        cell('code', '''from experiments.vna_kaggle import archive_with_status as _archive_outputs
 from diagnostics.stage_a import restore_archives
 import shutil
 def archive_outputs(output):
@@ -122,6 +122,57 @@ plt.savefig(STAGE_A / "null_p_values.png"); plt.show()
 archive_outputs(RUN_ROOT)
 print("Archive:", RUN_ROOT.with_suffix(".tar.gz"), "includes outputs/stageA/")
 ''')]
+    # Reuse nb1's session orchestration without importing it during module load.
+    from scripts.build_kaggle_vna_stage_b_rest import SESSION_RUNTIME, without_pytest
+    constants = ''.join(cells[1]['source'])
+    constants += 'SESSION_HOURS = 11.5\nSESSION_START = time.time()\nVNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600\n'
+    cells[1] = cell('code', constants)
+    cells[3] = cell('code', without_pytest(''.join(cells[3]['source'])))
+    runtime = ''.join(cells[4]['source'])
+    runtime = runtime.replace('"MKL_NUM_THREADS": "2"}',
+        '"MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2", "VNA_DEADLINE": str(VNA_DEADLINE)}')
+    runtime += SESSION_RUNTIME + '''
+def gpu_env(gpu): return {**ENV, "CUDA_VISIBLE_DEVICES": str(gpu)}
+heartbeat_thread = threading.Thread(target=heartbeat, daemon=True); heartbeat_thread.start()
+def stage_launch(measurement, gpu=0, extra=()):
+    return launch([sys.executable, "-u", "-m", "diagnostics.stage_a", measurement,
+                   *common, "--device", "cuda:0", *extra], gpu, "stageA_"+measurement,
+                  RUN_ROOT / f"{measurement}_gpu{gpu}.log")
+'''
+    cells[4] = cell('code', runtime)
+    cells[5] = cell('code', '''try:
+    if stage_launch("cost", extra=("--checkpoints",
+            str(RECIPE / "epoch_090.pt"), str(RECIPE / "epoch_100.pt"))):
+        cost = json.loads((STAGE_A / "cost_projection.json").read_text())
+        hours = cost["total_projected_gpu_hours"] + cost["smoke_gpu_hours"]
+        print("Stage A projected GPU-hours including smoke:", hours, flush=True)
+        if hours > GPU_HOURS_BUDGET and not ALLOW_OVER_BUDGET:
+            raise RuntimeError("Stage A exceeds GPU_HOURS_BUDGET")
+    if not session_paused.is_set(): stage_launch("a5")
+    archive_outputs(RUN_ROOT)
+except BaseException:
+    archive_stop.set(); archiver.join(timeout=10); archive_outputs(RUN_ROOT); raise
+''')
+    cells[6] = cell('code', '''from concurrent.futures import ThreadPoolExecutor
+def worker(gpu, measurements):
+    for measurement in measurements:
+        if not stage_launch(measurement, gpu): break
+try:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(worker, 0, ["null", "selection"]),
+                   pool.submit(worker, 1, ["joint", "mu", "solver"])]
+        for future in futures: future.result()
+    if not session_paused.is_set(): stage_launch("summary")
+finally:
+    archive_stop.set(); archiver.join(timeout=10); heartbeat_thread.join(timeout=2)
+    archive_outputs(RUN_ROOT)
+if session_paused.is_set(): print("PAUSED — rerun with this version's output attached", flush=True)
+if archive_errors: raise RuntimeError(archive_errors)
+''')
+    report = ''.join(cells[7]['source'])
+    report = report[report.index('import pandas'):]
+    cells[7] = cell('code', 'if not session_paused.is_set():\n' +
+                    ''.join('    '+line+'\n' for line in report.splitlines()))
     return {'cells': cells, 'metadata': base['metadata'], 'nbformat': 4, 'nbformat_minor': 5}
 
 

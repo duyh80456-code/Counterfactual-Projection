@@ -6,11 +6,11 @@ Phase-0 checkpoint and CIFAR root for trained-model GPU validation.
 import argparse
 import csv
 import json
-from dataclasses import replace
 from pathlib import Path
 import statistics
 import time
 import torch
+from experiments.vna_resume import Progress, file_hash, log, pause_if_due
 from experiments.vna_support import tiny_model, tiny_candidate, isolated_rng
 from methods.vna import (dedicated_generator, extract_tiny_A, block_products,
                          vna_block_correction, VNAConfig)
@@ -55,6 +55,7 @@ def run(output, checkpoint=None, seed=20261014, damping_rel=1e-2, damping_norm="
         eye=torch.eye(op.g.numel())
         J=torch.stack([p.JT(e).double() for e in eye]); E=torch.stack([p.JET(e).double() for e in eye])
         H=torch.stack([op.H(e) for e in eye],1)
+        _ = (J, E, H)  # retained dense toy-oracle work
     # Measure actual optimizer steps under a restorable independent baseline.
     with isolated_rng(dedicated_generator(seed, "sgd-baseline-model")):
         clone = tiny_model()
@@ -184,7 +185,23 @@ def run_checkpoint(args, *, stage_metadata=None, require_convergence=True):
     if stage_metadata is not None:
         from dataclasses import replace
         cfg=replace(cfg, damping_norm="outputs")
+    progress = None
+    completed = []
+    last_unit_seconds = 0.
+    if stage_metadata is not None:
+        identity = {'args': vars(args), 'checkpoint_sha256': file_hash(args.checkpoint),
+                    'code_commit': stage_metadata['code_commit']}
+        progress = Progress(output, identity, name='progress.pt')
+        if progress.state:
+            saved = progress.state
+            rows, batch_checks, factor_cost = saved['rows'], saved['batch_checks'], saved['factor_cost']
+            completed = saved['completed']
+            generator.set_state(saved['generator'].cpu())
+            for key, value in saved['generators'].items(): engine.generators[key].set_state(value.cpu())
+            last_unit_seconds = saved['last_unit_seconds']
+    relatives = sorted({1e-4,1e-3,1e-2,1e-1,config.damping_rel})
     for site,entry in engine.cache.items():
+        if all((site, relative) in completed for relative in relatives): continue
         A=entry['A']; trace=entry['trace_F']
         normalization=None
         if stage_metadata is not None:
@@ -198,7 +215,11 @@ def run_checkpoint(args, *, stage_metadata=None, require_convergence=True):
             op=GGNProducts(p,batch[1])
             n_out=op.g.numel()
             block_gradient_norm=float(op.gradient.norm())
-        for relative in sorted({1e-4,1e-3,1e-2,1e-1,config.damping_rel}):
+        for relative in relatives:
+            if (site, relative) in completed: continue
+            if progress: pause_if_due(seconds=last_unit_seconds)
+            unit_started = time.monotonic()
+            log(f'solver epoch={payload.get("epoch")} site={site} rank={entry["rank"]} mu={relative} start')
             mu=(max(relative*trace/size,1e-12) if cfg.damping_norm == "params" else relative*trace/n_out)
             variants={}
             with isolated_rng(engine.generators['construction']):
@@ -218,6 +239,10 @@ def run_checkpoint(args, *, stage_metadata=None, require_convergence=True):
                             diag['realized_gain']=float(gradient.dot(flatten(d,refs)))
                     sync(device); diag['seconds']=time.perf_counter()-t
                     variants[name]=(d,diag)
+                    log(f'solver epoch={payload.get("epoch")} site={site} rank={entry["rank"]} '
+                        f'mu={relative} variant={name} seconds={diag["seconds"]:.3f} '
+                        f'CG iterations={[r.get("iterations") for r in diag.get("cg", [])]} '
+                        f'converged={all(r["converged"] for r in diag.get("cg", []))}')
             reference=flatten(variants['exact'][0],refs)
             for name,(d,diag) in variants.items():
                 value=flatten(d,refs)
@@ -265,6 +290,13 @@ def run_checkpoint(args, *, stage_metadata=None, require_convergence=True):
                 batch_checks.append(check)
                 for row in rows:
                     if row['site']==site and row['relative_mu']==relative: row.update(check)
+            if progress:
+                last_unit_seconds = time.monotonic()-unit_started
+                completed.append((site, relative))
+                progress.save({'rows': rows, 'batch_checks': batch_checks, 'factor_cost': factor_cost,
+                               'completed': completed, 'generator': generator.get_state(),
+                               'generators': {key: g.get_state() for key, g in engine.generators.items()},
+                               'last_unit_seconds': last_unit_seconds})
     summary={'checkpoint':str(args.checkpoint),'epoch':payload.get('epoch'),'synthetic':args.fake_data,
         'device':str(device),'seed':args.seed,'sites':list(engine.cache),'sgd_seconds':sgd,
         'refresh_seconds':refresh_cost,'kfac_refresh_seconds':factor_cost,'rows':rows,

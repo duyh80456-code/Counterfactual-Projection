@@ -2,6 +2,7 @@
 import json
 import time
 import torch
+from experiments.vna_resume import log
 from adapters.icarl_hooks import sites_for, loss_context
 from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
 from methods.vna import random_A_like
@@ -41,6 +42,7 @@ class B3Measurement:
             for rank in self.ranks:
                 proposals, records = {}, []
                 for site in sites:
+                    site_started = time.monotonic()
                     layer = site.first_layer.layer
                     if rank > layer.out_channels: continue
                     seed = {'weight': layer.weight[:1].detach(), 'bias': None}
@@ -74,7 +76,8 @@ class B3Measurement:
                     null_stats = {}
                     for kind in ('N1', 'N2'):
                         lambdas, rhos = [], []
-                        for _ in range(self.null_repeats):
+                        for repeat in range(self.null_repeats):
+                            null_started = time.monotonic()
                             null = null_residual(g, kind, generator, residual_is_zero_sum=loss_spec.residual_is_zero_sum)
                             null_z, _, status = filtered(null)
                             null_A, cap = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
@@ -86,6 +89,8 @@ class B3Measurement:
                             converged &= status['converged'] and null_record['cg_converged']
                             lambdas.append(float(cap['generalized_eigenvalues'][0]))
                             rhos.append(null_record['rho'])
+                            log(f'mu={mu_rel} rank={rank} site={site.module_name} null={kind} '
+                                f'done={repeat+1}/{self.null_repeats} seconds={time.monotonic()-null_started:.3f}')
                         p_lam = empirical_p(float(capture['generalized_eigenvalues'][0]), lambdas)
                         null_stats.update({f'p_lambda_{kind}': p_lam, f'significant_{kind}': p_lam <= 1/9,
                                            f'p_rho_{kind}': empirical_p(real['rho'], rhos),
@@ -101,6 +106,8 @@ class B3Measurement:
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
                            'lambda1': float(capture['generalized_eigenvalues'][0]), 'subspace_sim': similarity, **null_stats}
                     records.append(row)
+                    log(f'mu={mu_rel} rank={rank} site={site.module_name} '
+                        f'seconds={time.monotonic()-site_started:.3f} cg_iters={real["cg_iters_used"]} converged={converged}')
                 joint = joint_correction(model, list(proposals), proposals, correction, cfg, names,
                                          loss_spec=loss_spec, ctx=corr_ctx)[3]
                 groups = {}

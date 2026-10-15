@@ -13,6 +13,7 @@ import sys
 import time
 import numpy as np
 import torch
+from experiments.vna_resume import Progress, Status, log, rng_state, restore_rng
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = ROOT/'third_party/loss-of-plasticity'
@@ -95,32 +96,8 @@ def merge_json(path, key, value):
 
 
 def restore_archives(input_root, output):
-    """Restore Stage-B files only, rejecting traversal and conflicts."""
-    import tarfile
-    import zipfile
-    output = Path(output)
-    def save(name, data):
-        parts = Path(name).parts
-        if '..' in parts or Path(name).is_absolute(): raise ValueError('unsafe archive member')
-        if 'stageB' not in parts: return
-        relative = Path(*parts[parts.index('stageB')+1:])
-        if not relative.parts: return
-        dest = output/relative
-        if dest.exists() and dest.read_bytes() != data: raise ValueError(f'conflicting Stage-B restore: {relative}')
-        dest.parent.mkdir(parents=True, exist_ok=True); dest.write_bytes(data)
-    for path in sorted(Path(input_root).rglob('*')):
-        if not path.is_file(): continue
-        if 'stageB' in path.parts:
-            save('/'.join(path.parts[path.parts.index('stageB'):]), path.read_bytes())
-        elif path.name.endswith('.tar.gz') or path.suffix == '.tar':
-            with tarfile.open(path) as archive:
-                for member in archive.getmembers():
-                    if member.isfile() and 'stageB' in Path(member.name).parts:
-                        save(member.name, archive.extractfile(member).read())
-        elif path.suffix == '.zip':
-            with zipfile.ZipFile(path) as archive:
-                for name in archive.namelist():
-                    if not name.endswith('/') and 'stageB' in Path(name).parts: save(name, archive.read(name))
+    from experiments.vna_kaggle import restore_stage_archives
+    return restore_stage_archives(input_root, output, 'stageB')
 
 
 def prepare_data(benchmark, params, run_dir, *, fake=False, smoke=False, data_dir=None):
@@ -194,6 +171,26 @@ def run_native(benchmark, params, run_dir, hook):
             # Tiny sequences expose an upstream zero-sized rank log. Padding
             # its three rank-log allocations is a test-fixture adapter only;
             # neither samples, permutations nor the training steps are changed.
+            original_rank = module.compute_matrix_rank_summaries
+            rank_task = None
+            def rank_progress(*args, **kwargs):
+                nonlocal rank_task
+                import inspect
+                frame = inspect.currentframe().f_back
+                task = frame.f_locals['task_idx']+1
+                if hook and hook.progress:
+                    hook.progress.boundary(lambda: hook._checkpoint(frame.f_locals['learner'], frame)
+                                           if hook.resume is None else None)
+                if hook and hook.resume is None and rank_task != task:
+                    rank_task = task
+                    if hook.status: hook.status.update(task=task, step=hook.step, phase='upstream rank SVD')
+                    hook._checkpoint(frame.f_locals['learner'], frame)
+                started = time.monotonic()
+                log(f'MNIST task={task} upstream rank SVD start')
+                result = original_rank(*args, **kwargs)
+                log(f'MNIST task={task} upstream rank SVD seconds={time.monotonic()-started:.3f}')
+                return result
+            module.compute_matrix_rank_summaries = rank_progress
             original = module.torch.zeros
             if params.get('fixture_rank_padding'):
                 def zeros(shape, *args, **kwargs):
@@ -202,7 +199,9 @@ def run_native(benchmark, params, run_dir, hook):
                     return original(shape, *args, **kwargs)
                 module.torch.zeros = zeros
             try: result = module.online_expr(params)
-            finally: module.torch.zeros = original
+            finally:
+                module.torch.zeros = original
+                module.compute_matrix_rank_summaries = original_rank
         else:
             import lop.imagenet.single_expr as module
             old = module.train_images_per_class, module.test_images_per_class, module.images_per_class
@@ -243,6 +242,7 @@ def finalize(output, benchmark, *, mu_rel_default=.01):
     synthetic = False
     for path in base.glob('*/summary.json'):
         summary = json.loads(path.read_text())
+        if summary.get('status') == 'PAUSED': continue
         synthetic |= summary.get('fake_data', False) or summary.get('smoke', False)
         if summary['arm'] == 'bp':
             bp = summary['tasks']; tasks = len(bp)
@@ -272,6 +272,20 @@ def finalize(output, benchmark, *, mu_rel_default=.01):
 
 
 def run(args):
+    name = args.arm if args.replacement_rate is None else f'cbp_rr_{args.replacement_rate:g}'
+    out = Path(args.out).resolve()/'b5'/args.benchmark/name
+    out.mkdir(parents=True, exist_ok=True)
+    status = Status(out, f'B5/{args.benchmark}/{name}')
+    status.update(phase='preparing data')
+    try:
+        result = _run(args, status)
+        status.update(phase='completed')
+        return result
+    finally:
+        status.close()
+
+
+def _run(args, status):
     timing_started = time.monotonic()
     upstream_imports()
     if args.benchmark == 'regression' and args.arm == 'cbp' and args.replacement_rate is None:
@@ -303,9 +317,29 @@ def run(args):
                  'fake_data': args.fake_data, 'smoke': args.smoke, 'mu_rel_default': args.mu_rel_default,
                  'mu_source': args.mu_rel_default_source, 'mu_rel_default_source': args.mu_rel_default_source}
     manifest = run_dir/'manifest.json'
-    if args.resume and manifest.exists() and json.loads(manifest.read_text()) != signature:
-        raise ValueError('resume configuration/commit mismatch')
-    if args.resume and (run_dir/'summary.json').exists(): return json.loads((run_dir/'summary.json').read_text())
+    previous = None
+    if args.resume and (run_dir/'summary.json').exists():
+        previous = json.loads((run_dir/'summary.json').read_text())
+    expected_tasks = (int(params['num_data_points'])//int(params['flip_after'])
+                      if args.benchmark == 'regression' else params['num_tasks'])
+    completed = (previous is not None and previous.get('status') in (None, 'COMPLETED')
+                 and len(previous.get('tasks', [])) == expected_tasks)
+    if args.resume and manifest.exists():
+        old_signature = json.loads(manifest.read_text())
+        # Completed, unmeasured legacy CBP arms retain their original provenance.
+        # Training recipes/streams must still agree; never replay those arms just
+        # because this observability-only implementation has a new commit.
+        compatible = old_signature == signature
+        if completed and args.arm == 'cbp':
+            compatible = ({k: v for k, v in old_signature.items() if k != 'code_commit'} ==
+                          {k: v for k, v in signature.items() if k != 'code_commit'})
+            compatible &= previous.get('upstream_commit') == UPSTREAM_PIN
+        if not compatible: raise ValueError('resume configuration/commit mismatch')
+    elif completed:
+        raise ValueError('completed B5 run has no manifest for identity validation')
+    if completed:
+        log(f'reusing completed {args.benchmark} {arm_name} code_commit={previous.get("code_commit")}')
+        return previous
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     if not prepare_data(args.benchmark, params, run_dir, fake=args.fake_data, smoke=args.smoke, data_dir=args.data_dir):
         entry = {'status': 'skipped: data unavailable', 'measurements_valid': False}
@@ -326,14 +360,19 @@ def run(args):
     resumed = None
     if args.resume and checkpoint_path.exists():
         with checkpoint_path.open('rb') as f: resumed = pickle.load(f)
+        if resumed.get('identity', signature) != signature:
+            raise ValueError('B5 checkpoint identity mismatch')
+    progress = Progress(run_dir, signature, name='deadline.pt')
+    status.update(phase='data ready')
     def checkpoint(state):
-        atomic_pickle(checkpoint_path, state)
+        atomic_pickle(checkpoint_path, {**state, 'identity': signature})
         write_json(run_dir/'measurements.json', state['rows'])
         write_csv(run_dir/'measurements.csv', state['rows'])
+        return checkpoint_path.stat().st_size
     hook = LearnHook(args.benchmark, args.arm, params,
                      B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default) if args.arm == 'bp' else None,
                      seed=args.seed, checkpoint=checkpoint, resume=resumed,
-                     time_steps=args.smoke, timing_started=timing_started)
+                     time_steps=args.smoke, timing_started=timing_started, progress=progress, status=status)
     start = time.monotonic()
     try:
         logs = run_native(args.benchmark, params, run_dir, hook)
@@ -341,15 +380,42 @@ def run(args):
         merge_json(output/'gate.json', f'B5_{args.benchmark}',
                    {'status': 'INVALID', 'measurements_valid': False, 'run_error': str(error)})
         raise
+    finally:
+        status.update(phase='saving checkpoint')
+    # The native loop has now consumed its final learn return and updated logs.
+    hook._checkpoint(hook.last_learner, hook.last_frame)
+    hook.last_frame = None
     atomic_pickle(run_dir/'upstream.pkl', logs)
     Path(params['data_file']).unlink(missing_ok=True)
     tasks = [{**metadata, **task} for task in hook.results.tasks()]
-    summary = {**metadata, 'arm': args.arm, 'tasks': tasks, 'wall_seconds': time.monotonic()-start,
+    summary = {**metadata, 'status': 'COMPLETED', 'arm': args.arm, 'tasks': tasks, 'wall_seconds': time.monotonic()-start,
                'smoke': args.smoke, 'tasks_run': len(tasks), 'measurements': len(hook.rows)}
     summary['measurement_point_seconds'] = hook.measurement_point_seconds
     summary['measurement_seconds'] = sum(point['seconds'] for point in hook.measurement_point_seconds)
     summary['training_seconds'] = max(0., summary['wall_seconds']-summary['measurement_seconds'])
     summary['steps_run'] = hook.step
+    if args.smoke and args.benchmark == 'mnist':
+        # Time exactly 2000 plain upstream learn calls, with the hook absent.
+        import copy
+        from adapters.lop_hooks import detached
+        live = hook.last_learner
+        features = live.previous_features
+        live.previous_features = detached(features)
+        try: learner = copy.deepcopy(live)
+        finally: live.previous_features = features
+        device = next(learner.net.parameters()).device
+        x, y = (part[-params.get('mini_batch_size', 1):].to(device) for part in hook.buffer.batch())
+        saved_rng = rng_state()
+        if device.type == 'cuda': torch.cuda.synchronize(device)
+        started = time.monotonic()
+        for _ in range(2000): learner.learn(x=x, target=y)
+        if device.type == 'cuda': torch.cuda.synchronize(device)
+        upstream_seconds = (time.monotonic()-started)/2000
+        restore_rng(saved_rng)
+        summary['upstream_step_seconds'] = upstream_seconds
+        hooked = float(np.median(hook.step_wall_seconds[hook.task_steps:]))
+        log(f'MNIST 2000 hook-disabled steps upstream={upstream_seconds*1000:.3f} ms/step '
+            f'hook={hooked*1000:.3f} ms/step overhead={(hooked-upstream_seconds)*1000:.3f} ms/step')
     if args.smoke:
         second_task = hook.step_wall_seconds[hook.task_steps:2*hook.task_steps]
         summary['startup_seconds'] = hook.startup_seconds

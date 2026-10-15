@@ -647,3 +647,115 @@ with raw final accuracy retained; all gate thresholds are unchanged.
 Validation for this revision: regenerated nb1/nb2/nb3 and the CIFAR pilot, and
 compiled every generated code cell. No pytest or commit. Notebook pins must be
 regenerated against the eventual published implementation before Kaggle runs.
+
+### NB2/NB3 complete resume, deadlines and progress
+
+B1/B2 retain upstream `main()` and replay cached epoch results, restoring weights,
+SGD momentum, `best_acc`, Python/NumPy/CPU/CUDA RNG, buffer/counters, rows and
+measurement streams before live training. Latest/previous atomic checkpoints
+cover every tenth/measured epoch, pending measurements, the final point and the
+one-time official test. B3 retains PyCIL's loops, replays completed task evaluations,
+and restores all learner attributes, grown/frozen networks, exemplars/class means,
+trainer curves and hook state. Mid-task resume skips completed epoch iterations;
+optimizer/scheduler state is restored before the first live iteration. It checkpoints
+every 25 epochs, after upstream epoch evaluation/logging, and after `after_task()`.
+Unavailable upstream eval metrics print `None`; no extra evaluation is performed.
+B4 automatically resumes training and restores measurement streams, skipping
+persisted measurement epochs. Identities reject setting/student, teacher hash,
+code/upstream commit, μ candidate or execution-bound mismatches; CSV/JSON artifacts
+are checkpointed too. Legacy outputs without identity are refused.
+
+NB2/NB3 set `SESSION_HOURS = 11.5`, stream lane/job logs, and print ten-minute
+GPU/last-line heartbeats. Epoch/point boundaries checkpoint and return 75 with
+`PAUSED` when remaining time is below the previous epoch plus point cost and a
+ten-minute margin. Both queues stop launching work, archive (including smoke
+checkpoints), and print “PAUSED — rerun with this version's output attached”.
+Finished summaries are identity-checked; B4 training and measurement completion
+markers are separate. Point/site/CG/null progress and the first-point full-run
+projection are printed. Measurement settings and vendored sources are unchanged.
+
+Pyflakes passed; NB2/NB3 and the shared-setup pilot were rebuilt and their code
+cells compiled. No pytest or commit. One CPU fake-data round trip per runner
+compared straight training against an epoch-1 pause/resume (two epochs for
+B1/B2/B4; two tasks of two epochs for B3). Clocks were fixed for bitwise log
+comparison. B3 additionally matched old-network/exemplar state, scheduler and
+trainer curves. B4 used a convolutional fixture because local `dual_growth` is
+unavailable; production Gromo execution remains unverified. Printed results:
+
+```text
+ROUND_TRIP B1: params=True optimizer=True RNG=True log_rows=True (bit-for-bit; fixed timing clock)
+ROUND_TRIP B1: elapsed=14.97s
+ROUND_TRIP B2: params=True optimizer=True RNG=True log_rows=True (bit-for-bit; fixed timing clock)
+ROUND_TRIP B2: elapsed=18.22s
+ROUND_TRIP B3: params=True optimizer=True RNG=True log_rows=True (bit-for-bit; fixed timing clock)
+ROUND_TRIP B3: elapsed=40.74s
+ROUND_TRIP B4: params=True optimizer=True RNG=True log_rows=True (bit-for-bit; fixed timing clock)
+ROUND_TRIP B4: elapsed=2.57s
+```
+
+Regenerate notebook pins with the published implementation before Kaggle.
+
+### NB1 session resume and observability
+
+Stage A now checkpoints null/A5 by epoch/site, selection by epoch/site/rank/kind,
+and joint/μ by epoch/μ. Solver audits retain per-site/μ progress and their private
+random streams. Completed command markers avoid repeating site selection on a
+finished command. Legacy epoch markers remain valid. The full-shape cost smoke
+runs before the full A5 sweep, and its projection prints immediately. Site/μ/rank,
+CG convergence/iterations, null replicates, selection, and A5 trace phases print
+progress without changing measurement settings.
+
+B5 retains upstream loops and prefix replay, checkpoints each task (before MNIST's
+rank SVD as well as before its first learn), every 15 wall minutes within a task,
+and on deadline. Resume includes model/optimizer/CBP state, RNG, replay statistics,
+measurement rows/buffer/private generators, upstream log arrays, and MNIST's
+cumulatively permuted data. The timed smoke previously captured the wrapper frame;
+it now finds the actual upstream frame. MNIST replay previously reconstructed its
+data using a prefix that omitted CBP RNG draws; its checkpoint now restores that
+data explicitly. The smoke also times 2000 hook-disabled upstream learn calls.
+Task metrics/checkpoint bytes and 10,000-step intervals print; runners publish
+30-second liveness with a separate last-progress timestamp.
+
+NB1 and standalone Stage A reuse NB23's deadline, streamed launch, heartbeat and
+logging helpers. Sessions last 11.5 hours, exit 75 pauses launching new work, and
+finally archives outputs. NB1 snapshots every 15 minutes. Completed B5 arms skip
+the smoke too. Completed unmeasured legacy CBP runs may retain their original code
+commit after matching all other manifest fields and the upstream pin. Other resume
+identity mismatches refuse. Expanded output files take precedence over an older
+archive from the same attached dataset; conflicts between datasets still refuse.
+
+Frozen archive diagnosis: `resume.pkl` is included; only input `data` directories,
+temporary files and locks are excluded. Task checkpoints do **not** trigger archives
+in the old notebook; snapshots were hourly. The archiver catches failures and keeps
+the old tar while training continues. In particular, `raw * 3 > 5 GB` rejects a
+snapshot before replacing it. The timed smoke's wrong-frame checkpoints also hid
+the full run's much larger upstream arrays (MNIST alone preallocates roughly
+240 MB of accuracy/weight logs). The most likely explanation for an exactly frozen
+archive across expected snapshot times is stale/failed archiving, rather than proof
+that `learn` hung. An upstream CPU SciPy `gesvd` on each 2000-by-2000 hidden feature
+matrix is a separate possible stall before the next learn checkpoint. The supplied
+size observations alone cannot establish which occurred in that Kaggle process.
+Archive failures now publish `STALE` status and largest-file/peak-budget diagnostics;
+SVD start/end, checkpoint bytes and runner timestamps distinguish these cases.
+OpenBLAS threads are limited to two alongside the existing OMP/MKL limits. Attached
+MNIST is selected directly, avoiding the old broad retry that mislabeled any MNIST
+failure as a download error.
+
+Files changed for NB1: `adapters/lop_hooks.py`, `diagnostics/stage_a.py`,
+`diagnostics/vna_solver_validation.py`, `experiments/stage_b5.py`,
+`experiments/vna_resume.py`, `experiments/vna_kaggle.py`, the Stage-A/NB1 notebook
+builders, shared `build_kaggle_vna_stage_b_rest.py`, this document, and rebuilt
+Stage-A/NB1 notebooks. NB23 work is retained. Pyflakes and notebook cell compilation
+passed. No pytest or commit. One CPU fake-data round trip per runner printed:
+
+```text
+ROUND_TRIP B5/regression mid-task stop=115: params=True optimizer=True CBP=True RNG=True upstream_logs=True log_rows=True step_log=True buffer=True
+ROUND_TRIP B5/mnist mid-task stop=115: params=True optimizer=True CBP=True RNG=True upstream_logs=True log_rows=True step_log=True buffer=True
+ROUND_TRIP B5 elapsed=24.75s
+ROUND_TRIP Stage A null: rows=True completed_units=2 invariant=True deadline_exit=75 (bit-for-bit; fixed timing clock)
+ROUND_TRIP Stage A elapsed=16.55s
+```
+
+These round trips exercise the pinned LoP loops and Stage-A null measurements on
+CPU; full GPU measurements and the new solver cache were not run. Notebook pins
+still require regeneration with the published implementation commit before Kaggle.

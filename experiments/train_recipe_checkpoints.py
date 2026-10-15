@@ -9,7 +9,8 @@ from experiments.vna_provenance import code_commit, resume_code_history
 import torch
 from experiments.shared_protocol import (atomic_torch_save, atomic_json_save,
     make_train_loader, make_eval_loader, evaluate, seed_everything,
-    rng_state, restore_rng, validate_resume_protocol)
+    validate_resume_protocol)
+from experiments.vna_resume import Progress, rng_state, restore_rng, log
 from experiments.vna_support import setup_data, build_model, DeviceCIFAR, DeviceTrainLoader, fast_train_epoch
 
 
@@ -41,10 +42,14 @@ def run(args):
                 "gpu_data": args.gpu_data, "amp": args.amp, "channels_last": args.channels_last,
                 "cudnn_benchmark": args.cudnn_benchmark, "epochs": 200, "architecture": architecture if architecture == "resnet18-quarter" else "tiny" if args.fake_data else "resnet18"}
     commit = code_commit(); code_history = [{"from_epoch": 1, "commit": commit}]
+    resume_identity = getattr(args, 'vna_identity', {'setting': 'B4',
+                              'code_commit': commit, 'protocol': protocol})
     epoch, history, loader_state = 0, [], None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         validate_resume_protocol(checkpoint["protocol"], protocol)
+        if architecture == 'resnet18-quarter' and checkpoint.get('identity') != resume_identity:
+            raise ValueError('B4 resume identity mismatch')
         code_history = resume_code_history(checkpoint, commit)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -65,7 +70,18 @@ def run(args):
         eval_loader = LimitedLoader(eval_loader, args.eval_limit_batches)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+    progress = Progress(output.parent, resume_identity, name='recipe/latest.pt') if architecture == 'resnet18-quarter' else None
+    def snapshot(current):
+        return {"kind": "vna_recipe", "epoch": current, "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "scheduler": scheduler.state_dict(),
+                "rng": rng_state(), "train_loader_generator_state": loader.generator.get_state(),
+                "splits": [indices, trigger, eval_indices, tuning], "protocol": protocol, "history": history,
+                "code_commit": commit, "code_history": code_history}
+    def boundary(current):
+        if progress:
+            progress.boundary(lambda: progress.save(snapshot(current)), history[-1]['seconds'] if history else 0.)
     for current in range(epoch + 1, min(200, args.max_epochs) + 1):
+        boundary(current-1)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         start = time.perf_counter()
@@ -80,19 +96,28 @@ def run(args):
         scheduler.step()
         history.append({"code_commit": commit, "code_history": list(code_history), "epoch": current, "train": metrics, "eval": eval_metrics,
                         "lr": lr, "train_seconds": train_seconds, "seconds": time.perf_counter() - start})
-        payload = {"kind": "vna_recipe", "epoch": current, "model": model.state_dict(),
-                   "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(), "scheduler": scheduler.state_dict(),
-                   "rng": rng_state(), "train_loader_generator_state": loader.generator.get_state(),
-                   "splits": [indices, trigger, eval_indices, tuning], "protocol": protocol, "history": history,
-                   "code_commit": commit, "code_history": code_history}
-        atomic_torch_save(payload, output / "latest.pt")
+        payload = snapshot(current)
+        if progress: payload["identity"] = progress.identity
+        if progress: progress.save(payload)
+        else: atomic_torch_save(payload, output / "latest.pt")
         if current % 10 == 0 or current in (98, 148) or architecture == "resnet18-quarter" and current == args.max_epochs:
             # Periodic diagnostics need only fp32 model weights, never momentum.
-            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol", "code_commit", "code_history", "history")},
+            atomic_torch_save({k: payload[k] for k in ("kind", "epoch", "model", "protocol", "code_commit", "code_history", "history", *(("identity",) if progress else ()))},
                               output / f"epoch_{current:03d}.pt")
         atomic_json_save(history, output / "history.json")
-        print({"epoch": current, "train_seconds": train_seconds,
-               "checkpoint_bytes": sum(p.stat().st_size for p in output.glob("*.pt"))}, flush=True)
+        log(f"epoch={current} train_loss={metrics['loss']:.6f} train_acc={metrics['accuracy']:.6f} "
+            f"eval_loss={eval_metrics['loss']:.6f} eval_acc={eval_metrics['accuracy']:.6f} "
+            f"lr={lr} seconds={history[-1]['seconds']:.3f}")
+        boundary(current)
+    # Reconstruct the persisted log even if restart has no live epoch left.
+    atomic_json_save(history, output / 'history.json')
+    if architecture == 'resnet18-quarter' and history and history[-1]['epoch'] == min(200, args.max_epochs):
+        current = history[-1]['epoch']
+        target = output / f'epoch_{current:03d}.pt'
+        if not target.exists():
+            payload = snapshot(current)
+            payload['identity'] = resume_identity
+            atomic_torch_save({k: payload[k] for k in ('kind', 'epoch', 'model', 'protocol', 'code_commit', 'code_history', 'history', 'identity')}, target)
     if epoch >= 200 or args.max_epochs >= 200:
         atomic_json_save({"epoch": 200}, output / "training_done.json")
     return output / "latest.pt"

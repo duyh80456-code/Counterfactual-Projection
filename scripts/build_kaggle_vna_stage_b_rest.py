@@ -30,11 +30,15 @@ Attach its Stage A summary to select the official μ; otherwise it remains pendi
 Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.
 Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch
 smokes include all measurement sites/ranks/nulls and feed the total GPU-hour
-budget. Hourly archives retain logs and B4 checkpoints. B1/B2/B3 restart after
-an interrupted training run; completed summaries are reused. B4 resumes its
-latest recipe checkpoint. The pin must include these files: since implementation
+budget. Hourly archives retain full checkpoints and logs. B1/B2 replay completed epochs,
+B3 resumes tasks and epoch prefixes, and B4 resumes training and measurements.
+The 11.5-hour session deadline pauses cleanly; attach its output to resume. The pin must include these files: since implementation
 is uncommitted, regenerate with the eventual published commit before Kaggle.
-'''), cell('code', f'''REPO_COMMIT = "{commit}"
+'''), cell('code', f'''import time
+SESSION_HOURS = 11.5
+SESSION_START = time.time()
+VNA_DEADLINE = SESSION_START + SESSION_HOURS * 3600
+REPO_COMMIT = "{commit}"
 GPU_HOURS_BUDGET = 8
 ALLOW_OVER_BUDGET = False
 MU_REL_DEFAULT = 1e-3
@@ -52,7 +56,43 @@ STAGE_B = RUN_ROOT / "outputs" / "stageB"
 STAGE_B.mkdir(parents=True, exist_ok=True)
 restore_archives(Path("/kaggle/input"), STAGE_B)
 ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2",
-       "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python"}
+       "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python", "VNA_DEADLINE": str(VNA_DEADLINE)}
+session_paused = threading.Event()
+lane_state = {gpu: {"job": "idle", "last": ""} for gpu in range(2)}
+def finished(out, job):
+    filename = "training_summary.json" if job.get("train_only") else "summary.json"
+    path = out / filename
+    if not path.exists(): return False
+    summary = json.loads(path.read_text())
+    if summary.get("status") != "COMPLETED": return False
+    identity = summary.get("identity", summary)
+    expected_setting = "B4" if job["name"] == "b4" else job["name"].split("_")[0].upper()
+    if identity.get("setting") != expected_setting or identity.get("workers") != 2:
+        raise ValueError(f"completed job protocol mismatch: {out}")
+    if "--student" in job["args"] and identity.get("student") != job["args"][job["args"].index("--student")+1]:
+        raise ValueError(f"completed job student identity mismatch: {out}")
+    if job.get("teacher"):
+        from scripts.fetch_teachers import TEACHERS
+        if identity.get("teacher_hash") != TEACHERS[job["teacher"]][1]:
+            raise ValueError(f"completed job teacher identity mismatch: {out}")
+    if identity.get("code_commit") != REPO_COMMIT:
+        raise ValueError(f"completed job code identity mismatch: {out}")
+    candidates = identity.get("mu_candidates") or sorted({summary.get("mu_rel_default", MU_REL_DEFAULT), .01})
+    if candidates != sorted({MU_REL_DEFAULT, .01}):
+        raise ValueError(f"completed job μ identity mismatch: {out}")
+    return True
+def pause_due():
+    if time.time() >= VNA_DEADLINE - 600: session_paused.set()
+    return session_paused.is_set()
+def launch(cmd, gpu, name, log_path):
+    from experiments.vna_resume import launch_logged
+    return launch_logged(cmd, cwd=REPO, env=gpu_env(gpu), log_path=log_path,
+                         lane=gpu, job=name, lanes=lane_state,
+                         paused=session_paused, deadline=VNA_DEADLINE)
+def heartbeat():
+    from experiments.vna_resume import print_heartbeat
+    while not archive_stop.wait(600):
+        print_heartbeat(RUN_ROOT / "outputs", SESSION_START, VNA_DEADLINE, lane_state)
 archive_lock = threading.Lock(); archive_stop = threading.Event(); archive_errors = []
 def archive_outputs():
     with archive_lock:
@@ -70,7 +110,7 @@ def command(job, out, *, smoke=False, measure=False):
            "--mu-rel-default", str(MU_REL_DEFAULT), "--mu-source", MU_SOURCE]
     if OFFICIAL_MU is not None:
         cmd += ["--official-mu", str(OFFICIAL_MU)]
-    if not smoke and job["name"] == "b4" and (out / "recipe/latest.pt").exists() and job["args"] == ["train"] and not measure:
+    if job["name"] == "b4" and (out / "recipe/latest.pt").exists() and job["args"] == ["train"] and not measure:
         cmd += ["--resume", str(out / "recipe/latest.pt")]
     return cmd + (["--smoke"] if smoke else [])
 def gpu_env(gpu): return {**ENV, "CUDA_VISIBLE_DEVICES": str(gpu)}
@@ -90,17 +130,20 @@ def prepare_teacher(job, gpu):
 b4_train_done = threading.Event(); b4_train_errors = []
 lane_timings = {}
 archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.start()
+heartbeat_thread = threading.Thread(target=heartbeat, daemon=True); heartbeat_thread.start()
 '''
 
 SMOKE = '''def smoke_lane(gpu, jobs):
     costs = []
     for job in jobs:
+        if pause_due(): break
         if job.get("wait_for_train"): continue
-        if (STAGE_B / job["name"] / "summary.json").exists(): continue
+        if finished(STAGE_B / job["name"], job): continue
         started = time.monotonic()
         prepare_teacher(job, gpu)
-        smoke_out = RUN_ROOT / "smoke" / "outputs" / "stageB" / job["name"]
-        subprocess.run(command(job, smoke_out, smoke=True), cwd=REPO, env=gpu_env(gpu), check=True)
+        smoke_out = STAGE_B / "_smoke" / job["name"]
+        if not launch(command(job, smoke_out, smoke=True), gpu, job["name"]+"_smoke",
+                      RUN_ROOT / f'{job["name"]}_smoke_gpu{gpu}.log'): break
         summary = json.loads((smoke_out / "summary.json").read_text())
         training = summary["training_seconds"] * job["epochs"] / summary["epochs_run"]
         point = max(p["seconds"] for p in summary["measurement_point_seconds"])
@@ -115,7 +158,7 @@ try:
     per_lane = {f"GPU{gpu}": sum(c["projected_gpu_hours"] + c["smoke_gpu_hours"] for c in costs)
                 for gpu, costs in enumerate(projections)}
     # B4 smoke train includes measurement; charge its measurement cost to GPU0.
-    b4_smoke = RUN_ROOT / "smoke/outputs/stageB/b4/summary.json"
+    b4_smoke = STAGE_B / "_smoke/b4/summary.json"
     if b4_smoke.exists() and any(j.get("wait_for_train") for j in LANES[0]):
         b4 = json.loads(b4_smoke.read_text())
         per_lane["GPU0"] += 12 * max(p["seconds"] for p in b4["measurement_point_seconds"]) / 3600
@@ -124,7 +167,7 @@ try:
     total = sum(per_lane.values())
     (STAGE_B / "cost_projection.json").write_text(json.dumps({"total_gpu_hours": total, "per_lane_gpu_hours": per_lane, "settings": projections}, indent=2))
     archive_outputs()
-    if total > GPU_HOURS_BUDGET and not ALLOW_OVER_BUDGET:
+    if not session_paused.is_set() and total > GPU_HOURS_BUDGET and not ALLOW_OVER_BUDGET:
         raise RuntimeError("Projected total GPU-hours exceed budget; review before ALLOW_OVER_BUDGET")
 except Exception:
     archive_stop.set(); archiver.join(timeout=10); archive_outputs(); raise
@@ -134,20 +177,21 @@ TRAIN = '''def train_lane(gpu, jobs):
     started = time.monotonic()
     try:
         for job in jobs:
+            if pause_due(): break
             out = STAGE_B / job["name"]
             if job.get("wait_for_train"):
-                while not (out / "recipe/epoch_200.pt").exists():
+                while not (out / "training_summary.json").exists():
+                    if pause_due(): return
                     if b4_train_done.wait(2):
-                        if b4_train_errors or not (out / "recipe/epoch_200.pt").exists():
+                        if b4_train_errors or not (out / "training_summary.json").exists():
                             raise RuntimeError("B4 final checkpoint unavailable: " + str(b4_train_errors))
-            if (out / "summary.json").exists():
+            if finished(out, job):
                 if job.get("train_only"): b4_train_done.set()
                 print("Reusing completed", job["name"], flush=True); continue
             prepare_teacher(job, gpu)
             try:
-                with (RUN_ROOT / f'{job["name"]}_gpu{gpu}.log').open("a", buffering=1) as log:
-                    subprocess.run(command(job, out), cwd=REPO, env=gpu_env(gpu), check=True,
-                                   stdout=log, stderr=subprocess.STDOUT)
+                if not launch(command(job, out), gpu, job["name"],
+                              RUN_ROOT / f'{job["name"]}_gpu{gpu}.log'): break
             except Exception as error:
                 if job.get("train_only"): b4_train_errors.append(str(error))
                 raise
@@ -165,6 +209,7 @@ try:
         list(pool.map(lambda item: train_lane(*item), enumerate(LANES)))
 finally:
     archive_stop.set(); archiver.join(timeout=10); archive_outputs()
+if session_paused.is_set(): print("PAUSED — rerun with this version's output attached", flush=True)
 if archive_errors: raise RuntimeError(archive_errors)
 '''
 
@@ -209,7 +254,8 @@ archive_outputs()
 
 def without_pytest(setup):
     lines = setup.splitlines(keepends=True)
-    start = next(i for i, line in enumerate(lines) if '"pytest"' in line)
+    start = next((i for i, line in enumerate(lines) if '"pytest"' in line), None)
+    if start is None: return setup
     del lines[start:start+2]
     return ''.join(lines)
 
@@ -229,3 +275,8 @@ for path in candidates:
         OFFICIAL_MU = float(summary["mu_rel_default"]); break
 print("measurement μ candidates:", (1e-3, 1e-2), "official μ:", OFFICIAL_MU)
 '''
+
+
+# NB1 and the standalone Stage A notebook use the same deadline/launch/heartbeat.
+SESSION_RUNTIME = RUNTIME[RUNTIME.index('session_paused ='):RUNTIME.index('def finished(')]
+SESSION_RUNTIME += RUNTIME[RUNTIME.index('def pause_due():'):RUNTIME.index('archive_lock =')]

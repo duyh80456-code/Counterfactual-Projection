@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import statistics
 import time
+from experiments.vna_resume import Status, log, pause_if_due
 from functools import wraps
 
 import torch
@@ -202,20 +203,30 @@ class Measurement:
             clone = copy.deepcopy(self.model)
             scores = {}
             for site in self.sites:
+                log(f'{self.args.measurement} epoch={self.epoch} site={site} rank={self.rank} selection start')
+                started = time.monotonic()
                 candidate = tiny_candidate(clone, site, stat, self.rank, self.args.seed)
                 A, _ = extract_tiny_A(clone, candidate)
                 A, _ = prepare_A(clone, site, A, 'tiny_U')
                 _, diag = vna_block_correction(clone, site, A, batch,
                     VNAConfig(seed=self.args.seed, cache_block_input=True), apply_gain_guard=False)
+                log(f'{self.args.measurement} epoch={self.epoch} site={site} rank={self.rank} '
+                    f'selection seconds={time.monotonic()-started:.3f} '
+                    f'CG iterations={diag.get("cg_iters_used")} converged={diag.get("cg_converged")}')
                 if not diag['nonfinite'] and math.isfinite(diag['V']):
                     scores[site] = diag['V']
             self._top = sorted(scores, key=lambda s: (-scores[s], s))[:3]
         return self._top[:1] if self.args.cost_smoke else self._top
 
     def correction(self, sites, A, batch, *, mu_rel=1e-2, cotangent=None, mu=None):
+        started = time.monotonic()
         d, V, rho, diag = joint_correction(self.model, sites, A, batch,
             replace(self.cfg, damping_rel=mu_rel), cotangent=cotangent, mu=mu,
             o_params=_resolve_site(self.model, sites[0])[2] if len(sites) == 1 else None)
+        log(f'{self.args.measurement} epoch={self.epoch} site={sites} '
+            f'rank={len(A[sites[0]]["weight"])} mu={mu_rel} '
+            f'seconds={time.monotonic()-started:.3f} CG iterations={diag.get("cg_iters_used")} '
+            f'converged={diag.get("cg_converged")}')
         return d, diag
 
     def derivative(self, sites, A, d):
@@ -240,6 +251,7 @@ class Measurement:
                 convergence = []
                 normalizations = []
                 for replicate in range(1 if self.args.cost_smoke else 8):
+                    started = time.monotonic()
                     purpose = f'null:{site}:{kind}:{replicate}'
                     gen = dedicated_generator(self.args.seed, f'{self.epoch}:{purpose}:stat', self.device)
                     cgen = dedicated_generator(self.args.seed, f'{self.epoch}:{purpose}:correction', self.device)
@@ -257,6 +269,8 @@ class Measurement:
                     values['rho'].append(diag['rho'])
                     normalized.append(float(eig[0]) / float(ns.square().sum()))
                     convergence.append(diag['cg_converged'])
+                    log(f'null epoch={self.epoch} site={site} kind={kind} '
+                        f'{replicate+1}/8 seconds={time.monotonic()-started:.3f}')
                 for key in real:
                     p = empirical_p(real[key], values[key])
                     rows.append({'site': site, 'null_kind': kind, 'stat': key, 'real': real[key],
@@ -286,6 +300,7 @@ class Measurement:
         for site in [*self.top_sites(), 'joint']:
             sites = self.sites if site == 'joint' else [site]
             for mu_rel in MU_GRID:
+                if getattr(self, 'unit_mu', mu_rel) != mu_rel: continue
                 d, diag = self.correction(sites, A, batch, mu_rel=mu_rel)
                 rows.append({'site': site, 'mu_rel': mu_rel, **diag,
                     'normalization_constant': {s: self.normalizations[s] for s in sites},
@@ -322,8 +337,11 @@ class Measurement:
         ranks = (1,) if self.args.smoke else ((64,) if self.args.cost_smoke else (4, 16, 64))
         batch = self.draw('selection-correction', self.batch_size)
         for site in self.top_sites():
+            if getattr(self, 'unit_site', site) != site: continue
             for rank in ranks:
+                if getattr(self, 'unit_rank', rank) != rank: continue
                 for kind in SELECTION_KINDS:
+                    if getattr(self, 'unit_kind', kind) != kind: continue
                     samples = []
                     for draw in range(1 if self.args.cost_smoke else (2 if self.args.smoke else 3)):
                         stat = self.draw(f'selection-stat:{draw}', self.stat_size, stat=True)
@@ -363,6 +381,7 @@ class Measurement:
         batch = self.draw('joint-correction', self.batch_size)
         rows = []
         for mu_rel in (1e-2, 1e-3):
+            if getattr(self, 'unit_mu', mu_rel) != mu_rel: continue
             _, diag = self.correction(self.sites, A, batch, mu_rel=mu_rel)
             single = [self.correction([site], A, batch, mu_rel=mu_rel)[1] for site in self.sites]
             rows.append({'site': 'joint', 'mu_rel': mu_rel, 'rank': self.rank,
@@ -408,6 +427,7 @@ class Measurement:
         inferred = recipe_scheduler_state(checkpoint['epoch'])
         rows = []
         for site in self.sites:
+            log(f'a5 epoch={self.epoch} site={site} rank={cfg.r_max} selection start')
             candidate = tiny_candidate(model, site, stat, cfg.r_max, self.args.seed)
             A, rank = extract_tiny_A(model, candidate)
             random_A = phase0_random_A(A, generator=dedicated_generator(
@@ -425,9 +445,14 @@ class Measurement:
             for prefix, fixed in (('old_', False), ('fixed_', True)):
                 audit_cfg = cfg
                 common = dict(shared_logits=logits, shared_g=g, cg_breakdown_flags=True, rhs_normalized_cg=fixed)
+                started = time.monotonic()
                 _, tiny = vna_block_correction(model, site, A, batch, audit_cfg, **common)
                 _, random = vna_block_correction(model, site, random_A, batch, audit_cfg,
                     damping_cache=tiny.get('damping_cache'), apply_gain_guard=False, **common)
+                log(f'a5 epoch={self.epoch} site={site} rank={rank} mu={cfg.damping_rel} '
+                    f'variant={prefix} seconds={time.monotonic()-started:.3f} '
+                    f'CG iterations={[tiny.get(k, {}).get("iterations") for k in ("cg_z", "cg_q")]} '
+                    f'converged={[tiny.get(k, {}).get("converged") for k in ("cg_z", "cg_q")]}')
                 row[prefix + 'ratio'] = diagnostic_ratio(tiny.get('V', float('nan')), random.get('V', float('nan')))
                 for label, diag in (('', tiny), ('random_', random)):
                     for key, value in serial_diag(diag).items():
@@ -438,11 +463,14 @@ class Measurement:
                         for key in ('iterations', 'converged', 'relative_residual'):
                             row[prefix + label + solve + '_' + key] = record.get(key)
                         row[prefix + label + solve + '_breakdown'] = record.get('breakdown', False)
+            log(f'a5 epoch={self.epoch} site={site} trace start')
+            trace_started = time.monotonic()
             with joint_products(model, [site], {site: A}, batch[0], _resolve_site(model, site)[2]) as products:
                 p = sum(ref.numel() for _, ref in products.parameter_refs)
                 from methods.vna_ggn import GGNProducts
                 trace_F = GGNProducts(products, batch[1]).trace(
                     replace(self.cfg, hutchinson_probes=1) if self.args.smoke else self.cfg)
+            log(f'a5 epoch={self.epoch} site={site} trace seconds={time.monotonic()-trace_started:.3f}')
             row.update({key[4:]: value for key, value in list(row.items())
                         if key.startswith('old_') and key != 'old_site'})
             mu = row.get('old_mu')
@@ -553,7 +581,7 @@ def summarize(args):
                              'old_nonpositive_gain', 'old_nonfinite') if k in r],
         cause='absolute CG breakdown' if r.get('old_cg_z_breakdown') or r.get('old_cg_q_breakdown') else 'ratio recovered; inspect raw CG/finite/guard columns')
         for r in a5 if r['epoch'] == 100 and r.get('old_ratio') == 0 and r.get('fixed_ratio') is not None and r['fixed_ratio'] > 0]
-    result = {**metadata(args, time.perf_counter()-start),
+    result = {**metadata(args, time.perf_counter()-start), 'status': 'COMPLETED',
         'mu_rel_default': 1e-3 if pairs and fraction >= MU_FRACTION else 1e-2,
         'mu_rule': {'ratio': MU_RATIO, 'threshold_fraction': MU_FRACTION,
                     'qualifying_points': hits, 'converged_pairs': len(pairs), 'fraction': fraction},
@@ -565,7 +593,8 @@ def summarize(args):
     return result
 
 
-def run(args):
+def _run(args, status):
+    last_seconds = 0.
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     for filename in FILES.values():
@@ -575,11 +604,30 @@ def run(args):
     if args.measurement == 'trace-cost':
         return real_trace_smoke(args)
     if args.measurement == 'cost':
+        cost_path = output/'cost_projection.json'
+        if cost_path.exists():
+            result = load_json(cost_path)
+            if result.get('identity') != cost_identity(args):
+                raise ValueError('Stage A cost identity mismatch')
+            log(f'Stage A restored cost projection: {result["total_projected_gpu_hours"]:.3f} GPU-hours')
+            return result
         return cost_smoke(args)
     if args.measurement == 'summary':
         for measurement in FILES:
             merge_measurement(output, measurement)
         return summarize(args)
+    paths = [Path(p) for p in args.checkpoints] or sorted(Path(args.checkpoint_dir).glob('epoch_*.pt'))
+    command_marker = output/'_commands'/f'{args.measurement}.json'
+    def command_identity():
+        return {'args': {k: v for k, v in vars(args).items()
+                         if k not in ('output', 'checkpoint_dir', 'checkpoints')},
+                'checkpoints': [checkpoint_hash(path) for path in paths],
+                'code_commit': code_commit()}
+    if paths and command_marker.exists():
+        if load_json(command_marker)['identity'] != command_identity():
+            raise ValueError(f'Stage A command identity mismatch: {command_marker}')
+        log(f'reusing completed Stage A {args.measurement}')
+        return None
     if args.fake_data:
         torch.set_num_threads(1)
     with isolated_rng(dedicated_generator(args.seed, 'model')):
@@ -609,33 +657,79 @@ def run(args):
         for name in measurements:
             if not (args.smoke or args.cost_smoke) and epoch not in EPOCHS[name]:
                 continue
-            marker = output / 'completed' / name / f'epoch_{epoch:03d}.json'
             identity = {'schema_version': SCHEMA_VERSION, 'args': args_identity,
-                        'checkpoint_sha256': digest, 'measurement': name, 'epoch': epoch, 'implementation_revision': 'review-round-1'}
-            if marker.exists():
-                previous = load_json(marker)
-                if previous['identity'] != identity:
-                    raise ValueError(f'resume identity mismatch in {marker}')
-                print(f'skip {name} epoch {epoch}', flush=True)
+                        'checkpoint_sha256': digest, 'measurement': name, 'epoch': epoch,
+                        'implementation_revision': 'review-round-1'}
+            legacy = output/'completed'/name/f'epoch_{epoch:03d}.json'
+            if legacy.exists():
+                if load_json(legacy)['identity'] != identity:
+                    raise ValueError(f'resume identity mismatch in {legacy}')
+                log(f'skip {name} epoch {epoch}')
                 continue
-            start = time.perf_counter()
-            with invariant(model):
-                if args.cost_smoke:
-                    measurement.sites = [r.name for r in model.growing_blocks()][:1]
-                if name == 'a5':
-                    rows = measurement.measure_a5(payload)
-                elif name == 'solver':
-                    rows = measurement.measure_solver(path, output / 'solver_audit' / f'epoch_{epoch:03d}')
-                else:
-                    rows = getattr(measurement, 'measure_' + name)()
-            meta = metadata(args, time.perf_counter() - start)
-            rows = [{'epoch': epoch, **row, **meta} for row in rows]
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json_save({**meta, 'identity': identity, 'rows': rows}, marker)
-            print(f'completed {name} epoch {epoch}: {len(rows)} rows in {meta["wall_seconds"]:.2f}s', flush=True)
+            original_sites = list(measurement.sites)
+            if args.cost_smoke:
+                measurement.sites = original_sites[:1]
+            if name in ('null', 'a5'):
+                units = [(site, None, None) for site in measurement.sites]
+            elif name == 'selection':
+                ranks = (1,) if args.smoke else ((64,) if args.cost_smoke else (4, 16, 64))
+                units = [(site, rank, kind) for site in measurement.top_sites()
+                         for rank in ranks for kind in SELECTION_KINDS]
+            elif name in ('mu', 'joint'):
+                units = [('joint', None, mu) for mu in (MU_GRID if name == 'mu' else (1e-2, 1e-3))]
+            else:
+                units = [('joint', None, None)]
+            for index, (site, rank, kind) in enumerate(units):
+                marker = output/'completed'/name/f'epoch_{epoch:03d}_unit_{index:03d}.json'
+                unit_identity = {**identity, 'unit': [site, rank, kind]}
+                if marker.exists():
+                    if load_json(marker)['identity'] != unit_identity:
+                        raise ValueError(f'resume identity mismatch in {marker}')
+                    log(f'skip {name} epoch={epoch} site={site} rank={rank} kind={kind}')
+                    continue
+                def paused():
+                    atomic_json_save({**metadata(args, 0.), 'status': 'PAUSED',
+                                      'identity': identity}, output/'summary.json')
+                pause_if_due(paused, seconds=last_seconds)
+                status.update(job=name, epoch=epoch, site=site, rank=rank, kind=kind,
+                              step=index, phase='measuring')
+                log(f'start {name} epoch={epoch} site={site} rank={rank} kind={kind}')
+                start = time.perf_counter()
+                measurement.sites = [site] if name in ('null', 'a5') else original_sites
+                if name in ('mu', 'joint'): measurement.unit_mu = kind
+                if name == 'selection':
+                    measurement.unit_site, measurement.unit_rank, measurement.unit_kind = site, rank, kind
+                with invariant(model):
+                    if name == 'a5': rows = measurement.measure_a5(payload)
+                    elif name == 'solver':
+                        rows = measurement.measure_solver(path, output/'solver_audit'/f'epoch_{epoch:03d}')
+                    else: rows = getattr(measurement, 'measure_' + name)()
+                last_seconds = time.perf_counter()-start
+                meta = metadata(args, last_seconds)
+                rows = [{'epoch': epoch, **row, **meta} for row in rows]
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                atomic_json_save({**meta, 'identity': unit_identity, 'rows': rows}, marker)
+                log(f'completed {name} epoch={epoch} site={site} rank={rank} kind={kind} '
+                    f'seconds={last_seconds:.2f}')
+            measurement.sites = original_sites
+            if hasattr(measurement, 'unit_mu'): del measurement.unit_mu
         for name in measurements:
             merge_measurement(output, name)
-    return summarize(args) if args.measurement == 'all' else None
+    result = summarize(args) if args.measurement == 'all' else None
+    command_marker.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_save({**metadata(args, 0.), 'identity': command_identity(),
+                      'status': 'COMPLETED'}, command_marker)
+    return result
+
+
+def run(args):
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+    (Path(args.output)/'_status'/args.measurement).mkdir(parents=True, exist_ok=True)
+    status = Status(Path(args.output)/'_status'/args.measurement, 'StageA/'+args.measurement)
+    try:
+        return _run(args, status)
+    finally:
+        status.close()
 
 
 def real_trace_smoke(args):
@@ -655,6 +749,14 @@ def real_trace_smoke(args):
     result.update(metadata(args, result['coordinate_vjp_seconds'] * 4))
     atomic_json_save(result, Path(args.output) / 'trace_cost.json')
     return result
+
+
+def cost_identity(args):
+    paths = [Path(p) for p in args.checkpoints] or sorted(Path(args.checkpoint_dir).glob('epoch_*.pt'))
+    return {'args': {k: v for k, v in vars(args).items()
+                     if k not in ('output', 'checkpoint_dir', 'checkpoints')},
+            'checkpoint_sha256': [checkpoint_hash(p) for p in paths[:2]],
+            'code_commit': code_commit()}
 
 
 def cost_smoke(args):
@@ -682,16 +784,17 @@ def cost_smoke(args):
     measured = 0.
     for name in FILES:
         units = [load_json(p) for p in (Path(pilot.output)/'completed'/name).glob('*.json')]
-        if len(units) != 2: raise ValueError(f'incomplete cost smoke: {name}')
-        times = [u['wall_seconds'] for u in units]
+        times = [sum(u['wall_seconds'] for u in units if u['identity']['epoch'] == epoch) for epoch in epochs]
+        if not all(times): raise ValueError(f'incomplete cost smoke: {name}')
         measured += sum(times)
         projections[name] = {'checkpoint_seconds': times, 'sample_multiplier': multipliers[name],
             'projected_gpu_hours': max(times) * multipliers[name] * len(EPOCHS[name]) / 3600}
-    result = {**metadata(args, measured), 'cost_projection': projections,
+    result = {**metadata(args, measured), 'identity': cost_identity(args), 'cost_projection': projections,
               'total_projected_gpu_hours': sum(p['projected_gpu_hours'] for p in projections.values()),
               'smoke_gpu_hours': measured/3600, 'epochs': epochs,
               'projection_basis': 'maximum of two checkpoint equivalents; full shapes/CG; rank64 charged to all A3 ranks'}
     atomic_json_save(result, Path(args.output) / 'cost_projection.json')
+    log(f'Stage A cost projection: {result["total_projected_gpu_hours"]:.3f} GPU-hours; smoke={result["smoke_gpu_hours"]:.3f} GPU-hours')
     return result
 
 
@@ -718,37 +821,8 @@ def main():
 
 
 def restore_archives(input_root, output):
-    """Restore only Stage-A members; reject traversal and conflicting files."""
-    import tarfile
-    import zipfile
-    output = Path(output)
-    def save(name, data):
-        parts = Path(name).parts
-        if '..' in parts or Path(name).is_absolute():
-            raise ValueError('unsafe archive member')
-        if 'stageA' not in parts:
-            return
-        relative = Path(*parts[parts.index('stageA')+1:])
-        if not relative.parts:
-            return
-        target = output / relative
-        if target.exists() and target.read_bytes() != data:
-            raise ValueError(f'conflicting Stage-A restore file {relative}')
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-    for path in sorted(Path(input_root).rglob('*')):
-        if path.is_file() and 'stageA' in path.parts:
-            save('/'.join(path.parts[path.parts.index('stageA'):]), path.read_bytes())
-        elif path.is_file() and (path.name.endswith('.tar.gz') or path.suffix == '.tar'):
-            with tarfile.open(path) as archive:
-                for member in archive.getmembers():
-                    if member.isfile() and 'stageA' in Path(member.name).parts:
-                        save(member.name, archive.extractfile(member).read())
-        elif path.is_file() and path.suffix == '.zip':
-            with zipfile.ZipFile(path) as archive:
-                for name in archive.namelist():
-                    if not name.endswith('/') and 'stageA' in Path(name).parts:
-                        save(name, archive.read(name))
+    from experiments.vna_kaggle import restore_stage_archives
+    return restore_stage_archives(input_root, output, 'stageA')
 
 
 if __name__ == '__main__':

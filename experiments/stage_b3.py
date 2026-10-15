@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from experiments.cifar_pilot import add_arguments, start_memory, pilot_summary
 from adapters.icarl_hooks import ICaRLHook
+from experiments.vna_resume import Progress
 from diagnostics.icarl_measure import B3Measurement
 from diagnostics.vna_gate import evaluate_gate, setting_config
 from experiments.stage_b5 import working_directory, write_json, write_csv
@@ -93,7 +94,8 @@ def reproduction_gate(tasks, *, smoke=False, fake=False):
             'tolerance_pp': 1.5, 'tasks_run': len(tasks), 'smoke': smoke, 'fake_data': fake}
 
 
-def run(args):
+def run(args, *, measure_override=None, observe=None):
+    os.environ.setdefault('VNA_JOB', 'b3')
     upstream_imports()
     import trainer
     from utils.data_manager import DataManager
@@ -110,12 +112,17 @@ def run(args):
     measure = B3Measurement(metadata, mu_rel_default=args.mu_rel_default,
                             ranks=(4,) if args.pilot else (4, 8, 16),
                             null_repeats=2 if args.pilot else 8, cg_iters=200 if args.pilot else 1000)
+    if measure_override is not None: measure = measure_override
+    identity = {**metadata, 'student': params['convnet_type'], 'teacher_hash': None,
+                'mu_candidates': sorted({args.mu_rel_default, .01}), 'recipe': params,
+                'workers': args.workers, 'pilot_batches': args.pilot_batches}
+    progress = Progress(out, identity)
     def persist(hook):
         write_csv(out/'measurements.csv', hook.rows)
         write_csv(out/'epochs.csv', hook.epochs)
         write_json(out/'tasks.json', hook.tasks)
     hook = ICaRLHook(measure, persist=persist, pilot=args.pilot,
-                     pilot_batches=args.pilot_batches, fake=args.fake_data)
+                     pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe)
     original_manager = trainer.DataManager
     def manager(*a, **kw):
         result = DataManager(*a, **kw)
@@ -123,7 +130,7 @@ def run(args):
         if args.smoke or args.pilot: result._increments = result._increments[:2]
         return result
     write_json(out/'protocol.json', {**metadata, 'args': params, 'workers': args.workers,
-               'resume': 'unavailable: a crash restarts training; hourly archives retain completed logs',
+               'resume': 'task and epoch prefix replay; full state checkpoints every 25 epochs and after_task',
                'measurement_buffer_m': hook.buffer.m, 'ranks': [4] if args.pilot else [4, 8, 16],
                'null_repeats': measure.null_repeats, 'cg_iters': measure.cg_iters,
                'pilot_batches': args.pilot_batches if args.pilot else None})
@@ -156,18 +163,19 @@ def run(args):
     write_json(out/'reproduction_gate.json', baseline)
     write_json(out/'gate.json', gate)
     diagnostic_seconds = sum(p['seconds'] for p in hook.point_seconds)
-    write_json(out/'summary.json', {**metadata, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds,
+    write_json(out/'summary.json', {**metadata, 'identity': identity, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds,
                'training_seconds': seconds-diagnostic_seconds, 'epochs_run': len(hook.epochs),
                'tasks_run': len(hook.tasks), 'measurement_point_seconds': hook.point_seconds,
-               'resume_supported': False, 'reproduction': baseline, 'gate': gate,
+               'resume_supported': True, 'status': 'COMPLETED', 'reproduction': baseline, 'gate': gate,
                **(pilot_summary(hook.epochs, hook.point_seconds, hook.rows, args.device,
                    full_epochs=1730, full_points=40,
                    full_batches=sum(c['full'] for c in hook.batch_counts)/len(hook.batch_counts),
                    pilot_batches=sum(c['pilot'] for c in hook.batch_counts)/len(hook.batch_counts))
                    if args.pilot else {})})
 
+    return hook
 
-def main():
+def parser():
     p = argparse.ArgumentParser(description=__doc__)
     add_arguments(p)
     p.add_argument('--smoke', action='store_true')
@@ -179,7 +187,11 @@ def main():
     p.add_argument('--mu-rel-default', type=float, default=.01)
     p.add_argument('--mu-source', default='cli/default')
     p.add_argument('--official-mu', type=float, choices=(1e-2, 1e-3))
-    run(p.parse_args())
+    return p
+
+
+def main():
+    run(parser().parse_args())
 
 
 if __name__ == '__main__': main()

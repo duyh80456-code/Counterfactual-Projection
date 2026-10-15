@@ -1,5 +1,6 @@
 """Read-only adapters for the vendored RepDistiller (BSD-2-Clause) entry points."""
 from contextlib import contextmanager
+import copy
 import importlib
 import inspect
 import os
@@ -13,6 +14,8 @@ from diagnostics.vna_align import MeasurementBuffer, MeasurementHook, _global_st
 from experiments.cifar_pilot import LimitedLoader
 from methods.vna_losses import CE, KDRepDistiller
 from methods.vna_sites import HookSite
+from experiments.vna_resume import (log, set_locals, hook_state, restore_hook,
+                                    rng_state, restore_rng, projected)
 
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = ROOT/'third_party/RepDistiller'
@@ -81,7 +84,7 @@ class BufferedLoader(LimitedLoader):
 
 class RepDistillerHook:
     def __init__(self, measure=None, *, persist=None, observe=None, smoke=False, fake=False,
-                 data_dir=None, batch_size=64, pilot=False, pilot_batches=20):
+                 data_dir=None, batch_size=64, pilot=False, pilot_batches=20, progress=None):
         self.buffer = MeasurementBuffer(4 if pilot and fake else 128)
         self.pilot, self.pilot_batches = pilot, pilot_batches
         self.measurement = MeasurementHook(measure, seed=0) if measure else None
@@ -89,6 +92,18 @@ class RepDistillerHook:
         self.smoke, self.fake, self.data_dir, self.batch_size = smoke, fake, data_dir, batch_size
         self.rows, self.epochs, self.point_seconds = [], [], []
         self.steps = 0
+        self.progress = progress
+        self.resume = progress.state if progress else None
+        self.replay_epoch = 0
+        self.returns = {}
+        self.final_test = None
+        self.pending_measure = None
+        if self.resume:
+            restore_hook(self, self.resume["hook"])
+            self.returns = copy.deepcopy(self.resume["returns"])
+            self.final_test = self.resume.get("final_test")
+            self.pending_measure = self.resume.get("pending_measure")
+            progress.restore_artifacts()
         self.model = self.teacher = self.optimizer = self.opt = self.test_loader = None
 
     def loaders(self, original, **kwargs):
@@ -129,14 +144,43 @@ class RepDistillerHook:
         spec, ctx = loss_context(self.teacher, batch)
         ctx.update(teacher=self.teacher, epoch=epoch, step=self.steps, task=0, end_of_task=False,
                    known_classes=0, train_acc=self.epochs[-1]['train_acc'])
+        self.boundary()
+        log(f"measurement start epoch={epoch}")
         started = time.monotonic()
         self.rows.extend(self.measurement(self.model, batch, spec, ctx) or [])
         self.point_seconds.append({'epoch': epoch, 'seconds': time.monotonic()-started})
+        log(f'measurement end epoch={epoch} seconds={self.point_seconds[-1]["seconds"]:.3f}')
+        projected(self, self.opt.epochs, 1 if self.pilot or self.smoke else len(POINTS))
         if self.persist: self.persist(self)
+
+    def checkpoint(self):
+        if self.progress is None or self.model is None: return
+        values = self.last_frame.f_locals
+        self.progress.save({'epoch': len(self.epochs), 'model': self.model.state_dict(),
+            'teacher': None if self.teacher is None else self.teacher.state_dict(),
+            'optimizer': self.optimizer.state_dict(), 'rng': rng_state(),
+            'best_acc': values.get('best_acc', 0), 'hook': hook_state(self),
+            'pending_measure': self.pending_measure, 'returns': self.returns, 'teacher_eval': getattr(self, 'teacher_eval', self.progress.state.get('teacher_eval') if self.progress.state else None), 'final_test': self.final_test})
+
+    def boundary(self):
+        if self.progress:
+            self.progress.boundary(self.checkpoint, self.epochs[-1]['seconds'] if self.epochs else 0.,
+                self.point_seconds[-1]['seconds'] if self.point_seconds else 0.)
+
+    def restore(self, frame):
+        if self.resume is None: return
+        state = self.resume
+        self.model.load_state_dict(state['model'])
+        if self.teacher is not None: self.teacher.load_state_dict(state['teacher'])
+        self.optimizer.load_state_dict(state['optimizer'])
+        set_locals(frame, {'best_acc': state['best_acc']})
+        restore_rng(state['rng'])
+        self.resume = None
 
     @contextmanager
     def install(self, entry):
         original_lr, original_loader = entry.adjust_learning_rate, entry.get_cifar100_dataloaders
+        original_train, original_validate, original_save = entry.train, entry.validate, torch.save
         from dataset import cifar100
         folder = cifar100.get_data_folder
         def scheduler(epoch, opt, optimizer):
@@ -146,9 +190,38 @@ class RepDistillerHook:
             self.model = values.get('model_s', values.get('model'))
             self.teacher = values.get('model_t')
             self.optimizer, self.opt = optimizer, opt
-            if epoch > 1: self.finish_epoch(epoch-1, values)
+            self.replay_epoch = epoch
+            if self.resume is not None and epoch <= self.resume["epoch"]:
+                return original_lr(epoch, opt, optimizer)
+            self.restore(frame)
+            if epoch > 1: self.finish_epoch(epoch-1, frame.f_locals)
+            self.boundary()
             return original_lr(epoch, opt, optimizer)
+        def train(epoch, *args, **kwargs):
+            if self.resume is not None and epoch <= self.resume['epoch']:
+                return self.returns[epoch]['train']
+            result = original_train(epoch, *args, **kwargs)
+            self.returns.setdefault(epoch, {})['train'] = copy.deepcopy(result)
+            return result
+        def validate(*args, **kwargs):
+            frame = inspect.currentframe().f_back
+            epoch = frame.f_locals.get('epoch') if frame.f_code is entry.main.__code__ else None
+            if epoch is None and self.resume is not None and 'teacher_eval' in self.resume:
+                return self.resume['teacher_eval']
+            if epoch is not None and self.resume is not None and epoch <= self.resume['epoch']:
+                return self.returns[epoch]['eval']
+            result = original_validate(*args, **kwargs)
+            if epoch is not None: self.returns.setdefault(epoch, {})['eval'] = copy.deepcopy(result)
+            else: self.teacher_eval = copy.deepcopy(result)
+            return result
+        def save(*args, **kwargs):
+            # Upstream replay must never overwrite best/save_freq snapshots.
+            frame = inspect.currentframe().f_back
+            if frame.f_code is entry.main.__code__ and self.resume is not None:
+                return
+            return original_save(*args, **kwargs)
         try:
+            entry.train, entry.validate, torch.save = train, validate, save
             entry.adjust_learning_rate = scheduler
             entry.get_cifar100_dataloaders = lambda **kw: self.loaders(original_loader, **kw)
             if self.data_dir: cifar100.get_data_folder = lambda: str(Path(self.data_dir).resolve())
@@ -156,12 +229,27 @@ class RepDistillerHook:
         finally:
             entry.adjust_learning_rate, entry.get_cifar100_dataloaders = original_lr, original_loader
             cifar100.get_data_folder = folder
+            entry.train, entry.validate, torch.save = original_train, original_validate, original_save
 
     def finish_epoch(self, epoch, values):
+        self.restore(self.last_frame) if self.resume is not None and epoch >= self.resume["epoch"] else None
+        if epoch <= len(self.epochs):
+            if self.pending_measure == epoch:
+                self.measure(epoch); self.pending_measure = None; self.checkpoint()
+            return
         self.epochs.append({'epoch': epoch, 'train_acc': float(values['train_acc'])/100,
                             'train_loss': float(values['train_loss']), 'eval_acc': float(values['test_acc'])/100,
                             'eval_loss': float(values['test_loss']), 'lr': self.optimizer.param_groups[0]['lr'],
                             'seconds': values['time2']-values['time1']})
+        log(f"epoch={epoch} train_loss={float(values['train_loss']):.6f} train_acc={float(values['train_acc']):.6f} "
+            f"eval_loss={float(values['test_loss']):.6f} eval_acc={float(values['test_acc']):.6f} "
+            f"lr={self.optimizer.param_groups[0]['lr']} seconds={self.epochs[-1]['seconds']:.3f}")
         if self.observe: self.observe(self.model, self.optimizer)
-        if (epoch == 2 if self.pilot else epoch in POINTS or self.smoke and epoch == 2): self.measure(epoch)
+        if (epoch == 2 if self.pilot else epoch in POINTS or self.smoke and epoch == 2):
+            self.pending_measure = epoch
+            self.measure(epoch)
+            self.pending_measure = None
         if self.persist: self.persist(self)
+        if epoch % 10 == 0 or epoch in POINTS or epoch == self.opt.epochs or self.smoke and epoch == 2:
+            self.checkpoint()
+        self.boundary()
