@@ -110,7 +110,11 @@ class SolveCache:
         with torch.no_grad(): n_out = self.ctx['model'](data[0][:1]).numel()*len(data[0])
         factor = self.factor(data, context)
         reason = choose_solver(self.solver, n_out, self.output_exact_max)[1]
-        return {**factor.metadata(), 'solver_reason': reason} if factor else dict(solver='cg', solver_reason=reason, n_out=n_out,
+        # Process-wide memory peaks depend on earlier runs. Keep them in the
+        # factor/monitor logs rather than checkpointed numerical result rows.
+        metadata = {} if factor is None else {k: v for k, v in factor.metadata().items()
+            if k not in ('peak_rss_bytes', 'peak_cuda_bytes')}
+        return {**metadata, 'solver_reason': reason} if factor else dict(solver='cg', solver_reason=reason, n_out=n_out,
             M_build_seconds=0., factor_seconds=0., M_memory_bytes=0, min_eig=None, max_eig=None,
             residual_in_range_H=None)
 

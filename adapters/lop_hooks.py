@@ -289,6 +289,7 @@ class LearnHook:
                 ctx = {'targets': self.buffer.batch()[1],
                        'loss_fn': lambda z, c: learner.loss_func(z, c['targets'].to(z) if self.benchmark == 'regression' else c['targets']),
                        'task': task, 'step': self.step, 'point': 'first' if first_point else 'mid',
+                       'first_measurement_point': task == min(self.points) and first_point,
                        'within_task_step': within, 'buffer_task_purity': 1.0, 'buffer_m': self.buffer.m,
                        'shadow': self.shadow, 'cbp_units': self.selected, 'learner': learner}
                 ctx['init_row_norms'] = self.init_row_norms

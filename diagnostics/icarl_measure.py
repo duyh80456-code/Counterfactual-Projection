@@ -42,8 +42,7 @@ class B3Measurement:
         with torch.no_grad():
             g = loss_spec.residual(model(stat[0]), stat_ctx)
             e = loss_spec.residual(model(evaluation[0]), eval_ctx)
-        first_point = not getattr(self, "_measured", False)
-        self._measured = True
+        first_point = ctx.get('first_measurement_point', False)
         factors = {}
         prepared_groups = {}
         for mu_rel in self.mus:

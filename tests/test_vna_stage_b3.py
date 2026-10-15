@@ -149,3 +149,71 @@ def test_resnet32_zero_b_and_parameter_count():
         _assert_bitwise(before, model.state_dict())
         assert sum(p.numel() for p in model.parameters()) == count
     finally: torch.set_num_threads(previous_threads)
+
+
+def test_full_measurement_alignment_and_resume(monkeypatch):
+    """Restore rows and the measurement stream after task 1's first point."""
+    from types import SimpleNamespace
+    from diagnostics.icarl_measure import B3Measurement
+    from diagnostics.vna_align import MeasurementBuffer
+    from experiments.vna_resume import hook_state, restore_hook
+    from methods.vna_losses import CE
+    from methods.vna_sites import HookSite
+    from torch import nn
+    import adapters.icarl_hooks as hooks
+    import diagnostics.measure_efficiency as efficiency
+
+    comparisons = []
+    exact_cg_check = efficiency.exact_cg_check
+    def comparison(*args, **kwargs):
+        comparisons.append(1)
+        return exact_cg_check(*args, **kwargs)
+    monkeypatch.setattr(efficiency, 'exact_cg_check', comparison)
+
+    old = torch.get_num_threads(); torch.set_num_threads(1)
+    try:
+        torch.manual_seed(48)
+        class Native(nn.Sequential):
+            def forward(self, x): return {'logits': super().forward(x).mean((2, 3))}
+        native = Native(nn.Conv2d(3, 4, 1), nn.ReLU(), nn.Conv2d(4, 3, 1)).double()
+        learner = SimpleNamespace(_network=native, _cur_task=0)
+        batch = torch.randn(8, 3, 2, 2, dtype=torch.float64), torch.arange(8)%3
+        def context(learner, batch): return CE(), {'targets': batch[1], 'known_classes': 0}
+        monkeypatch.setattr(hooks, 'loss_context', context)
+        def sites(model):
+            return [HookSite(model, 'native.0', 'native.2', 'conv', between=('native.1',))]
+        def measurement():
+            return B3Measurement(dict(seed=13), sites_fn=sites,
+                context_fn=lambda ctx, b: context(learner, b), ranks=(1,), groups=False, null_repeats=1)
+        def hook(measure):
+            h = ICaRLHook(measure, seed=13)
+            h.buffer = MeasurementBuffer(8); h.buffer.update(batch)
+            return h
+        # Reuse a measurement object across straight and interrupted runs too.
+        measure = measurement()
+        full = hook(measure)
+        for epoch in (1, 2):
+            full.steps = epoch
+            full.measure_point(learner, epoch, .5, 2)
+        partial = hook(measure)
+        partial.steps = 1
+        partial.measure_point(learner, 1, .5, 2)
+        checkpoint = hook_state(partial)
+        assert len(comparisons) == 4  # Two dampings in each independent run.
+        resumed = hook(measurement())
+        restore_hook(resumed, checkpoint)
+        restored = copy.deepcopy(resumed.rows)
+        resumed.steps = 2
+        resumed.measure_point(learner, 2, .5, 2)
+        assert len(comparisons) == 4  # Resume must never recompute the comparison.
+        _assert_bitwise(restored, resumed.rows[:len(restored)])
+        def numerical(rows):
+            return [{k: v for k, v in row.items() if k not in
+                ('wall_seconds', 'M_build_seconds', 'factor_seconds')} for row in rows]
+        _assert_bitwise(numerical(full.rows), numerical(resumed.rows))
+        checked = [r for r in resumed.rows if 'exact_vs_cg_relative' in r]
+        assert {(r['task'], r['epoch']) for r in checked} == {(1, 1)}
+        assert len(checked) == 2  # One row for each damping at that point.
+        assert len(resumed.rows) == len(full.rows) == 4
+    finally:
+        torch.set_num_threads(old)

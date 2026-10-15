@@ -150,7 +150,8 @@ class ICaRLHook:
         spec, loss_ctx = loss_context(learner, batch)
         ctx = {**loss_ctx, 'learner': learner, 'task': learner._cur_task+1,
                'epoch': epoch, 'step': self.steps, 'end_of_task': epoch == last,
-               'train_acc': train_acc}
+               'train_acc': train_acc,
+               'first_measurement_point': learner._cur_task == 0 and epoch == max(1, last//2)}
         started = time.monotonic()
         self.rows.extend(self.measurement(model, batch, spec, ctx) or [])
         self.point_seconds.append({'task': ctx['task'], 'epoch': epoch,

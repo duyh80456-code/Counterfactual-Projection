@@ -92,8 +92,7 @@ class B5Measurement:
         with torch.no_grad(): logits = model(stat[0])
         g = loss_spec.residual(logits, loss_ctx)
         with torch.no_grad(): e = loss_spec.residual(model(evaluation[0]), eval_ctx)
-        first_point = not getattr(self, "_measured", False)
-        self._measured = True
+        first_point = ctx.get('first_measurement_point', False)
         factors = {}
         for mu_rel in self.mus:
             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=self.cg_tol, project_bn=False,
