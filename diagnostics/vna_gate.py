@@ -21,7 +21,7 @@ def setting_config(setting, *, tasks_run=None, mu_rel_default=1e-2):
     else:
         raise ValueError(f'unknown setting {setting}')
     return {'window': window, 'train_acc_applicable': setting not in ('B3', 'B5'),
-            'mu_rel_default': mu_rel_default, 'damping_norm': 'outputs'}
+            'mu_rel_default': mu_rel_default, 'damping_norm': 'outputs', 'min_points': 10 if setting == 'B5' else 0}
 
 
 BUILTIN_CONFIGS = {s: setting_config(s) for s in ('B1', 'B2', 'B3', 'B4')}
@@ -42,7 +42,7 @@ def evaluate_gate(rows, setting_cfg):
     n = len(eligible)
     frac = lambda fn: sum(bool(fn(r)) for r in eligible) / n if n else 0.
     rho = frac(lambda r: r['rho_joint'] >= RHO_MIN)
-    n1 = frac(lambda r: r['significant_rho_N1'])
+    n1 = frac(lambda r: r.get('significant_nu_N1', False))
     tiny = frac(lambda r: r['V_tiny_V'] > r['V_random_frob'])
     applicable = setting_cfg['train_acc_applicable']
     final = setting_cfg.get('final_train_acc')
@@ -51,8 +51,8 @@ def evaluate_gate(rows, setting_cfg):
     conditions = {'rho': rho >= RHO_FRAC, 'N1': n1 >= N1_FRAC,
                   'tiny_V': tiny >= TINYV_FRAC,
                   'train_acc': (final is not None and final < TRAIN_ACC_MAX) if applicable else 'n/a'}
-    return {'status': 'INVALID' if excluded_fraction > .10 else 'PASS' if n and all(v is True or v == 'n/a' for v in conditions.values()) else 'FAIL',
+    return {'status': 'INVALID' if excluded_fraction > .10 or len(points) < setting_cfg.get('min_points', 0) else 'PASS' if n and all(v is True or v == 'n/a' for v in conditions.values()) else 'FAIL',
             'eligible_points': n, 'excluded_points': len(excluded),
-            'excluded_fraction': excluded_fraction, 'gate_null_statistic': 'rho', 'rho_fraction': rho, 'N1_fraction': n1,
+            'excluded_fraction': excluded_fraction, 'points_in_window': len(points), 'gate_null_statistic': 'nu', 'rho_fraction': rho, 'N1_fraction': n1,
             'tiny_V_fraction': tiny, 'final_train_acc': final if applicable else 'n/a',
             'raw_final_train_acc': final, 'conditions': conditions}

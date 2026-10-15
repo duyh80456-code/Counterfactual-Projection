@@ -8,7 +8,7 @@ import torch
 from adapters.icarl_hooks import sites_for, loss_context
 from diagnostics.stage_a import diagnostic_ratio
 from diagnostics.measure_efficiency import (SolveCache, draw_nulls, virtual_energy,
-                                             solve_z, null_columns, verify_energy)
+                                             null_columns, verify_energy)
 from methods.vna import random_A_like
 from methods.vna_ggn import GGNConfig
 from methods.vna_joint import joint_correction
@@ -18,10 +18,11 @@ from experiments.vna_resume import measurement_update
 
 class B3Measurement:
     def __init__(self, metadata, *, mu_rel_default=.01, cg_iters=1000, sites_fn=sites_for,
-                 context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8):
+                 context_fn=None, ranks=(4, 8, 16), groups=True, null_repeats=8, solver="auto", output_exact_max=4096, cg_tol=1e-6):
         self.metadata = metadata
         self.mus = [1e-3, 1e-2]
         self.cg_iters = cg_iters
+        self.solver, self.output_exact_max, self.cg_tol = solver, output_exact_max, cg_tol
         self.sites_fn, self.ranks, self.groups = sites_fn, ranks, groups
         self.context_fn = context_fn or (lambda ctx, batch: loss_context(ctx['learner'], batch))
         self.null_repeats = null_repeats
@@ -41,10 +42,12 @@ class B3Measurement:
         with torch.no_grad():
             g = loss_spec.residual(model(stat[0]), stat_ctx)
             e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+        factors = {}
+        prepared_groups = {}
         for mu_rel in self.mus:
-            cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6,
+            cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=self.cg_tol,
                             seed=self.metadata['seed'], damping_norm='outputs', project_bn=False)
-            cache = SolveCache(model, sites[0], stat, loss_spec, stat_ctx, cfg)
+            cache = SolveCache(model, sites[0], stat, loss_spec, stat_ctx, cfg, solver=self.solver, output_exact_max=self.output_exact_max, factors=factors)
             z = cache.solve('real:stat', g, stat, stat_ctx)
             ze = cache.solve('real:eval', e, evaluation, eval_ctx)
             cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
@@ -52,10 +55,17 @@ class B3Measurement:
             groups = {}
             for label, mask in (('exemplar', evaluation[1] < ctx['known_classes']),
                                 ('new', evaluation[1] >= ctx['known_classes'])) if self.groups else ():
-                subset = tuple(t[mask] for t in evaluation)
-                if mask.any():
-                    _, context = self.context_fn(ctx, subset)
-                    with torch.no_grad(): residual = loss_spec.residual(model(subset[0]), context)
+                if label not in prepared_groups:
+                    subset = tuple(t[mask] for t in evaluation)
+                    if mask.any():
+                        _, context = self.context_fn(ctx, subset)
+                        with torch.no_grad(): residual = loss_spec.residual(model(subset[0]), context)
+                        prepared_groups[label] = subset, context, residual
+                    else: prepared_groups[label] = None
+                prepared = prepared_groups[label]
+                if prepared:
+                    subset, context, residual = prepared
+                    cache.factor(subset, context, parent=cache.factor(evaluation, eval_ctx), mask=mask)
                     zg = cache.solve('real:'+label, residual, subset, context)
                     groups[label] = (subset, residual, zg)
                 else: groups[label] = None
@@ -71,7 +81,8 @@ class B3Measurement:
                     real = score(A)
                     measurement_update(solve='tiny_V:correction')
                     checked = joint_correction(model, [site], {site: A}, evaluation, cfg, cache.ctx['names'],
-                        mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx)[3]
+                        mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx,
+                        output_factor=cache.factor(evaluation, eval_ctx))[3]
                     consistency = verify_energy(real, checked)
                     random, _ = prepare_A(model, site, random_A_like(A, generator=generator), 'random_frob', reference=A)
                     random_record = score(random)
@@ -87,12 +98,13 @@ class B3Measurement:
                         similarity = subspace_sim(*pieces)
                     values = {}
                     for kind, draws in nulls.items():
-                        lambdas, rhos = [], []
+                        lambdas, rhos, energies = [], [], []
                         for null_z, null_ze, null_e in draws:
                             null_A, cap = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
                             lambdas.append(float(cap['generalized_eigenvalues'][0]))
-                            rhos.append(score(null_A, null_e, null_ze)['rho'])
-                        values[kind] = lambdas, rhos
+                            energy = score(null_A, null_e, null_ze)
+                            rhos.append(energy['rho']); energies.append(energy)
+                        values[kind] = lambdas, rhos, energies
                     for label, group in groups.items():
                         if group:
                             data, residual, filtered = group
@@ -106,14 +118,14 @@ class B3Measurement:
                            'mu_rel': mu_rel, 'mu': cache.mu, 'trace': cache.trace, 'damping_norm': 'outputs',
                            'buffer_m': len(batch[0]), 'measurement_m': len(batch[0]),
                            'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'correction_m': len(evaluation[0]),
-                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho')},
+                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'e_norm2', 'nu')},
                            **{k: checked[k] for k in ('cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
                            'cg_converged_real': real_ok, 'cg_converged_null': null_ok, 'cg_converged': real_ok and null_ok,
-                           'V_consistency': consistency, 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                           'V_consistency': consistency, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
                            'lambda1': lam, 'subspace_sim': similarity,
                            'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['epoch']}:{ctx['step']}:{mu_rel}",
-                           **null_columns(lam, real['rho'], values)}
+                           **null_columns(lam, real['rho'], values, real['nu'])}
                     records.append(row)
                 joint_rho = sum(row['rho'] for row in records)
                 for row in records:

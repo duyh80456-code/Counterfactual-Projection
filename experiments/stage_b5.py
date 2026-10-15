@@ -14,6 +14,7 @@ import sys
 import time
 import numpy as np
 import torch
+import torch._decomp.decompositions_for_jvp  # before run_native patches torch.zeros
 from experiments.vna_resume import Progress, Status, log, rng_state, restore_rng
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +74,7 @@ def atomic_pickle(path, value):
 
 def write_json(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(value, indent=2)+'\n'); tmp.replace(path)
+    tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(value, indent=2, default=str)+'\n'); tmp.replace(path)
 
 
 def write_csv(path, rows):
@@ -314,7 +315,8 @@ def _run(args, status):
     if args.benchmark == 'regression': params['env_file'] = str(run_dir/'data/regression.pkl')
     params['examples_per_epoch'] = params.get('fake_train_images_per_class', 600)*params.get('num_classes', 2)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    signature = {'params': params, 'seed': args.seed, 'code_commit': commit,
+    signature = {'measurement_protocol': 'round2-nu', 'solver': getattr(args, 'solver', 'auto'),
+                 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'params': params, 'seed': args.seed, 'code_commit': commit,
                  'fake_data': args.fake_data, 'smoke': args.smoke, 'mu_rel_default': args.mu_rel_default,
                  'mu_source': args.mu_rel_default_source, 'mu_rel_default_source': args.mu_rel_default_source}
     manifest = run_dir/'manifest.json'
@@ -327,14 +329,7 @@ def _run(args, status):
                  and len(previous.get('tasks', [])) == expected_tasks)
     if args.resume and manifest.exists():
         old_signature = json.loads(manifest.read_text())
-        # Completed, unmeasured legacy CBP arms retain their original provenance.
-        # Training recipes/streams must still agree; never replay those arms just
-        # because this observability-only implementation has a new commit.
         compatible = old_signature == signature
-        if completed and args.arm == 'cbp':
-            compatible = ({k: v for k, v in old_signature.items() if k != 'code_commit'} ==
-                          {k: v for k, v in signature.items() if k != 'code_commit'})
-            compatible &= previous.get('upstream_commit') == UPSTREAM_PIN
         if not compatible: raise ValueError('resume configuration/commit mismatch')
     elif completed:
         raise ValueError('completed B5 run has no manifest for identity validation')
@@ -371,7 +366,7 @@ def _run(args, status):
         write_csv(run_dir/'measurements.csv', state['rows'])
         return checkpoint_path.stat().st_size
     hook = LearnHook(args.benchmark, args.arm, params,
-                     configure_measurement(B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default), args, run_dir) if args.arm == 'bp' else None,
+                     configure_measurement(B5Measurement(args.benchmark, metadata, mu_rel_default=args.mu_rel_default), args, run_dir),
                      seed=args.seed, checkpoint=checkpoint, resume=resumed,
                      time_steps=args.smoke, timing_started=timing_started, progress=progress, status=status)
     start = time.monotonic()

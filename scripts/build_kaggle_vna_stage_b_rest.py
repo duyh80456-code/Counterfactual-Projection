@@ -6,34 +6,24 @@ def build(commit, number):
     base = base_build(commit)
     bootstrap = ''.join(base['cells'][2]['source']).replace('vna_phase0_seed0', f'vna_stage_b_nb{number}')
     setup = ''.join(base['cells'][3]['source'])
+    setup = setup.replace('test_env.update(', 'test_env.update(TQDM_DISABLE="1", ')
     # Base setup names a subset; every Stage B lane requires the full suite.
     import re
     setup = re.sub(r'"pytest", "-q"[^\n]*?\], cwd=REPO,', '"pytest", "-q"], cwd=REPO,', setup) + MU_SETUP
-    if number == 2:
-        lanes = [[{'name': 'b3', 'module': 'experiments.stage_b3', 'args': [], 'epochs': 1730,
-                   'points': 40, 'output_factor': 5},
-                  {'name': 'b4', 'module': 'experiments.stage_b4', 'args': ['measure'],
-                   'epochs': 200, 'points': 12, 'wait_for_train': True}],
-                 [{'name': 'b2_resnet8x4', 'module': 'experiments.stage_b12',
-                   'args': ['b2', '--student', 'resnet8x4'], 'teacher': 'resnet32x4', 'epochs': 240, 'points': 15},
-                  {'name': 'b4', 'module': 'experiments.stage_b4', 'args': ['train'],
-                   'epochs': 200, 'points': 0, 'train_only': True}]]
-    else:
-        lanes = [[{'name': 'b1_resnet8x4', 'module': 'experiments.stage_b12',
-                   'args': ['b1', '--student', 'resnet8x4'], 'epochs': 240, 'points': 15},
-                  {'name': 'b1_wrn_16_2', 'module': 'experiments.stage_b12',
-                   'args': ['b1', '--student', 'wrn_16_2'], 'epochs': 240, 'points': 15}],
-                 [{'name': 'b2_wrn_16_2', 'module': 'experiments.stage_b12',
-                   'args': ['b2', '--student', 'wrn_16_2'], 'teacher': 'wrn_40_2', 'epochs': 240, 'points': 15}]]
+    if number == 3:
+        return {'cells': [cell('markdown', '# VNA Stage B — Notebook 3 (deferred)\nB1 and B2 run after supervisor review of B3. No jobs are launched.'),
+                          cell('code', f'REPO_COMMIT = "{commit}"\nprint("B1/B2 deferred until after B3 review")')],
+                'metadata': base['metadata'], 'nbformat': 4, 'nbformat_minor': 5}
+    lanes = [[{'name': 'b3', 'module': 'experiments.stage_b3', 'args': [], 'epochs': 1730,
+               'points': 13, 'output_factor': 5}], []]
     return {'cells': [cell('markdown', f'''# VNA Stage B — Notebook {number}
 T4×2, Internet and `github_token`; attach CIFAR-100 and prior Stage-B archives.
 Both μ candidates (1e-3 and 1e-2) are measured independently of nb1.
 Gate G always reads μ=1e-2. Attach the Stage A summary for its provenance.
-Every loader uses two workers. Two GPU queues run the registered settings; no correction is applied.
-Teachers are fetched, hash-checked and gated before B2. Real-data two-epoch
+Only B3 runs (13 measurement points); B4 is deferred. Every loader uses two workers.
+Real-data two-epoch
 smokes include all measurement sites/ranks/nulls and feed the total GPU-hour
-budget. Hourly archives retain full checkpoints and logs. B1/B2 replay completed epochs,
-B3 resumes tasks and epoch prefixes, and B4 resumes training and measurements.
+budget. Hourly archives retain full checkpoints and logs. B3 resumes tasks and epoch prefixes.
 The 11.5-hour session deadline pauses cleanly; attach its output to resume. The pin must include these files: since implementation
 is uncommitted, regenerate with the eventual published commit before Kaggle.
 '''), cell('code', f'''import time
@@ -57,7 +47,7 @@ from experiments.vna_kaggle import archive_outputs as _archive_outputs
 STAGE_B = RUN_ROOT / "outputs" / "stageB"
 STAGE_B.mkdir(parents=True, exist_ok=True)
 restore_archives(Path("/kaggle/input"), STAGE_B)
-ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2",
+ENV = {**test_env, "PYTHONUNBUFFERED": "1", "TQDM_DISABLE": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2",
        "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python", "VNA_DEADLINE": str(VNA_DEADLINE)}
 session_paused = threading.Event()
 lane_state = {gpu: {"job": "idle", "last": ""} for gpu in range(2)}

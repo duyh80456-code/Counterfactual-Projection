@@ -49,7 +49,7 @@ def run(args):
     identity = {'setting': 'B4', 'student': 'resnet18-quarter', 'teacher_hash': None,
                 'code_commit': code_commit(), 'upstream_commit': '8d19107b61a9459a9021065a329b699adcb0f25b', 'mu_candidates': [1e-3, 1e-2],
                 'seed': 0, 'device': args.device, 'fake_data': args.fake_data,
-                'smoke': args.smoke, 'pilot': args.pilot, 'workers': args.workers,
+                'smoke': args.smoke, 'pilot': args.pilot, 'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers,
                 'pilot_batches': args.pilot_batches}
     if args.mode == 'train':
         params = recipe.parser().parse_args([])
@@ -138,7 +138,6 @@ def run(args):
         if checkpoint['protocol']['fake_data'] != args.fake_data: raise ValueError('B4 data mismatch')
         if epoch in {r['epoch'] for r in epochs}: continue
         boundary()
-        log(f'measurement start epoch={epoch}')
         model.load_state_dict(checkpoint['model'])
         history = checkpoint['history'][-1]
         ctx = {'epoch': epoch, 'task': 0, 'step': epoch, 'end_of_task': False, 'known_classes': 0,
@@ -147,7 +146,6 @@ def run(args):
         t = time.monotonic()
         rows.extend(isolated(model, batch, CE(), ctx))
         costs.append({'epoch': epoch, 'seconds': time.monotonic()-t})
-        log(f'measurement end epoch={epoch} seconds={costs[-1]["seconds"]:.3f}')
         if len(costs) == 1:
             training = sum(h['seconds'] for h in checkpoint['history'])/epoch*200
             log(f'projected total seconds={training + costs[0]["seconds"]*(len(POINTS)-1):.1f}')

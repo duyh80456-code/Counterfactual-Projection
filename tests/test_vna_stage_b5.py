@@ -123,12 +123,12 @@ def test_resume_task_boundary_restores_rng_logs_and_learner(benchmark, arm, tmp_
     # MNIST checkpoints at the next task's pre-training SVD, before learn clears the previous task buffer.
     assert len(checkpoint['buffer']) == (64 if benchmark == 'mnist' else 0)
     if arm == 'bp':
-        # The production schedule measures tasks 1, 2, 5, ...; task 3 is
-        # deliberately unmeasured. ImageNet fills its 100-example fixture
+        # In this three-task fixture, tasks 2 and 3 are in the dense
+        # second half. ImageNet fills its 100-example fixture
         # buffer on step 1, where its two-step first/mid points coincide.
         expected_points = [('first', 1)] if benchmark == 'imagenet' else [('first', 64), ('mid', 80)]
         assert [(r['task'], r['point'], r['within_task_step']) for r in full.rows] == [
-            (task, point, step) for task in (1, 2) for point, step in expected_points]
+            (task, point, step) for task in (1, 2, 3) for point, step in expected_points]
         assert all(r['buffer_task_purity'] == 1.0 for r in full.rows)
     _assert_bitwise(full.results.state(), resumed.results.state())
 
@@ -278,12 +278,20 @@ def test_notebook_pin_full_suite_archive_resume_budget_and_sources(tmp_path):
     assert '"-m", "pytest", "-q"], cwd=REPO' in sources
     for i, c in enumerate(notebook['cells']):
         if c['cell_type'] == 'code': compile(''.join(c['source']), f'cell-{i}', 'exec')
-    # All three Stage B notebooks must stop on a failing full-suite setup.
+    # Active notebooks check the suite; notebook 3 is explicitly deferred.
     from scripts.build_kaggle_vna_stage_b_rest import build as build_rest
     for number in (2, 3):
         other = build_rest(commit, number)
-        assert '"-m", "pytest", "-q"], cwd=REPO' in ''.join(other['cells'][3]['source'])
-        assert 'V_consistency min/median/max' in ''.join(other['cells'][5]['source'])
+        if number == 2:
+            assert '"-m", "pytest", "-q"], cwd=REPO' in ''.join(other['cells'][3]['source'])
+            assert 'V_consistency min/median/max' in ''.join(other['cells'][5]['source'])
+            scope = {}
+            exec(''.join(other['cells'][1]['source']), scope)
+            assert [[j['name'] for j in lane] for lane in scope['LANES']] == [['b3'], []]
+            assert scope['LANES'][0][0]['points'] == 13
+        else:
+            assert len(other['cells']) == 2
+            assert 'deferred' in ''.join(other['cells'][0]['source'])
         for i, cell in enumerate(other['cells']):
             if cell['cell_type'] == 'code': compile(''.join(cell['source']), f'nb{number}-cell-{i}', 'exec')
     from experiments.stage_b5 import restore_archives
@@ -366,7 +374,7 @@ def test_scalar_regression_full_measurement_alignment_and_resume(tmp_path):
     _assert_bitwise(logs, resumed_logs)
     _assert_bitwise(expected_state, learner_state(resumed.last_learner))
     # Timing is observational, all numerical rows must replay identically.
-    numerical = lambda rows: [{k: v for k, v in row.items() if k != 'wall_seconds'} for row in rows]
+    numerical = lambda rows: [{k: v for k, v in row.items() if k not in ('wall_seconds', 'M_build_seconds', 'factor_seconds')} for row in rows]
     _assert_bitwise(numerical(full.rows), numerical(resumed.rows))
 
 

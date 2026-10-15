@@ -171,7 +171,7 @@ def launch_logged(cmd, *, cwd, env, log_path, lane, job, lanes, paused, deadline
         paused.set()
         return False
     lanes[lane] = {'job': job, 'last': 'starting'}
-    env = {**env, 'VNA_LANE': str(lane), 'VNA_JOB': job}
+    env = {**env, 'VNA_LANE': str(lane), 'VNA_JOB': job, 'TQDM_DISABLE': '1'}
     with Path(log_path).open('a', buffering=1) as stream:
         process = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -211,12 +211,16 @@ def measurement_update(**values):
 
 
 def measurement_cli(parser):
+    parser.add_argument('--solver', choices=['auto', 'output_exact', 'cg'], default='auto')
+    parser.add_argument('--output-exact-max', '--OUTPUT_EXACT_MAX', type=int, default=4096)
     parser.add_argument('--measurement-timeout-s', type=float, default=7200.)
     parser.add_argument('--faulthandler-timeout-s', type=float, default=3600.)
 
 
 def configure_measurement(measure, args, out):
     if measure:
+        measure.solver = getattr(args, 'solver', 'auto')
+        measure.output_exact_max = getattr(args, 'output_exact_max', 4096)
         measure.runtime = {'out': str(out),
                            'timeout_s': getattr(args, 'measurement_timeout_s', 7200.),
                            'traceback_s': getattr(args, 'faulthandler_timeout_s', 3600.)}
@@ -235,6 +239,8 @@ class MeasurementMonitor(Status):
         self.lock, self.stop = threading.Lock(), threading.Event()
         self.thread = threading.Thread(target=self._heartbeat, daemon=True)
         self.solves = []
+        self.factors = []
+        self.solver_choices = []
         self.traceback_file = None
 
     def _write(self):
@@ -288,7 +294,14 @@ class MeasurementMonitor(Status):
         with self.lock: self._write()
         current_measurement.reset(self.token)
         seconds = sum(r['seconds'] for r in self.solves)
-        log(f'measurement CG solves={len(self.solves)} mean_solve_seconds={seconds/max(1, len(self.solves)):.6f} '
+        if self.out:
+            atomic_json_save(self.factors, self.out/'factors.json')
+        log(f'measurement task={self.values.get("task")} epoch={self.values.get("epoch")} '
+            f'solvers={json.dumps(self.solver_choices)} '
+            f'M_build_seconds={sum(r["M_build_seconds"] for r in self.factors):.6f} '
+            f'factor_seconds={sum(r["factor_seconds"] for r in self.factors):.6f} '
+            f'M_max_memory_bytes={max((r["M_memory_bytes"] for r in self.factors), default=0)} '
+            f'solves={len(self.solves)} mean_solve_seconds={seconds/max(1, len(self.solves)):.6f} '
             f'point_seconds={time.monotonic()-self.started:.6f}')
 
     def timeout_rows(self, measure, ctx):

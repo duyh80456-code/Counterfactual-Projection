@@ -78,7 +78,7 @@ def _inverse(action, rhs, cfg):
 
 
 def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,
-                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None):
+                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None, output_factor=None):
     """Return (d, V, rho, record), without installing or applying neurons.
 
     GGNConfig selects trace(F)/p or trace(F)/n_out via damping_norm.
@@ -105,10 +105,18 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
             action = lambda v: op.F(v) + damping * v
             from experiments.vna_resume import measurement_update
             measurement_update(solve='tiny_V:correction:z')
-            u, first = _inverse(action, op.gradient, cfg)
-            z = op.H(p.Jv(u))
+            if output_factor is None:
+                u, first = _inverse(action, op.gradient, cfg)
+                z = op.H(p.Jv(u))
+            else:
+                z = output_factor.z(op.g, damping).flatten()
+                first = dict(converged=output_factor.range_ok, iterations=0, relative_residual=output_factor.range_error)
             measurement_update(solve='tiny_V:correction:d')
-            d, second = _inverse(action, op.COE(p.JET(z).double()), cfg)
+            if output_factor is None:
+                d, second = _inverse(action, op.COE(p.JET(z).double()), cfg)
+            else:
+                d = output_factor.d(p, p.JET(z).double(), damping)
+                second = dict(converged=bool(torch.isfinite(d).all()), iterations=0, relative_residual=0.)
         V = float(p.JET(z).double().square().sum())
         U = float(p.JET(op.g).double().square().sum())
         norm = float(op.gradient.square().sum())

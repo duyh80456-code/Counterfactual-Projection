@@ -1,0 +1,19 @@
+{
+  "cg_iteration": 28,
+  "epoch": 1,
+  "last_progress_time": 1792079884.9711812,
+  "last_update_time": 1792079886.959981,
+  "mu": 0.00020856882988652965,
+  "mu_rel": 0.01,
+  "phase": "measurement",
+  "point": "first",
+  "point_elapsed_seconds": 29.71918351299246,
+  "rank": 4,
+  "seed": 45,
+  "setting": "B5",
+  "site": "native.layers.0->native.layers.2",
+  "solve": "tiny_V:correction:d",
+  "solve_index": 84,
+  "step": 512,
+  "task": 2
+}

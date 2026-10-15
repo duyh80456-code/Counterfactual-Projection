@@ -152,14 +152,14 @@ def hook_products(model, sites, A_by_site, inputs, names=None, *, bn_mode='eval'
 
 def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
               existing_weight_projection, normalize, score_signs, numerical_threshold,
-              loss_spec=None, contexts=None):
+              loss_spec=None, contexts=None, chunk_size=8):
     """TINY's whitened input/cotangent SVD for native linear/conv sites.
 
     Norms on new coordinates are identity, as in HookProducts. Incoming
     patches form S; outgoing-kernel cotangents form N. Optional projection
     removes the existing second-layer feature span before the solve.
     """
-    from methods.vna_select import normalize_A, _neuron, _concat, score_A
+    from methods.vna_select import normalize_A, _neuron, _concat
     from methods.vna_ggn import filtered_cotangent
     import torch.nn.functional as F
     batches = list(batches)
@@ -179,11 +179,13 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
         raise ValueError('one cotangent required per batch')
     before = _snapshot(model)
     modes = {m: m.training for m in model.modules()}
-    xs, ys, rs = [], [], []
+    S = N = YY = YR = XY = None
+    chunks = [(tuple(t[i:i+chunk_size] for t in batch), z[i:i+chunk_size])
+              for batch, z in zip(batches, cotangents) for i in range(0, len(batch[0]), chunk_size)]
     try:
         model.eval()
         with _preserve_functional_state(model), torch.enable_grad():
-            for (inputs, _), z in zip(batches, cotangents):
+            for (inputs, _), z in chunks:
                 capture = {}
                 def save_first(module, args):
                     capture['x'] = args[0].detach()
@@ -244,17 +246,30 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
                     y, residual = y.reshape(len(x), -1), residual.reshape(len(x), -1)
                 if second.bias is not None:
                     y = torch.cat((y, torch.ones_like(y[:, :1])), 1)
-                xs.append(x.double()); ys.append(y.double()); rs.append(residual.detach().double())
+                for offset in range(0, len(x), 1024):
+                    xc = x[offset:offset+1024].double()
+                    yc = y[offset:offset+1024].double()
+                    rc = residual[offset:offset+1024].detach().double()
+                    ss = torch.einsum('ndk,nek->de', xc, xc)
+                    cross = torch.einsum('ndk,no->dko', xc, rc)
+                    S = ss if S is None else S + ss
+                    N = cross if N is None else N + cross
+                    if existing_weight_projection:
+                        yy, yr = yc.T @ yc, yc.T @ rc
+                        xy = torch.einsum('ndk,ny->dky', xc, yc)
+                        YY = yy if YY is None else YY + yy
+                        YR = yr if YR is None else YR + yr
+                        XY = xy if XY is None else XY + xy
     finally:
         for module, mode in modes.items():
             module.training = mode
         _assert_unchanged(model, before)
-    X, Y, R = torch.cat(xs), torch.cat(ys), torch.cat(rs)
     if existing_weight_projection:
-        R = R - Y @ (torch.linalg.pinv(Y, rtol=numerical_threshold) @ R)
+        # Y^+ R = (Y^T Y)^+ Y^T R; eigenvalue cutoff is squared.
+        coef = torch.linalg.pinv(YY, rtol=max(numerical_threshold**2, torch.finfo(YY.dtype).eps*YY.shape[0]), hermitian=True) @ YR
+        N = N - torch.einsum('dky,yo->dko', XY, coef)
     n = sum(len(x) for x, _ in batches)
-    S = torch.einsum('ndk,nek->de', X, X) / n
-    N = torch.einsum('ndk,no->dko', X, R).reshape(d, -1) / n
+    S, N = S / n, N.reshape(d, -1) / n
     es, qs = torch.linalg.eigh(S)
     inv = torch.where(es > numerical_threshold, es.clamp_min(numerical_threshold).rsqrt(), 0.)
     whitening = (qs * inv) @ qs.T
@@ -269,7 +284,18 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
         chosen = []
         for i in range(keep):
             plus, minus = _neuron(A, i), _neuron(A, i, -1)
-            gains = [sum(score_A(model, site, a, x, z) for (x, _), z in zip(batches, cotangents)) for a in (plus, minus)]
+            def chunked_score(a):
+                total = 0.
+                for (inputs, _), z in zip(batches, cotangents):
+                    gradient = None
+                    for offset in range(0, len(inputs), chunk_size):
+                        from methods.vna import block_products
+                        with block_products(model, site, a, inputs[offset:offset+chunk_size]) as products:
+                            piece = products.JET(z[offset:offset+chunk_size].flatten()).double()
+                        gradient = piece if gradient is None else gradient + piece
+                    total += float(gradient.square().sum())
+                return total
+            gains = [chunked_score(a) for a in (plus, minus)]
             chosen.append(plus if gains[0] >= gains[1] else minus)
         A = _concat(chosen)
     return A, {'S': S, 'N_z': N, 'singular_values': singular[:keep],

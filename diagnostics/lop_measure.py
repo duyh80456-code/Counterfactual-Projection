@@ -6,10 +6,10 @@ import json
 import time
 import torch
 from adapters.lop_hooks import Prediction, sites_for
-from diagnostics.stage_a import null_residual, empirical_p, diagnostic_ratio
+from diagnostics.stage_a import diagnostic_ratio
 from methods.vna_ggn import GGNConfig, GGNProducts
 from methods.vna_joint import joint_correction, joint_products
-from diagnostics.measure_efficiency import SolveCache, draw_nulls, virtual_energy, solve_z, verify_energy
+from diagnostics.measure_efficiency import SolveCache, draw_nulls, virtual_energy, verify_energy, null_columns
 from experiments.vna_resume import measurement_update
 from methods.vna_select import tiny_V, tiny_U_from_cotangent, normalize_A, prepare_A, subspace_sim, neuron_norms
 
@@ -62,33 +62,18 @@ def spectrum(model, sites, A, batch, spec, ctx, mu, *, top_k=20):
     """
     with joint_products(model, sites, A, batch[0]) as products:
         op = GGNProducts(products, batch[1], spec, ctx)
-        n, c = op.logits.shape
-        eye = torch.eye(c, device=batch[0].device, dtype=torch.float64)
-        blocks = torch.stack([spec.metric_apply(op.logits, eye[j].expand(n, c), op.ctx) for j in range(c)], -1)
-        e, q = torch.linalg.eigh(blocks)
-        root = (q * e.clamp_min(0).sqrt().unsqueeze(-2)) @ q.transpose(-1, -2)
-        transform = lambda v: torch.einsum('nij,nj->ni', root, v.double().reshape(n, c)).flatten()
-        size = n*c
-        coordinate = torch.zeros(size, device=batch[0].device, dtype=torch.float64)
-        columns = []
-        for i in range(size):
-            coordinate.zero_(); coordinate[i] = 1
-            columns.append(transform(products.K(transform(coordinate))).double())
-        K = torch.stack(columns, -1)
-        eigen, basis = torch.linalg.eigh((K+K.T)/2)
-        # g is an output residual; report its energy in these output directions.
-        energy = (basis.T @ op.g).square()
-        low = float(energy[eigen < mu].sum()/energy.sum()) if energy.sum() else 0.
-        return {'K_top_eigenvalues': json.dumps(eigen.flip(0)[:top_k].clamp_min(0).tolist()),
-                'residual_energy_lambda_lt_mu': low, 'K_spectrum_method': 'exact_output_GGN'}
+        from methods.vna_output import OutputFactor
+        return OutputFactor(op).spectrum(op.g, mu, top_k)
+
 
 
 class B5Measurement:
-    def __init__(self, benchmark, metadata, *, mu_rel_default=.01, ranks=None, cg_iters=1000):
+    def __init__(self, benchmark, metadata, *, mu_rel_default=.01, ranks=None, cg_iters=1000, solver="auto", output_exact_max=4096, cg_tol=1e-6):
         self.benchmark, self.metadata = benchmark, {'setting': 'B5', **metadata}
         self.mus = [1e-3, 1e-2]
         self.ranks = ranks or ([1, 2, 4] if benchmark == 'regression' else [4, 16, 64])
         self.cg_iters = cg_iters
+        self.solver, self.output_exact_max, self.cg_tol = solver, output_exact_max, cg_tol
 
     def __call__(self, model, batch, loss_spec, ctx, *, generator):
         start = time.monotonic()
@@ -107,10 +92,11 @@ class B5Measurement:
         with torch.no_grad(): logits = model(stat[0])
         g = loss_spec.residual(logits, loss_ctx)
         with torch.no_grad(): e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+        factors = {}
         for mu_rel in self.mus:
-            cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=1e-6, project_bn=False,
+            cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=self.cg_tol, project_bn=False,
                             seed=self.metadata['seed'], damping_norm='outputs')
-            cache = SolveCache(model, sites[0], stat, loss_spec, loss_ctx, cfg)
+            cache = SolveCache(model, sites[0], stat, loss_spec, loss_ctx, cfg, solver=self.solver, output_exact_max=self.output_exact_max, factors=factors)
             mu, trace = cache.mu, cache.trace
             z = cache.solve('real:stat', g, stat, loss_ctx)
             ze = cache.solve('real:eval', e, evaluation, eval_ctx)
@@ -131,7 +117,8 @@ class B5Measurement:
                     real = correction(A)
                     measurement_update(solve='tiny_V:correction')
                     checked = joint_correction(model, [site], {site: A}, evaluation, cfg, all_names,
-                        mu=mu, trace_F=trace, loss_spec=loss_spec, ctx=eval_ctx)[3]
+                        mu=mu, trace_F=trace, loss_spec=loss_spec, ctx=eval_ctx,
+                        output_factor=cache.factor(evaluation, eval_ctx))[3]
                     consistency = verify_energy(real, checked)
                     real.update({k: checked[k] for k in ('cg_converged', 'cg_iters_used', 'cg_rel_residual',
                                                         'raw_gain', 'realized_gain', 'finite')}, mu=mu)
@@ -153,22 +140,14 @@ class B5Measurement:
                         similarity = subspace_sim(first, second)
                     null_stats = {}
                     for kind in ('N1', 'N2'):
-                        null_lambda, null_rho = [], []
+                        null_lambda, null_rho, energies = [], [], []
                         for null_z, null_ze, null_e in nulls[kind]:
                             null_A, capture = tiny_V(model, site, [stat], rank, cotangents=[null_z], cfg=cfg)
                             record = correction(null_A, null_e, null_ze)
                             null_lambda.append(float(capture['generalized_eigenvalues'][0]))
-                            null_rho.append(record['rho'])
+                            null_rho.append(record['rho']); energies.append(record)
                         lam = float(cap['generalized_eigenvalues'][0])
-                        p_lam = empirical_p(lam, null_lambda)
-                        significant_lam = p_lam <= 1/9
-                        p_rho = empirical_p(real['rho'], null_rho)
-                        significant_rho = p_rho <= 1/9
-                        null_stats.update({f'p_lambda_{kind}': p_lam, f'p_rho_{kind}': p_rho,
-                                           f'significant_{kind}': significant_lam,
-                                           f'significant_rho_{kind}': significant_rho,
-                                           f'null_lambda_{kind}': json.dumps(null_lambda),
-                                           f'null_rho_{kind}': json.dumps(null_rho)})
+                        null_stats.update(null_columns(lam, real['rho'], {kind: (null_lambda, null_rho, energies)}, real['nu']))
                     row = {**self.metadata, 'task': ctx['task'], 'step': ctx['step'], 'point': ctx['point'],
                            'within_task_step': ctx['within_task_step'], 'buffer_task_purity': ctx['buffer_task_purity'],
                            'site': site.module_name, 'rank': rank, 'mu_rel': mu_rel, 'selection': 'tiny_V',
@@ -176,9 +155,9 @@ class B5Measurement:
                            'selected_rank': len(A['weight']),
                            'measurement_m': len(batch[0]), 'buffer_m': len(batch[0]),
                            'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'trace': trace,
-                           'V_consistency': consistency,
+                           'V_consistency': consistency, **cache.metadata(evaluation, eval_ctx),
                            'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['step']}:{mu_rel}",
-                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'mu', 'cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
+                           **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'e_norm2', 'nu', 'mu', 'cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
                            'damping_norm': 'outputs', 'lambda1': lam,
                            'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
@@ -197,7 +176,10 @@ class B5Measurement:
                     # zeroed at the declared selected coordinates only.
                     if site not in swaps:
                         swap_row = {'cg_converged_real': True}
-                        candidates = [(label, shadow, selected[index]) for label, shadow, selected in ctx['cbp_candidates']]
+                        m = max(1, len(stats[index]['dormant_indices']))
+                        candidates = [(label, shadow, torch.argsort(shadow.bias_corrected_util[index])[:m])
+                                      for label, shadow, selected in ctx['cbp_candidates']]
+                        swap_row['cbp_selection'] = 'lowest_utility_m'
                         candidates.append(('redo', ctx['shadow'], stats[index]['dormant_indices']))
                         for criterion, shadow, units in candidates:
                             count = len(units)
@@ -230,7 +212,7 @@ class B5Measurement:
                                         spatial = second.in_features//first.out_channels
                                         outgoing_units = (units[:, None]*spatial+torch.arange(spatial, device=units.device)).flatten()
                                     second.weight[:, outgoing_units] = 0
-                                clone_cache = SolveCache(clone, clone_site, stat, loss_spec, loss_ctx, cfg, mu=mu, trace=trace)
+                                clone_cache = SolveCache(clone, clone_site, stat, loss_spec, loss_ctx, cfg, mu=mu, trace=trace, solver=self.solver, output_exact_max=self.output_exact_max)
                                 with torch.no_grad(): clone_e = loss_spec.residual(clone(evaluation[0]), eval_ctx)
                                 clone_z = clone_cache.solve(f'real:swap:{criterion}:{len(gains)}', clone_e, evaluation, eval_ctx)
                                 gains.append(virtual_energy(clone, [clone_site], {clone_site: a}, evaluation, clone_z, clone_e))
@@ -248,7 +230,8 @@ class B5Measurement:
                 if not proposals: continue
                 joint_rho = sum(row['rho'] for row in records.values())
                 if spectral is None:
-                    spectral = spectrum(model, list(proposals), proposals, evaluation, loss_spec, eval_ctx, mu)
+                    factor = cache.factor(evaluation, eval_ctx)
+                    spectral = factor.spectrum(e, mu) if factor else dict(K_spectrum_method='unavailable_matrix_free_cg')
                 for site, row in records.items():
                     row.update(rho_joint=joint_rho, **spectral)
                     rows.append(row)

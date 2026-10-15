@@ -1,0 +1,20 @@
+{
+  "cg_iteration": 0,
+  "column": 32,
+  "epoch": 1,
+  "last_progress_time": 1792082124.415325,
+  "last_update_time": 1792082126.945896,
+  "mu": 0.0004194396603237061,
+  "mu_rel": 0.01,
+  "phase": "measurement",
+  "point": null,
+  "point_elapsed_seconds": 10.710428960999707,
+  "rank": 4,
+  "seed": 45,
+  "setting": "B1",
+  "site": "a->b",
+  "solve": "tiny_V:correction:d",
+  "solve_index": 68,
+  "step": 512,
+  "task": 2
+}

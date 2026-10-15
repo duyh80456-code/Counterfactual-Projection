@@ -1,0 +1,50 @@
+[
+  {
+    "M_build_seconds": 0.08938940399093553,
+    "M_device": "cpu",
+    "M_memory_bytes": 18432,
+    "factor_seconds": 0.0007574869960080832,
+    "max_eig": 1.1608071111960712,
+    "min_eig": -1.6084016184371983e-16,
+    "n_out": 48,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  },
+  {
+    "M_build_seconds": 0.10328385198954493,
+    "M_device": "cpu",
+    "M_memory_bytes": 18432,
+    "factor_seconds": 0.0007371199899353087,
+    "max_eig": 1.1619686206345536,
+    "min_eig": -6.299605582088434e-17,
+    "n_out": 48,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  },
+  {
+    "M_build_seconds": 0.001799513993319124,
+    "M_device": "cpu",
+    "M_memory_bytes": 1800,
+    "factor_seconds": 0.00019206598517484963,
+    "max_eig": 1.1609290126114697,
+    "min_eig": -1.3610643494802832e-16,
+    "n_out": 15,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  },
+  {
+    "M_build_seconds": 0.003101789014181122,
+    "M_device": "cpu",
+    "M_memory_bytes": 8712,
+    "factor_seconds": 0.0006435210234485567,
+    "max_eig": 1.1626472548481106,
+    "min_eig": -1.0064022555714054e-16,
+    "n_out": 33,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  }
+]

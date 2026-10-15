@@ -27,6 +27,7 @@ DISK_CAP_BYTES = 5_000_000_000
 '''
     bootstrap = ''.join(base['cells'][2]['source']).replace('vna_phase0_seed0', 'vna_stage_b_nb1')
     setup = ''.join(base['cells'][3]['source'])
+    setup = setup.replace('test_env.update(', 'test_env.update(TQDM_DISABLE="1", ')
     start = setup.index('required_cifar_files =')
     end = setup.index('print("CIFAR-100 root:", DATA_ROOT)') + len('print("CIFAR-100 root:", DATA_ROOT)')
     setup = setup[:start] + setup[end:]
@@ -35,8 +36,8 @@ DISK_CAP_BYTES = 5_000_000_000
     setup = re.sub(r'"pytest", "-q"[^\n]*?\], cwd=REPO,', '"pytest", "-q"], cwd=REPO,', setup)
     return {'cells': [cell('markdown', '''# VNA Notebook 1 — B5 MNIST and regression
 Enable Internet, T4×2 and `github_token`. All three lanes start immediately:
-GPU0 runs measured MNIST BP; GPU1 runs MNIST CBP (rr 1e-4); CPU runs the five
-regression CBP arms, then measured regression BP. No Stage A outputs, Phase-0
+GPU0 runs measured MNIST BP; GPU1 runs MNIST CBP (rr 1e-4); CPU reruns all six measured regression arms with the round-2 schedule (38 points,
+22 in the gate window). MNIST BP and CBP use 36 points (20 in the gate window). No Stage A outputs, Phase-0
 checkpoints or CIFAR data are required. Stage A remains a standalone notebook.
 BP measures both μ=1e-3 and μ=1e-2; Gate G uses μ=1e-2.
 ImageNet-32 is dropped. MNIST uses upstream load_mnist.py with attached data as
@@ -52,11 +53,11 @@ Regenerate with the published commit containing this implementation before Kaggl
 RUNTIME = '''from concurrent.futures import ThreadPoolExecutor
 from experiments.vna_kaggle import archive_with_status as _archive_outputs
 from experiments.stage_b5 import restore_archives as restore_b, RATES, finalize, merge_json
-STAGE_B = RUN_ROOT / "outputs/stageB"
+STAGE_B = RUN_ROOT / "outputs/stageB/round2"
 STAGE_B.mkdir(parents=True, exist_ok=True)
-restore_b(Path("/kaggle/input"), STAGE_B)
+restore_b(Path("/kaggle/input"), STAGE_B.parent)
 merge_json(STAGE_B / "gate.json", "imagenet", "dropped (supervisor 2026-10-15)")
-ENV = {**test_env, "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+ENV = {**test_env, "PYTHONUNBUFFERED": "1", "TQDM_DISABLE": "1", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
        "VNA_DEADLINE": str(VNA_DEADLINE)}
 CPU_ENV = {k: v for k, v in ENV.items() if k != "CUDA_VISIBLE_DEVICES"}
 archive_lock = threading.Lock(); archive_stop = threading.Event(); archive_errors = []
@@ -86,7 +87,7 @@ def command(benchmark, arm, out, mu, source, *, smoke=False, rate=None, attached
     if attached and MNIST_DIR: cmd += ["--data-dir", str(MNIST_DIR)]
     return cmd
 def run_b5(benchmark, arm, lane, mu, source, *, smoke=False, rate=None):
-    out = RUN_ROOT / "smoke/outputs/stageB" if smoke else STAGE_B
+    out = RUN_ROOT / "smoke/outputs/stageB/round2" if smoke else STAGE_B
     name = arm if rate is None else f"cbp_rr_{rate:g}"
     if not launch(command(benchmark, arm, out, mu, source, smoke=smoke, rate=rate,
                           attached=bool(MNIST_DIR)), lane, f"{benchmark}_{name}",
@@ -94,7 +95,7 @@ def run_b5(benchmark, arm, lane, mu, source, *, smoke=False, rate=None):
         return None
     return json.loads((out / "b5" / benchmark / name / "summary.json").read_text())
 def b5_job(benchmark, arm, lane, *, rate=None):
-    mu, source = (MU_REL_DEFAULT, MU_SOURCE) if arm == "bp" else (1e-2, "cbp: unmeasured; no mu required")
+    mu, source = (MU_REL_DEFAULT, MU_SOURCE) if arm == "bp" else (MU_REL_DEFAULT, MU_SOURCE)
     if mu is None or pause_due(): return
     name = arm if rate is None else f"cbp_rr_{rate:g}"
     previous = STAGE_B / "b5" / benchmark / name / "summary.json"
@@ -109,23 +110,24 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     point_seconds = (sum(p["seconds"] for p in summary["measurement_point_seconds"]) /
                      len(summary["measurement_point_seconds"])) if summary["measurement_point_seconds"] else 0
     import csv
-    solve_path = RUN_ROOT / "smoke/outputs/stageB/b5" / benchmark / name / "solves.csv"
+    solve_path = RUN_ROOT / "smoke/outputs/stageB/round2/b5" / benchmark / name / "solves.csv"
     solves = list(csv.DictReader(solve_path.open())) if solve_path.exists() else []
     print(benchmark, name, "CG solves", len(solves), "mean seconds/solve",
           sum(float(r["seconds"]) for r in solves)/max(1, len(solves)), flush=True)
     import statistics
-    measurement_path = RUN_ROOT / "smoke/outputs/stageB/b5" / benchmark / name / "measurements.csv"
+    measurement_path = RUN_ROOT / "smoke/outputs/stageB/round2/b5" / benchmark / name / "measurements.csv"
     measurement_rows = list(csv.DictReader(measurement_path.open())) if measurement_path.exists() else []
     consistency = [float(r["V_consistency"]) for r in measurement_rows if r.get("V_consistency")]
     print(benchmark, name, "V_consistency min/median/max",
           (min(consistency), statistics.median(consistency), max(consistency)) if consistency else (None, None, None), flush=True)
     startup = summary["startup_seconds"]
     steady = summary["steady_step_seconds"]
-    points = (16 if benchmark == "regression" else 18) if arm == "bp" else 0
+    points = 38 if benchmark == "regression" else 36
     hours = (startup + steady * steps + points * point_seconds) / 3600
     print(benchmark, arm, rate, f"startup {startup:.3f} s; {steady*1000:.3f} ms/step; "
           f"full steps {steps}; measurement {point_seconds:.3f} s/point; "
-          f"projected {hours:.3f} hours", flush=True)
+          f"projected {hours:.3f} hours; per-session GPU-hours {min(hours, SESSION_HOURS):.3f}; "
+          f"estimated sessions {__import__('math').ceil(hours/SESSION_HOURS)}", flush=True)
     projections.setdefault(lane, []).append(hours + (time.monotonic()-start)/3600)
     projected = sum(projections[lane])
     print(lane, f"{projected:.3f} projected {'CPU' if lane == 'CPU' else 'GPU'}-hours including smoke", flush=True)

@@ -116,7 +116,7 @@ def run(args, *, measure_override=None, observe=None):
     if measure_override is not None: measure = measure_override
     identity = {**metadata, 'student': params['convnet_type'], 'teacher_hash': None,
                 'mu_candidates': [1e-3, 1e-2], 'recipe': params,
-                'workers': args.workers, 'pilot_batches': args.pilot_batches}
+                'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers, 'pilot_batches': args.pilot_batches}
     progress = Progress(out, identity)
     def persist(hook):
         write_csv(out/'measurements.csv', hook.rows)
@@ -131,7 +131,7 @@ def run(args, *, measure_override=None, observe=None):
         write_json(out/'class_order.json', result._class_order)
         if args.smoke or args.pilot: result._increments = result._increments[:2]
         return result
-    write_json(out/'protocol.json', {**metadata, 'args': params, 'workers': args.workers,
+    write_json(out/'protocol.json', {**metadata, 'args': params, 'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers,
                'resume': 'task and epoch prefix replay; full state checkpoints every 25 epochs and after_task',
                'measurement_buffer_m': hook.buffer.m, 'ranks': [4] if args.pilot else [4, 8, 16],
                'null_repeats': measure.null_repeats, 'cg_iters': measure.cg_iters,

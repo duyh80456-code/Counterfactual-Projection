@@ -90,7 +90,7 @@ def test_51_old_measurement_numerical_equivalence(tmp_path):
     batch = torch.randn(32, 3, 32, 32, dtype=torch.float64), torch.arange(32)%3
     ctx = dict(task=2, epoch=1, step=1, end_of_task=False, train_acc=.5, known_classes=1)
     meta = dict(seed=45, setting='B3')
-    new = B3Measurement(meta, sites_fn=sites, context_fn=context, ranks=(1,), groups=False)
+    new = B3Measurement(meta, sites_fn=sites, context_fn=context, ranks=(1,), groups=False, solver="cg")
     baseline = old.B3Measurement(meta, sites_fn=sites, context_fn=context, ranks=(1,), groups=False)
     baseline.mus = new.mus
     # Baseline's redundant joint call inferred damping on eval. Explicitly pin
@@ -180,8 +180,8 @@ def test_53_b5_selection_only_reads_stat(monkeypatch, discrepancy):
         counts['swaps'] += 1
         return original_swap(*args)
     monkeypatch.setattr(mod, 'swap_directions', swap)
-    measure = mod.B5Measurement('mnist', {'seed': 3}, ranks=[1, 2])
-    shadow = SimpleNamespace(bounds=[.1])
+    measure = mod.B5Measurement('mnist', {'seed': 3}, ranks=[1, 2], solver='cg')
+    shadow = SimpleNamespace(bounds=[.1], bias_corrected_util=[torch.arange(2)])
     ctx = dict(task=1, step=256, point='first', within_task_step=256, buffer_task_purity=1.,
                buffer_m=256, loss_fn=lambda z,c: nn.functional.cross_entropy(z,c['targets']),
                shadow=shadow, cbp_candidates=[('cbp', shadow, [torch.tensor([0])])], init_row_norms=[1.])
@@ -200,12 +200,12 @@ def test_53_b5_selection_only_reads_stat(monkeypatch, discrepancy):
 def test_54_gate():
     from diagnostics.vna_gate import evaluate_gate, setting_config
     rows = [dict(task=2, epoch=i, step=i, end_of_task=False, rank=16, mu_rel=.01,
-                 cg_converged=True, rho_joint=.4, significant_N1=False, significant_rho_N1=True,
+                 cg_converged=True, rho_joint=.4, significant_N1=False, significant_rho_N1=True, significant_nu_N1=True,
                  V_tiny_V=2., V_random_frob=1., train_acc=1.) for i in range(10)]
     cfg = setting_config('B3')
     result = evaluate_gate(rows, cfg)
     assert result['status'] == 'PASS' and result['conditions']['train_acc'] == 'n/a'
-    assert result['gate_null_statistic'] == 'rho'
+    assert result['gate_null_statistic'] == 'nu'
     rows[0].update(cg_converged=False, status='timeout')
     assert evaluate_gate(rows, cfg)['excluded_fraction'] == .1
     assert evaluate_gate(rows, cfg)['status'] == 'PASS'

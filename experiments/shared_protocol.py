@@ -62,7 +62,7 @@ def atomic_torch_save(payload: dict, path: Path) -> None:
 def atomic_json_save(payload: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
     os.replace(temporary, path)
 
 

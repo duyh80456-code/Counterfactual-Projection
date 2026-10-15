@@ -75,7 +75,7 @@ def run(args, *, measure_override=None, observe=None):
                     'teacher_hash': file_hash(teacher) if args.setting == 'b2' else None,
                     'upstream_commit': __import__('subprocess').check_output(
                         ['git', '-C', str(UPSTREAM), 'rev-parse', 'HEAD'], text=True).strip(),
-                    'workers': args.workers, 'pilot_batches': args.pilot_batches}
+                    'solver': getattr(args, 'solver', 'auto'), 'output_exact_max': getattr(args, 'output_exact_max', 4096), 'workers': args.workers, 'pilot_batches': args.pilot_batches}
         progress = Progress(out, identity)
         argv += ['--num_workers', str(args.workers)]
         if args.smoke or args.pilot: argv += ['--epochs', '2']

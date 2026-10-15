@@ -135,7 +135,7 @@ def test_joint_full_parameter_dense_oracle_and_invariance(toy):
 
 def gate_rows():
     return [dict(epoch=i*20, rank=16, mu_rel=.01, cg_converged=True,
-                 rho_joint=.3, significant_N1=True, significant_rho_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
+                 rho_joint=.3, significant_N1=True, significant_rho_N1=True, significant_nu_N1=True, V_tiny_V=2., V_random_frob=1., train_acc=.98)
             for i in range(1, 11)]
 
 

@@ -1,0 +1,26 @@
+[
+  {
+    "M_build_seconds": 0.08721677598077804,
+    "M_device": "cpu",
+    "M_memory_bytes": 18432,
+    "factor_seconds": 0.0006767630111426115,
+    "max_eig": 0.6135652124880467,
+    "min_eig": -4.5841422632424113e-17,
+    "n_out": 48,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  },
+  {
+    "M_build_seconds": 0.08996060700155795,
+    "M_device": "cpu",
+    "M_memory_bytes": 18432,
+    "factor_seconds": 0.0006765949947293848,
+    "max_eig": 0.6132203817581513,
+    "min_eig": -6.896585627587986e-17,
+    "n_out": 48,
+    "residual_in_range_H": true,
+    "residual_range_relative_error": 0.0,
+    "solver": "output_exact"
+  }
+]

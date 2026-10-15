@@ -146,11 +146,9 @@ class RepDistillerHook:
         ctx.update(teacher=self.teacher, epoch=epoch, step=self.steps, task=0, end_of_task=False,
                    known_classes=0, train_acc=self.epochs[-1]['train_acc'])
         self.boundary()
-        log(f"measurement start epoch={epoch}")
         started = time.monotonic()
         self.rows.extend(self.measurement(self.model, batch, spec, ctx) or [])
         self.point_seconds.append({'epoch': epoch, 'seconds': time.monotonic()-started})
-        log(f'measurement end epoch={epoch} seconds={self.point_seconds[-1]["seconds"]:.3f}')
         projected(self, self.opt.epochs, 1 if self.pilot or self.smoke else len(POINTS))
         if self.persist: self.persist(self)
 
@@ -183,6 +181,13 @@ class RepDistillerHook:
         original_lr, original_loader = entry.adjust_learning_rate, entry.get_cifar100_dataloaders
         original_train, original_validate, original_save = entry.train, entry.validate, torch.save
         from dataset import cifar100
+        from helper import loops
+        from unittest.mock import patch
+        import builtins
+        def epoch_print(*args, **kwargs):
+            if args and str(args[0]).startswith(('Epoch: [', 'Test: [')):
+                return
+            return builtins.print(*args, **kwargs)
         folder = cifar100.get_data_folder
         def scheduler(epoch, opt, optimizer):
             frame = inspect.currentframe().f_back
@@ -226,7 +231,8 @@ class RepDistillerHook:
             entry.adjust_learning_rate = scheduler
             entry.get_cifar100_dataloaders = lambda **kw: self.loaders(original_loader, **kw)
             if self.data_dir: cifar100.get_data_folder = lambda: str(Path(self.data_dir).resolve())
-            yield self
+            with patch.object(loops, 'print', epoch_print, create=True):
+                yield self
         finally:
             entry.adjust_learning_rate, entry.get_cifar100_dataloaders = original_lr, original_loader
             cifar100.get_data_folder = folder

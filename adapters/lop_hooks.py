@@ -141,7 +141,7 @@ class LearnHook:
         self._timing_mark = None
         self._timing_step = 0
         self._timing_measurement = 0.
-        self.points = {1, 2, 5, 10, 20, 50, 100, 150, 200}
+        self.points = set()
         if benchmark == 'regression':
             self.task_steps = int(params['flip_after'])
         elif benchmark == 'mnist':
@@ -151,6 +151,8 @@ class LearnHook:
         if self.task_steps < 1:
             raise ValueError('task must contain at least one step')
         capacity = int(params['num_data_points']) if benchmark == 'regression' else params['num_tasks']*self.task_steps
+        tasks = capacity // self.task_steps
+        self.points = measurement_tasks(tasks)
         self.results = StepLog(capacity, self.task_steps, params.get('mini_batch_size', 1), benchmark != 'regression')
 
     def _shadow(self, learner):
@@ -170,7 +172,11 @@ class LearnHook:
                     self.shadows[rate] = GnT(**kwargs, init='kaiming', accumulate=self.benchmark == 'mnist')
             shadow = self.shadows[rate]
             with _global_state():
-                selected = shadow.test_features(learner.previous_features)[0]
+                for i in range(shadow.num_hidden_layers):
+                    shadow.ages[i] += 1
+                    shadow.update_utility(layer_idx=i, features=learner.previous_features[i])
+                selected = [torch.empty(0, dtype=torch.long, device=next(learner.net.parameters()).device)
+                            for _ in range(shadow.num_hidden_layers)]
             label = f'cbp_rr_{rate:g}' if self.benchmark == 'regression' else 'cbp'
             self.cbp_candidates.append((label, shadow, selected))
         self.shadow, self.selected = self.cbp_candidates[0][1:]
@@ -270,7 +276,7 @@ class LearnHook:
         within = (self.step-1)%self.task_steps + 1
         self.results.append(result, target)
         if self.observe: self.observe(learner, x, target, task, self.step)
-        if self.measurement is not None and self.arm == 'bp':
+        if self.measurement is not None:
             self._shadow(learner)
             smoke_done = self.time_steps and bool(self.measurement_point_seconds)
             if not smoke_done and len(self.buffer) == self.buffer.m and task in self.points and (first_point or within == max(1, self.task_steps//2)):
@@ -292,11 +298,6 @@ class LearnHook:
                 self.rows.extend(rows or [])
                 if any(r.get('status') == 'timeout' for r in rows or []):
                     self._checkpoint(learner, self.last_frame)
-        if self.step % 10000 == 0 or within == self.task_steps:
-            elapsed = time.monotonic()-self.report_started
-            log(f'{self.benchmark} {self.arm} task={task} step={self.step} '
-                f'ms/step={1000*elapsed/max(1, self.step-self.report_step):.3f}')
-            self.report_started, self.report_step = time.monotonic(), self.step
         if within == self.task_steps:
             self.last_task_ms = 1000*(time.monotonic()-self.task_started)/within
             row = list(self.results.tasks())[-1]
@@ -342,3 +343,14 @@ class LearnHook:
             yield self
         finally:
             for cls, original in originals.items(): cls.learn = original
+
+
+def measurement_tasks(tasks):
+    """Sparse first half, at least ten tasks (twenty points) in second half."""
+    early = {1, 2, 5, 10, 20, 30, 40, 50}
+    stride = max(1, tasks // 20)
+    points = {t for t in early if t <= tasks/2} | set(range(tasks//2+stride, tasks+1, stride)) | {tasks}
+    # The listed regression grid has only 20 window points; task 51 supplies
+    # the two additional points required by the same round-2 specification.
+    if tasks == 100: points.add(51)
+    return points

@@ -130,7 +130,7 @@ class ICaRLHook:
             f"train_acc={train_acc:.6f} eval_loss={row['eval_loss']} eval_acc={row['eval_acc']} "
             f"lr={row['lr']} seconds={row['seconds']:.3f}")
         if self.observe: self.observe(learner, optimizer)
-        point = learner._cur_task == 1 and epoch == 2 if self.pilot else epoch in {1, 10, max(1, last//2), last}
+        point = learner._cur_task == 1 and epoch == 2 if self.pilot else measurement_epoch(learner._cur_task+1, epoch, last)
         if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and self.point_seconds:
             point = False
         if self.measurement and point:
@@ -144,7 +144,6 @@ class ICaRLHook:
 
     def measure_point(self, learner, epoch, train_acc, last):
         self.boundary()
-        log(f'measurement start task={learner._cur_task+1} epoch={epoch}')
         device = next(learner._network.parameters()).device
         batch = tuple(t.to(device) for t in self.buffer.batch())
         model = Prediction(learner._network)
@@ -156,8 +155,7 @@ class ICaRLHook:
         self.rows.extend(self.measurement(model, batch, spec, ctx) or [])
         self.point_seconds.append({'task': ctx['task'], 'epoch': epoch,
                                    'batch_size': len(batch[0]), 'seconds': time.monotonic()-started})
-        log(f'measurement end task={ctx["task"]} epoch={epoch} seconds={self.point_seconds[-1]["seconds"]:.3f}')
-        projected(self, 1730, 40)
+        projected(self, 1730, 13)
 
     def record_task(self, learner, result):
         row = {'task': learner._cur_task+1}
@@ -292,3 +290,8 @@ class ICaRLHook:
             icarl.DataLoader = original_loader
             torch.optim.lr_scheduler.MultiStepLR = original_scheduler
             icarl.iCaRL._train, icarl.iCaRL.eval_task = original_train, original_eval
+
+
+def measurement_epoch(task, epoch, last):
+    """Ten midpoint observations plus reference endpoints at tasks 2, 5, 10."""
+    return epoch == max(1, last//2) or (epoch == last and task in {2, 5, 10})
