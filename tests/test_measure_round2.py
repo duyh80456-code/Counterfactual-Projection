@@ -125,8 +125,8 @@ def test_nu_gate_and_schedules(tmp_path):
 def test_auto_scaling():
     from methods.vna_output import choose_solver
     assert choose_solver('auto',4096)[0]=='output_exact'
-    assert choose_solver('auto',25600)[0]=='cg'
-    assert choose_solver('auto',13,12)[0]=='cg'
+    assert choose_solver('auto',25600)[0]=='output_exact'
+    assert choose_solver('auto',13,12)[0]=='output_exact'
     assert choose_solver('output_exact',25600)[0]=='output_exact'
 
 

@@ -98,7 +98,7 @@ def periodic_archive():
 def command(job, out, *, smoke=False, measure=False):
     args = ["measure"] if measure else job["args"]
     cmd = [sys.executable, "-u", "-m", job["module"], *args, "--out", str(out),
-           "--device", "cuda:0", "--workers", "2", "--data-dir", str(DATA_ROOT),
+           "--device", "cuda:0", "--workers", "2", "--solver", "auto", "--data-dir", str(DATA_ROOT),
            "--mu-rel-default", str(MU_REL_DEFAULT), "--mu-source", MU_SOURCE]
     if OFFICIAL_MU is not None:
         cmd += ["--official-mu", str(OFFICIAL_MU)]
@@ -144,6 +144,11 @@ SMOKE = '''def smoke_lane(gpu, jobs):
         import statistics
         measurement_path = smoke_out / "measurements.csv"
         measurement_rows = list(csv.DictReader(measurement_path.open())) if measurement_path.exists() else []
+        for row in measurement_rows:
+            print(job["name"], "task", row.get("task"), "n_out", row.get("n_out"),
+                  "M_build_seconds", row.get("M_build_seconds"), "factor_seconds", row.get("factor_seconds"),
+                  "peak RSS", row.get("peak_rss_bytes"),
+                  "tiny_V peak CUDA", row.get("tiny_V_peak_cuda_bytes"), flush=True)
         consistency = [float(r["V_consistency"]) for r in measurement_rows if r.get("V_consistency")]
         print(job["name"], "V_consistency min/median/max",
               (min(consistency), statistics.median(consistency), max(consistency)) if consistency else (None, None, None), flush=True)

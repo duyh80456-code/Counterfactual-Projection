@@ -41,11 +41,14 @@ class SolveCache:
             self.mu = relative_damping(cfg, self.trace, op) if mu is None else mu
         self.ctx = dict(model=model, site=site, seed=seed, names=names,
                         loss_spec=loss_spec, cfg=cfg, mu=self.mu)
+        for factor in (factors or {}).values():
+            if factor is not None: factor.release()
         self.solver, self.output_exact_max = solver, output_exact_max
         self.factors = {} if factors is None else factors
         self.null_draw_id = 'null'
         self.cache = {}
         self.records = {}
+        self.factor_reported = set()
 
     def solve(self, residual_id, residual, data, context):
         key = (self.mu, residual_id)
@@ -62,7 +65,7 @@ class SolveCache:
                 if monitor: monitor.begin_solve()
                 started = time.perf_counter()
                 z = factor.z(residual, self.mu)
-                record = dict(converged=factor.range_ok, iterations=0, relative_residual=factor.range_error)
+                record = dict(converged=factor.range_ok and factor.factor_error is None, iterations=0, relative_residual=factor.range_error)
                 if monitor: monitor.end_solve({**record, 'seconds': time.perf_counter()-started})
             self.cache[key], self.records[key] = z, record
         return self.cache[key]
@@ -78,20 +81,29 @@ class SolveCache:
                 matrix = None
                 if parent is not None:
                     indices = mask[:, None].expand(-1, parent.shape[1]).flatten().nonzero().flatten()
-                    matrix = parent.matrix[indices.to(parent.matrix.device)][:, indices.to(parent.matrix.device)] * (parent.shape[0]/len(data[0]))
-                self.factors[key] = OutputFactor(op, matrix=matrix) if solver == 'output_exact' else None
+                    indices = indices.to(parent.matrix.device)
+                    matrix = parent.matrix[indices[:, None], indices[None, :]]
+                    matrix.mul_(parent.shape[0]/len(data[0]))
+                self.factors[key] = OutputFactor(op, matrix=matrix, factor_mode='cholesky' if parent is not None else None) if solver == 'output_exact' else None
                 from experiments.vna_resume import log
                 factor = self.factors[key]
                 from experiments.vna_resume import current_measurement
                 monitor = current_measurement.get()
                 if monitor:
-                    if factor: monitor.factors.append(factor.metadata())
                     choice = dict(solver=solver, reason=reason, n_out=op.g.numel())
                     if choice not in monitor.solver_choices: monitor.solver_choices.append(choice)
                 else:
                     log(f"solver={solver} reason={reason} n_out={op.g.numel()} " +
                         (str(factor.metadata()) if factor else 'matrix-free CG'))
-        return self.factors[key]
+        factor = self.factors[key]
+        if factor is not None:
+            factor.prepare(self.mu)
+            from experiments.vna_resume import current_measurement
+            monitor = current_measurement.get()
+            if monitor and key not in self.factor_reported:
+                monitor.factors.append(factor.metadata())
+                self.factor_reported.add(key)
+        return factor
 
     def metadata(self, data, context):
         from methods.vna_output import choose_solver
@@ -110,19 +122,22 @@ class SolveCache:
 def draw_nulls(cache, g, e, stat, evaluation, stat_ctx, eval_ctx, generator, repeats):
     from methods.vna import dedicated_generator
     generator = dedicated_generator(cache.ctx['cfg'].seed, cache.null_draw_id, g.device)
-    result = {}
+    # Draw every residual first in the original RNG order, then solve all stat
+    # residuals before all eval residuals, so a large output factor is
+    # activated once per dataset instead of alternating per replicate.
+    drawn = []
     for kind in ('N1', 'N2'):
-        draws = []
         for repeat in range(repeats):
             a = null_residual(g, kind, generator,
                              residual_is_zero_sum=cache.ctx['loss_spec'].residual_is_zero_sum)
             b = null_residual(e, kind, generator,
                              residual_is_zero_sum=cache.ctx['loss_spec'].residual_is_zero_sum)
-            label = f'null:{kind}:{repeat}'
-            za = cache.solve(label+':stat', a, stat, stat_ctx)
-            zb = cache.solve(label+':eval', b, evaluation, eval_ctx)
-            draws.append((za, zb, b))
-        result[kind] = draws
+            drawn.append((kind, f'null:{kind}:{repeat}', a, b))
+    za = {label: cache.solve(label+':stat', a, stat, stat_ctx) for _, label, a, _ in drawn}
+    zb = {label: cache.solve(label+':eval', b, evaluation, eval_ctx) for _, label, _, b in drawn}
+    result = {kind: [] for kind in ('N1', 'N2')}
+    for kind, label, _, b in drawn:
+        result[kind].append((za[label], zb[label], b))
     return result
 
 
@@ -147,3 +162,27 @@ def verify_energy(energy, correction):
     """Report relative V disagreement; callers exclude inconsistent rows."""
     relative = abs(energy['V']-correction['V']) / max(abs(correction['V']), 1e-300)
     return relative
+
+
+def exact_cg_check(cache, residual, data, context):
+    """Independent real solve, reported without affecting exclusion."""
+    from dataclasses import replace
+    factor = cache.factor(data, context)
+    if factor is None:
+        from methods.vna_output import OutputFactor
+        with joint_products(cache.ctx['model'], [cache.ctx['site']],
+                {cache.ctx['site']: cache.ctx['seed']}, data[0], cache.ctx['names']) as p:
+            factor = OutputFactor(GGNProducts(p, data[1], cache.ctx['loss_spec'], context))
+    exact = factor.z(residual, cache.mu)
+    cfg = replace(cache.ctx['cfg'], cg_tol=1e-6, cg_iters=1000)
+    cg, record = solve_z(residual, data, {**cache.ctx, 'cfg': cfg, 'loss_ctx': context})
+    return dict(exact_vs_cg_relative=float((exact-cg).norm()/exact.norm().clamp_min(1e-300)),
+                exact_vs_cg_iterations=record['iterations'], exact_vs_cg_converged=record['converged'])
+
+
+def exact_cg_summary(rows):
+    return [dict(task=r.get('task'), step=r.get('step'), mu_rel=r.get('mu_rel'),
+                 **{k: v for k, v in r.items() if k.startswith('exact_vs_cg_')})
+            for i, r in enumerate(rows) if 'exact_vs_cg_relative' in r
+            and not any((p.get('task'), p.get('step'), p.get('mu_rel')) ==
+                        (r.get('task'), r.get('step'), r.get('mu_rel')) for p in rows[:i])]

@@ -107,6 +107,9 @@ def main():
                       forced_output_exact_factor_cpu_seconds_n_cubed=(eval_factor['factor_seconds']*(forced_n_out/n_out)**3 if eval_factor else cubic_calibration*forced_n_out**3),
                       forced_output_exact_cost_basis='CPU fake-model factor timing; cubic factorization estimate, not a T4 forecast',
                       peak_cuda_bytes=None, cpu_process_peak_rss_bytes=__import__('resource').getrusage(__import__('resource').RUSAGE_SELF).ru_maxrss * (1 if __import__('sys').platform == 'darwin' else 1024))
+        if setting == 'B5':
+            from adapters.lop_hooks import measurement_tasks
+            record['projected_mnist_cbp_measurement_cpu_hours'] = elapsed*2*sum(t > 100 for t in measurement_tasks(200))/3600
         results.append(record)
         print(json.dumps(record), flush=True)
     if args.profile_real_tiny: profile_real_tiny(out)
@@ -141,9 +144,15 @@ def profile_real_tiny(out):
         with torch.no_grad(): z = torch.randn_like(model(batch[0])).double()
         torch.cuda.reset_peak_memory_stats()
         started = time.monotonic()
-        for site in sites: tiny_V(model,site,[batch],min(16,site.first_layer.layer.weight.shape[0]),cotangents=[z])
+        peaks = []
+        for site in sites:
+            torch.cuda.reset_peak_memory_stats()
+            tiny_V(model,site,[batch],min(16,site.first_layer.layer.weight.shape[0]),cotangents=[z])
+            torch.cuda.synchronize()
+            peaks.append(torch.cuda.max_memory_allocated())
+            print(json.dumps(dict(model=name, site=site.module_name, tiny_V_peak_cuda_bytes=peaks[-1])), flush=True)
         torch.cuda.synchronize()
-        row = dict(model=name,batch_size=256,tiny_V_peak_cuda_bytes=torch.cuda.max_memory_allocated(),
+        row = dict(model=name,batch_size=256,tiny_V_peak_cuda_bytes=max(peaks),
                    seconds=time.monotonic()-started)
         print(json.dumps(row),flush=True); results.append(row)
         del model,sites,batch,z,site

@@ -42,6 +42,8 @@ class B3Measurement:
         with torch.no_grad():
             g = loss_spec.residual(model(stat[0]), stat_ctx)
             e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+        first_point = not getattr(self, "_measured", False)
+        self._measured = True
         factors = {}
         prepared_groups = {}
         for mu_rel in self.mus:
@@ -50,6 +52,15 @@ class B3Measurement:
             cache = SolveCache(model, sites[0], stat, loss_spec, stat_ctx, cfg, solver=self.solver, output_exact_max=self.output_exact_max, factors=factors)
             z = cache.solve('real:stat', g, stat, stat_ctx)
             ze = cache.solve('real:eval', e, evaluation, eval_ctx)
+            failed = [f for f in factors.values() if f is not None and f.factor_error]
+            if failed:
+                rows.append({**self.metadata, 'task': ctx['task'], 'step': ctx['step'],
+                             'mu_rel': mu_rel, **failed[0].metadata(),
+                             'cg_converged_real': False, 'cg_converged_null': False,
+                             'cg_converged': False, 'status': 'factor_error'})
+                continue
+            from diagnostics.measure_efficiency import exact_cg_check
+            comparison = exact_cg_check(cache, e, evaluation, eval_ctx) if first_point else {}
             cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
             nulls = draw_nulls(cache, g, e, stat, evaluation, stat_ctx, eval_ctx, generator, self.null_repeats)
             groups = {}
@@ -69,6 +80,13 @@ class B3Measurement:
                     zg = cache.solve('real:'+label, residual, subset, context)
                     groups[label] = (subset, residual, zg)
                 else: groups[label] = None
+            failed = [f for f in factors.values() if f is not None and f.factor_error]
+            if failed:
+                rows.append({**self.metadata, 'task': ctx['task'], 'step': ctx['step'],
+                             'mu_rel': mu_rel, **failed[0].metadata(),
+                             'cg_converged_real': False, 'cg_converged_null': False,
+                             'cg_converged': False, 'status': 'factor_error'})
+                continue
             for rank in self.ranks:
                 records = []
                 group_sums = {label: 0. for label in groups}
@@ -121,11 +139,13 @@ class B3Measurement:
                            **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'e_norm2', 'nu')},
                            **{k: checked[k] for k in ('cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
                            'cg_converged_real': real_ok, 'cg_converged_null': null_ok, 'cg_converged': real_ok and null_ok,
-                           'V_consistency': consistency, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                           'V_consistency': consistency, **comparison, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
                            'lambda1': lam, 'subspace_sim': similarity,
                            'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['epoch']}:{ctx['step']}:{mu_rel}",
                            **null_columns(lam, real['rho'], values, real['nu'])}
+                    factor = cache.factor(evaluation, eval_ctx)
+                    row.update(factor.spectrum(e, cache.mu) if factor else {})
                     records.append(row)
                 joint_rho = sum(row['rho'] for row in records)
                 for row in records:

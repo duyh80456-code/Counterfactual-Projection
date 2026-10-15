@@ -48,6 +48,25 @@ def choose_signs(model, site, A, inputs, z):
     return _concat(choices)
 
 
+def _profile_tiny(function):
+    from functools import wraps
+    @wraps(function)
+    def measured(model, site, *args, **kwargs):
+        from experiments.vna_resume import current_measurement
+        monitor = current_measurement.get()
+        device = next(model.parameters()).device
+        profile = monitor is not None and device.type == 'cuda'
+        if profile: torch.cuda.reset_peak_memory_stats(device)
+        try:
+            return function(model, site, *args, **kwargs)
+        finally:
+            if profile:
+                peak = torch.cuda.max_memory_allocated(device)
+                monitor.tiny_V_peak_cuda_bytes = max(monitor.tiny_V_peak_cuda_bytes, peak)
+    return measured
+
+
+@_profile_tiny
 def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
            existing_weight_projection=False, normalize=True, score_signs=True,
            numerical_threshold=1e-6, loss_spec=None, contexts=None):

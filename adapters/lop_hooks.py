@@ -152,7 +152,11 @@ class LearnHook:
             raise ValueError('task must contain at least one step')
         capacity = int(params['num_data_points']) if benchmark == 'regression' else params['num_tasks']*self.task_steps
         tasks = capacity // self.task_steps
+        window = params.get('measure_window_only', 'auto')
+        self.measure_window_only = window == 'yes' or (window == 'auto' and benchmark == 'mnist' and arm == 'cbp')
         self.points = measurement_tasks(tasks)
+        if self.measure_window_only:
+            self.points = [task for task in self.points if task > tasks/2]
         self.results = StepLog(capacity, self.task_steps, params.get('mini_batch_size', 1), benchmark != 'regression')
 
     def _shadow(self, learner):

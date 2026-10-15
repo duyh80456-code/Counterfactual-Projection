@@ -80,7 +80,7 @@ archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.star
 def command(benchmark, arm, out, mu, source, *, smoke=False, rate=None, attached=False):
     device = "cpu" if benchmark == "regression" else "cuda:0"
     cmd = [sys.executable, "-u", "-m", "experiments.stage_b5", benchmark, "--arm", arm,
-           "--device", device, "--out", str(out), "--mu-rel-default", str(mu),
+           "--device", device, "--solver", "auto", "--out", str(out), "--mu-rel-default", str(mu),
            "--mu-rel-default-source", source]
     cmd += ["--smoke"] if smoke else ["--resume"]
     if rate is not None: cmd += ["--replacement-rate", str(rate)]
@@ -117,12 +117,19 @@ def b5_job(benchmark, arm, lane, *, rate=None):
     import statistics
     measurement_path = RUN_ROOT / "smoke/outputs/stageB/round2/b5" / benchmark / name / "measurements.csv"
     measurement_rows = list(csv.DictReader(measurement_path.open())) if measurement_path.exists() else []
+    print(benchmark, name, "tiny_V peak CUDA bytes",
+          max((int(r.get("tiny_V_peak_cuda_bytes") or 0) for r in measurement_rows), default=0),
+          "M peak host RSS bytes", max((int(r.get("peak_rss_bytes") or 0) for r in measurement_rows), default=0), flush=True)
     consistency = [float(r["V_consistency"]) for r in measurement_rows if r.get("V_consistency")]
     print(benchmark, name, "V_consistency min/median/max",
           (min(consistency), statistics.median(consistency), max(consistency)) if consistency else (None, None, None), flush=True)
     startup = summary["startup_seconds"]
     steady = summary["steady_step_seconds"]
     points = 38 if benchmark == "regression" else 36
+    if benchmark == "mnist" and arm == "cbp":
+        from adapters.lop_hooks import measurement_tasks
+        points = 2 * sum(task > 100 for task in measurement_tasks(200))
+        print("MNIST CBP projected measurement hours", points * point_seconds / 3600, flush=True)
     hours = (startup + steady * steps + points * point_seconds) / 3600
     print(benchmark, arm, rate, f"startup {startup:.3f} s; {steady*1000:.3f} ms/step; "
           f"full steps {steps}; measurement {point_seconds:.3f} s/point; "

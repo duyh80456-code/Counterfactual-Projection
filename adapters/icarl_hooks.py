@@ -131,7 +131,7 @@ class ICaRLHook:
             f"lr={row['lr']} seconds={row['seconds']:.3f}")
         if self.observe: self.observe(learner, optimizer)
         point = learner._cur_task == 1 and epoch == 2 if self.pilot else measurement_epoch(learner._cur_task+1, epoch, last)
-        if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and self.point_seconds:
+        if self.measurement and getattr(self.measurement.measure, 'metadata', {}).get('smoke') and any(p.get('task') == learner._cur_task+1 for p in self.point_seconds):
             point = False
         if self.measurement and point:
             self.pending_measure = epoch

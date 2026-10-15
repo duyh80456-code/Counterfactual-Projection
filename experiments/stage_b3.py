@@ -164,9 +164,10 @@ def run(args, *, measure_override=None, observe=None):
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
     write_json(out/'reproduction_gate.json', baseline)
     write_json(out/'gate.json', gate)
+    from diagnostics.measure_efficiency import exact_cg_summary
     diagnostic_seconds = sum(p['seconds'] for p in hook.point_seconds)
     write_json(out/'summary.json', {**metadata, 'identity': identity, 'mu_rel_default': args.mu_rel_default, 'mu_source': args.mu_source, 'seconds': seconds,
-               'training_seconds': seconds-diagnostic_seconds, 'epochs_run': len(hook.epochs),
+               'exact_vs_cg': exact_cg_summary(hook.rows), 'training_seconds': seconds-diagnostic_seconds, 'epochs_run': len(hook.epochs),
                'tasks_run': len(hook.tasks), 'measurement_point_seconds': hook.point_seconds,
                'resume_supported': True, 'status': 'COMPLETED', 'reproduction': baseline, 'gate': gate,
                **(pilot_summary(hook.epochs, hook.point_seconds, hook.rows, args.device,

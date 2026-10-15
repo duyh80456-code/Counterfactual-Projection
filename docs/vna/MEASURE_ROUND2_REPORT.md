@@ -125,3 +125,16 @@ Skipped: `tests.test_vna_split3.test_render_comparison_curves` — optional diag
 ```
 
 New files: methods/vna_output.py, tests/test_measure_round2.py, PREREGISTRATION_CHANGES.md, this report, and measurement logs/diffs.
+
+## Round 3
+
+- `methods/vna_output.py`: auto always selects output exact; retain eigh through 4096 outputs and use CPU float64 Cholesky per damping value above that size. Build GPU-vmapped columns into CPU storage, symmetrize by bounded blocks, reuse each factor for all right-hand sides, and report factor failures, timing, device and peak memory. Inactive large matrices and factors are parked in temporary files to keep only one large matrix/factor pair in host memory; factors are restored without recomputation. Large spectra are explicitly skipped.
+- `diagnostics/measure_efficiency.py`, `methods/vna_joint.py`: reuse principal submatrices for B3 groups, propagate factor failures, release factors between damping values, and independently compare the first point's real exact solve with CG at tolerance 1e-6 and 1000 iterations.
+- `diagnostics/icarl_measure.py`, `diagnostics/lop_measure.py`: attach solver and comparison diagnostics to measurement rows. B5 CBP swaps use learner utility and strictly mature units, recording source and eligibility; BP retains shadow utility.
+- `adapters/lop_hooks.py`, `experiments/stage_b5.py`: add `--measure-window-only auto|yes|no`; auto restricts MNIST CBP to the second-half gate window. Record the requested/effective policy and exact-versus-CG comparisons in summaries. `experiments/stage_b3.py` also records the comparisons.
+- `methods/vna_select.py`, `experiments/vna_resume.py`, `diagnostics/vna_align.py`: reset and collect CUDA peak allocation for each measured TINY-V call, expose the point peak in rows and print it alongside peak host RSS.
+- `adapters/icarl_hooks.py`: B3 smoke retains one measurement point in each of tasks 1 and 2.
+- `scripts/build_kaggle_vna_stage_b_nb1.py`, `scripts/build_kaggle_vna_stage_b_rest.py`, `scripts/smoke_measure_efficiency.py`: pass auto explicitly, print output sizes/build/factor timing and memory, and separately project MNIST CBP measurement cost. Real-model profiling resets CUDA peaks before each TINY-V call.
+- `tests/test_measure_round2.py`: update auto-selection expectations. Rebuilt `notebooks/kaggle_vna_stage_b_nb1.ipynb` and `notebooks/kaggle_vna_stage_b_nb2.ipynb` pinned to current HEAD.
+
+Validation: compiled touched Python files and both notebooks' code cells. No pytest or smoke was run; no commit was created.

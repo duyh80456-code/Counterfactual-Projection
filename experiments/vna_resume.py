@@ -240,6 +240,7 @@ class MeasurementMonitor(Status):
         self.thread = threading.Thread(target=self._heartbeat, daemon=True)
         self.solves = []
         self.factors = []
+        self.tiny_V_peak_cuda_bytes = 0
         self.solver_choices = []
         self.traceback_file = None
 
@@ -297,7 +298,8 @@ class MeasurementMonitor(Status):
         if self.out:
             atomic_json_save(self.factors, self.out/'factors.json')
         log(f'measurement task={self.values.get("task")} epoch={self.values.get("epoch")} '
-            f'solvers={json.dumps(self.solver_choices)} '
+            f'solvers={json.dumps(self.solver_choices)} tiny_V_peak_cuda_bytes={self.tiny_V_peak_cuda_bytes} '
+            f'peak_host_rss_bytes={max((r.get("peak_rss_bytes", 0) for r in self.factors), default=0)} '
             f'M_build_seconds={sum(r["M_build_seconds"] for r in self.factors):.6f} '
             f'factor_seconds={sum(r["factor_seconds"] for r in self.factors):.6f} '
             f'M_max_memory_bytes={max((r["M_memory_bytes"] for r in self.factors), default=0)} '

@@ -92,6 +92,8 @@ class B5Measurement:
         with torch.no_grad(): logits = model(stat[0])
         g = loss_spec.residual(logits, loss_ctx)
         with torch.no_grad(): e = loss_spec.residual(model(evaluation[0]), eval_ctx)
+        first_point = not getattr(self, "_measured", False)
+        self._measured = True
         factors = {}
         for mu_rel in self.mus:
             cfg = GGNConfig(damping_rel=mu_rel, cg_iters=self.cg_iters, cg_tol=self.cg_tol, project_bn=False,
@@ -100,6 +102,15 @@ class B5Measurement:
             mu, trace = cache.mu, cache.trace
             z = cache.solve('real:stat', g, stat, loss_ctx)
             ze = cache.solve('real:eval', e, evaluation, eval_ctx)
+            failed = [f for f in factors.values() if f is not None and f.factor_error]
+            if failed:
+                rows.append({**self.metadata, 'task': ctx['task'], 'step': ctx['step'],
+                             'mu_rel': mu_rel, **failed[0].metadata(),
+                             'cg_converged_real': False, 'cg_converged_null': False,
+                             'cg_converged': False, 'status': 'factor_error'})
+                continue
+            from diagnostics.measure_efficiency import exact_cg_check
+            comparison = exact_cg_check(cache, e, evaluation, eval_ctx) if first_point else {}
             cache.null_draw_id = f"{self.metadata['seed']}:{ctx.get('task')}:{ctx.get('epoch')}:{ctx['step']}:{mu_rel}"
             nulls = draw_nulls(cache, g, e, stat, evaluation, loss_ctx, eval_ctx, generator, 8)
             swaps = {}
@@ -155,7 +166,7 @@ class B5Measurement:
                            'selected_rank': len(A['weight']),
                            'measurement_m': len(batch[0]), 'buffer_m': len(batch[0]),
                            'stat_m': len(stat[0]), 'eval_m': len(evaluation[0]), 'trace': trace,
-                           'V_consistency': consistency, **cache.metadata(evaluation, eval_ctx),
+                           'V_consistency': consistency, **comparison, **cache.metadata(evaluation, eval_ctx),
                            'null_draw_id': f"{self.metadata['seed']}:{ctx['task']}:{ctx['step']}:{mu_rel}",
                            **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'e_norm2', 'nu', 'mu', 'cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
                            'damping_norm': 'outputs', 'lambda1': lam,
@@ -177,8 +188,20 @@ class B5Measurement:
                     if site not in swaps:
                         swap_row = {'cg_converged_real': True}
                         m = max(1, len(stats[index]['dormant_indices']))
-                        candidates = [(label, shadow, torch.argsort(shadow.bias_corrected_util[index])[:m])
-                                      for label, shadow, selected in ctx['cbp_candidates']]
+                        candidates = []
+                        learner_source = self.metadata.get('arm', 'bp') != 'bp'
+                        swap_row['cbp_utility_source'] = 'learner' if learner_source else 'shadow'
+                        for label, shadow, selected in ctx['cbp_candidates']:
+                            source = ctx['learner'].gnt if learner_source else shadow
+                            utility = source.bias_corrected_util[index]
+                            if learner_source:
+                                eligible = torch.where(source.ages[index] > source.maturity_threshold)[0]
+                            else:
+                                eligible = torch.arange(len(utility), device=utility.device)
+                            units = eligible[torch.argsort(utility[eligible])[:m]]
+                            swap_row['eligible_units'] = len(eligible)
+                            swap_row[f'{label}_eligible_units'] = len(eligible)
+                            candidates.append((label, source, units))
                         swap_row['cbp_selection'] = 'lowest_utility_m'
                         candidates.append(('redo', ctx['shadow'], stats[index]['dormant_indices']))
                         for criterion, shadow, units in candidates:

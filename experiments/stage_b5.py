@@ -311,6 +311,7 @@ def _run(args, status):
     arm_name = args.arm if args.replacement_rate is None else f'cbp_rr_{args.replacement_rate:g}'
     output = Path(args.out).resolve(); run_dir = output/'b5'/args.benchmark/arm_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    params['measure_window_only'] = getattr(args, 'measure_window_only', 'auto')
     params['data_file'] = str(run_dir/'upstream_in_progress.tmp'); params['run_idx'] = 0
     if args.benchmark == 'regression': params['env_file'] = str(run_dir/'data/regression.pkl')
     params['examples_per_epoch'] = params.get('fake_train_images_per_class', 600)*params.get('num_classes', 2)
@@ -386,6 +387,10 @@ def _run(args, status):
     tasks = [{**metadata, **task} for task in hook.results.tasks()]
     summary = {**metadata, 'status': 'COMPLETED', 'arm': args.arm, 'tasks': tasks, 'wall_seconds': time.monotonic()-start,
                'smoke': args.smoke, 'tasks_run': len(tasks), 'measurements': len(hook.rows)}
+    from diagnostics.measure_efficiency import exact_cg_summary
+    summary['exact_vs_cg'] = exact_cg_summary(hook.rows)
+    summary['measure_window_only'] = params['measure_window_only']
+    summary['measure_window_only_effective'] = hook.measure_window_only
     summary['measurement_point_seconds'] = hook.measurement_point_seconds
     summary['measurement_seconds'] = sum(point['seconds'] for point in hook.measurement_point_seconds)
     summary['training_seconds'] = max(0., summary['wall_seconds']-summary['measurement_seconds'])
@@ -427,6 +432,7 @@ def _run(args, status):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     measurement_cli(p)
+    p.add_argument('--measure-window-only', choices=['auto', 'yes', 'no'], default='auto')
     p.add_argument('benchmark', choices=CFG)
     p.add_argument('--arm', required=True, choices=['bp', 'cbp'])
     p.add_argument('--smoke', action='store_true'); p.add_argument('--fake-data', action='store_true')
