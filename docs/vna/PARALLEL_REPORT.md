@@ -31,9 +31,9 @@ rate and preflight guard coverage, the final validity contracts passed all 14
 tests in 18.19 seconds (`parallel_logs/pytest_validity_contracts.xml`).
 
 The runtime pin for the common notebook and every P1–P6 variant is
-`f8863823275abcb7c6ade8f3248418f7da98741e`. This is the implementation
-revision containing the validity fixes and smoke-only gate. Later notebook
-packaging and documentation commits do not change this runtime pin.
+`2d4114b0bfa23e74847c23d15725515ac64397bc`. It includes the validity fixes, smoke-only gate, and handling for
+an infeasible real calibration: the preflight writes `NO_FEASIBLE_K` and its
+measurements, while full runs still reject a schedule without a positive K.
 
 ## 0.1 Range(H) investigation
 
@@ -112,7 +112,7 @@ Builder:
 
 ```sh
 python scripts/build_kaggle_vna_parallel.py \
-  --commit f8863823275abcb7c6ade8f3248418f7da98741e --variants
+  --commit 2d4114b0bfa23e74847c23d15725515ac64397bc --variants
 ```
 
 Generated files:
