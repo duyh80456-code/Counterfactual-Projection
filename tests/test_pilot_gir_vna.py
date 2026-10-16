@@ -172,7 +172,9 @@ def test_active_interventions_resume_exactly_mid_task(tmp_path):
     class Pause(Exception): pass
     def observe(learner,x,y,task,step):
         if step==200:
-            partial.last_checkpoint = 0  # next native pre-learn checkpoint is a safe boundary
+            # -inf (not 0): time.monotonic() counts from boot, so a fresh container
+            # can be < checkpoint_seconds and a 0 reference never triggers.
+            partial.last_checkpoint = float('-inf')  # next native pre-learn checkpoint is a safe boundary
     reset(); partial,pp = make(checkpoint=checkpoint,observe=observe)
     with pp.install(), pytest.raises(Pause): run_native('regression',params,tmp_path,partial)
     reset(); resumed,rp = make(resume=state)
