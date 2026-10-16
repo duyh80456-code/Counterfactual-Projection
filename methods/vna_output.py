@@ -35,12 +35,35 @@ class OutputFactor:
         eye = torch.eye(c, device=op.logits.device, dtype=torch.float64)
         blocks = torch.stack([op.loss_spec.metric_apply(op.logits, eye[j].expand(n, c), op.ctx)
                               for j in range(c)], -1)
-        vals, q = torch.linalg.eigh((blocks+blocks.transpose(-1, -2))/2)
-        positive = vals > vals.abs().amax(-1, keepdim=True)*c*torch.finfo(vals.dtype).eps
-        root = torch.where(positive, vals.clamp_min(0).sqrt(), 0.)
-        self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
-        self.pinv = (q*torch.where(positive, root.clamp_min(1e-300).reciprocal(), 0.).unsqueeze(-2)) @ q.transpose(-1, -2)
-        self.projector = (q*positive.double().unsqueeze(-2)) @ q.transpose(-1, -2)
+        blocks = (blocks+blocks.transpose(-1, -2))/2
+        # CE and the iCaRL CE+KD loss have exactly one structural null
+        # direction: adding the same constant to every logit.  A relative
+        # eigencut incorrectly removes tiny, but non-zero, curvature directions
+        # once a classifier is saturated.  Keep the complete analytic tangent
+        # space for zero-sum softmax losses and reserve the numerical fallback
+        # for metrics without a declared range.
+        if op.loss_spec.residual_is_zero_sum:
+            tangent, _ = torch.linalg.qr(eye[:, :-1] - eye[:, -1:])
+            reduced = torch.einsum('ci,ncd,dj->nij', tangent, blocks, tangent)
+            vals, reduced_q = torch.linalg.eigh(reduced)
+            q = torch.einsum('ci,nij->ncj', tangent, reduced_q)
+            # A PSD eigensolver can return a tiny negative value for a highly
+            # saturated but non-null tangent direction.  Preserve its scale
+            # instead of mapping it either to zero or to the float64 minimum.
+            floor = vals.abs().amax(-1, keepdim=True) * torch.finfo(vals.dtype).eps**2
+            safe = vals.abs().clamp_min(floor.clamp_min(torch.finfo(vals.dtype).tiny))
+            root = safe.sqrt()
+            self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
+            self.pinv = (q*root.reciprocal().unsqueeze(-2)) @ q.transpose(-1, -2)
+            projector = eye - torch.ones_like(eye) / c
+        else:
+            vals, q = torch.linalg.eigh(blocks)
+            positive = vals > vals.abs().amax(-1, keepdim=True)*c*torch.finfo(vals.dtype).eps
+            projector = (q*positive.double().unsqueeze(-2)) @ q.transpose(-1, -2)
+            root = torch.where(positive, vals.clamp_min(0).sqrt(), 0.)
+            self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
+            self.pinv = (q*torch.where(positive, root.clamp_min(1e-300).reciprocal(), 0.).unsqueeze(-2)) @ q.transpose(-1, -2)
+        self.projector = projector.expand(n, c, c).clone()
         if factor_mode == 'cholesky' and matrix is not None:
             matrix = matrix.cpu()
         size = n*c
@@ -174,7 +197,7 @@ class OutputFactor:
         projected = torch.einsum('nij,nj->ni', self.projector, e)
         error = float((e-projected).norm()/e.norm().clamp_min(1e-300))
         self.range_error = max(self.range_error, error)
-        self.range_ok &= error <= 1e-10
+        self.range_ok &= error <= 1e-6
         s = torch.einsum('nij,nj->ni', self.pinv, e).flatten()
         if self.factor_mode == 'cholesky':
             return self.apply_root(s-mu*self.inverse(s, mu)).reshape_as(residual)

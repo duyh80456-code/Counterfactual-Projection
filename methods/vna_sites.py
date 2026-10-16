@@ -152,7 +152,7 @@ def hook_products(model, sites, A_by_site, inputs, names=None, *, bn_mode='eval'
 
 def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
               existing_weight_projection, normalize, score_signs, numerical_threshold,
-              loss_spec=None, contexts=None, chunk_size=8):
+              loss_spec=None, contexts=None, chunk_size=8, selection='tiny_V'):
     """TINY's whitened input/cotangent SVD for native linear/conv sites.
 
     Norms on new coordinates are identity, as in HookProducts. Incoming
@@ -275,7 +275,16 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
     whitening = (qs * inv) @ qs.T
     u, singular, _ = torch.linalg.svd(whitening @ N, full_matrices=False)
     keep = min(rank, max(1, int((singular > numerical_threshold).sum())))
-    rows = (whitening @ u[:, :keep]).T.to(first.weight)
+    if selection == 'tiny_V':
+        rows = (whitening @ u[:, :keep]).T.to(first.weight)
+        euclidean = None
+    elif selection == 'tiny_V_euclid':
+        values, vectors = torch.linalg.eigh((N @ N.T + (N @ N.T).T) * .5)
+        keep = min(rank, max(1, int((values > 0).sum())))
+        rows = vectors[:, -keep:].T.flip(0).to(first.weight)
+        euclidean = values.flip(0).clamp_min(0)
+    else:
+        raise ValueError('unknown TINY selection: '+selection)
     A = {'weight': rows[:, :first.weight[0].numel()].reshape(keep, *first.weight.shape[1:]),
          'bias': rows[:, -1] if first.bias is not None else None}
     if normalize:
@@ -300,4 +309,5 @@ def hook_tiny(model, site, batches, rank, *, cotangents, cfg,
         A = _concat(chosen)
     return A, {'S': S, 'N_z': N, 'singular_values': singular[:keep],
                'generalized_eigenvalues': singular.square(),
+               'euclidean_eigenvalues': euclidean, 'selection': selection,
                'existing_weight_projection': existing_weight_projection}

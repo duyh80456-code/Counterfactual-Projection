@@ -13,7 +13,8 @@ from diagnostics.vna_align import _global_state, _assert_bitwise, MeasurementHoo
 from experiments.pilot_gir_vna import PilotEngine
 from experiments.stage_b3 import upstream_imports
 from experiments.vna_resume import rng_state, hook_state, restore_hook
-from methods.vna_losses import CE
+from methods.vna_losses import CE, ICaRLPyCIL
+from methods.vna_output import OutputFactor
 from methods.vna_sites import HookSite
 
 
@@ -181,3 +182,32 @@ def test_forgetting_includes_current_accuracy_like_native_pycl():
     assert hook.tasks[-1]['cnn_forgetting']==10.
     assert hook.tasks[-1]['nme_forgetting']==0.
     assert hook.tasks[-1]['cnn_average_accuracy']==47.5
+
+
+def test_icarl_kd_residual_and_metric_have_full_softmax_tangent_range():
+    """Saturated task>=2 logits must not lose valid tiny-curvature axes."""
+    upstream_imports()
+    from models.icarl import _KD_loss
+    logits = torch.tensor([[45., 18., -9., -36.],
+                           [38., 12., -14., -40.]], dtype=torch.float64)
+    teacher = torch.tensor([[2., 1., -1.], [-2., .5, 3.]], dtype=torch.float64)
+    ctx = {'targets': torch.tensor([3, 2]), 'known_classes': 3,
+           'teacher_logits': teacher}
+    spec = ICaRLPyCIL(T=2., known_classes=3)
+    ctx['loss_fn'] = lambda z, c: (torch.nn.functional.cross_entropy(z, c['targets']) +
+        _KD_loss(z[:, :c['known_classes']], c['teacher_logits'], 2))
+    residual = spec.residual(logits, ctx)
+    with torch.enable_grad():
+        z = logits.detach().requires_grad_(True)
+        gradient = torch.autograd.grad(ctx['loss_fn'](z, ctx), z, create_graph=True)[0]
+        expected_residual = gradient.detach().clone()
+        vector = torch.tensor([[.2, -.3, .7, -.6], [-.5, .4, .1, 0.]], dtype=torch.float64)
+        oracle = torch.autograd.grad(gradient, z, vector)[0]
+    torch.testing.assert_close(spec.metric_apply(logits, vector, ctx), oracle,
+                               rtol=1e-10, atol=1e-12)
+    torch.testing.assert_close(residual, expected_residual, rtol=0, atol=1e-12)
+    identity = SimpleNamespace(K=lambda value: value)
+    factor = OutputFactor(SimpleNamespace(logits=logits, loss_spec=spec, ctx=ctx, p=identity))
+    factor.z(residual, 1e-3)
+    assert factor.range_error <= 1e-8
+    assert factor.range_ok

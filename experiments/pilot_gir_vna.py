@@ -5,10 +5,10 @@ import time
 import torch
 from diagnostics.vna_align import _global_state
 from diagnostics.measure_efficiency import SolveCache
-from methods.vna import dedicated_generator
+from methods.vna import dedicated_generator, random_A_like
 from methods.vna_ggn import GGNConfig, ngd_control
 from methods.vna_joint import joint_correction
-from methods.vna_select import tiny_V, neuron_norms
+from methods.vna_select import tiny_V, neuron_norms, prepare_A
 
 
 @contextmanager
@@ -45,11 +45,15 @@ def exact_cache(model, sites, batch, spec, ctx, cfg):
 
 class PilotEngine:
     def __init__(self, *, seed=0, gir=False, random=False, upstream_random=False,
-                 coefficient=0., ngd=False, every=100, pool=8, refresh=1000, rho_min=0., rank=1):
+                 coefficient=0., ngd=False, every=100, pool=8, refresh=1000,
+                 rho_min=0., rank=1, selection='tiny_V'):
         if every < 1 or pool < 1 or refresh < 1: raise ValueError('pilot intervals/pool must be positive')
         self.seed, self.gir, self.random, self.upstream_random = seed, gir, random, upstream_random
         self.coefficient, self.ngd, self.every = coefficient, ngd, every
         self.pool_size, self.refresh, self.rho_min, self.rank = pool, refresh, rho_min, rank
+        if selection not in ('tiny_V', 'tiny_V_euclid', 'random_frob'):
+            raise ValueError('unknown selection: '+selection)
+        self.selection = selection
         self.pools, self.positions, self.pool_steps = {}, {}, {}
         self.events, self.activities, self.generators = [], [], {}
         self.task = None
@@ -88,13 +92,22 @@ class PilotEngine:
             with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
             z = factor.z(e, cache.mu)
             for site in sites:
-                a, capture = tiny_V(model, site, [batch], self.pool_size, cotangents=[z], cfg=self.cfg)
+                a, capture = self.select(model, site, batch, z, self.pool_size)
                 positive = int((capture['generalized_eigenvalues'][:len(a['weight'])] > 0).sum())
                 key = site.module_name
                 self.pools[key] = slice_rows(a, 0, positive)
                 self.positions[key], self.pool_steps[key] = 0, step
         self.events.append(dict(kind='gir_refresh', task=self.task, step=step, seconds=time.monotonic()-started,
                                 directions={k: len(a['weight']) for k, a in self.pools.items()}))
+
+    def select(self, model, site, batch, z, rank):
+        kind = 'tiny_V_euclid' if self.selection == 'tiny_V_euclid' else 'tiny_V'
+        a, capture = tiny_V(model, site, [batch], rank, cotangents=[z], cfg=self.cfg,
+                            selection=kind)
+        if self.selection == 'random_frob':
+            random = random_A_like(a, generator=self.generator(a['weight'].device))
+            a, _ = prepare_A(model, site, random, 'random_frob', reference=a)
+        return a, capture
 
     def take(self, model, site, batch, spec, ctx, count, norm, step):
         key = site.module_name
@@ -122,10 +135,11 @@ class PilotEngine:
             proposals = {}
             for site in sites:
                 m = self.positions.get(site.module_name, 0) if self.gir else 0
-                a, _ = tiny_V(model, site, [batch], m+self.rank, cotangents=[z], cfg=self.cfg)
+                a, _ = self.select(model, site, batch, z, m+self.rank)
                 proposals[site] = slice_rows(a, m, m+self.rank)
             if not any(len(a['weight']) for a in proposals.values()):
-                row = dict(kind='correction', task=self.task, step=step, rho=0., skipped=True,
+                row = dict(kind='correction', task=self.task, step=step, K=self.every,
+                           selection=self.selection, rho=0., skipped=True,
                            reason='no unreserved positive directions', seconds=time.monotonic()-started)
                 self.events.append(row); return row
             proposals = {s: a for s, a in proposals.items() if len(a['weight'])}
@@ -143,7 +157,8 @@ class PilotEngine:
                 refs = dict(model.named_parameters())
                 with torch.no_grad():
                     for name, value in delta.items(): refs[name].add_(value.to(refs[name]), alpha=-lr*self.coefficient)
-        row = dict(kind='correction', task=self.task, step=step, rho=rho, skipped=skipped,
+        row = dict(kind='correction', task=self.task, step=step, K=self.every,
+                   selection=self.selection, rho=rho, skipped=skipped,
                    rho_gate_skip=rho < self.rho_min, vna_norm=vna_norm,
                    correction_norm=sum(float(v.double().square().sum()) for v in delta.values())**.5,
                    gradient_dot_direction=record['realized_gain'], seconds=time.monotonic()-started,

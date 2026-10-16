@@ -76,3 +76,24 @@ appends the measured K decision below. Select the smallest numerical K from
 max(t_VNA_task * 12800/n_out_task)/K <= mean(t_iter).
 No feasible choice stops the run. Shared schedule and windows apply to NGD.
 Fake CPU calibration is labeled synthetic and never registers a real K.
+
+## Euclidean TINY diagnostic (2026-10-17, before parallel runs)
+
+After the B3 quick result showed `tiny_V` below its matched random control,
+add `tiny_V_euclid` as a diagnostic selection variant.  It reuses exactly the
+same N statistic as TINY but selects the leading eigenvectors of N N^T,
+maximizing V under the Euclidean norm of A rather than the generalized S norm.
+It uses the same true-ReLU sign choice and incoming-neuron mean-norm
+normalization.  This post-hoc diagnostic is reported separately and does not
+replace the preregistered `tiny_V` arm.
+
+## Parallel full-run scheduling (2026-10-17, before parallel runs)
+
+The six-account prompt removes the separate smoke phase.  Correction arms
+therefore calibrate inside the full run, before observing task outcomes: the
+first post-SGD correction of each task is timed, and the smallest K in
+{50,100,200,400,800,iterations_per_epoch} satisfying the existing projected
+cost rule is used for the remainder of that task.  The calibration correction
+is itself the first VNA/NGD update, so no extra optimization step is introduced.
+Each task's decision and timing are written to the event stream and every
+correction row records the active K.

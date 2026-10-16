@@ -16,7 +16,7 @@ from experiments.vna_resume import rng_state
 from methods.vna_ggn import GGNConfig, ngd_control
 from methods.vna_joint import joint_correction, joint_products
 from methods.vna_losses import MSE
-from methods.vna_select import tiny_V, neuron_norms
+from methods.vna_select import tiny_V, tiny_V_euclid, neuron_norms
 from tests.test_vna_stage_b5 import fixture, reset
 
 
@@ -79,6 +79,22 @@ def test_exact_ngd_matches_vna_norm_and_positive_gradient():
         expected = torch.linalg.solve(matrix+cache.mu*torch.eye(op.size), op.gradient)
         flat = torch.cat([raw[n].flatten() for n,_ in products.parameter_refs])
         torch.testing.assert_close(flat, expected, rtol=1e-8, atol=1e-9)
+
+
+def test_tiny_v_euclid_reuses_n_and_selects_top_euclidean_direction():
+    model, sites, batch, spec, ctx = small_problem()
+    cfg = GGNConfig(project_bn=False)
+    cache, factor = exact_cache(model, sites, batch, spec, ctx, cfg)
+    with torch.no_grad(): residual = spec.residual(model(batch[0]), ctx)
+    z = factor.z(residual, cache.mu)
+    selected, capture = tiny_V_euclid(model, sites[0], [batch], 1,
+                                      cotangents=[z], cfg=cfg,
+                                      normalize=False, score_signs=False)
+    row = torch.cat((selected['weight'].flatten(1), selected['bias'][:,None]), 1).double()[0]
+    values, vectors = torch.linalg.eigh(capture['N_z'] @ capture['N_z'].T)
+    expected = vectors[:, -1]
+    assert abs(float(torch.nn.functional.cosine_similarity(row, expected, dim=0))) == pytest.approx(1., abs=1e-10)
+    assert capture['selection'] == 'tiny_V_euclid'
 
 
 def test_pool_consumes_once_norm_positive_refresh_and_resume(monkeypatch):

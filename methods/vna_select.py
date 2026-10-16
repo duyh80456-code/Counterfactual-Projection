@@ -66,10 +66,26 @@ def _profile_tiny(function):
     return measured
 
 
+def euclidean_A(model, site, capture, rank):
+    """Top eigendirections of N N^T, without TINY's S metric."""
+    first = site.first_layer.layer if hasattr(site, 'resolve') else model.block(site).first_layer.layer
+    N = capture['N_z'].double()
+    values, vectors = torch.linalg.eigh((N @ N.T + (N @ N.T).T) * .5)
+    keep = min(rank, max(1, int((values > 0).sum())))
+    rows = vectors[:, -keep:].T.flip(0).to(first.weight)
+    width = first.weight[0].numel()
+    A = {'weight': rows[:, :width].reshape(keep, *first.weight.shape[1:]),
+         'bias': rows[:, -1] if first.bias is not None else None}
+    capture = {**capture, 'euclidean_eigenvalues': values.flip(0).clamp_min(0),
+               'selection': 'tiny_V_euclid'}
+    return A, capture
+
+
 @_profile_tiny
 def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
            existing_weight_projection=False, normalize=True, score_signs=True,
-           numerical_threshold=1e-6, loss_spec=None, contexts=None):
+           numerical_threshold=1e-6, loss_spec=None, contexts=None,
+           selection='tiny_V'):
     """Reuse native TINY's thresholded generalized eigensolve.
 
     Pseudo loss sum(f*z) has logit derivative exactly z. Native N=-M_prev
@@ -78,17 +94,21 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
     For z=g parity use sum-CE cotangents (batch*g), as upstream expects sums.
     Default z=H J (F+mu)^-1 J^T g (or the supplied solver's cotangent).
     """
+    if selection not in ('tiny_V', 'tiny_V_euclid'):
+        raise ValueError('unknown TINY selection: '+selection)
     if hasattr(site, 'resolve'):
         if site.native_path:
             return tiny_V(model, site.native_name, batches, rank, cotangents=cotangents,
                           cfg=cfg, existing_weight_projection=existing_weight_projection,
                           normalize=normalize, score_signs=score_signs,
-                          numerical_threshold=numerical_threshold, loss_spec=loss_spec, contexts=contexts)
+                          numerical_threshold=numerical_threshold, loss_spec=loss_spec,
+                          contexts=contexts, selection=selection)
         from methods.vna_sites import hook_tiny
         return hook_tiny(model, site, batches, rank, cotangents=cotangents, cfg=cfg,
                          existing_weight_projection=existing_weight_projection,
                          normalize=normalize, score_signs=score_signs,
-                         numerical_threshold=numerical_threshold, loss_spec=loss_spec, contexts=contexts)
+                         numerical_threshold=numerical_threshold, loss_spec=loss_spec,
+                         contexts=contexts, selection=selection)
     from experiments.vna_support import isolated_rng
     from gromo.utils.training_utils import compute_statistics
     from dual_growth.adapters import TinyAdapter
@@ -148,6 +168,9 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
     whitening = (qs * inv) @ qs.T
     capture['generalized_eigenvalues'] = torch.linalg.eigvalsh(whitening @ N @ N.T @ whitening).flip(0).clamp_min(0)
     capture['existing_weight_projection'] = existing_weight_projection
+    capture['selection'] = selection
+    if selection == 'tiny_V_euclid':
+        A, capture = euclidean_A(model, site, capture, rank)
     if normalize:
         A = normalize_A(model, site, A)
     if score_signs:
@@ -160,6 +183,11 @@ def tiny_V(model, site, batches, rank, *, cotangents=None, cfg=GGNConfig(),
             chosen.append(plus if gain_plus >= gain_minus else minus)
         A = _concat(chosen)
     return A, capture
+
+
+def tiny_V_euclid(model, site, batches, rank, **kwargs):
+    """Diagnostic TINY variant maximizing V under the Euclidean A norm."""
+    return tiny_V(model, site, batches, rank, selection='tiny_V_euclid', **kwargs)
 
 
 def greedy_V(model, site, tiny_A, inputs, z, *, random_count=8, r_max=16,

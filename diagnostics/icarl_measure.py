@@ -12,7 +12,9 @@ from diagnostics.measure_efficiency import (SolveCache, draw_nulls, virtual_ener
 from methods.vna import random_A_like
 from methods.vna_ggn import GGNConfig
 from methods.vna_joint import joint_correction
-from methods.vna_select import tiny_V, tiny_U_from_cotangent, prepare_A, subspace_sim
+from methods.vna_select import (tiny_V, tiny_U_from_cotangent, prepare_A,
+                                subspace_sim, euclidean_A, normalize_A,
+                                choose_signs)
 from experiments.vna_resume import measurement_update
 
 
@@ -102,9 +104,12 @@ class B3Measurement:
                     if rank > site.first_layer.layer.out_channels: continue
                     measurement_update(mu=cache.mu, mu_rel=mu_rel, site=site.module_name, rank=rank)
                     A, capture = tiny_V(model, site, [stat], rank, cotangents=[z], cfg=cfg)
+                    euclidean, _ = euclidean_A(model, site, capture, rank)
+                    euclidean = choose_signs(model, site, normalize_A(model, site, euclidean), stat[0], z)
                     def score(a, cotangent=e, filtered=ze):
                         return virtual_energy(model, [site], {site: a}, evaluation, filtered, cotangent)
                     real = score(A)
+                    euclidean_record = score(euclidean)
                     measurement_update(solve='tiny_V:correction')
                     checked = joint_correction(model, [site], {site: A}, evaluation, cfg, cache.ctx['names'],
                         mu=cache.mu, trace_F=cache.trace, loss_spec=loss_spec, ctx=eval_ctx,
@@ -149,7 +154,8 @@ class B3Measurement:
                            **{k: real[k] for k in ('U', 'V', 'eta', 'rho', 'e_norm2', 'nu')},
                            **{k: checked[k] for k in ('cg_iters_used', 'cg_rel_residual', 'raw_gain', 'realized_gain', 'finite')},
                            'cg_converged_real': real_ok, 'cg_converged_null': null_ok, 'cg_converged': real_ok and null_ok,
-                           'V_consistency': consistency, **comparison, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'], 'V_random_frob': random_record['V'],
+                           'V_consistency': consistency, **comparison, **cache.metadata(evaluation, eval_ctx), 'V_tiny_V': real['V'],
+                           'V_tiny_V_euclid': euclidean_record['V'], 'V_random_frob': random_record['V'],
                            'V_tiny_U': u_record['V'], 'tiny_V_random_ratio': diagnostic_ratio(real['V'], random_record['V']),
                            'lambda1': lam, 'subspace_sim': similarity,
                            **{k:v for k,v in stats[site.module_name].items() if k!='dormant_indices'},

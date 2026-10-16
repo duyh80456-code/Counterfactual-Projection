@@ -81,19 +81,27 @@ def runtime(*, smoke=False, fake=False, workers=4, data_dir=None):
         base.DataLoader = original_base_loader
 
 
-def reproduction_gate(tasks, *, smoke=False, fake=False):
+def reproduction_gate(tasks, *, smoke=False, fake=False, init_cls=10, increment=10):
     # Published iCaRL uses nearest-mean-of-exemplars inference, logged by PyCIL as NME.
     curve = [r['nme_top1'] for r in tasks if 'nme_top1' in r]
     mean = float(np.mean(curve)) if curve else None
-    valid = not smoke and not fake and len(curve) == 10
-    return {'status': 'PASS' if valid and abs(mean-64.42) <= 1.5 else 'FAIL' if valid else 'INVALID',
+    expected = 1 + int(np.ceil((100-init_cls)/increment)) if init_cls < 100 else 1
+    reference = 64.42 if (init_cls, increment) == (10, 10) else None
+    valid = not smoke and not fake and len(curve) == expected
+    passed = valid and reference is not None and abs(mean-reference) <= 1.5
+    return {'status': 'PASS' if passed else 'NO_REFERENCE' if valid and reference is None else 'FAIL' if valid else 'INVALID',
             'metric': 'Average Accuracy (NME)', 'average_accuracy': mean,
             'last_task_accuracy': curve[-1] if curve else None,
-            'reference_average_accuracy': 64.42, 'reference_last_task_accuracy': 49.5,
-            'reference_source': REFERENCE_SOURCE,
+            'reference_average_accuracy': reference,
+            'reference_last_task_accuracy': 49.5 if reference is not None else None,
+            'reference': 'none' if reference is None else reference,
+            'reference_source': REFERENCE_SOURCE if reference is not None else 'none published by PyCIL for this protocol',
             'reference_paper': 'https://arxiv.org/abs/2112.12533',
             'reference_plot': 'https://github.com/LAMDA-CL/PyCIL/blob/'+UPSTREAM_PIN+'/resources/cifar100.png',
-            'tolerance_pp': 1.5, 'tasks_run': len(tasks), 'smoke': smoke, 'fake_data': fake}
+            'tolerance_pp': 1.5 if reference is not None else None,
+            'init_cls': init_cls, 'increment': increment,
+            'tasks_run': len(tasks), 'expected_tasks': expected,
+            'smoke': smoke, 'fake_data': fake}
 
 
 def run(args, *, measure_override=None, observe=None, intervention=None):
@@ -103,13 +111,15 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
     import trainer
     from utils.data_manager import DataManager
     params = recipe()
+    params.update(seed=[args.seed], init_cls=args.init_cls, increment=args.increment)
     if args.device == 'cpu': params['device'] = [-1]
     out = Path(args.out or ('outputs/pilot/b3' if args.pilot else 'outputs/stageB/b3')).resolve(); out.mkdir(parents=True, exist_ok=True)
     if args.fake_data:
         params.update(memory_size=80)
         torch.set_num_threads(1)
     if args.pilot: start_memory(args.device)
-    metadata = {'setting': 'B3', 'seed': 1993, 'upstream_commit': UPSTREAM_PIN,
+    metadata = {'setting': 'B3', 'seed': args.seed, 'init_cls': args.init_cls,
+                'increment': args.increment, 'upstream_commit': UPSTREAM_PIN,
                 'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data,
                 'measure_profile': args.measure_profile,
@@ -127,6 +137,7 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
                 'window': None if intervention is None else intervention.window,
                 'calibrate': False if intervention is None else intervention.calibrate,
                 'every_epoch': False if intervention is None else intervention.every_epoch,
+                'auto_schedule': False if intervention is None else intervention.auto_schedule,
                 'init_seed': getattr(args, 'init_seed', 1)}
     identity = copy.deepcopy(identity)
     progress = Progress(out, identity)
@@ -136,16 +147,23 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
         write_json(out/'tasks.json', hook.tasks)
         if intervention is not None:
             write_json(out/'interventions.json', intervention.engine.events)
+            vna_rows = [event for event in intervention.engine.events
+                        if event.get('kind') == 'correction']
+            if vna_rows:
+                write_csv(out/'vna_log.csv', vna_rows)
+            elif not (out/'vna_log.csv').exists():
+                (out/'vna_log.csv').write_text('task,step,K,rho,seconds,selection,skipped\n')
             write_json(out/'activities.json', [{**r, 'sites': {site: {k:v for k,v in a.items() if k!='dormant_indices'}
                 for site,a in r['sites'].items()}} for r in intervention.engine.activities])
     configure_measurement(measure, args, out)
-    hook = ICaRLHook(measure, persist=persist, pilot=args.pilot,
+    hook = ICaRLHook(measure, seed=args.seed, persist=persist, pilot=args.pilot,
                      pilot_batches=args.pilot_batches, fake=args.fake_data, progress=progress, observe=observe, intervention=intervention,
-                     measure_profile=args.measure_profile, smoke=args.smoke)
+                     measure_profile=args.measure_profile, smoke=args.smoke,
+                     save_measurement_checkpoints=getattr(args, 'save_measurement_checkpoints', False))
     summary_path = out/'summary.json'
     if summary_path.exists():
         previous = json.loads(summary_path.read_text())
-        expected_tasks = 2 if args.smoke or args.pilot else 10
+        expected_tasks = 2 if args.smoke or args.pilot else 1 + int(np.ceil((100-args.init_cls)/args.increment))
         if previous.get('status') == 'COMPLETED':
             if previous.get('identity') != identity: raise ValueError('completed run identity mismatch')
             if previous.get('tasks_run') == expected_tasks and hook.completed == expected_tasks:
@@ -178,7 +196,8 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
         trainer._set_random = original_random
         persist(hook)
     seconds = getattr(hook, 'elapsed_base', 0.) + time.monotonic()-started
-    baseline = reproduction_gate(hook.tasks, smoke=args.smoke, fake=args.fake_data)
+    baseline = reproduction_gate(hook.tasks, smoke=args.smoke, fake=args.fake_data,
+                                 init_cls=args.init_cls, increment=args.increment)
     by_mu = {}
     for mu in ((1e-2,) if args.measure_profile=='quick' else (1e-2, 1e-3)):
         cfg = setting_config('B3', mu_rel_default=mu)
@@ -195,7 +214,8 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
     official_mu = 1e-2
     gate = {'by_mu': by_mu, 'official_mu': official_mu, 'gate_null_statistic': 'nu',
             'status': by_mu[str(official_mu)]['status'] if official_mu is not None else 'PENDING_STAGE_A'}
-    write_json(out/'reproduction_gate.json', baseline)
+    if getattr(args, 'arm', 'icarl') == 'icarl':
+        write_json(out/'reproduction_gate.json', baseline)
     if args.measure_profile=='quick':
         gate['status_label'] = 'exploratory'
         write_json(out/'gate_quick.json', gate)
@@ -234,6 +254,10 @@ def parser():
     p.add_argument('--device', choices=('cpu', 'cuda:0'), default='cuda:0')
     p.add_argument('--workers', type=int, default=4)
     p.add_argument('--data-dir')
+    p.add_argument('--seed', type=int, default=1993)
+    p.add_argument('--init-cls', type=int, choices=(10, 50), default=10)
+    p.add_argument('--increment', type=int, choices=(5, 10), default=10)
+    p.add_argument('--save-measurement-checkpoints', action='store_true')
     p.add_argument('--mu-rel-default', type=float, default=.01)
     p.add_argument('--mu-source', default='cli/default')
     p.add_argument('--official-mu', type=float, choices=(1e-2, 1e-3))

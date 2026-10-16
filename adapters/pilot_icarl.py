@@ -36,9 +36,11 @@ def activity_stats(model, batch, sites=None):
 
 
 class ICaRLPilot:
-    def __init__(self, engine, *, window=128, calibrate=False, every_epoch=False):
+    def __init__(self, engine, *, window=128, calibrate=False, every_epoch=False,
+                 auto_schedule=False):
         self.engine, self.window, self.calibrate = engine, window, calibrate
         self.every_epoch = every_epoch
+        self.auto_schedule = auto_schedule
         self.batch = None
         self.calibration, self.iteration_times = [], []
         self.full_batches = []
@@ -46,7 +48,8 @@ class ICaRLPilot:
 
     def state_dict(self):
         return dict(engine=self.engine.state_dict(), batch=self.batch, calibration=self.calibration,
-                    iteration_times=self.iteration_times, full_batches=self.full_batches, measured_tasks=self.measured_tasks)
+                    iteration_times=self.iteration_times, full_batches=self.full_batches,
+                    measured_tasks=self.measured_tasks, auto_schedule=self.auto_schedule)
 
     def load_state_dict(self, state):
         self.engine.load_state_dict(state['engine'])
@@ -102,7 +105,7 @@ class ICaRLPilot:
         self.batch = tuple(t.to(device) for t in self.batch)
         task = learner._cur_task+1
         # One calibration correction at each smoke task, independent of K.
-        calibrating = self.calibrate and task not in self.measured_tasks
+        calibrating = (self.calibrate or self.auto_schedule) and task not in self.measured_tasks
         step = self.engine.every if calibrating else hook.steps
         epoch_due = self.every_epoch and hook.epoch_step == len(learner.train_loader)
         if not calibrating:
@@ -121,7 +124,13 @@ class ICaRLPilot:
         finally: self.engine.every = saved_interval
         if device.type=='cuda': torch.cuda.synchronize(device)
         if calibrating:
-            self.calibration.append(dict(task=task, vna_seconds=time.monotonic()-started,
+            point = dict(task=task, vna_seconds=time.monotonic()-started,
                 n_out=len(self.batch[0])*learner._total_classes,
-                iteration_seconds=started-hook.iteration_started))
+                iteration_seconds=started-hook.iteration_started)
+            self.calibration.append(point)
             self.measured_tasks.add(task)
+            if self.auto_schedule:
+                from experiments.pilot_gir_vna import choose_interval
+                schedule = choose_interval([point], len(learner.train_loader))
+                self.engine.every = schedule['K']
+                self.engine.events.append(dict(kind='schedule', task=task, **schedule))

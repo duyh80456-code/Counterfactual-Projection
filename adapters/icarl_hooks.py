@@ -14,6 +14,7 @@ from methods.vna_losses import CE, ICaRLPyCIL
 from methods.vna_sites import HookSite
 from experiments.vna_resume import (log, hook_state, restore_hook, rng_state,
                                     restore_rng, projected, set_locals)
+from experiments.shared_protocol import atomic_torch_save
 
 
 class Prediction(nn.Module):
@@ -55,7 +56,7 @@ def loss_context(learner, batch):
 
 
 class ICaRLHook:
-    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None, intervention=None, measure_profile='full', smoke=False):
+    def __init__(self, measure=None, *, seed=1993, persist=None, observe=None, pilot=False, pilot_batches=20, fake=False, progress=None, intervention=None, measure_profile='full', smoke=False, save_measurement_checkpoints=False):
         self.intervention = intervention
         self.measure_profile, self.smoke = measure_profile, smoke
         self.buffer = MeasurementBuffer(4 if fake and (pilot or measure_profile=='quick') else (128 if measure_profile=='quick' else 512))
@@ -79,6 +80,7 @@ class ICaRLHook:
         self.current_epoch = 0
         self.trainer_frame = None
         self.loop_info = None
+        self.save_measurement_checkpoints = save_measurement_checkpoints
         if self.resume:
             restore_hook(self, self.resume['hook'])
             self.completed = self.resume['completed']
@@ -160,6 +162,17 @@ class ICaRLHook:
                'train_acc': train_acc,
                'first_measurement_point': (learner._cur_task == (1 if self.measure_profile=='quick' else 0) and
                                            (self.smoke or epoch == max(1, last//2)))}
+        if self.save_measurement_checkpoints and self.progress is not None:
+            directory = self.progress.out/'measurement_checkpoints'
+            directory.mkdir(parents=True, exist_ok=True)
+            point_state = {name: copy.deepcopy(getattr(learner, name)) for name in
+                           ('_network','_old_network','_known_classes','_total_classes','_cur_task')}
+            atomic_torch_save({'learner': point_state,
+                'buffer': tuple(t.detach().cpu() for t in batch),
+                'task': ctx['task'], 'epoch': epoch, 'step': self.steps,
+                'train_acc': train_acc, 'last': last,
+                'measure_profile': self.measure_profile},
+                directory/f'task_{ctx["task"]:02d}_epoch_{epoch:03d}.pt')
         started = time.monotonic()
         self.rows.extend(self.measurement(model, batch, spec, ctx) or [])
         self.point_seconds.append({'task': ctx['task'], 'epoch': epoch,

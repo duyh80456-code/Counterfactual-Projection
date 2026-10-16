@@ -26,13 +26,32 @@ def run(args):
         from copy import copy
         results = []
         for rate in native.RATES:
-            child = copy(args); child.replacement_rate = rate; results.append(run(child))
+            child = copy(args); child.replacement_rate = rate
+            if args.flat_output: child.out = str(Path(args.out)/'rates'/f'rr_{rate:g}')
+            results.append(run(child))
+        if args.flat_output:
+            root = Path(args.out).resolve(); root.mkdir(parents=True, exist_ok=True)
+            aggregate = dict(status='COMPLETED', arm=args.arm, seed=args.seed,
+                             replacement_rate='all_registered', variants=results,
+                             mean_last50=None, seconds=sum(r['seconds'] for r in results))
+            native.write_json(root/'summary.json', aggregate)
+            native.write_json(root/'tasks.json', {str(r['replacement_rate']):r['tasks'] for r in results})
+            native.write_json(root/'protocol.json', dict(arm=args.arm, seed=args.seed,
+                replacement_rates=native.RATES, code_commit=results[0]['identity']['code_commit']))
+            combined = [{**event, 'replacement_rate': result['replacement_rate']}
+                        for result in results for event in result['events']
+                        if event.get('kind') == 'correction']
+            if combined: native.write_csv(root/'vna_log.csv', combined)
+            elif not (root/'vna_log.csv').exists():
+                (root/'vna_log.csv').write_text('task,step,K,rho,seconds,selection,skipped,replacement_rate\n')
+            return aggregate
         return results
     params, provenance = native.recipe('regression', base, args.replacement_rate)
     if args.smoke: params.update(num_data_points=1000, flip_after=500)
     params.update(run_idx=0, use_gpu=0)
     suffix = '' if base == 'bp' else f'_rr{args.replacement_rate:g}'
-    out = Path(args.out).resolve()/f'{args.arm}{suffix}'/f'seed{args.seed}'
+    out = (Path(args.out).resolve() if args.flat_output else
+           Path(args.out).resolve()/f'{args.arm}{suffix}'/f'seed{args.seed}')
     out.mkdir(parents=True, exist_ok=True)
     params['data_file'] = str(out/'upstream_in_progress.tmp')
     params['env_file'] = str(out/'data/regression.pkl')
@@ -42,6 +61,7 @@ def run(args):
     if (out/'manifest.json').exists() and json.loads((out/'manifest.json').read_text()) != identity:
         raise ValueError('pilot resume identity mismatch')
     native.write_json(out/'manifest.json', identity)
+    native.write_json(out/'protocol.json', identity)
     if args.resume and (out/'summary.json').exists():
         previous = json.loads((out/'summary.json').read_text())
         if previous.get('status') == 'COMPLETED': return previous
@@ -94,7 +114,12 @@ def run(args):
             gir_random_fill=sum(r.get('gir_random_fill',0) for r in engine.events),
             rho_gate_skips=sum(r.get('rho_gate_skip',False) for r in engine.events))
         native.write_json(out/'summary.json', summary)
+        native.write_json(out/'tasks.json', tasks)
         native.write_csv(out/'online.csv', tasks)
+        corrections = [row for row in engine.events if row.get('kind') == 'correction']
+        if corrections: native.write_csv(out/'vna_log.csv', corrections)
+        elif not (out/'vna_log.csv').exists():
+            (out/'vna_log.csv').write_text('task,step,K,rho,seconds,selection,skipped\n')
         print(json.dumps({k:v for k,v in summary.items() if k not in ('events','activities','identity','tasks')}), flush=True)
         return summary
     finally: status.close()
@@ -130,6 +155,7 @@ def parser():
     p.add_argument('--seed', type=int, choices=(0,1,2), default=0)
     p.add_argument('--replacement-rate', type=float, choices=native.RATES)
     p.add_argument('--out', default='outputs/pilot_b5')
+    p.add_argument('--flat-output', action='store_true')
     p.add_argument('--smoke', action='store_true'); p.add_argument('--fake-data', action='store_true')
     p.add_argument('--resume', action='store_true')
     p.add_argument('--gir-pool', type=int, default=8)
