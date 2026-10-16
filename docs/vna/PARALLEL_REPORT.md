@@ -30,11 +30,10 @@ The affected CIL/validity run passed 24 tests in 143.90 seconds. After adding
 rate and preflight guard coverage, the final validity contracts passed all 14
 tests in 18.19 seconds (`parallel_logs/pytest_validity_contracts.xml`).
 
-Implemented from branch `vna-pilot-gir-vna`, base commit
-`018789b422f271021384d2254b0ff1c68ccf4e7b`.  The generated notebooks are
-pinned to implementation commit
-`f8863823275abcb7c6ade8f3248418f7da98741e` and can fetch the validity fixes
-and smoke-only gate.
+The runtime pin for the common notebook and every P1–P6 variant is
+`f8863823275abcb7c6ade8f3248418f7da98741e`. This is the implementation
+revision containing the validity fixes and smoke-only gate. Later notebook
+packaging and documentation commits do not change this runtime pin.
 
 ## 0.1 Range(H) investigation
 
@@ -104,7 +103,8 @@ Every parallel job directory contains `summary.json`, `tasks.json`,
 `protocol.json`, and `vna_log.csv`; baseline iCaRL also contains
 `reproduction_gate.json`.  A logical CBP B5 job preserves all five registered
 replacement rates and stores their individual results below `rates/`, plus a
-top-level aggregate manifest.  At most four B5 processes run concurrently.
+top-level aggregate manifest. The full-run CPU queue is configured for at
+most four B5 processes, but remains blocked by the preflight hold.
 
 ## Notebooks and collection
 
@@ -122,10 +122,15 @@ Generated files:
 
 All six populated notebooks are byte-equivalent after the first cell.  The
 first cell contains only the selected `JOBS_GPU0`, `JOBS_GPU1`, `JOBS_CPU`,
-shared `RUN_TAG`, and common immutable session settings.  They run pytest
-once, then start full jobs directly with resume, hourly archive, heartbeat,
-`ALLOW_OVER_BUDGET=True`, two GPU lanes and a four-worker CPU queue.  The P6
-queue naturally runs four jobs followed by the remaining two.
+shared `RUN_TAG`, and common immutable session settings. Direct inspection
+of all six first cells confirms the runtime pin above; Python cells parse
+successfully, and all cells after the first are identical across P1–P6.
+
+They run pytest once, then real-data two-task GPU preflight on T4 x2, archive
+the results, and stop. Full CPU/GPU training remains blocked even though
+`ALLOW_OVER_BUDGET=True` is retained in the configuration. Review real T4
+timings, feasibility, matched schedules and baseline provenance before
+deciding whether to enable the P1–P6 full-run queues.
 
 Results are merged with:
 
