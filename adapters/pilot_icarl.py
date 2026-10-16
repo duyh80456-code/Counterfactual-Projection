@@ -116,7 +116,7 @@ class ICaRLPilot:
         saved_interval = self.engine.every
         if calibrating or epoch_due: self.engine.every = 1
         try:
-            row = self.engine.correction(model, sites_for(model), self.batch, spec, ctx, hook.steps if calibrating else step,
+            self.engine.correction(model, sites_for(model), self.batch, spec, ctx, hook.steps if calibrating else step,
                                          optimizer.param_groups[0]['lr'])
         finally: self.engine.every = saved_interval
         if device.type=='cuda': torch.cuda.synchronize(device)

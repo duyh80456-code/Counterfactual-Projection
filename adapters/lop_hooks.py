@@ -216,7 +216,8 @@ class LearnHook:
             detail = (f' task={row["task"]} steps={self.task_steps} '
                       f'ms/step={self.last_task_ms} '
                       f'online_accuracy={row["online_accuracy"]} online_error={row["online_error"]}')
-        log(f'{self.benchmark} {self.arm} step={self.step}{detail} checkpoint written ({size} bytes)')
+        if not getattr(self, 'task_log_only', False):
+            log(f'{self.benchmark} {self.arm} step={self.step}{detail} checkpoint written ({size} bytes)')
 
     def _restore_resume(self, learner, frame):
         state = self.resume
@@ -313,9 +314,13 @@ class LearnHook:
         if within == self.task_steps:
             self.last_task_ms = 1000*(time.monotonic()-self.task_started)/within
             row = list(self.results.tasks())[-1]
-            log(f'{self.benchmark} {self.arm} task={task} steps={within} '
-                f'ms/step={1000*(time.monotonic()-self.task_started)/within:.3f} '
-                f'online_accuracy={row["online_accuracy"]} online_error={row["online_error"]}')
+            if getattr(self, 'task_log_only', False):
+                log(f'task={task} steps={within} online_error={row["online_error"]} '
+                    f'seconds={time.monotonic()-self.task_started:.3f}')
+            else:
+                log(f'{self.benchmark} {self.arm} task={task} steps={within} '
+                    f'ms/step={1000*(time.monotonic()-self.task_started)/within:.3f} '
+                    f'online_accuracy={row["online_accuracy"]} online_error={row["online_error"]}')
             self.task_started = time.monotonic()
         return result
 

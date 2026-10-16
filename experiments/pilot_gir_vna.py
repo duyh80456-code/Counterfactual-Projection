@@ -1,7 +1,6 @@
 """Shared exact training interventions. All stochastic draws use private generators."""
 from contextlib import contextmanager, redirect_stdout
 import io
-import math
 import time
 import torch
 from diagnostics.vna_align import _global_state

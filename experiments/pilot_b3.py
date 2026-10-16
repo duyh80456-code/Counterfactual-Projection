@@ -1,5 +1,6 @@
 """Six performance arms through pinned PyCIL and the existing resume hooks."""
 import json
+import logging
 from pathlib import Path
 from experiments import stage_b3
 from experiments.pilot_gir_vna import PilotEngine, choose_interval
@@ -37,7 +38,14 @@ def run(args):
             def __call__(self, *a, **kw): return []
         measure = NoMeasurement(measure.metadata, measure_profile='quick')
     args.measure_profile = 'quick'
-    hook = stage_b3.run(args, measure_override=measure, intervention=intervention)
+    # PyCIL repeats its final epoch description through logging.info; the hook
+    # owns the pilot epoch lines, while measurement and notebook heartbeats stay live.
+    previous_logging = logging.root.manager.disable
+    try:
+        logging.disable(logging.INFO)
+        hook = stage_b3.run(args, measure_override=measure, intervention=intervention)
+    finally:
+        logging.disable(previous_logging)
     out = Path(args.out)
     if args.calibrate:
         points = intervention.calibration

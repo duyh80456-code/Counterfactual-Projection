@@ -1,7 +1,6 @@
 """GIR intercepts only upstream GnT generation; selection and bookkeeping stay native."""
 from contextlib import contextmanager
 import math
-import time
 import torch
 from adapters.lop_hooks import Prediction, sites_for
 from diagnostics.lop_measure import activity_stats

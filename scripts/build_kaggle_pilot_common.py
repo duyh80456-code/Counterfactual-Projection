@@ -3,7 +3,7 @@ from scripts.build_kaggle_vna_stage_b_rest import build as stage_build, RUNTIME
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 
-def notebook(commit, *, b5=False):
+def notebook(commit, *, b5=False, quick=False):
     base = stage_build(commit, 2)
     cells = base['cells']
     config = f'''import time
@@ -22,8 +22,13 @@ DISK_CAP_BYTES = 5_000_000_000
         setup = setup[:start]+setup[end:]
         setup = setup.replace('print(\"Official TEST verified:\", DATA_ROOT / \"cifar-100-python/test\")', '')
     setup += '\nMU_REL_DEFAULT = 1e-2\nOFFICIAL_MU = 1e-2\nMU_SOURCE = \"preregistered-pilot\"\n'
-    bootstrap = ''.join(cells[2]['source']).replace('vna_stage_b_nb2', 'vna_pilot_b5' if b5 else 'vna_pilot_b3')
-    title = '# GIR/VNA B5 regression pilot\nCPU only, at most four processes. Three paired seeds; all upstream CBP rates.' if b5 else '# GIR/VNA B3 full performance pilot\nGPU0: icarl → icarl_vna → icarl_gir_vna. GPU1: icarl_ngd → icarl_gir → icarl_gir_randdir.'
+    bootstrap = ''.join(cells[2]['source']).replace('vna_stage_b_nb2', 'vna_pilot_b5' if b5 else ('vna_b3_quick' if quick else 'vna_pilot_b3'))
+    title = '# GIR/VNA B5 regression pilot\nCPU only, at most four processes. Three paired seeds; all upstream CBP rates.' if b5 else '# GIR/VNA B3 full performance pilot\nGPU0: icarl_vna → icarl_gir_vna. GPU1: icarl_ngd → icarl_gir → icarl_gir_randdir.'
+    if quick: title = '# B3 iCaRL quick measurement pilot\nGPU0 only: icarl, with --measure-profile quick.'
+    # Inherited environments cover bootstrap, installation, tests and all workers.
+    bootstrap = bootstrap.replace('import hashlib, json, os, shutil, subprocess, sys, threading, time, zipfile\n',
+        'import hashlib, json, os, shutil, subprocess, sys, threading, time, zipfile\nos.environ.update(TQDM_DISABLE="1", PYTHONUNBUFFERED="1")\n')
+    setup = setup.replace('test_env.update(', 'test_env.update(PYTHONUNBUFFERED="1", ')
     title += '\nAttach previous stageB archives to resume. Smoke precedes full training. The current HEAD pin must be republished by the supervisor after committing. No real-data results are embedded.'
     runtime = RUNTIME[:RUNTIME.index('def prepare_teacher(')]
     runtime = runtime[:runtime.index('def finished(')] + runtime[runtime.index('def pause_due():'):]
@@ -34,7 +39,7 @@ archiver = threading.Thread(target=periodic_archive, daemon=True); archiver.star
 heartbeat_thread = threading.Thread(target=heartbeat, daemon=True); heartbeat_thread.start()
 '''
     return dict(cells=[cell('markdown', title), cell('code', config), cell('code', bootstrap),
-                       cell('code', setup), cell('code', runtime), cell('code', B5 if b5 else B3)],
+                       cell('code', setup), cell('code', runtime), cell('code', B5 if b5 else (QUICK if quick else B3))],
                 metadata=base['metadata'], nbformat=4, nbformat_minor=5)
 
 
@@ -81,7 +86,7 @@ if archive_errors: raise RuntimeError(archive_errors)
 
 B3 = '''from experiments.pilot_b3 import ARMS
 ROOT = STAGE_B / "pilot_b3"
-LANES = [["icarl", "icarl_vna", "icarl_gir_vna"], ["icarl_ngd", "icarl_gir", "icarl_gir_randdir"]]
+LANES = [["icarl_vna", "icarl_gir_vna"], ["icarl_ngd", "icarl_gir", "icarl_gir_randdir"]]
 SCHEDULE = ROOT / "_smoke/icarl_vna/schedule.json"
 def pilot_command(arm, out, smoke=False):
     cmd = [sys.executable, "-u", "-m", "experiments.pilot_b3", "--arm", arm,
@@ -143,13 +148,22 @@ finally:
     archive_stop.set(); archiver.join(timeout=10); archive_outputs()
 import pandas as pd
 rows = []
-for arm in ARMS:
-    path = ROOT/arm/"summary.json"
+paths = [ROOT/arm/"summary.json" for arm in ARMS if arm != "icarl"]
+for path in sorted(Path("/kaggle/input").rglob("summary.json")):
+    if "_smoke" in path.parts: continue
+    try: baseline = json.loads(path.read_text())
+    except (OSError, ValueError): continue
+    if (baseline.get("arm") == "icarl" and baseline.get("measure_profile") == "quick"
+            and baseline.get("status") == "COMPLETED" and baseline.get("tasks_run") == 10):
+        paths.insert(0, path)
+        print("Attached quick baseline:", path)
+        break
+for path in paths:
     if not path.exists(): continue
     s = json.loads(path.read_text())
     if s.get("status")!="COMPLETED": continue
-    if arm=="icarl": print("Baseline reproduction gate (64.42 ± 1.5 NME):", s["reproduction"])
-    row = dict(arm=arm)
+    if s["arm"]=="icarl": print("Baseline reproduction gate (64.42 ± 1.5 NME):", s["reproduction"])
+    row = dict(arm=s["arm"])
     for label in ("cnn", "nme"):
         last = s["tasks"][-1]
         row.update({label+"_average":last[label+"_average_accuracy"], label+"_last":last[label+"_top1"], label+"_forgetting":last[label+"_forgetting"]})
@@ -160,9 +174,43 @@ if control:
         for k,v in control.items():
             if k!="arm": row["delta_"+k] = row[k]-v
         # Iterate a copy because delta fields are added to the control row too.
+if not control: print("No attached completed iCaRL quick summary found; showing arms alone.")
 display(pd.DataFrame(rows))
 if session_paused.is_set(): print("PAUSED: attach this output and rerun to resume")
 if archive_errors: raise RuntimeError(archive_errors)
 '''
 # Stable iteration while the baseline row gains its delta fields.
 B3 = B3.replace('for k,v in control.items():', 'for k,v in list(control.items()):').replace('if k!="arm": row["delta_"+k]', 'if k!="arm" and not k.startswith("delta_"): row["delta_"+k]')
+
+
+QUICK = B3[:B3.index('try:\n    with ThreadPoolExecutor')]
+QUICK = QUICK.replace('LANES = [["icarl_vna", "icarl_gir_vna"], ["icarl_ngd", "icarl_gir", "icarl_gir_randdir"]]', 'LANES = [["icarl"]]')
+QUICK = QUICK.replace('"pilot_b3"', '"pilot_b3_quick"')
+QUICK = QUICK.replace('"--arm", arm,', '"--arm", arm, "--measure-profile", "quick",')
+QUICK += '''try:
+    costs = smoke_lane(0, ["icarl"])
+    print("Quick smoke cost projection:", costs)
+    archive_outputs()
+    if not session_paused.is_set():
+        launch(pilot_command("icarl", ROOT / "icarl"), 0, "icarl", RUN_ROOT / "icarl_full.log")
+finally:
+    archive_stop.set(); archiver.join(timeout=10); archive_outputs()
+import pandas as pd
+out = ROOT / "icarl"
+summary = out / "summary.json"
+print("Baseline reproduction gate (64.42 ± 1.5 NME):")
+if summary.exists(): print(json.loads(summary.read_text())["reproduction"])
+else: print("Pending completion")
+measurements = out / "measurements.csv"
+print("Quick measurement rows summary:")
+if measurements.exists() and measurements.stat().st_size:
+    rows = pd.read_csv(measurements)
+    print("rows:", len(rows))
+    keys = [k for k in ("task", "epoch", "site", "status") if k in rows.columns]
+    if keys: display(rows.groupby(keys, dropna=False).size().reset_index(name="rows"))
+else: print("No measurement rows yet")
+gate = out / "gate_quick.json"
+print("gate_quick.json:", gate.read_text() if gate.exists() else "Pending completion")
+if session_paused.is_set(): print("PAUSED: attach this output and rerun to resume")
+if archive_errors: raise RuntimeError(archive_errors)
+'''

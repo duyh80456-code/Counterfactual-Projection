@@ -165,9 +165,11 @@ class ICaRLHook:
         self.point_seconds.append({'task': ctx['task'], 'epoch': epoch,
                                    'batch_size': len(batch[0]), 'seconds': time.monotonic()-started})
         seconds = self.point_seconds[-1]['seconds']
-        log(f'measurement task={ctx["task"]} profile={self.measure_profile} seconds={seconds:.3f}')
-        if seconds > 600: log('WARNING: measurement point exceeded 10 minutes; continuing')
-        projected(self, 1730, 3 if self.measure_profile=='quick' else 13)
+        if self.intervention is None:
+            log(f'measurement task={ctx["task"]} profile={self.measure_profile} seconds={seconds:.3f}')
+        if self.intervention is None:
+            if seconds > 600: log('WARNING: measurement point exceeded 10 minutes; continuing')
+            projected(self, 1730, 3 if self.measure_profile=='quick' else 13)
 
     def record_task(self, learner, result):
         row = {'task': learner._cur_task+1}
@@ -244,7 +246,7 @@ class ICaRLHook:
         class EpochProgress:
             def __init__(self, iterable):
                 start = hook.resume['epoch'] if hook.resume is not None and hook.resume['mid'] else 0
-                self.bar = original_tqdm(list(iterable)[start:])
+                self.bar = original_tqdm(list(iterable)[start:], **({"disable": True} if hook.intervention is not None else {}))
             def set_description(self, *args, **kwargs): return self.bar.set_description(*args, **kwargs)
             def __iter__(self):
                 if hook.resume is not None and hook.resume['mid']:

@@ -63,6 +63,7 @@ def run(args):
     status = Status(out, f'pilot B5 {args.arm} seed={args.seed}')
     hook = LearnHook('regression', base, params, seed=args.seed, checkpoint=checkpoint,
                      resume=resumed, intervention=intervention, progress=Progress(out, identity, name='deadline.pt'), status=status)
+    hook.task_log_only = True
     hook.buffer = MeasurementBuffer(128)
     started = time.monotonic()
     try:
