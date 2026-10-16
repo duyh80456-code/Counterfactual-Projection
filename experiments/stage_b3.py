@@ -117,9 +117,14 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
     if args.fake_data:
         params.update(memory_size=80)
         torch.set_num_threads(1)
+    fingerprint = None
+    if not args.fake_data and args.data_dir:
+        from experiments.parallel_validity import dataset_fingerprint
+        fingerprint = dataset_fingerprint(args.data_dir)
     if args.pilot: start_memory(args.device)
     metadata = {'setting': 'B3', 'seed': args.seed, 'init_cls': args.init_cls,
                 'increment': args.increment, 'upstream_commit': UPSTREAM_PIN,
+                'dataset_fingerprint': fingerprint,
                 'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
                 'pilot': args.pilot, 'smoke': args.smoke, 'fake_data': args.fake_data,
                 'measure_profile': args.measure_profile,

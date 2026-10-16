@@ -39,6 +39,7 @@ DISK_CAP_BYTES = 5_000_000_000
 
 RUNNER = r'''import re
 from concurrent.futures import ThreadPoolExecutor
+from experiments.parallel_validity import validate_baseline, validate_record
 ROOT = STAGE_B / RUN_TAG
 ROOT.mkdir(parents=True, exist_ok=True)
 ENV.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
@@ -49,10 +50,9 @@ def completed(job):
     summary = json.loads(path.read_text())
     if summary.get("status") != "COMPLETED": return False
     protocol_path = ROOT/job/"protocol.json"
-    if protocol_path.exists():
-        protocol = json.loads(protocol_path.read_text())
-        commit = protocol.get("code_commit") or protocol.get("identity",{}).get("code_commit")
-        if commit and commit != REPO_COMMIT: raise ValueError("completed commit mismatch: "+job)
+    protocol = json.loads(protocol_path.read_text())
+    tasks = json.loads((ROOT/job/"tasks.json").read_text())
+    validate_record(job, summary, protocol, tasks, REPO_COMMIT)
     return True
 
 def cil_command(job):
@@ -95,20 +95,46 @@ def run_cpu(job):
 
 def reuse_existing_baseline():
     target = ROOT/"icarl__inc10__s1993"
-    if target.exists(): return
+    if target.exists():
+        validate_baseline(target, REPO_COMMIT, DATA_ROOT)
+        return
     for path in Path("/kaggle/input").rglob("summary.json"):
         try: summary = json.loads(path.read_text())
         except (OSError,ValueError): continue
-        if (summary.get("arm") == "icarl" and summary.get("status") == "COMPLETED"
-                and summary.get("seed",1993) == 1993 and summary.get("tasks_run") == 10):
+        if summary.get("arm") == "icarl" and summary.get("seed") == 1993:
+            try: validate_baseline(path.parent, REPO_COMMIT, DATA_ROOT)
+            except (OSError, ValueError, KeyError) as error:
+                print("Rejected attached baseline:", path, str(error))
+                continue
             target.mkdir(parents=True, exist_ok=True)
             for name in ("summary.json","tasks.json","protocol.json","reproduction_gate.json","vna_log.csv"):
                 source = path.parent/name
                 if source.exists(): shutil.copy2(source,target/name)
             print("Reused attached inc10 seed1993 baseline:",path)
             return
+    raise RuntimeError("No validated seed1993 baseline: attach matching dataset/protocol/commit artifacts")
+
+def real_t4_preflight(gpu, jobs):
+    for job in jobs:
+        cmd = cil_command(job)
+        cmd[cmd.index("--out")+1] = str(ROOT/"_preflight"/job)
+        if "--auto-schedule" in cmd: cmd.remove("--auto-schedule")
+        cmd += ["--smoke"]
+        if "icarl_vna" in job or "icarl_ngd" in job: cmd += ["--calibrate"]
+        if not launch(cmd, gpu, job+"_preflight", RUN_ROOT/f"{RUN_TAG}_{job}_preflight.log"):
+            return
 
 try:
+    # Until actual T4 calibration has been reviewed, these artifacts are
+    # smoke-only. No CPU or GPU full-training job may start in this revision.
+    import torch
+    assert torch.cuda.device_count() == 2
+    assert all("T4" in torch.cuda.get_device_name(i) for i in range(2)), "T4 x2 required"
+    with ThreadPoolExecutor(max_workers=2) as preflight_pool:
+        list(preflight_pool.map(lambda pair: real_t4_preflight(*pair),
+                                enumerate((JOBS_GPU0,JOBS_GPU1))))
+    archive_outputs()
+    raise RuntimeError("FULL RUN HELD: review archived real T4 smoke schedules before enabling full training")
     reuse_existing_baseline()
     with ThreadPoolExecutor(max_workers=2) as gpu_pool, ThreadPoolExecutor(max_workers=4) as cpu_pool:
         futures = [gpu_pool.submit(run_gpu,0,JOBS_GPU0), gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
@@ -142,7 +168,7 @@ def build(commit, preset=None, run_tag='vna_parallel_20261017'):
     jobs = PRESETS[preset] if preset else ([],[],[])
     result = notebook(commit)
     cells = result['cells']
-    cells[0] = cell('markdown', '# Parallel VNA pilot\nSix-account CIL/B5 run; full jobs start directly after one shared pytest pass.')
+    cells[0] = cell('markdown', '# Parallel VNA pilot — validation hold\nRun real T4 calibration after pytest, archive results, and stop. Full training awaits review of real schedules and baseline provenance.')
     cells[1] = cell('code', config(commit, jobs, run_tag))
     cells[-1] = cell('code', RUNNER)
     result['cells'] = [cells[1], cells[0], *cells[2:]]

@@ -1,5 +1,35 @@
 # Parallel CIL/B5 pilot implementation — 2026-10-17
 
+## Validity review follow-up
+
+The earlier CPU suite established implementation identities only. The full
+experiment pipeline is **held pending real T4 smoke review**. Updated P1–P6
+run two-task, real-data GPU calibration into `_preflight/<job>/`, archive it,
+and stop before any full CPU/GPU job. They do not treat synthetic timing as
+approval. No T4 or CIFAR dataset is available in this local environment;
+real feasibility and matched scheduling remain unverified.
+
+Baseline reuse now requires completed ordered tasks, explicit real/full flags,
+seed and initialization seed, CIFAR-100 B0 Inc10, exact pinned upstream/native
+recipe, the implementation commit, and SHA-256 hashes of train/test/meta.
+Existing historical artifacts without these proofs are rejected. This means
+the old seed1993 result cannot currently be reused automatically; recovering
+verifiable metadata or rerunning a matching baseline is necessary before a
+complete paired comparison can be authorized.
+
+Collector accepts only completed job-root artifacts, rejects missing metadata,
+mixed implementation commits, synthetic/truncated CIL results, mismatched
+comparison protocols, and conflicting duplicates. Nested B5 rate artifacts
+cannot overwrite the aggregate job summary. Deliberate arm/seed/device
+differences are excluded from comparison signatures; dataset, native recipe,
+upstream, initialization, and worker differences are retained.
+
+Targeted validation log: `parallel_logs/pytest_validity.xml`. The previously
+recorded full suite below describes the earlier implementation revision.
+The affected CIL/validity run passed 24 tests in 143.90 seconds. After adding
+rate and preflight guard coverage, the final validity contracts passed all 14
+tests in 18.19 seconds (`parallel_logs/pytest_validity_contracts.xml`).
+
 Implemented from branch `vna-pilot-gir-vna`, base commit
 `018789b422f271021384d2254b0ff1c68ccf4e7b`.  The generated notebooks are
 pinned to implementation commit

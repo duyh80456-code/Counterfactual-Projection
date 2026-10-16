@@ -6,7 +6,11 @@ import json
 import statistics
 import tarfile
 import zipfile
+import sys
 from pathlib import Path, PurePosixPath
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+from experiments.parallel_validity import validate_record
 
 
 def files(source):
@@ -28,13 +32,16 @@ def files(source):
 
 def collect(inputs, run_tag):
     jobs = {}
+    commit = None
+    protocols = {}
     for source in inputs:
         grouped = {}
         for path, data in files(source):
             parts = path.parts
             if run_tag not in parts: continue
             index = parts.index(run_tag)
-            if len(parts) <= index+2: continue
+            # Only the job's own files, never a nested rates/.../summary.json.
+            if len(parts) != index+3: continue
             job, name = parts[index+1], parts[-1]
             if name in {'summary.json','tasks.json','protocol.json','reproduction_gate.json','vna_log.csv'}:
                 grouped.setdefault(job, {})[name] = data
@@ -42,12 +49,24 @@ def collect(inputs, run_tag):
             if 'summary.json' not in payload: continue
             record = {'job': job, 'source': str(source),
                       'summary': json.loads(payload['summary.json'])}
+            if record['summary'].get('status') != 'COMPLETED': continue
             for name in ('tasks.json','protocol.json','reproduction_gate.json'):
                 if name in payload: record[name[:-5]] = json.loads(payload[name])
             if 'vna_log.csv' in payload:
                 record['vna'] = list(csv.DictReader(io.StringIO(payload['vna_log.csv'].decode())))
+            if 'protocol' not in record or 'tasks' not in record:
+                raise ValueError(f'{job}: missing protocol/tasks artifact')
+            current, group, signature = validate_record(job, record['summary'],
+                record['protocol'], record['tasks'], commit)
+            commit = current
+            if group in protocols and protocols[group] != signature:
+                raise ValueError(f'{job}: inconsistent comparison protocol')
+            protocols[group] = signature
             previous = jobs.get(job)
-            if previous is None or record['summary'].get('status') == 'COMPLETED': jobs[job] = record
+            if previous is not None and any(previous.get(k) != record.get(k)
+                    for k in ('summary','protocol','tasks','reproduction_gate','vna')):
+                raise ValueError(f'{job}: conflicting duplicate completed results')
+            jobs[job] = record
     return jobs
 
 
