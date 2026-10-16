@@ -33,7 +33,8 @@ tests in 18.19 seconds (`parallel_logs/pytest_validity_contracts.xml`).
 Implemented from branch `vna-pilot-gir-vna`, base commit
 `018789b422f271021384d2254b0ff1c68ccf4e7b`.  The generated notebooks are
 pinned to implementation commit
-`11886859f98ee596b27b72e4f8d603d6c60fd849` and can fetch the implemented code.
+`f8863823275abcb7c6ade8f3248418f7da98741e` and can fetch the validity fixes
+and smoke-only gate.
 
 ## 0.1 Range(H) investigation
 
@@ -111,7 +112,7 @@ Builder:
 
 ```sh
 python scripts/build_kaggle_vna_parallel.py \
-  --commit 11886859f98ee596b27b72e4f8d603d6c60fd849 --variants
+  --commit f8863823275abcb7c6ade8f3248418f7da98741e --variants
 ```
 
 Generated files:
