@@ -218,6 +218,12 @@ class V3Engine:
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state): vars(self).update(deepcopy(state))
 
+    @property
+    def kernel_self(self): return self.arm.startswith('kernel_self')
+
+    @property
+    def gir_only(self): return self.arm == 'gir'
+
     def configure_schedule(self, schedule):
         self.K_base = self.every = int(schedule['K_base'])
         if 'cg_tol' in schedule: self.tol = schedule['cg_tol']
@@ -230,7 +236,7 @@ class V3Engine:
             self.applications, self.last_refresh = 0, -10
             self.warm.clear(); self.A.clear()
 
-    def _solve(self, op, mu, B, records, *, tol=None, warm=None):
+    def _solve(self, op, mu, B, records, *, tol=None, warm=None, max_iter=None):
         cfg = self.cfg
         def solve(name, rhs, beta=0.):
             start = time.perf_counter()
@@ -239,7 +245,8 @@ class V3Engine:
             initial = cache.get(name)
             if initial is not None and initial.shape != rhs.shape: initial = None
             result = conjugate_gradient(action, rhs.double(), x0=initial,
-                max_iter=cfg.cg_iters, tolerance=cfg.cg_tol if tol is None else tol, eps=1e-30)
+                max_iter=cfg.cg_iters if max_iter is None else max_iter,
+                tolerance=cfg.cg_tol if tol is None else tol, eps=1e-30)
             if torch.isfinite(result.solution).all(): cache[name] = result.solution.detach().clone()
             records.append(dict(name=name, beta=beta, relative_residual=result.relative_residual,
                 iterations=result.iterations, converged=result.converged, rhs_norm=float(rhs.norm()),
@@ -266,12 +273,12 @@ class V3Engine:
         chi = float(((ps-pt).square()/ps).sum()/n)
         return eold.flatten(), H_old, chi
 
-    def _direction(self, p, op, mu, *, exact=False, split=None, split_only=False):
+    def _direction(self, p, op, mu, *, exact=False, split=None, split_only=False, warm=None):
         records = []
         eold, H_old, chi = self.old_parts(op)
         B = lambda v: p.JT(H_old(p.Jv(v))).double()
         solve = self._solve(op, mu, B, records, tol=1e-8 if exact else None,
-                            warm={} if exact else None)
+                            warm={} if exact else warm, max_iter=2000 if exact else None)
         g, gO = op.gradient, p.JT(eold).double()
         if split is None or exact:
             x = solve('z', g)
@@ -281,10 +288,10 @@ class V3Engine:
         zN = z-zO
         if split_only:
             return dict(x=x, xO=xO, z=z, zO=zO, zN=zN, eold=eold, g=g, gO=gO, records=records)
-        kernel = p.K if 'kself' in self.arm or self.arm == 'kernel_self' else p.KE
+        kernel = p.K if self.kernel_self else p.KE
         u, uR, uN = kernel(z).double(), kernel(zO).double(), kernel(zN).double()
         V, VO = max(float(z@u), 0.), max(float(zO@uR), 0.)
-        if 'kself' in self.arm or self.arm == 'kernel_self' or 'b0' in self.arm or not bool(eold.any()):
+        if 'b0' in self.arm or not bool(eold.any()):
             d = solve('d', p.JT(op.H(u)).double())
             dN, drep = d, torch.zeros_like(d)
             beta = dict(beta=0., beta_branch='unprotected', leak=max(float(d@B(d)), 0.), epsilon_star=None, beta_suf=None)
@@ -380,12 +387,45 @@ class V3Engine:
             trace = op.trace(self.cfg)
             mu = relative_damping(self.cfg, trace, op)
             preliminary = self._direction(p, op, mu, split_only=True)
+        if self.gir_only:
+            gir_started = time.perf_counter()
+            before = self.dead_slots(model, sites, batch)
+            swaps, gains, swap_records = 0, [], []
+            residual = (preliminary['eold']-preliminary['zO']
+                        if bool(preliminary['eold'].any()) else op.g-preliminary['z'])
+            for site in sites:
+                units = before.get(site.module_name, [])
+                if units:
+                    proposal = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
+                        units[:1], iteration, residual=residual)
+                    swaps += self.install_gir(model, site, proposal, units[:1], optimizer)
+                    if proposal:
+                        gains.append(proposal[0]['score'])
+                        swap_records.append(dict(site=site.module_name, unit=int(units[0]),
+                            score=proposal[0]['score']))
+                    break
+            next_K = self.K_base if remaining is None or remaining <= 0 else min(self.K_base, remaining)
+            row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration,
+                K=self.K_next, K_next=next_K, refresh_A=False, skipped=False, skip_reason=None,
+                d=None, d_N=None, d_rep=None, Delta_hat=0., g_dot_d=0., h_dot_d=0.,
+                gradient_norm=float(preliminary['g'].norm()), rho=0., rho_proj=0., V=0., V_O=0.,
+                mu=mu, mu_rel=self.mu_rel, beta=0., beta_branch=None, s=0., s_star=0.,
+                swaps=swaps, swap_records=swap_records, ell=gains, exact_cg=None,
+                exact_cg_converged=None, false_skip=False, solver_tightened=self.solver_tightened,
+                power_iters=self.power_iters, gir_seconds=time.perf_counter()-gir_started,
+                seconds=time.perf_counter()-started,
+                skip_rate=sum(bool(r.get('skipped')) for r in self.events)/max(1,len(self.events)))
+            if apply:
+                self.last_iteration, self.K_next = iteration, next_K
+                self.applications += 1
+                self.events.append(row)
+            return row
         selection_started = time.perf_counter()
         A = self.A
         if refresh:
             A = self._select(model, sites, batch, preliminary)
             selected_sites = [s for s in sites if s.module_name in A]
-            if A and bool(preliminary['eold'].any()) and 'b0' not in self.arm and 'kself' not in self.arm and self.arm != 'kernel_self':
+            if A and bool(preliminary['eold'].any()) and 'b0' not in self.arm:
                 with training_products(model, selected_sites, A, batch[0]) as p:
                     op = GGNProducts(p, batch[1], spec, ctx)
                     first = self._direction(p, op, mu, split=(preliminary['x'], preliminary['xO'], preliminary['z'], preliminary['zO']))
@@ -443,8 +483,9 @@ class V3Engine:
                 exact_records = exact['records']
                 cos_exact = float(nn.functional.cosine_similarity(d, exact['d'], dim=0)) if d.norm() and exact['d'].norm() else 1.
                 h_exact = float(exact['gO']@exact['d'])
-                false_skip = bool(skipped and h_exact >= 0)
-                if apply:
+                exact_converged = all(r['converged'] for r in exact_records)
+                false_skip = bool(exact_converged and skipped and h_exact >= 0)
+                if apply and exact_converged:
                     self.exact_checks += 1; self.false_skips += int(false_skip)
                     if cos_exact < .99: self.tol, self.solver_tightened = 1e-4, True
                     if self.false_skips/self.exact_checks > .1: self.power_iters = 20
@@ -532,8 +573,8 @@ class V3Engine:
         with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
             mu = relative_damping(self.cfg, op.trace(self.cfg), op)
-            values = self._direction(p, op, mu)
             if residual is None:
+                values = self._direction(p, op, mu, split_only=True, warm={})
                 residual = op.g if gradmax else values['eold']-values['zO'] if bool(values['eold'].any()) else op.g-values['z']
         S, Ns = statistics(model, site, batch, [residual])
         rows = generalized_rows(Ns[0]@Ns[0].T, S, 4, euclidean=gradmax)

@@ -71,7 +71,7 @@ def protocol(args, engine, params, upstream):
         replacement_rate_checks=[1e-6,1e-5,1e-4,1e-2] if args.setting == 'regression' else [],
         window=('current_augmented_minibatch' if args.setting == 'icarl' else
                 'current augmented stream10 + native replay up to64; 74 after memory warmup' if args.setting == 'online' else
-                'FIFO 128 most recent observed samples; available prefix at start; spans task boundaries'),
+                'FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples'),
         step_rule=('min(s_star, K*lr/(1-momentum))' if args.arm.endswith('_lf') else
                    'min(s_star, lr*norm(g)/norm(d))'), K_units='iterations',
         mu_rel=engine.mu_rel, K_base=engine.K_base,

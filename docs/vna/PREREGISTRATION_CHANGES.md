@@ -231,3 +231,15 @@ P7–P10 retain their upstream algorithms.
     source overlay is used (source_digest = null). Notebooks without the
     authority schedule run their unscheduled baselines and skip scheduled arms
     until the Q2/O1 archive is attached; they never recalibrate.
+
+## V3 fixes (2026-10-18, before any v3 results)
+
+The B5/PM V3 intervention window is now the FIFO of at most 128 samples from
+the current task. It is reset at every task boundary, and the first
+application is delayed until at least 32 current-task samples are present;
+subsequent applications retain the registered K schedule. GIR-only `gir`
+applications compute only the split and GIR replacement. `kernel_self` uses
+the same protected β-rule and `d_rep + d_N` split as VNA, differing only by
+using K instead of K_E; only `vna_b0` and settings without old classes are
+unprotected. Exact checks use up to 2000 CG iterations and affect adaptive
+solver counters only when every exact solve converges.

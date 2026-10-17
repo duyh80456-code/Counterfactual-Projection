@@ -69,6 +69,29 @@ def test_kernel_self_cg_and_warm_and_read_only_bn(bn):
     for name, value in before.items(): assert torch.equal(value, model.state_dict()[name])
 
 
+def test_kernel_self_protects_old_classes_but_keeps_unprotected_beta_zero_case():
+    model, site, (x, _), _, _, optimizer = problem(outputs=4)
+    with torch.no_grad(): teacher = model(x)[:, :2].clone(); teacher[:, 0] += 1
+    engine = V3Engine('kernel_self'); engine.begin_task(2)
+    with training_products(model, [site], seed_proposals([site]), x) as p:
+        op = GGNProducts(p, torch.tensor([0, 1, 2, 3, 0, 2]),
+            ICaRLPyCIL(T=2, known_classes=2),
+            dict(targets=torch.tensor([0, 1, 2, 3, 0, 2]), known_classes=2,
+                 teacher_logits=teacher))
+        values = engine._direction(p, op, .1)
+        assert values['beta_branch'] != 'unprotected'
+
+    model, site, batch, _, _, _ = problem(outputs=1)
+    engine = V3Engine('kernel_self'); engine.begin_task(1); engine.tol = 1e-12
+    with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
+        op = GGNProducts(p, batch[1], MSE(), dict(targets=batch[1]))
+        values = engine._direction(p, op, .1)
+        eye = torch.eye(op.size, dtype=torch.float64)
+        F = torch.stack([op.F(v) for v in eye], 1)
+        expected = F @ torch.linalg.inv(F+.1*eye) @ F @ torch.linalg.inv(F+.1*eye) @ op.gradient
+        torch.testing.assert_close(values['d'], expected, rtol=1e-8, atol=1e-10)
+
+
 def test_beta_all_branches_verified_upper_and_monotone_leak():
     F = torch.tensor([[2., .2], [.2, 1.]], dtype=torch.float64)
     B = torch.tensor([[1., 0.], [0., 0.]], dtype=torch.float64)

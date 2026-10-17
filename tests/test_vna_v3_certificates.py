@@ -70,6 +70,22 @@ def test_zero_old_residual_with_inexact_cg_does_not_false_skip():
     assert row['tau_g']>0 and not row['skipped'] and not row['false_skip']
 
 
+def test_nonconverged_exact_check_is_logged_but_not_counted():
+    model, site, batch, optimizer = mlp()
+    class IncompleteExact(V3Engine):
+        def _direction(self, p, op, mu, **kwargs):
+            values = super()._direction(p, op, mu, **kwargs)
+            if kwargs.get('exact'):
+                values['records'][0]['converged'] = False
+            return values
+    engine = IncompleteExact('vna'); engine.begin_task(1)
+    row = engine.apply(model, [site], batch, MSE(), dict(targets=batch[1]), optimizer, 1)
+    assert row['exact_cg_converged'] is False
+    assert row['false_skip'] is False
+    assert engine.exact_checks == engine.false_skips == 0
+    assert engine.tol == 1e-3 and engine.power_iters == 5
+
+
 def test_real_sgd_momentum_and_weight_decay_remain_native_after_correction():
     model,site,batch,optimizer=mlp(bn=True)
     x,y=batch

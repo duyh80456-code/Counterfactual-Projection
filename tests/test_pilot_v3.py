@@ -165,8 +165,23 @@ def test_current_cil_minibatch_and_cross_task_fifo(monkeypatch):
     fifo_hook.step=128
     online.before(fifo_hook,None,torch.zeros(1,3),torch.zeros(1,1))
     x,y=fifo_hook.buffer.batch()
-    assert len(x)==128 and torch.equal(x[0],torch.ones(3)) and torch.equal(x[-1],torch.zeros(3))
+    assert len(x)==1 and torch.equal(x[0],torch.zeros(3)) and torch.equal(y[0],torch.zeros(1))
     assert online.engine.task==2
+
+
+def test_engine_arm_matrix_covers_registered_v3_arms():
+    from experiments.pilot_v3 import B5_ARMS, PM_ARMS, ICARL_ARMS, ONLINE_ARMS, engine_arm
+    arms = B5_ARMS + PM_ARMS + ICARL_ARMS + ONLINE_ARMS
+    assert len(arms) == 12 + 8 + 5 + 6
+    for registered in arms:
+        engine = V3Engine(engine_arm(registered))
+        assert engine.kernel_self == ('kself' in registered)
+        assert engine.arm.endswith('_lf') == registered.endswith('_lf')
+        assert ('gir' in engine.arm) == ('gir' in registered)
+        assert ('vna' in engine.arm) == ('vna' in registered)
+        assert ('rand' in engine.arm) == ('rand' in registered)
+        assert ('b0' in engine.arm) == ('b0' in registered)
+    assert engine_arm('b5_bp_kself_lf') == 'kernel_self_lf'
 
 
 def test_preflight_selects_common_mu_and_selected_trial_time(tmp_path):

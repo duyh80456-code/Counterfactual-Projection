@@ -72,7 +72,10 @@ class LoPV3(Calibration):
 
     def before(self, hook, learner, x, target):
         self.hook, self.learner = hook, learner
-        self.engine.begin_task(hook.step//hook.task_steps+1)
+        task = hook.step//hook.task_steps+1
+        changed = task != self.engine.task
+        self.engine.begin_task(task)
+        if changed: hook.buffer.samples.clear()
         hook.buffer.update((x, target))
         self._started = time.monotonic()
 
@@ -84,7 +87,7 @@ class LoPV3(Calibration):
         model, batch, spec, ctx = self.context()
         within = (hook.step-1) % hook.task_steps+1
         remaining = hook.task_steps-within
-        if self.engine.arm not in ('cbp_gir','cbp_gradmax'):
+        if len(hook.buffer) >= 32 and self.engine.arm not in ('cbp_gir','cbp_gradmax'):
             self.apply(self.engine, model, lop_sites(model), batch, spec, ctx, learner.opt,
                        hook.step, remaining)
         self.full_batches = [hook.task_steps]
