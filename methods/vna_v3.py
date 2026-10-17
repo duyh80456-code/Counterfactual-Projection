@@ -413,6 +413,7 @@ class V3Engine:
                 swaps=swaps, swap_records=swap_records, ell=gains, exact_cg=None,
                 exact_cg_converged=None, false_skip=False, solver_tightened=self.solver_tightened,
                 power_iters=self.power_iters, gir_seconds=time.perf_counter()-gir_started,
+                exact_check_seconds=0.,
                 seconds=time.perf_counter()-started,
                 skip_rate=sum(bool(r.get('skipped')) for r in self.events)/max(1,len(self.events)))
             if apply:
@@ -421,8 +422,8 @@ class V3Engine:
                 self.events.append(row)
             return row
         selection_started = time.perf_counter()
-        A = self.A
-        if refresh:
+        A = seed_proposals(sites) if self.kernel_self else self.A
+        if refresh and not self.kernel_self:
             A = self._select(model, sites, batch, preliminary)
             selected_sites = [s for s in sites if s.module_name in A]
             if A and bool(preliminary['eold'].any()) and 'b0' not in self.arm:
@@ -434,14 +435,14 @@ class V3Engine:
                     matrix_values=[preliminary['z'], preliminary['zO'], y, preliminary['zN']])
             if 'rand' in self.arm: A = self._randomize(model, sites, batch, A)
         tiny_seconds = time.perf_counter()-selection_started
-        active = [s for s in sites if s.module_name in A]
+        active = sites if self.kernel_self else [s for s in sites if s.module_name in A]
         if not active:
             next_K = min(self.K_base, remaining) if remaining is not None and remaining > 0 else self.K_base
             row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration,
                 K=self.K_next, K_next=next_K, refresh_A=refresh, skipped=True,
                 skip_reason='no_positive_directions', Delta_hat=float('inf'), g_dot_d=0.,
                 h_dot_d=0., gradient_norm=float(preliminary['g'].norm()), rho=0., V=0.,
-                V_O=0., mu=mu, mu_rel=self.mu_rel, cos_cg_exact=None,
+                V_O=0., mu=mu, mu_rel=self.mu_rel, cos_cg_exact=None, exact_check_seconds=0.,
                 swaps=0, swap_records=[], seconds=time.perf_counter()-started)
             if apply:
                 self.last_iteration, self.K_next = iteration, next_K
@@ -478,8 +479,11 @@ class V3Engine:
             skipped = reason is not None
             cos_exact, h_exact, false_skip = None, None, False
             exact_records = []
-            if self.task in (1, 2) and self.applications < 3:
+            exact_check_seconds = 0.
+            if apply and self.task in (1, 2) and self.applications < 3:
+                exact_started = time.perf_counter()
                 exact = self._direction(p, op, mu, exact=True)
+                exact_check_seconds = time.perf_counter()-exact_started
                 exact_records = exact['records']
                 cos_exact = float(nn.functional.cosine_similarity(d, exact['d'], dim=0)) if d.norm() and exact['d'].norm() else 1.
                 h_exact = float(exact['gO']@exact['d'])
@@ -528,6 +532,7 @@ class V3Engine:
             kappa=None, kappa_reason='V_NS is not defined in supplied theory', s=s, s_star=optimum, cap_binding=binding, cg=values['records']+preliminary['records'],
             cos_cg_exact=cos_exact, exact_cg=exact_records,
             exact_cg_converged=all(r['converged'] for r in exact_records) if exact_records else None,
+            exact_check_seconds=exact_check_seconds,
             h_exact=h_exact, false_skip=false_skip, solver_tightened=self.solver_tightened,
             power_iters=self.power_iters, gradient_norm=float(g.norm()), mu=mu, mu_rel=self.mu_rel,
             dead_before_step5=sum(map(len, before.values())), dead_after_step5=sum(map(len, after.values())),
@@ -537,7 +542,7 @@ class V3Engine:
             seconds=time.perf_counter()-started, certificate_norms='power estimates x1.1',
             skip_rate=(sum(bool(r.get('skipped')) for r in self.events)+int(skipped))/(len(self.events)+1))
         if apply:
-            self.A = A
+            if not self.kernel_self: self.A = A
             if refresh: self.last_refresh = self.applications
             self.last_iteration, self.K_next = iteration, next_K
             self.applications += 1

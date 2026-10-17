@@ -38,7 +38,7 @@ class Calibration:
         if calibrating and event is not None:
             self.counts[task] = self.counts.get(task, 0)+1
             self.calibration.append(dict(task=task, classes=ctx.get('classes', 1),
-                vna_seconds=event.get('seconds', 0.),
+                vna_seconds=event.get('seconds', 0.)-event.get('exact_check_seconds', 0.),
                 gir_seconds=event.get('gir_seconds',0.), iteration=iteration))
         return event
 
@@ -139,14 +139,23 @@ class LoPV3(Calibration):
             started = time.monotonic()
             if active and any(counts):
                 model, batch, spec, ctx = pilot.context()
-                for site, units in zip(lop_sites(model), features_to_replace):
-                    if len(units):
-                        proposal = pilot.engine.prepare_gir(model, site, batch, spec, ctx,
-                            gnt.opt, units, pilot.hook.step+1, gradmax='gradmax' in pilot.engine.arm)
-                        proposals.append((site, units, proposal))
+                if len(pilot.hook.buffer) >= 32:
+                    for site, units in zip(lop_sites(model), features_to_replace):
+                        if len(units):
+                            proposal = pilot.engine.prepare_gir(model, site, batch, spec, ctx,
+                                gnt.opt, units, pilot.hook.step+1, gradmax='gradmax' in pilot.engine.arm)
+                            proposals.append((site, units, proposal))
             native_started = time.monotonic()
             result = original(gnt, features_to_replace, counts)
             native_seconds = time.monotonic()-native_started
+            if active and any(counts) and len(pilot.hook.buffer) < 32:
+                for site, units in zip(lop_sites(model), features_to_replace):
+                    if len(units):
+                        pilot.engine.events.append(dict(kind='cbp_replace',task=pilot.engine.task,
+                            iteration=pilot.hook.step+1,site=site.module_name,
+                            selected_units=[int(u) for u in units],swaps=0,
+                            candidate_missing=len(units),gir_fallback=True,
+                            seconds=(time.monotonic()-started-native_seconds)/max(1, len(features_to_replace))))
             for site, units, proposal in proposals:
                 used = pilot.engine.install_gir(model, site, proposal, units, gnt.opt)
                 for unit in units[:used]:

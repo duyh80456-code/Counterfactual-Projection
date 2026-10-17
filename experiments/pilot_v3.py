@@ -95,8 +95,8 @@ def finalize_calibration(args, engine, adapter, out):
     for point, report in zip(adapter.calibration, adapter.mu_trials):
         selected = next(row for row in report['trials'] if row['mu_rel'] == engine.mu_rel)
         point['actual_application_seconds'] = point['vna_seconds']
-        point['selected_mu_trial_seconds'] = selected['seconds']
-        point['vna_seconds'] = selected['seconds']+point.get('gir_seconds',0.)
+        point['selected_mu_trial_seconds'] = selected['seconds']-selected.get('exact_check_seconds', 0.)
+        point['vna_seconds'] = point['selected_mu_trial_seconds']+point.get('gir_seconds',0.)
     timing = float(np.mean(adapter.iteration_times[:200]))
     points = []
     for task in (1, 2):

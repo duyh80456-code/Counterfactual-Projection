@@ -132,6 +132,31 @@ def test_zero_lambda_is_bitwise_and_readonly_preflight_state():
     for n, v in before.items(): assert torch.equal(v, model.state_dict()[n])
 
 
+def test_exact_check_is_apply_only_and_timed_separately(monkeypatch):
+    model, site, batch, spec, ctx, optimizer = problem()
+    engine = V3Engine('vna'); engine.begin_task(1)
+    calls = []
+    original = engine._direction
+    def direction(*args, **kwargs):
+        calls.append(kwargs.get('exact', False))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(engine, '_direction', direction)
+    row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, apply=False)
+    assert True not in calls
+    assert row['exact_check_seconds'] == 0.
+    row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1)
+    assert True in calls
+    assert row['exact_check_seconds'] > 0.
+
+
+def test_kernel_self_uses_all_valid_sites_without_selection(monkeypatch):
+    model, site, batch, spec, ctx, optimizer = problem()
+    engine = V3Engine('kernel_self'); engine.begin_task(1)
+    monkeypatch.setattr(engine, '_select', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('selection')))
+    row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1)
+    assert row['skip_reason'] != 'no_positive_directions'
+
+
 def test_adaptive_schedule_iterations_skips_and_budget_exceeded():
     points = [dict(task=1, classes=10, vna_seconds=100., iteration_seconds=.01),
               dict(task=2, classes=20, vna_seconds=200., iteration_seconds=.01)]

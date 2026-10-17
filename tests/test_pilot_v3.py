@@ -125,6 +125,25 @@ def test_cbp_selection_timing_and_native_rng_preserved(monkeypatch):
     _assert_bitwise(selections[0],selections[1]);_assert_bitwise(selections[0],selections[2])
 
 
+def test_cbp_short_buffer_keeps_native_initialization(monkeypatch):
+    upstream_imports()
+    from lop.algos.cbp import ContinualBackprop
+    from lop.nets.ffnn import FFNN
+    from types import SimpleNamespace
+    learner=ContinualBackprop(FFNN(input_size=3,num_features=3).double(),
+        replacement_rate=1.,maturity_threshold=0,device='cpu')
+    engine=V3Engine(arm='cbp_gir')
+    intervention=LoPV3(engine)
+    hook=SimpleNamespace(step=0,task_steps=10,buffer=MeasurementBuffer(31))
+    intervention.before(hook,learner,torch.ones(4,3,dtype=torch.float64),torch.zeros(4,1,dtype=torch.float64))
+    monkeypatch.setattr(engine,'prepare_gir',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('prepare')))
+    monkeypatch.setattr(engine,'install_gir',lambda *args,**kwargs: (_ for _ in ()).throw(AssertionError('install')))
+    with intervention.install():
+        learner.gnt.gen_and_test([torch.ones(4,3,dtype=torch.float64)])
+    event=engine.events[-1]
+    assert event['gir_fallback'] and event['swaps']==0
+
+
 def test_online_ace_residual_and_curvature_match_native_loss():
     from experiments.pilot_v3_online import OnlineCE
     spec=OnlineCE()
