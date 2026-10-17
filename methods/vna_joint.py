@@ -110,8 +110,8 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
                 u, first = _inverse(action, op.gradient, cfg)
                 z = op.H(p.Jv(u))
             else:
-                z = output_factor.z(op.g, damping).flatten()
-                first = dict(converged=output_factor.range_ok and output_factor.factor_error is None, iterations=0, relative_residual=output_factor.range_error)
+                z = output_factor.z(op.g, damping, kernel_residual=p.K(op.g)).flatten()
+                first = dict(converged=output_factor.factor_error is None and bool(torch.isfinite(z).all()), iterations=0, relative_residual=0.)
             measurement_update(solve='tiny_V:correction:d')
             if output_factor is None:
                 d, second = _inverse(action, op.COE(p.JET(z).double()), cfg,

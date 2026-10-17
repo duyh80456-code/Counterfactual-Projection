@@ -60,7 +60,7 @@ def test_exact_ngd_matches_vna_norm_and_positive_gradient():
     cfg = GGNConfig(project_bn=False)
     cache, factor = exact_cache(model, sites, batch, spec, ctx, cfg)
     with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
-    a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[factor.z(e, cache.mu)], cfg=cfg)
+    a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[cache.solve('e', e, batch, ctx)], cfg=cfg)
     d, _, _, record = joint_correction(model, sites, {sites[0]:a}, batch, cfg,
         mu=cache.mu, trace_F=cache.trace, loss_spec=spec, ctx=ctx, output_factor=factor)
     ngd, control = ngd_control(model, sites[0], a, batch, cfg, mu=cache.mu,
@@ -86,7 +86,7 @@ def test_tiny_v_euclid_reuses_n_and_selects_top_euclidean_direction():
     cfg = GGNConfig(project_bn=False)
     cache, factor = exact_cache(model, sites, batch, spec, ctx, cfg)
     with torch.no_grad(): residual = spec.residual(model(batch[0]), ctx)
-    z = factor.z(residual, cache.mu)
+    z = cache.solve('e', residual, batch, ctx)
     selected, capture = tiny_V_euclid(model, sites[0], [batch], 1,
                                       cotangents=[z], cfg=cfg,
                                       normalize=False, score_signs=False)
@@ -253,7 +253,7 @@ def test_training_cg_warm_start_matches_exact_direction(loss):
     engine = PilotEngine(coefficient=1., every=1)
     exact, factor = exact_cache(model, sites, batch, spec, ctx, GGNConfig(project_bn=False))
     with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
-    a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[factor.z(e, exact.mu)], cfg=engine.cfg)
+    a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[exact.solve('e', e, batch, ctx)], cfg=engine.cfg)
     d_exact, *_ = joint_correction(model, sites[:1], {sites[0]: a}, batch, engine.cfg,
         mu=exact.mu, trace_F=exact.trace, loss_spec=spec, ctx=ctx, output_factor=factor)
     warm = {}

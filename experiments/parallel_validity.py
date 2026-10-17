@@ -27,6 +27,53 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
     identity = summary.get('identity', summary)
     if identity.get('code_commit', commit) != commit:
         raise ValueError(f'{job}: summary/protocol code_commit mismatch')
+    if protocol.get('benchmark') == 'cil_competitor':
+        from experiments.competitors import cil_recipe, CIL_METHODS
+        from experiments.stage_b3 import UPSTREAM_PIN
+        match = re.fullmatch(r'('+ '|'.join(CIL_METHODS)+r')__(?:(inc10|b50inc10)__)?s(\d+)', job)
+        if not match: raise ValueError(f'{job}: invalid competitor label')
+        method, setting, seed = match.groups()
+        expected, source, overrides = cil_recipe(method, setting or 'inc10', int(seed))
+        if identity != protocol or protocol.get('args') != expected or protocol.get('config_overrides') != overrides:
+            raise ValueError(f'{job}: competitor recipe or override audit mismatch')
+        if protocol.get('cfg_source') != source or protocol.get('upstream_commit') != UPSTREAM_PIN:
+            raise ValueError(f'{job}: competitor cfg/upstream mismatch')
+        if protocol.get('fake_data') is not False or protocol.get('arm') != method:
+            raise ValueError(f'{job}: synthetic or mismatched competitor')
+        expected_tasks = 1 if method == 'joint' else 1+(100-expected['init_cls'])//expected['increment']
+        if (summary.get('tasks') != tasks or len(tasks) != expected_tasks or
+                [r.get('task') for r in tasks] != list(range(1,expected_tasks+1))):
+            raise ValueError(f'{job}: incomplete competitor tasks')
+        fingerprint = protocol.get('dataset_fingerprint')
+        if (not isinstance(fingerprint,dict) or set(fingerprint) != {'train','test','meta'} or
+                any(not re.fullmatch('[0-9a-f]{64}',str(v)) for v in fingerprint.values())):
+            raise ValueError(f'{job}: missing competitor data provenance')
+        if summary.get('parameter_count',0) <= 0 or summary.get('gpu_hours',-1) < 0:
+            raise ValueError(f'{job}: missing competitor resource accounting')
+        return commit, ('cil_competitor',method,expected['init_cls'],expected['increment']), {
+            'dataset':fingerprint, 'upstream':protocol['upstream_commit']}
+    if protocol.get('benchmark') == 'b5_competitor':
+        from experiments import stage_b5
+        from experiments.competitors import b5_recipe
+        if job != 'b5_'+protocol.get('arm','') or identity != protocol:
+            raise ValueError(f'{job}: mismatched B5 competitor')
+        variants = summary.get('variants',[])
+        if protocol.get('fake_data') is not False or [r.get('seed') for r in variants] != [0,1,2]:
+            raise ValueError(f'{job}: synthetic or incomplete competitor seeds')
+        if protocol.get('upstream_commit') != stage_b5.UPSTREAM_PIN:
+            raise ValueError(f'{job}: wrong competitor upstream')
+        for variant in variants:
+            ident = variant.get('identity',{})
+            expected, source, grid = b5_recipe(protocol['arm'],protocol['selected'])
+            actual = dict(ident.get('params',{}))
+            for key in ('data_file','env_file','run_idx','use_gpu'): actual.pop(key,None)
+            if actual != expected or ident.get('code_commit') != commit or ident.get('fake_data') is not False:
+                raise ValueError(f'{job}: B5 competitor recipe mismatch')
+            if (variant.get('status') != 'COMPLETED' or variant.get('steps') != expected['num_data_points'] or
+                    len(variant.get('tasks',[])) != expected['num_data_points']//expected['flip_after'] or
+                    tasks.get(str(variant['seed'])) != variant['tasks']):
+                raise ValueError(f'{job}: incomplete B5 competitor trajectory')
+        return commit, ('b5_competitor',protocol['arm']), {'competitor':protocol['arm']}
     if job.startswith('icarl'):
         match = re.fullmatch(r'(icarl(?:_vna(?:_random|_euclid)?|_ngd)?)__(inc10|inc5|b50inc10)__s(\d+)', job)
         if not match: raise ValueError(f'{job}: unknown CIL job')

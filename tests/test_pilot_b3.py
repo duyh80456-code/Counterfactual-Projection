@@ -208,6 +208,6 @@ def test_icarl_kd_residual_and_metric_have_full_softmax_tangent_range():
     torch.testing.assert_close(residual, expected_residual, rtol=0, atol=1e-12)
     identity = SimpleNamespace(K=lambda value: value)
     factor = OutputFactor(SimpleNamespace(logits=logits, loss_spec=spec, ctx=ctx, p=identity))
-    factor.z(residual, 1e-3)
+    factor.z(residual, 1e-3, kernel_residual=residual)
     assert factor.range_error <= 1e-8
     assert factor.range_ok

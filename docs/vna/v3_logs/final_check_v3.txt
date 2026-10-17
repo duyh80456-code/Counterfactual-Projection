@@ -1,0 +1,165 @@
+=== T0
+[PASS] T0a: e_i orthogonal to 1 = null(H_i) (e in range H), and null(H_i)=span(1) -> 2.50e-11
+[PASS] T0b: e_O,i orthogonal to 1 = null(W_i) (e_O in range W) -> 2.12e-12
+[PASS] T0b-WIT: generic vectors are NOT in range(H_i): min |1^T v|/|v| over trials -> 5.77e-03
+[PASS] T0c: ||e_O||^2_{W+} = (1/N) sum chi^2(p_t || p_s) -> 2.98e-15
+[PASS] T0c-NEG: chi^2 with teacher denominator rejected (min rel err) -> 1.74e-02
+[PASS] T0f: exact factor L_i = (N T^2)^-1/2 (D^1/2 - sqrt(p) p^T): L^T L = W and L 1 = 0 -> 8.32e-16, 4.32e-16
+[PASS] T0d: KD gradient = O^T (p_s - p_t)/(N T) -> 2.31e-16
+[PASS] T0e: KD Hessian = (diag p_s - p_s p_s^T)/(N T^2) with STUDENT p_s -> 1.78e-16
+[PASS] T0e-NEG: teacher-probability KD Hessian rejected -> 6.90e-01
+=== T1
+[PASS] T1a: d* = d_rep + d_N^beta equals the stacked least-squares minimiser -> 3.93e-12
+[PASS] T1a-NEG: ignoring beta (d_rep + d_N^0) is rejected -> 5.99e-02
+[PASS] T1b: output-space form d = J^T R (M+mu)^-1 R t (no pinv) -> 4.06e-12
+[PASS] T1c: range-free z = R (M+mu)^-1 R (J g) at logit scales 1..30 -> 4.52e-12
+[PASS] T1c-NEG: thresholded-pinv z (old code) fails under saturation (max rel err, scale>=20) -> 8.09e-01
+=== T2
+[PASS] T2a: beta=0 reproduces VNA d = G J^T H K_E z -> 3.94e-16
+[PASS] T2b: g^T d = V and d = Q g with Q = L^T K_E L -> 2.41e-13
+[PASS] T2c: Q is PSD (min eig / max eig) -> -1.86e-16
+[PASS] T2d: ||d_beta - d_inf||_A <= ||r||/(1+beta sigma_min^2) -> max ratio 0.900
+[PASS] T2e: asymptotic O(1/beta) rate (successive ratio ~10 once beta sigma^2 >> 1) -> max |ratio-10|/10 = 1.78e-02 over 48 pairs
+[PASS] T2h: hard-limit kernel K_NS = J P J^T = K - J C^T(C C^T)^+ C J^T with C = W^1/2 C (Schur complement) -> 5.05e-15
+[PASS] T2i: J d_N^inf lies in range(K_NS) (nested projection, hard limit) -> 7.48e-14
+[PASS] T2f: beta=1e7 solution matches KKT with W^1/2 C x = 0 (C full row rank), error / ||d_N^0|| -> 3.53e-07
+[PASS] T2g: pinv-KKT limit satisfies W^1/2 C d_inf = 0 also for rank-deficient C (p < N k) -> 2.02e-13
+[PASS] T2f-NEG: Euclidean constraint C x = 0 (math.md Prop 2) is NOT the limit (min dist / ||d_N^0||) -> 2.65e-01
+=== T3
+[PASS] T3a: g_O^T d_rep = V_O (repair is always in the descent direction of KD) -> 2.57e-13
+[PASS] T3b: |e_O^T C d| <= ||e_O||_{W+} sqrt(leak) -> max ratio 0.875
+[PASS] T3b-NEG: same bound with ||e_O||_W (wrong metric) is violated in some instances -> 12265 violations
+[PASS] T3c: leak(beta) nonincreasing on grid -> 0 instances violate
+[PASS] T3d: leak(beta) <= ||u_N||_H^2 / beta -> max ratio 0.246
+[PASS] T3d-WIT: h(beta) is non-monotone in some instances (so bisection on h is invalid) -> 62/300
+[PASS] T3e: certificate: leak(beta) <= eps* = V_O^2/||e_O||^2_{W+}  =>  h(beta) >= 0 -> 0 violations / 6900 grid points
+[PASS] T3e-WIT: certificate is not vacuous: pure VNA (beta=0) raises KD to first order -> 102/300
+[PASS] T3f: beta_cert <= beta_suf -> 300/300
+[PASS] T3g: h(beta_cert) <= 2 V_O when beta_cert > 0 -> max 1.856
+[PASS] T3h: hard limit: e_O^T C d_N^inf = 0, i.e. h(inf) = V_O -> 3.83e-11
+[PASS] T3i: beta_cert is the KKT multiplier: SLSQP constrained minimiser = d_N^{beta_cert} -> 4.20e-08
+[PASS] T3i-WIT: unconstrained d_N^0 is infeasible for the budget (min leak0/eps*) -> 6.66
+[PASS] T3j: Delta L_KD(theta - eps d) = -eps g_O^T d + O(eps^2) (sign as in THEORY_FINAL; math.md Prop 3 had +) -> rel err 5.2e-02 -> 5.2e-03
+=== T4
+[PASS] T4a: Phi_N(d_N^beta) = fit + mu||d||^2 is nondecreasing in beta -> 0 violations
+[PASS] T4b: Phi_N(d_beta) - Phi_N(d_0) <= beta (leak_0 - leak_beta) -> max ratio 0.500
+[PASS] T4c-WIT: fit alone decreases on the explicit counterexample (claim "fit monotone" rejected) -> [-0.1434, -0.14426, -0.1451]
+[PASS] T4d: on the same counterexample fit + mu||d||^2 is nondecreasing -> [-0.08745, -0.08724, -0.08602]
+=== T5
+[PASS] T5a: ||d_rep|| <= ||u_R||_H/sqrt(mu), ||d_N^beta|| <= ||u_N||_H/sqrt(mu) for all beta -> max ratio 0.235
+[PASS] T5b: g^T d* >= V - ||g||_G min(sqrt(beta leak_0), 2||u_N||_H) -> max violation 7.4e-14
+[PASS] T5c-WIT: g^T d* < 0 occurs at beta_cert (descent is NOT unconditional -> skip rule needed) -> 8/200
+[PASS] T5d: with g^T d >= 0: L decreases by >= eps||g||^2(1 - L_s eps (1+rho)^2/2) for eps < 2/(L_s(1+rho)^2) -> min slack 1.239e+01
+[PASS] T5d-NEG: without the skip rule (g^T d < 0, rho=3) the same step can increase L -> min decrease -3.763e+02
+[PASS] T5e: gamma = 1: adversarial search over K_E = v v^T (solve-based d) never finds g^T d < 0 -> min 9.97e-18
+[PASS] T5e-NEG: gamma in {0,2,5}: the same search finds g^T d < 0 (wrong residual weighting rejected) -> {0.0: '-3.38e-04', 2.0: '-2.04e-04', 5.0: '-4.49e-03'}
+=== T6
+[PASS] T6a: g^T d* = tr(A^T M_S A), M_S = sym(N_z N_zO^T) + sym(N_y N_zN^T) -> 3.52e-12
+[PASS] T6a-NEG: using the tiny_V matrix N_z N_z^T at beta>0 is rejected -> min rel err 2.10e-03
+[PASS] T6b: top positive generalised eigvecs of (M_S, S_x) are optimal (random S_x-orthonormal A never better) -> max excess -1.09e-03
+[PASS] T6c: beta = 0: tiny_V(z) is exactly optimal -> 2.18e-13
+[PASS] T6d: suboptimality of tiny_V(z) <= 2 sum top-r |eig(S^-1/2 Delta S^-1/2)| -> max ratio 0.121
+[PASS] T6d-WIT: tiny_V(z) is strictly suboptimal for some beta>0 instance -> max rel subopt 0.914
+=== T7
+[PASS] T7a: shared functional: gain(v|J) = (E_J(t_r) - E_[J,Jv](t_r))/2, t_r = -H^+ r (logit scale 1) -> 6.65e-14
+[PASS] T7a-NEG: same identity with target -r (no H^+) is rejected -> min rel err 9.86e-01
+[PASS] T7b: Schur form gain = s^T S_v^-1 s / 2 with s = J_v^T r_perp, r_perp = r - z(r) -> 5.78e-11
+[PASS] T7b-NEG: s = J_v^T r (no complement) rejected: min err >= 1e3 x the positive tolerance, median > 1e-2 -> min 2.50e-03, median 1.95e+00 (positive check tol 1e-8)
+[PASS] T7c: r_perp = r - z(r) = mu (HK+mu)^-1 r -> 4.21e-12
+[PASS] T7d: gradient wrt new outgoing weights at the relaxed live optimum = s -> 1.26e-11
+[PASS] T7e: two-sided bound |s|^2/(2(lmax+mu)) <= gain <= |s|^2/(2 mu) -> max ratio 0.9989
+[PASS] T7f: v_hat = argmax ell(v) = |s|^2/(2(lmax(J_v^T H J_v)+mu)) attains factor mu/(c_H+mu) of the best candidate -> min normalised ratio 4.976
+[PASS] T7f-WIT: argmax ell is not always the exact argmax of gain (so the factor, not optimality, is the claim) -> 32/60 trials
+[PASS] T7g: practical r_perp is the H-weighted (oblique) complement, not the Euclidean one (median |cos|, H != I, mu->0) -> 0.763
+[PASS] T7h: H = I, mu -> 0: r_perp equals the Euclidean residual (OMP atom selection) -> 1.42e-10
+[PASS] T7k: jump cost of removing unit u = -e^T f_u + 1/2 f_u^T H f_u + O(|f_u|^3) (remainder ratio ~8 per halving) -> 7.93, 7.96
+[PASS] T7k-NEG: unified Cor 3c sign (+e^T f_u - 1/2 f^T H f) is rejected -> min rel err 2.00
+[PASS] T7l: the VNA step computed before the swap does not touch the dead slot ((d)_u = 0) -> 0.0e+00
+[PASS] T7i: dead-slot insertion with B_v = 0 preserves the window function exactly -> 0.0e+00
+[PASS] T7j: after insertion K' = K + J_v J_v^T (the new unit adds a tangent direction; a_v columns are 0) -> 1.12e-16
+[PASS] T7j-WIT: removing a LIVE unit changes the function (jump cost != 0) -> 7.05e-01
+=== T8
+[PASS] T8a: discrete Gronwall: ||x_m - y_m|| <= sum (1+tau L_U)^(m-1-j) tau delta_j -> max ratio 1.0000
+[PASS] T8a-NEG: the same bound with only the projection defect lambda||Jd-u|| (not the realised defect) is violated -> max ratio 2.7; mean realised 0.728 vs projection part 0.020
+=== T9
+[PASS] T9a: ||x_hat - x|| <= rho ||b|| / mu (rho = final residual relative to ||b||) -> max ratio 0.722
+[PASS] T9b: cos(d_hat, d*) >= c  =>  normalised certificate degrades by <= ||g_O|| sqrt(2(1-c)) -> max violation -7.72e-04
+[PASS] T9a-NEG: stopping rule relative to the initial residual (far warm start) breaks the tol||b||/mu bound -> max ratio 3.2e+05
+=== T10
+[PASS] T10a: BN train mode: g^T d = V -> 5.91e-14
+[PASS] T10b: BN train mode: first-order FD of the train-mode loss matches -eps g^T d -> 2.0e-02 -> 2.0e-03
+[PASS] T10b-NEG: eval-mode (running-stats) quantities mispredict the train-mode loss change -> rel err 4.87
+[PASS] T10c: BN parameters excluded: identity g_S^T d_S = V_S still exact -> 1.66e-14
+[PASS] T10d: BN after the virtual neuron: phi(2a) = phi(a) (A4 linearity fails -> stated as assumption) -> |phi(2a)-phi(a)| = 4.7e-05, |phi(2a)-2phi(a)| = 1.98
+[PASS] T10e: outside-buffer correction: [L(th - eps m - eps d) - L(th - eps m)] / (-eps g^T d) -> 1 -> [0.9871, 0.99872]
+[PASS] T10f: real torch SGD(momentum=.9): outside-buffer correction displaces exactly lr*d (ratio 1) -> 1.000000
+[PASS] T10f-NEG: real torch SGD: the same d fed through the buffer is replayed ~1/(1-nu)=10 times (ratio 1 rejected) -> 10.0000
+=== T11
+[PASS] T11a: V_O = 0: h(0) = g_O^T d*(0) = 0 (normalised), so beta = 0 is certified -> 2.65e-14
+[PASS] T11b: V_O = 0: g^T d*(0) = V >= 0 (step passes the descent certificate) -> min rel dev -1.27e-13
+[PASS] T11c-WIT: V_O = 0 with leak(0) > 0 occurs, so the v1 skip rule discarded certified steps -> 60/60
+[PASS] T11d: e_O = 0: g_O = 0 and chi^2 = 0; the rule returns beta = 0 with tag eO=0 (no 0/0) -> max 0.0e+00, tags ['eO=0']
+[PASS] T11e: c_old = 1: W = 0 and e_O = 0 (KD is constant), handled by the eO=0 branch -> |W| 0.0e+00, |e_O| 0.0e+00
+[PASS] T11f: p <= N(c_old-1), rank C_hat = p: ||d_N^beta||/||d_N^0|| -> 0 (beta = 1e10) -> ranks [10], max ratio 1.3e-08
+[PASS] T11g: log-bracket bisection (12 steps) always returns a certified beta: leak <= eps* and h >= 0 -> 0 bad / 120
+=== T12
+[PASS] T12a: L10 tight: |D^3 l[h,h,h]| <= 2sqrt2/(6sqrt3) * (1 for CE, T^-3 for KD) * ||h||^3, and the two-point construction attains it (>= 0.999) -> constructed/bound: CE 1.0000, KD,T=1.0 1.0000, KD,T=2.0 1.0000, KD,T=4.0 1.0000; max random/bound 0.8864
+[PASS] T12a-NEG: mutated L3 constants rejected by the same two-sided test: KD normaliser T^-1 (fails tightness), constant x0.1 (fails validity) -> T^-1: tight=False; x0.1: valid=False
+[PASS] T12a-WIT: the v2 constant 0.708 is valid but 2.6x loose (passes validity, fails tightness) -> valid=True, tight=False, ratio 0.384
+[PASS] T12a2: combined CE + KD, N samples: |D^3L[h,h,h]| <= 0.2722 (1+T^-3)/N ||h||^3 (validity) and attained >= 0.95 on the aligned N=1, T=1 configuration (tightness) -> max ratio 0.576, aligned 1.0000
+[PASS] T12a2-NEG: mutant combined normaliser max(1, T^-3) (no additivity of CE and KD) is violated on the aligned configuration -> ratio under mutant 2.000
+[PASS] T12b: jump remainder |j_u - (-e^T f_u + f_u^T H f_u/2)| <= L3/6 ||f_u||^3 with L3 = 0.2722(1+T^-3)/N, validity at T = 1, 2, 4; near-tight construction (T = 1) >= 0.95 -> max ratio T=1 1.0000, T=2 0.3700, T=4 0.5840; constructed 1.0000
+[PASS] T12b-NEG: mutant L3 without the KD term (0.2722/N) is violated on the aligned configuration -> max ratio 2.000
+[PASS] T12b-NEG2: claim "jump is exactly quadratic" (R3 = 0) is rejected for large f_u (max rel err) -> 9.85
+[PASS] T12c: [structural] live-slot swap: window loss change equals the forward-pass jump j_u exactly (also for KD) -> 3 active samples, |dL - j_u| = 0.0e+00, |dKD - j_u^KD| = 0.0e+00
+[PASS] T12d: real ReLU net, dead slot: model change from the network Jacobians after the swap = -Schur gain from phi(a_v) alone -> 9.8e-14
+[PASS] T12d-NEG: same comparison with s = J_v^T e (no complement) is rejected -> min rel err 2.64e+00
+[PASS] T12e-WIT: a unit dead on the window can be active off the window (preservation is a window statement) -> active on window 0, off window 5/50
+=== T13
+[PASS] T13a-WIT: a unit dead before step 5 can be alive after it -> 18/40
+[PASS] T13a: recheck A5 after step 5, insert only if still dead: window function unchanged -> 0.0e+00
+[PASS] T13a-NEG: inserting without the recheck changes the window function -> 1.08e-01
+[PASS] T13b: reset optimiser state: first update of B_v is exactly -lr grad, of a_v exactly -lr(grad + wd a_v) with grad_a = 0 -> |dB+lr g| 0.0e+00, |da+lr(g+wd a)| 4.9e-17, |grad_a| 0.0e+00
+[PASS] T13b-NEG: without the reset, stale momentum moves B_v / a_v beyond the gradient step -> 4.43e-02, 9.71e-03
+[PASS] T13b2: scope of T13(d): nesterov -> first step -(1+nu) lr grad; dampening delta -> -(1-delta) lr grad (positive multiple, no stale term) -> 3.5e-18, 0.0e+00
+[PASS] T13b2-NEG: the plain-momentum formula -lr grad is wrong for nesterov (claimed scope matters) -> 1.28e-02
+[PASS] T13c: telescoping: gain({v1,v2}|J) = gain(v1|J) + gain(v2|[J,J_v1]) -> 0.0e+00
+[PASS] T13d: rank-q deflation: r_perp' = r_perp - H_perp J_v1 S_v1^-1 s_v1 and H_perp' = H_perp - H_perp J_v1 S_v1^-1 J_v1^T H_perp equal the recomputed ones -> 4.5e-14
+[PASS] T13d-NEG: using the stale r_perp for the 2nd slot misstates its gain (min rel err) -> 1.35e-02
+[PASS] T13e: cheap multi-slot rule: joint gain of any set >= max single gain (adding columns never raises q*) -> 0 violations / 40
+[PASS] T13e-WIT: deflated greedy beats naive top-2-by-individual-gain in some instances (never worse by construction) -> 26 wins, 14 ties / 40
+[PASS] T13f: ReLU features: Schur gain 1/2 s^T S_v^-1 s with s = J_v^T r_perp is exact for any a (no A4 needed) -> 1.6e-12
+[PASS] T13f-NEG: linear-feature (A4) gain prediction rejected for ReLU slots: min err >= 1e3 x tol, median > 5e-2 -> min 2.21e-02, median 1.31e+00
+[PASS] T13g: certified lower bound 1/2|s|^2/(lmax(J_v^T H J_v)+mu) never exceeds the exact gain -> 0 violations
+[PASS] T13h-WIT: sign/bias chosen by the certified lower bound vs fixed (+a0, b=0): exact gain >= in most trials -> 40/40
+=== T14
+[PASS] T14a: BN (train mode, fresh channel): gain = N * generalised Rayleigh quotient with CENTRED stats (also masked ReLU) -> 6.4e-15
+[PASS] T14b: BN: the top generalised eigvec of (Xc^T S S^T Xc, Xc^T Xc) is optimal (no random a exceeds it) -> max excess -3.0e+00
+[PASS] T14b-NEG: uncentred statistics (A4 as written, ignoring BN mean subtraction) mispredict the gain -> min rel err 1.38e-04
+[PASS] T14c: ridged S_x (d_a > N): top eigvec in range(X^T) (exact in theory; tol = cond*eps); eigenvalue -> range-restricted value -> out-of-range 6.4e-08, rel gap at rho=1e-8: 1.5e-08
+[PASS] T14c-WIT: without the ridge S_x is singular when d_a > N (Cholesky fails) -> cholesky succeeded=False
+=== T15
+[PASS] T15a: real MLP, CE+KD, certified beta + skip rule: applied steps decrease L, first-order prediction within 1% -> 24 applied, 1 skipped, max rel err 1.1e-04
+[PASS] T15b: real MLP: the correction alone (theta - eps lam d_hat) does not increase L_KD when h_hat >= 0 (eps=1e-4) -> 0 increases / 24
+=== T16
+[PASS] T16a: post-swap model expanded at f - f_u: error <= L3/6 |D|^3; expanded with H(f): error <= L3/6 |D|^3 + L3 |f_u| |D|^2 / 2 -> max ratios 0.225, 0.062
+[PASS] T16a-NEG: H taken at the pre-swap output f violates the third-order bound (it carries an O(|f_u||D|^2) term) -> max ratio 11.1
+[PASS] T16b: [empirical] near-linear regime (mu_rel = 10): predicted dL, dKD (L-recovery, H at f - f_u) match the realised GN step in sign >= 90%, corr >= 0.9 -> n=80, L: agree 0.97 corr 0.97; KD: agree 0.99 corr 1.00
+[PASS] T16c-WIT: [empirical] production damping (mu_rel = 1e-2): sign agreement near chance -> live-slot prediction unreliable -> L: agree 0.36 corr -0.39; KD: agree 0.59 corr 0.30
+[PASS] T16d-WIT: [empirical] against real recovery (200 GD steps) the prediction is weak even at mu_rel = 10 (A10 is interpretive) -> L: agree 0.66 corr 0.39; KD: agree 0.64 corr 0.46
+[PASS] T16e: [structural] immediate exact certificate: swaps with j_u <= 0 and j_u^KD <= 0 never raise window L or KD at insertion -> 0 violations / 37
+[PASS] T16e-WIT: the v2 KD quantity (KD-only recovery) disagrees in sign with the v3 prediction (L-recovery) in many pairs -> 43/80
+=== T17
+[PASS] T17a: BN slot: insertion with B_v = 0 preserves the window function exactly for every (gamma, beta_BN) candidate -> dead before: True, max |df| 0.0e+00
+[PASS] T17a-WIT: without resetting the slot BN (gamma, beta_BN) the inserted unit stays dead (phi = 0): the candidate is dropped -> sum phi keep 0.0e+00, reset 6.61
+[PASS] T17b: bias rule acts on beta_BN: beta = -median(sigma x_hat) makes about half the window active -> 8/16 active
+[PASS] T17b-WIT: a pre-BN bias is cancelled by train-mode BN (so a bias rule on the linear layer does nothing) -> 8.3e-17
+[PASS] T17c: BN slot: model change from the network Jacobians after insertion = Schur gain from the realised BN feature phi -> 2.6e-15
+[PASS] T17d: T14(a) with BN eps: relative error <= eps/var (exact as eps -> 0) -> eps=1e-5: 4.0e-06 (eps/var 4.0e-06); eps=1e-14: 4.8e-15
+=== T18
+[PASS] T18a: a-posteriori CG bound ||d_hat - d*|| <= Dhat = ||J^T H K_E|| ||HJ|| rho1 ||b1||/mu^2 + rho2 ||b2||/mu, hence |h_hat - h*| <= ||g_O|| Dhat -> 0 violations / 60
+[PASS] T18a-NEG: the same bound without the 1/mu amplification is violated -> 30/60
+[PASS] T18b-WIT: V_O = 0 (h* = 0) with CG: the strict test h_hat < 0 skips certified steps -> 15/30
+[PASS] T18c: tolerant rule (skip iff h_hat < -||g_O|| Dhat) never skips a step whose exact h* >= 0 -> 0/30 spurious skips
+
+SUMMARY: 144/144 checks pass (29 mutation negative controls, 22 existence witnesses); failing: []

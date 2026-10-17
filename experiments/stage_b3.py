@@ -123,6 +123,7 @@ def run(args, *, measure_override=None, observe=None, intervention=None):
         fingerprint = dataset_fingerprint(args.data_dir)
     if args.pilot: start_memory(args.device)
     metadata = {'setting': 'B3', 'seed': args.seed, 'init_cls': args.init_cls,
+                'source_digest': os.environ.get('VNA_SOURCE_DIGEST'),
                 'increment': args.increment, 'upstream_commit': UPSTREAM_PIN,
                 'dataset_fingerprint': fingerprint,
                 'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),

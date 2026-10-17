@@ -69,8 +69,10 @@ class SolveCache:
                 monitor = current_measurement.get()
                 if monitor: monitor.begin_solve()
                 started = time.perf_counter()
-                z = factor.z(residual, self.mu)
-                record = dict(converged=factor.range_ok and factor.factor_error is None, iterations=0, relative_residual=factor.range_error)
+                with joint_products(self.ctx['model'], [self.ctx['site']],
+                        {self.ctx['site']: self.ctx['seed']}, data[0], self.ctx['names']) as products:
+                    z = factor.z(residual, self.mu, kernel_residual=products.K(residual.flatten()))
+                record = dict(converged=factor.factor_error is None and bool(torch.isfinite(z).all()), iterations=0, relative_residual=0.)
                 if monitor: monitor.end_solve({**record, 'seconds': time.perf_counter()-started})
             self.cache[key], self.records[key] = z, record
         return self.cache[key]
@@ -121,7 +123,7 @@ class SolveCache:
             if k not in ('peak_rss_bytes', 'peak_cuda_bytes')}
         return {**metadata, 'solver_reason': reason} if factor else dict(solver='cg', solver_reason=reason, n_out=n_out,
             M_build_seconds=0., factor_seconds=0., M_memory_bytes=0, min_eig=None, max_eig=None,
-            residual_in_range_H=None)
+            residual_range_relative_error=None)
 
     def converged(self, *, null=False):
         return all(r['converged'] for (_, key), r in self.records.items()
@@ -182,7 +184,9 @@ def exact_cg_check(cache, residual, data, context):
         with joint_products(cache.ctx['model'], [cache.ctx['site']],
                 {cache.ctx['site']: cache.ctx['seed']}, data[0], cache.ctx['names']) as p:
             factor = OutputFactor(GGNProducts(p, data[1], cache.ctx['loss_spec'], context))
-    exact = factor.z(residual, cache.mu)
+    with joint_products(cache.ctx['model'], [cache.ctx['site']],
+            {cache.ctx['site']: cache.ctx['seed']}, data[0], cache.ctx['names']) as products:
+        exact = factor.z(residual, cache.mu, kernel_residual=products.K(residual.flatten()))
     cfg = replace(cache.ctx['cfg'], cg_tol=1e-6, cg_iters=1000)
     cg, record = solve_z(residual, data, {**cache.ctx, 'cfg': cfg, 'loss_ctx': context})
     return dict(exact_vs_cg_relative=float((exact-cg).norm()/exact.norm().clamp_min(1e-300)),

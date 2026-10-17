@@ -1,0 +1,91 @@
+.....F....................................................FF.........    [100%]
+=================================== FAILURES ===================================
+____________________________ test_v3_reference[T13] ____________________________
+
+function = 'T13'
+
+    @pytest.mark.parametrize('function', ['T0', 'T1', 'T6', 'T9', 'T11', 'T13', 'T14', 'T17', 'T18'])
+    def test_v3_reference(function):
+        module = reference('final_check_v3.py')
+        getattr(module, function)()
+>       assert module.RES and all(ok for _, ok in module.RES), module.RES
+E       AssertionError: [('T13a-WIT', True), ('T13a', True), ('T13a-NEG', True), ('T13b', True), ('T13b-NEG', True), ('T13b2', True), ...]
+E       assert ([('T13a-WIT', True), ('T13a', True), ('T13a-NEG', True), ('T13b', True), ('T13b-NEG', True), ('T13b2', True), ...] and False)
+E        +  where [('T13a-WIT', True), ('T13a', True), ('T13a-NEG', True), ('T13b', True), ('T13b-NEG', True), ('T13b2', True), ...] = <module 'final_check_v3' from '/Users/pxokq/expanding-guide model/docs/vna/final_check_v3.py'>.RES
+E        +  and   False = all(<generator object test_v3_reference.<locals>.<genexpr> at 0x1224ee740>)
+
+tests/test_theory_v3.py:34: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[PASS] T13a-WIT: a unit dead before step 5 can be alive after it -> 18/40
+[PASS] T13a: recheck A5 after step 5, insert only if still dead: window function unchanged -> 0.0e+00
+[PASS] T13a-NEG: inserting without the recheck changes the window function -> 1.08e-01
+[PASS] T13b: reset optimiser state: first update of B_v is exactly -lr grad, of a_v exactly -lr(grad + wd a_v) with grad_a = 0 -> |dB+lr g| 0.0e+00, |da+lr(g+wd a)| 4.9e-17, |grad_a| 0.0e+00
+[PASS] T13b-NEG: without the reset, stale momentum moves B_v / a_v beyond the gradient step -> 4.43e-02, 9.71e-03
+[PASS] T13b2: scope of T13(d): nesterov -> first step -(1+nu) lr grad; dampening delta -> -(1-delta) lr grad (positive multiple, no stale term) -> 3.5e-18, 0.0e+00
+[PASS] T13b2-NEG: the plain-momentum formula -lr grad is wrong for nesterov (claimed scope matters) -> 1.28e-02
+[PASS] T13c: telescoping: gain({v1,v2}|J) = gain(v1|J) + gain(v2|[J,J_v1]) -> 0.0e+00
+[PASS] T13d: rank-q deflation: r_perp' = r_perp - H_perp J_v1 S_v1^-1 s_v1 and H_perp' = H_perp - H_perp J_v1 S_v1^-1 J_v1^T H_perp equal the recomputed ones -> 5.4e-14
+[FAIL] T13d-NEG: using the stale r_perp for the 2nd slot misstates its gain (min rel err) -> 3.85e-03
+[PASS] T13e: cheap multi-slot rule: joint gain of any set >= max single gain (adding columns never raises q*) -> 0 violations / 40
+[PASS] T13e-WIT: deflated greedy beats naive top-2-by-individual-gain in some instances (never worse by construction) -> 31 wins, 9 ties / 40
+[PASS] T13f: ReLU features: Schur gain 1/2 s^T S_v^-1 s with s = J_v^T r_perp is exact for any a (no A4 needed) -> 2.1e-12
+[PASS] T13f-NEG: linear-feature (A4) gain prediction rejected for ReLU slots: min err >= 1e3 x tol, median > 5e-2 -> min 5.47e-03, median 1.39e+00
+[PASS] T13g: certified lower bound 1/2|s|^2/(lmax(J_v^T H J_v)+mu) never exceeds the exact gain -> 0 violations
+[PASS] T13h-WIT: sign/bias chosen by the certified lower bound vs fixed (+a0, b=0): exact gain >= in most trials -> 37/39
+___________ test_training_cg_warm_start_matches_exact_direction[ce] ____________
+
+loss = 'ce'
+
+    @pytest.mark.parametrize('loss', ['ce', 'icarl'])
+    def test_training_cg_warm_start_matches_exact_direction(loss):
+        model, sites, batch, spec, ctx = classifier_problem(loss)
+        engine = PilotEngine(coefficient=1., every=1)
+        exact, factor = exact_cache(model, sites, batch, spec, ctx, GGNConfig(project_bn=False))
+        with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
+>       a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[factor.z(e, exact.mu)], cfg=engine.cfg)
+                                                               ^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: OutputFactor.z() missing 1 required keyword-only argument: 'kernel_residual'
+
+tests/test_pilot_gir_vna.py:256: TypeError
+----------------------------- Captured stdout call -----------------------------
+M build n_out=32 seconds=0.04249606898520142 peak RSS=489742336
+[CPU b3] solver=output_exact reason=auto uses exact output-space solve n_out=32 {'solver': 'output_exact', 'n_out': 32, 'M_build_seconds': 0.04249606898520142, 'factor_mode': 'eigh', 'factor_error': None, 'peak_rss_bytes': 489742336, 'peak_cuda_bytes': 0, 'factor_seconds': 0.0005275439762044698, 'M_device': 'cpu', 'M_memory_bytes': 8192, 'min_eig': -5.5227906278861814e-17, 'max_eig': 2.601081433143366, 'residual_range_relative_error': 0.0}
+__________ test_training_cg_warm_start_matches_exact_direction[icarl] __________
+
+loss = 'icarl'
+
+    @pytest.mark.parametrize('loss', ['ce', 'icarl'])
+    def test_training_cg_warm_start_matches_exact_direction(loss):
+        model, sites, batch, spec, ctx = classifier_problem(loss)
+        engine = PilotEngine(coefficient=1., every=1)
+        exact, factor = exact_cache(model, sites, batch, spec, ctx, GGNConfig(project_bn=False))
+        with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
+>       a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[factor.z(e, exact.mu)], cfg=engine.cfg)
+                                                               ^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: OutputFactor.z() missing 1 required keyword-only argument: 'kernel_residual'
+
+tests/test_pilot_gir_vna.py:256: TypeError
+----------------------------- Captured stdout call -----------------------------
+M build n_out=32 seconds=0.04510140902129933 peak RSS=489742336
+[CPU b3] solver=output_exact reason=auto uses exact output-space solve n_out=32 {'solver': 'output_exact', 'n_out': 32, 'M_build_seconds': 0.04510140902129933, 'factor_mode': 'eigh', 'factor_error': None, 'peak_rss_bytes': 489742336, 'peak_cuda_bytes': 0, 'factor_seconds': 0.01028220698935911, 'M_device': 'cpu', 'M_memory_bytes': 8192, 'min_eig': -5.9217892869237e-17, 'max_eig': 2.774779342560134, 'residual_range_relative_error': 0.0}
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360
+.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360
+.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_theory_v3.py::test_v3_reference[T13] - AssertionError: [('T...
+FAILED tests/test_pilot_gir_vna.py::test_training_cg_warm_start_matches_exact_direction[ce]
+FAILED tests/test_pilot_gir_vna.py::test_training_cg_warm_start_matches_exact_direction[icarl]
+3 failed, 66 passed, 36 warnings in 1125.64s (0:18:45)

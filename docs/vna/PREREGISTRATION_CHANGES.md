@@ -129,3 +129,105 @@ cost rule is used for the remainder of that task.  The calibration correction
 is itself the first VNA/NGD update, so no extra optimization step is introduced.
 Each task's decision and timing are written to the event stream and every
 correction row records the active K.
+
+
+## VNA–GIR v3 decisive pilot (2026-10-18T03:13:29+07:00)
+
+Registration scope: before any full training results from the new v3 VNA or
+`kernel_self` implementations. Historical two-epoch VNA/NGD smoke results
+already exist and are disclosed below; they are not full v3 training results.
+The following setup supersedes the old P1–P6 GIR/VNA setup. Competitors
+P7–P10 retain their upstream algorithms.
+
+1. **Training solver.** Matrix-free parameter-space CG, relative true residual
+   against ||b||, tolerance 1e-3, maximum 50 iterations, task/site/system warm
+   starts. First three applications of tasks 1 and 2 also compute CG tol 1e-8
+   checks; cosine below .99 tightens training tol to 1e-4. Measurement remains
+   exact output-space factorization. μ=max(μ_rel tr(F)/n_out,1e-12), eight
+   Hutchinson probes; preflight evaluates μ_rel in {.001,.01,.1} and logs
+   failed selection criteria explicitly. Full runs consume the fixed shared
+   calibration artifact, starting from fresh native initialization/RNG.
+2. **Joint correction.** One global Jacobian and summed virtual kernels across
+   selected sites replace independent per-site correction solves. Equality of
+   joint and separate formulas is checked with identical scope and damping.
+3. **Push-through.** Exact measurement z uses R(M+μI)^−1 R K e, without
+   pseudo-inverse or residual-range exclusion. Range error remains diagnostic.
+4. **Iteration schedule.** First application is after iteration one of each
+   task. K_next=round(K_base clip(.3/rho,.25,4)), at least one, capped at
+   remaining iterations; skips use K_base. K_base is the smallest candidate
+   in {50,100,200,400,800} union {1,2,5,10} times task-2 iterations/epoch
+   fitting projected correction time per K <= baseline iteration time.
+   Infeasibility selects the maximum candidate with budget_exceeded=true.
+   Task-2 mean cost is extrapolated linearly in class count; raw timings are
+   retained. Families share the authority VNA schedule; isolated Kaggle
+   notebooks consume its archived artifact instead of recalibrating per arm.
+5. **Step s — user decision 2026-10-18.** Main rule is
+   min(s*,lr||g||/||d||), s*=gᵀd/[dᵀ(F+μI)d]. B5 _lf variants use
+   min(s*,K lr/(1−momentum)). This explicitly overrides unified_gn.md §5's
+   preference for λ-faithful as the primary setup, following the pilot prompt.
+   Compute s only after certificates; nonpositive gᵀd yields s=0.
+6. **Protection and certificate.** Implement v3 repair/new split, χ² from
+   student probabilities, β-rule branches a/b/c and four log bisection steps,
+   alternating A update, direct gᵀd and g_Oᵀd, outside-momentum correction,
+   no correction weight decay, train-mode frozen BN buffers. Per user decision:
+   “τ_h, τ_g là ước lượng; chuẩn phổ bị ước lượng thấp nên quy tắc bỏ qua
+   chặt hơn (bảo thủ). Bảo đảm KD tăng bậc một ≤ ε·λ·τ_dùng đúng chính xác
+   cho mọi bước được áp dụng, vì ĥ tính chính xác trên vector áp dụng. Điều
+   có thể mất là tính chất ‘không bỏ nhầm bước có h* ≥ 0’ của T18.”
+   Use five power iterations times 1.1; log skip rate and false skips when
+   h_exact>=0. Above 10% false skips in preflight use 20 power iterations and
+   retain the transition in the artifact. No claim of a rigorous upper bound
+   for these estimated spectral norms is made.
+7. **Kernel control.** New kernel_self is exactly K_E→K, d=(FG)^2g, with
+   common certificate and step rule. Audit found that the old output-exact NGD
+   branch used Gg, so this is an implemented formula correction, not merely a
+   relabeling of the historical control. Historical results remain separate.
+8. **GIR.** Cotangent is r_perp=r−z(r), r=e for B5/PM and r=e_old for KD.
+   Check exact dead slots after the correction, valid conv1 slots only, S=1
+   for standalone GIR. New outgoing weights are zero; reset corresponding
+   optimizer elements to zero and BN slot statistics/affine parameters.
+   ReLU candidates use four leading directions, both signs and median shifts;
+   remove zero features, score the actual virtual Jacobian. CBP retains native
+   selection/cadence/RNG draws and changes only initialization. For small-q
+   multiple insertions deflate the complement. Historical B5 TINY 10/13 result
+   used z, not the v3 complement. LIVE_SWAP remains off.
+9. **Controls.** Add native-selection cbp_gradmax (Euclidean N_e eigvecs)
+   and per-site exact virtual-kernel trace matched random control. With BN,
+   trace matching scales the virtual feature/kernel, because scaling incoming
+   a alone is cancelled by BN; the resulting kernel scale is logged.
+10. **Settings and decision criteria.** Prioritize B5, then small Permuted
+    MNIST, then official CCL-DC online CIFAR-100, then offline PyCIL iCaRL.
+    B5 Q-A/B require all three paired seed wins; PM Q-A/B/C require >=2/3;
+    offline CIL Q-A/B require >=.5pp CNN average; online require >=.5pp final
+    and learning accuracy. GIR must beat CBP and GradMax >=2/3 seeds. β
+    protection compares forgetting and stability-gap depth/recovery. Single
+    CIL seed is pilot evidence only; no post-result hyperparameter changes.
+11. **Disclosed prior observations, unused for selection.** Two-epoch smoke
+    CNN VNA15.05/NGD21.3; β=0 quick rho_joint .26/.42/.58 and tiny_V losing
+    random 7/9 rows; unified_gn toy results. consistency_setup.md was referenced
+    but not supplied; its content/results are not fabricated or re-created.
+12. **Metrics and architecture.** Main tables include anytime AUC, learning
+    accuracy, iterations to half initial new-task loss, final performance,
+    paired effects and cost. Offline continual evaluation: epochs1–10 then
+    every10, old/new class accuracy and stability gap. Follow new-slot output
+    contributions at 1/5/20 tasks. B5/PM MLPs remain plain ReLU; PM uses three
+    hidden layers of ten units and full native task horizon. Online retains
+    native backbone, with nf20 variants only where supported upstream.
+13. **Removed from this pilot.** tiny_V_euclid is diagnostic only, LIVE_SWAP
+    off. No full-run review hold follows successful preflight. Optional C-Flat
+    may remain unintegrated and Q3 GPU1 empty, as the prompt permits.
+14. **CBP rate — user decision 2026-10-18.** All B5 CBP-family arms and all
+    three seeds use replacement_rate=1e-3. Add seed0 baseline checks
+    b5_cbp__rate1e-6__s0, b5_cbp__rate1e-5__s0,
+    b5_cbp__rate1e-4__s0, b5_cbp__rate1e-2__s0: total40 jobs.
+    Record rate and check identities in protocol.json. If a check beats1e-3,
+    report it and never change the selected rate during this pilot.
+15. **Loss normalization.** B5 uses the native torch mean squared error:
+    residual and H have coefficient2/N for a scalar output, not1/N. This
+    resolves the pilot shorthand H=I/N by following authoritative loss
+    derivatives and the upstream objective without altering it.
+16. **Provenance (amended 2026-10-18, before any run).** The v3 code is
+    committed on `vna-v3-pilot`; notebooks pin that commit directly, so no
+    source overlay is used (source_digest = null). Notebooks without the
+    authority schedule run their unscheduled baselines and skip scheduled arms
+    until the Q2/O1 archive is attached; they never recalibrate.

@@ -76,7 +76,10 @@ def test_range_flag_and_subset_matrix():
     sub = exact.factor(subset, context, parent=factor, mask=mask)
     independent = SolveCache(model, site, subset, CE(), context, GGNConfig(), solver='output_exact').factor(subset, context)
     torch.testing.assert_close(sub.matrix, independent.matrix, rtol=1e-10, atol=1e-14)
-    factor.z(torch.ones_like(factor.root[:, :, 0]), .01)
+    residual = torch.ones_like(factor.root[:, :, 0])
+    z = exact.solve('outside_range', residual, data, ctx)
+    assert torch.isfinite(z).all() and exact.converged()
+    assert 'residual_in_range_H' not in factor.metadata()
     assert not factor.range_ok and factor.range_error > .9
 
 

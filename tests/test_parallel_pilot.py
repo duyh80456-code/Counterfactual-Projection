@@ -137,22 +137,96 @@ def test_b5_validator_rejects_partial_rates_and_protocol_mismatch():
         validate_record('b5_cbp__s0',aggregate,protocol,{'.001':tasks})
 
 
-def test_t4_preflight_uses_separate_output_and_calibration(tmp_path):
+
+def runner_functions(tmp_path, preset='Q2'):
     import re
     namespace=dict(re=re,sys=__import__('sys'),ROOT=tmp_path,DATA_ROOT=tmp_path,
-                   RUN_ROOT=tmp_path,RUN_TAG='test')
+                   RUN_ROOT=tmp_path,RUN_TAG='test',Path=Path,json=json,
+                   REPO_COMMIT='a'*40,SOURCE_DIGEST='c'*64,PRESET=preset)
     tree=ast.parse(RUNNER)
     functions=[node for node in tree.body if isinstance(node,ast.FunctionDef)]
     exec(compile(ast.Module(body=functions,type_ignores=[]),'<runner>','exec'),namespace)
+    return namespace
+
+
+def test_authority_preflight_produces_shared_schedule_and_no_hold(tmp_path):
+    namespace=runner_functions(tmp_path)
     launched=[]
     namespace['launch']=lambda command,*args:launched.append(command) or True
-    namespace['real_t4_preflight'](0,['icarl_vna_euclid__inc10__s1993'])
+    namespace['prepare_schedule']('icarl',0)
     cmd=launched[0]
-    assert '--smoke' in cmd and '--calibrate' in cmd and '--auto-schedule' not in cmd
-    assert '_preflight' in cmd[cmd.index('--out')+1]
-    guard=next(node for node in tree.body if isinstance(node,ast.Try))
-    stop=next(i for i,node in enumerate(guard.body) if isinstance(node,ast.Raise))
-    baseline=next(i for i,node in enumerate(guard.body) if isinstance(node,ast.Expr)
-                  and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
-                  and node.value.func.id=='reuse_existing_baseline')
-    assert stop < baseline
+    assert '--preflight-only' in cmd and '--schedule-output' in cmd
+    assert cmd[cmd.index('--arm')+1]=='icarl_vna'
+    (tmp_path/'_schedules'/'icarl.json').write_text('{}')  # stands in for the preflight output
+    for job in ('icarl_kself__inc10__s1993','icarl_vna_b0__inc10__s1993'):
+        command=namespace['command'](job)
+        assert command[command.index('--schedule')+1]==str(tmp_path/'_schedules'/'icarl.json')
+    assert 'FULL RUN HELD' not in RUNNER and 'raise RuntimeError' not in RUNNER[:RUNNER.index('finally:')]
+    namespace['PRESET']='Q1'
+    (tmp_path/'_schedules'/'icarl.json').unlink(missing_ok=True)
+    launched.clear()
+    namespace['prepare_schedule']('icarl',0)
+    assert not launched  # non-authority notebooks never recalibrate
+    assert namespace['command']('icarl_kself__inc10__s1993') is None
+    assert namespace['command']('icarl__inc10__s1993') is not None
+
+
+def test_registered_40_regression_jobs_and_rate_commands(tmp_path):
+    jobs=PRESETS['P-B5'][2]
+    assert len(jobs)==40 and len(set(jobs))==40
+    namespace=runner_functions(tmp_path)
+    (tmp_path/'_schedules').mkdir(); (tmp_path/'_schedules'/'regression.json').write_text('{}')
+    checks=[j for j in jobs if '__rate' in j]
+    assert len(checks)==4 and all(j.endswith('__s0') for j in checks)
+    for job in jobs:
+        cmd=namespace['command'](job)
+        if job.startswith('b5_cbp'):
+            rate=cmd[cmd.index('--replacement-rate')+1]
+            assert rate==(job.split('__rate')[1].split('__')[0] if '__rate' in job else '1e-3')
+    assert len(PRESETS['P-PM'][2])==24
+
+
+def test_collector_shared_schedule_and_paired_decisions():
+    from scripts.collect_parallel import paired, decisions, validate_shared_schedules
+    jobs={}
+    for arm in ('b5_bp_vna','b5_bp_kself','b5_bp_vna_rand'):
+        for seed in range(3):
+            jobs[f'{arm}__s{seed}']=dict(summary=dict(seed=seed,mean_last50=1 if arm=='b5_bp_vna' else 2),
+                protocol=dict(setting='regression',schedule=dict(K_base=50,mu_rel=.01)))
+    row=paired(jobs,'b5_bp_vna','b5_bp_kself','mean_last50',True)
+    assert row['wins']==3 and row['complete'] and row['sign_test_p_one_sided']==.125
+    assert decisions(jobs)[0]['signal']
+    validate_shared_schedules(jobs)
+    jobs['b5_bp_kself__s0']['protocol']['schedule']=dict(K_base=100,mu_rel=.01)
+    with pytest.raises(ValueError,match='shared authority'):
+        validate_shared_schedules(jobs)
+
+
+def test_v3_collector_rejects_synthetic_partial_or_mixed_source(tmp_path):
+    from scripts.collect_parallel import validate_result
+    protocol=dict(algorithm_version='v3',setting='regression',arm='b5_bp',seed=0,
+        code_commit='a'*40,source_digest='c'*64,upstream_commit='b'*40,
+        synthetic=False,preflight_only=False,cfg=dict(num_data_points=100,flip_after=50))
+    tasks=[dict(task=1),dict(task=2)]
+    summary=dict(status='COMPLETED',identity=protocol,tasks=tasks)
+    validate_result('b5_bp__s0',summary,protocol,tasks,'a'*40,'c'*64)
+    with pytest.raises(ValueError,match='source_digest'):
+        validate_result('b5_bp__s0',summary,protocol,tasks,'a'*40,'d'*64)
+    with pytest.raises(ValueError,match='synthetic'):
+        validate_result('b5_bp__s0',summary,dict(protocol,synthetic=True),tasks)
+    with pytest.raises(ValueError,match='trajectory'):
+        validate_result('b5_bp__s0',dict(summary,tasks=tasks[:1]),protocol,tasks[:1])
+
+
+def test_source_bundle_captures_runtime_overlay_without_outputs(tmp_path):
+    import hashlib
+    import zipfile
+    from scripts.build_kaggle_vna_parallel import source_bundle
+    path=tmp_path/'vna_v3_source.zip'
+    digest=source_bundle(path)
+    assert digest==hashlib.sha256(path.read_bytes()).hexdigest()
+    with zipfile.ZipFile(path) as archive:
+        names=archive.namelist()
+        assert 'adapters/vna_v3_hooks.py' in names
+        assert 'experiments/pilot_v3.py' in names
+        assert not any(n.startswith(('notebooks/','.git/','outputs/')) or '/v3_logs/' in n for n in names)

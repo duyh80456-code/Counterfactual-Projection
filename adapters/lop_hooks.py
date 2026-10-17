@@ -269,7 +269,8 @@ class LearnHook:
             self.progress.boundary(lambda: self._checkpoint(learner, frame),
                                    point_seconds=max((p['seconds'] for p in self.measurement_point_seconds), default=0))
         if self.step % self.task_steps == 0:
-            self.buffer.samples.clear()
+            if not getattr(self.intervention, 'preserve_fifo', False):
+                self.buffer.samples.clear()
             self._checkpoint(learner, frame)
         elif now-self.last_checkpoint >= self.checkpoint_seconds:
             self._checkpoint(learner, frame)

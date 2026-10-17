@@ -227,6 +227,7 @@ class ICaRLHook:
                 for item in islice(iterator, self.limit) if self.limit else iterator:
                     if hook.learner is not None and self is hook.learner.train_loader:
                         hook.buffer.update((item[1], item[2])); hook.steps += 1
+                        hook.current_batch = (item[1], item[2])
                         hook.epoch_step += 1
                         iteration_started = time.monotonic()
                         hook.iteration_started = iteration_started

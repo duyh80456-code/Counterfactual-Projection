@@ -13,7 +13,6 @@ from experiments.shared_protocol import (atomic_torch_save, atomic_json_save, ma
     make_eval_loader, evaluate, seed_everything, rng_state, restore_rng, validate_resume_protocol)
 from experiments.vna_support import setup_data, build_model, DeviceCIFAR, DeviceTrainLoader, augmented_batch, isolated_rng
 from experiments.vna_training_support import TrainingVNA, sync
-from methods.vna import add_vna_grad_
 from experiments.vna_provenance import code_commit, resume_code_history
 
 
@@ -43,7 +42,9 @@ def training_protocol(args):
     scale=args.epochs_scale if args.arm=='sgd_cm' else 1.
     protocol={k:v for k,v in vars(args).items() if k not in ('output','resume','max_epochs','device','data_root','budget_root','disk_budget','run_config')}
     protocol.update(total_epochs=round(args.epochs*scale),milestones=[round(100*scale),round(150*scale)],
-                    architecture='tiny' if args.fake_data else 'resnet18',format_version=3, cg_normalize_rhs=True)
+                    architecture='tiny' if args.fake_data else 'resnet18',format_version=4, cg_normalize_rhs=True,
+                    correction_solver='cg_shared',correction_scope='full_trainable',
+                    correction_cg_tol=1e-3,correction_cg_max_iter=50,correction_placement='after_sgd_outside_momentum')
     return protocol
 
 
@@ -143,37 +144,47 @@ def run(args):
             else: loss.backward()
             step+=1
             applied_ratios=[]
-            correction_step=vna_active and step%args.vna_every==0
-            if vna_active and step%args.vna_every==0:
+            pending_delta = None
+            correction_step=vna_active and step-engine.controller.get('last_correction_step',0)>=args.vna_every
+            if correction_step:
+                engine.controller['last_correction_step']=step
                 sync(device); t=time.perf_counter()
                 batch=augmented_batch(statistics_data,indices,args.vna_batch,engine.generators['correction'],device)
                 with isolated_rng(engine.generators['construction']):
-                    for site in engine.cache:
-                        delta,diag=engine.correction(model,site,batch)
-                        if args.lambda_mode=='spread': engine.queue_spread(site,delta,diag['skipped'])
-                        if diag['skipped']: skipped+=1
-                        else:
-                            # Zero coefficient deliberately performs diagnostics but no gradient write.
-                            coefficient=engine.coefficient
-                            refs=dict(model.named_parameters())
-                            grad_norm=sum(float(refs[n].grad.detach().double().square().sum()) for n in delta if refs[n].grad is not None)**.5
-                            diag['applied_delta_ratio']=abs(coefficient)*diag['correction_norm']/max(grad_norm,1e-30)
-                            if args.lambda_mode!='spread':
-                                applied_ratios.append({'site':site,'applied_delta_ratio':diag['applied_delta_ratio']})
-                                if coefficient!=0: add_vna_grad_(model,delta,coefficient)
-                            applied+=1
-                        correction_count+=1
-                        diag.setdefault('applied_delta_ratio',0.)
-                        diagnostics.append(diag); corrections.append(clean_json(dict(diag,epoch=current,step=step,arm=args.arm)))
+                    delta,diag=engine.correction_joint(model,batch)
+                    if args.lambda_mode=='spread': engine.queue_spread('__joint__',delta,diag['skipped'])
+                    if diag['skipped']: skipped+=1
+                    else:
+                        coefficient=engine.coefficient
+                        refs=dict(model.named_parameters())
+                        grad_norm=sum(float(refs[n].grad.detach().double().square().sum()) for n in delta if refs[n].grad is not None)**.5
+                        diag['applied_delta_ratio']=abs(coefficient)*diag['correction_norm']/max(grad_norm,1e-30)
+                        if args.lambda_mode!='spread':
+                            applied_ratios.append({'site':'__joint__','applied_delta_ratio':diag['applied_delta_ratio']})
+                            pending_delta=delta
+                        applied+=1
+                    correction_count+=1
+                    diag.setdefault('applied_delta_ratio',0.)
+                    diagnostics.append(diag); corrections.append(clean_json(dict(diag,epoch=current,step=step,arm=args.arm)))
                 sync(device); components['correction']=components.get('correction',0.)+time.perf_counter()-t
-            if vna_active and args.lambda_mode=='spread': applied_ratios=engine.apply_spread(model)
             current_loss=float(loss.detach())
             step_records.append({'epoch':current,'step':step,'correction_step':correction_step,
                 'train_loss':current_loss,'loss_jump':None if previous_loss is None else current_loss-previous_loss,
                 'applications':applied_ratios})
             previous_loss=current_loss
-            if args.amp: scaler.step(optimizer); scaler.update()
+            did_step=True
+            if args.amp:
+                old_scale=scaler.get_scale(); scaler.step(optimizer); scaler.update()
+                did_step=scaler.get_scale()>=old_scale
             else: optimizer.step()
+            lr=optimizer.param_groups[0]['lr']
+            if did_step and vna_active and args.lambda_mode=='spread':
+                applied_ratios=engine.apply_spread(model,lr)
+                step_records[-1]['applications']=applied_ratios
+            elif did_step and pending_delta and engine.coefficient!=0:
+                refs=dict(model.named_parameters())
+                with torch.no_grad():
+                    for name,value in pending_delta.items(): refs[name].add_(value.to(refs[name]),alpha=-lr*engine.coefficient)
             loss_sum+=loss.detach().double()*targets.numel(); correct+=(logits.argmax(1)==targets).sum(); count+=targets.numel()
         if count==0: raise ValueError('empty training epoch')
         loss_sum,correct=torch.stack((loss_sum,correct.double())).tolist()

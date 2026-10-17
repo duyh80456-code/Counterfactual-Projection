@@ -1,8 +1,8 @@
 """Stateful Stage 2a corrections; no persistent model expansion.
 
 Lite uses M = I/(tr(F)/number_of_logits), hence NGD_lite=M F M h.
-Selection uses z=H J M h for all three solvers. CG warm starts are per site
-and per right-hand side; refreshed curvature invalidates the starts.
+Selection uses z=H J M h for all three solvers. Training shares one CG
+curvature across sites; refreshed curvature invalidates the warm starts.
 """
 from dataclasses import asdict
 import time
@@ -91,8 +91,7 @@ class TrainingVNA:
             self.spread[site] = {'delta': {n: v.detach().clone() for n,v in delta.items()},
                                  'remaining': self.args.vna_every}
 
-    def apply_spread(self, model):
-        from methods.vna import add_vna_grad_
+    def apply_spread(self, model, lr=1.):
         refs = dict(model.named_parameters()); ratios = []
         for site, state in list(self.spread.items()):
             delta = state['delta']
@@ -100,10 +99,61 @@ class TrainingVNA:
                             for n in delta if refs[n].grad is not None)**.5
             ratios.append({'site': site, 'applied_delta_ratio':
                            abs(self.coefficient)*norm(delta)/max(grad_norm, 1e-30)})
-            if self.coefficient != 0: add_vna_grad_(model, delta, self.coefficient)
+            if self.coefficient != 0:
+                with torch.no_grad():
+                    for name, value in delta.items(): refs[name].add_(value.to(refs[name]), alpha=-lr*self.coefficient)
             state['remaining'] -= 1
             if state['remaining'] == 0: del self.spread[site]
         return ratios
+
+    @preserve_buffers_and_modes
+    def correction_joint(self, model, batch):
+        """All selected sites share the full original-parameter curvature."""
+        from dataclasses import replace
+        from methods.vna_joint import joint_products
+        from methods.vna import _cg_record
+        sites = list(self.cache)
+        cfg = replace(self.cfg, cg_iters=50, cg_tol=1e-3, seed=self.seed('hutchinson'))
+        records = []
+        warm = self.warm.setdefault('__joint__', {})
+        with joint_products(model, sites, {s:self.cache[s]['A'] for s in sites}, batch[0]) as p:
+            op = GGNProducts(p, batch[1])
+            trace = op.trace(cfg); mu = relative_damping(cfg, trace, op)
+            def solve(rhs, key):
+                result = conjugate_gradient(lambda v:op.F(v)+mu*v, rhs.double(),
+                    x0=warm.get(key), max_iter=50, tolerance=1e-3, eps=1e-30)
+                records.append(_cg_record(result, include_breakdown=True))
+                if torch.isfinite(result.solution).all(): warm[key] = result.solution.detach().clone()
+                return result.solution
+            u = solve(op.gradient, 'u')
+            z = op.H(p.Jv(u)); V = float(p.JET(z).double().square().sum())
+            d = solve(op.COE(p.JET(z).double()), 'vna')
+            vna_raw_gain = float(op.gradient.dot(d))
+            def projected(value):
+                delta = _unflatten(value, p.parameter_refs)
+                for site in sites: delta = project_bn_tangent(model, site, delta, cfg.project_bn)
+                return delta
+            reference = projected(d); delta = reference
+            raw_gain = vna_raw_gain
+            if self.args.arm == 'ngd':
+                d = solve(op.F(u), 'ngd')
+                delta, scale = norm_match(projected(d), reference)
+                raw_gain = float(op.gradient.dot(d))*scale
+            flat = torch.cat([delta[n].flatten() for n,_ in p.parameter_refs]).double()
+            ref_flat = torch.cat([reference[n].flatten() for n,_ in p.parameter_refs]).double()
+            gain = float(op.gradient.dot(flat)); ref_gain = float(op.gradient.dot(ref_flat))
+            finite = bool(torch.isfinite(flat).all() and torch.isfinite(ref_flat).all())
+            skipped = not finite or not (gain > 0 and ref_gain > 0)
+            rho = self.coefficient*V/max(float(op.gradient.square().sum()),1e-30)
+            diag = dict(site='__joint__', sites=sites, rank=sum(e['rank'] for e in self.cache.values()),
+                correction_solver='cg_shared', parameter_scope='full_trainable', cg_tol=1e-3,cg_max_iter=50,
+                mu=mu, trace_F=trace, rho=rho,V=V,raw_gain=raw_gain,realized_gain=gain,
+                vna_raw_gain=vna_raw_gain,vna_realized_gain=ref_gain,coefficient=self.coefficient,
+                vna_norm=norm(reference),correction_norm=norm(delta),cg=records,
+                G1=any(e['G1'] for e in self.cache.values()),G2=rho>.3,G3=self.controller.get('G3'),
+                state='active',bn_mode='eval',skipped=skipped,
+                skip_reason='nonfinite' if not finite else 'nonpositive_gain' if skipped else None)
+        return ({} if skipped else delta),diag
 
     def inverse(self, op, refs, site, rhs, mu, trace, key=None, records=None):
         if self.args.solver == 'kfac': return self.factors[site].apply(rhs, refs, mu)

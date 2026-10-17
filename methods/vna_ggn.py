@@ -175,10 +175,8 @@ def ngd_control(model, site, A, batch, cfg=GGNConfig(), *, reference=None, norm_
         with joint_products(model, [site], {site: A}, batch[0]) as products:
             op = GGNProducts(products, batch[1], kwargs.get("loss_spec"), kwargs.get("ctx"))
             mu = kwargs["mu"]
-            # (F+mu I)^-1 J^T e = J^T R (M+mu I)^-1 R^+ e.
-            e = op.g.reshape(output_factor.shape)
-            rhs = torch.einsum("nij,nj->ni", output_factor.pinv, e).flatten()
-            d = products.JT(output_factor.apply_root(output_factor.inverse(rhs, mu))).double()
+            z = output_factor.z(op.g, mu, kernel_residual=products.K(op.g)).flatten()
+            d = products.JT((op.g.flatten()-z)/mu).double()
             delta = _unflatten(d, products.parameter_refs)
             diag = {"realized_gain": float(op.gradient.dot(d)), "finite": bool(torch.isfinite(d).all())}
     else:

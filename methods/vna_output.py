@@ -14,14 +14,10 @@ def choose_solver(requested, n_out, maximum=OUTPUT_EXACT_MAX):
 
 
 class OutputFactor:
-    r"""Let A=RJ, F=AᵀA and M=AAᵀ, with R=H^(1/2).
+    r"""Exact push-through solves with M = R K R and R = H^(1/2).
 
-    (AᵀA+μI)Aᵀ=Aᵀ(AAᵀ+μI), hence inverse(F+μI)JᵀR
-    =JᵀR inverse(M+μI). For e in range(H), s=R⁺e and
-    z=HJ inverse(F+μI)Jᵀe=RM inverse(M+μI)s.
-    Likewise d=JᵀR inverse(M+μI)(R J_E w). R⁺ uses the
-    numerical positive eigenspace, including singular CE/KD metrics.
-    One eigendecomposition serves all residuals, sites and both μ values.
+    z(r) = R (M + mu I)^-1 R K r needs no inverse of R and no
+    range assumption. Products are supplied by the active caller context.
     """
     _large_factors = weakref.WeakSet()
 
@@ -36,33 +32,14 @@ class OutputFactor:
         blocks = torch.stack([op.loss_spec.metric_apply(op.logits, eye[j].expand(n, c), op.ctx)
                               for j in range(c)], -1)
         blocks = (blocks+blocks.transpose(-1, -2))/2
-        # CE and the iCaRL CE+KD loss have exactly one structural null
-        # direction: adding the same constant to every logit.  A relative
-        # eigencut incorrectly removes tiny, but non-zero, curvature directions
-        # once a classifier is saturated.  Keep the complete analytic tangent
-        # space for zero-sum softmax losses and reserve the numerical fallback
-        # for metrics without a declared range.
+        vals, q = torch.linalg.eigh(blocks)
+        root = vals.clamp_min(0).sqrt()
+        self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
         if op.loss_spec.residual_is_zero_sum:
-            tangent, _ = torch.linalg.qr(eye[:, :-1] - eye[:, -1:])
-            reduced = torch.einsum('ci,ncd,dj->nij', tangent, blocks, tangent)
-            vals, reduced_q = torch.linalg.eigh(reduced)
-            q = torch.einsum('ci,nij->ncj', tangent, reduced_q)
-            # A PSD eigensolver can return a tiny negative value for a highly
-            # saturated but non-null tangent direction.  Preserve its scale
-            # instead of mapping it either to zero or to the float64 minimum.
-            floor = vals.abs().amax(-1, keepdim=True) * torch.finfo(vals.dtype).eps**2
-            safe = vals.abs().clamp_min(floor.clamp_min(torch.finfo(vals.dtype).tiny))
-            root = safe.sqrt()
-            self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
-            self.pinv = (q*root.reciprocal().unsqueeze(-2)) @ q.transpose(-1, -2)
             projector = eye - torch.ones_like(eye) / c
         else:
-            vals, q = torch.linalg.eigh(blocks)
             positive = vals > vals.abs().amax(-1, keepdim=True)*c*torch.finfo(vals.dtype).eps
             projector = (q*positive.double().unsqueeze(-2)) @ q.transpose(-1, -2)
-            root = torch.where(positive, vals.clamp_min(0).sqrt(), 0.)
-            self.root = (q*root.unsqueeze(-2)) @ q.transpose(-1, -2)
-            self.pinv = (q*torch.where(positive, root.clamp_min(1e-300).reciprocal(), 0.).unsqueeze(-2)) @ q.transpose(-1, -2)
         self.projector = projector.expand(n, c, c).clone()
         if factor_mode == 'cholesky' and matrix is not None:
             matrix = matrix.cpu()
@@ -192,18 +169,14 @@ class OutputFactor:
             return torch.cholesky_solve(rhs.flatten().to(self.matrix).unsqueeze(1), self.cholesky).flatten().to(self.root)
         return (self.basis @ ((self.basis.T @ rhs.flatten().to(self.basis))/(self.eigen.clamp_min(0)+mu))).to(self.root)
 
-    def z(self, residual, mu):
+    def z(self, residual, mu, *, kernel_residual):
         e = residual.double().reshape(self.shape)
         projected = torch.einsum('nij,nj->ni', self.projector, e)
         error = float((e-projected).norm()/e.norm().clamp_min(1e-300))
         self.range_error = max(self.range_error, error)
         self.range_ok &= error <= 1e-6
-        s = torch.einsum('nij,nj->ni', self.pinv, e).flatten()
-        if self.factor_mode == 'cholesky':
-            return self.apply_root(s-mu*self.inverse(s, mu)).reshape_as(residual)
-        coefficients = self.basis.T @ s.to(self.basis)
-        value = self.basis @ (self.eigen.clamp_min(0)/(self.eigen.clamp_min(0)+mu)*coefficients)
-        return self.apply_root(value.to(self.root)).reshape_as(residual)
+        rhs = self.apply_root(kernel_residual)
+        return self.apply_root(self.inverse(rhs, mu)).reshape_as(residual)
 
     def d(self, products, w, mu):
         return products.JT(self.apply_root(self.inverse(self.apply_root(products.JEv(w)), mu))).double()
@@ -215,7 +188,7 @@ class OutputFactor:
                     factor_seconds=self.factor_seconds, M_device=self.matrix_device, M_memory_bytes=self.size*self.size*8,
                     min_eig=float(self.eigen.min()) if self.factor_mode == 'eigh' else None,
                     max_eig=float(self.eigen.max()) if self.factor_mode == 'eigh' else None,
-                    residual_in_range_H=self.range_ok, residual_range_relative_error=self.range_error)
+                    residual_range_relative_error=self.range_error)
 
     def spectrum(self, residual, mu, top_k=20):
         if self.size > OUTPUT_EXACT_MAX:

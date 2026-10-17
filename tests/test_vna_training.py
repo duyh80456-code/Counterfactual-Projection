@@ -75,6 +75,34 @@ def test_training_ngd_norm_matching(tmp_path,solver):
     assert cp['final']['params']==cp['final']['sgd_params']
 
 
+def test_joint_training_two_sites_share_two_solves(tmp_path, monkeypatch):
+    from experiments import vna_training_support as support
+    from methods.vna_sites import HookSite
+    from methods.vna_joint import joint_correction
+    from dataclasses import replace
+    model=torch.nn.Sequential(torch.nn.Linear(3,4),torch.nn.ReLU(),
+        torch.nn.Linear(4,4),torch.nn.ReLU(),torch.nn.Linear(4,2)).double()
+    sites=[HookSite(model,'0','2','linear',between=('1',)),
+           HookSite(model,'2','4','linear',between=('3',))]
+    engine=support.TrainingVNA(arguments(tmp_path,'--arm','vna','--solver','lite'),torch.device('cpu'))
+    engine.cache={s:dict(A={'weight':torch.randn(1,model[int(s.first)].in_features,dtype=torch.float64),
+        'bias':torch.randn(1,dtype=torch.float64)},rank=1,G1=True) for s in sites}
+    batch=(torch.randn(3,3,dtype=torch.float64),torch.tensor([0,1,0]))
+    calls=[]; original=support.conjugate_gradient
+    def counted(*args,**kwargs):
+        calls.append(kwargs)
+        return original(*args,**kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(support,'conjugate_gradient',counted)
+        actual,diag=engine.correction_joint(model,batch)
+    assert len(calls)==2 and len(diag['cg'])==2
+    assert all(c['max_iter']==50 and c['tolerance']==1e-3 for c in calls)
+    assert set(actual)==dict(model.named_parameters()).keys()
+    expected,*_=joint_correction(model,sites,{s:e['A'] for s,e in engine.cache.items()},batch,
+        replace(engine.cfg,cg_iters=50,cg_tol=1e-3),mu=diag['mu'],trace_F=diag['trace_F'])
+    assert all(torch.allclose(actual[n],expected[n],rtol=1e-8,atol=1e-10) for n in actual)
+
+
 def test_training_protocol_and_scaled_schedule(tmp_path):
     args=arguments(tmp_path,'--arm','sgd_cm')
     args.epochs=200
@@ -315,14 +343,19 @@ def test_spread_total_effect_and_rejected_replacement(tmp_path):
     assert args.lambda_mode == 'spread'
     engine = TrainingVNA(args, torch.device('cpu'))
     model = torch.nn.Linear(2, 1, bias=False).double()
+    optimizer = torch.optim.SGD(model.parameters(), lr=.1, momentum=.9)
+    model.weight.grad = torch.ones_like(model.weight)
+    optimizer.step()
+    momentum = optimizer.state[model.weight]['momentum_buffer'].clone()
     delta = {'weight': torch.tensor([[2., -3.]], dtype=torch.float64)}
     engine.queue_spread('site', delta)
-    total = torch.zeros_like(delta['weight'])
+    initial = model.weight.detach().clone()
     for _ in range(4):
         model.weight.grad = torch.zeros_like(model.weight)
         engine.apply_spread(model)
-        total += model.weight.grad
-    assert torch.equal(total, delta['weight'] * args.lambda_vna * args.vna_every)
+        assert torch.count_nonzero(model.weight.grad)==0
+        assert torch.equal(optimizer.state[model.weight]['momentum_buffer'],momentum)
+    assert torch.allclose(initial-model.weight, delta['weight'] * args.lambda_vna * args.vna_every)
     assert not engine.spread
     engine.queue_spread('site', delta)
     engine.queue_spread('site', {}, skipped=True)
@@ -459,7 +492,7 @@ def test_outputs_damping_refresh_and_resume_fingerprint(tmp_path):
     assert args.damping_norm == 'outputs'
     assert TrainingVNA(args, torch.device('cpu')).cfg.damping_norm == 'outputs'
     protocol = training_protocol(args)
-    assert protocol['format_version'] == 3 and protocol['cg_normalize_rhs']
+    assert protocol['format_version'] == 4 and protocol['cg_normalize_rhs']
     legacy = {k: v for k, v in protocol.items() if k not in ('damping_norm', 'cg_normalize_rhs')}
     legacy['format_version'] = 2
     with pytest.raises(ValueError, match='resume protocol mismatch:.*damping_norm'):
