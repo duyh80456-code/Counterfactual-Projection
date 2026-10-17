@@ -201,6 +201,7 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 class V3Engine:
     def __init__(self, arm='vna', *, seed=0, coefficient=1., K_base=100):
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
+        self.preflight_only = False
         self.K_base, self.every = K_base, K_base
         self.mu_rel, self.tol, self.power_iters = .01, 1e-3, 5
         self.task, self.last_iteration, self.K_next = None, None, 1
@@ -478,9 +479,9 @@ class V3Engine:
             reason = 'nonfinite' if not torch.isfinite(d).all() or not math.isfinite(Delta) else 'invalid_beta' if values.get('invalid_beta') else 'negative_total_certificate' if gh < -tau_g else 'negative_old_certificate' if hh < -tau_h else None
             skipped = reason is not None
             cos_exact, h_exact, false_skip = None, None, False
-            exact_records = []
+            exact_records = None
             exact_check_seconds = 0.
-            if apply and self.task in (1, 2) and self.applications < 3:
+            if self.preflight_only and apply and self.task in (1, 2) and self.applications < 3:
                 exact_started = time.perf_counter()
                 exact = self._direction(p, op, mu, exact=True)
                 exact_check_seconds = time.perf_counter()-exact_started
@@ -489,7 +490,7 @@ class V3Engine:
                 h_exact = float(exact['gO']@exact['d'])
                 exact_converged = all(r['converged'] for r in exact_records)
                 false_skip = bool(exact_converged and skipped and h_exact >= 0)
-                if apply and exact_converged:
+                if self.preflight_only and exact_converged:
                     self.exact_checks += 1; self.false_skips += int(false_skip)
                     if cos_exact < .99: self.tol, self.solver_tightened = 1e-4, True
                     if self.false_skips/self.exact_checks > .1: self.power_iters = 20

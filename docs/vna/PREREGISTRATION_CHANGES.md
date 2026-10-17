@@ -243,3 +243,4 @@ the same protected β-rule and `d_rep + d_N` split as VNA, differing only by
 using K instead of K_E; only `vna_b0` and settings without old classes are
 unprotected. Exact checks use up to 2000 CG iterations and affect adaptive
 solver counters only when every exact solve converges.
+17. **Preflight-only exact checks (2026-10-18, before any v3 results).** Full-run arms load and keep the calibrated `cg_tol`, `tol`, and `power_iters` without running exact checks.

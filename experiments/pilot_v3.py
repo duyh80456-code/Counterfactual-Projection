@@ -55,6 +55,7 @@ def make_engine(args):
     engine = V3Engine(arm=arm, seed=args.seed,
         coefficient=0. if arm == 'baseline' else args.coefficient,
         K_base=schedule['K_base'] if schedule else 100)
+    engine.preflight_only = args.preflight_only
     if schedule: engine.configure_schedule(schedule)
     return engine
 

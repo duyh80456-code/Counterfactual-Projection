@@ -78,12 +78,28 @@ def test_nonconverged_exact_check_is_logged_but_not_counted():
             if kwargs.get('exact'):
                 values['records'][0]['converged'] = False
             return values
-    engine = IncompleteExact('vna'); engine.begin_task(1)
+    engine = IncompleteExact('vna'); engine.preflight_only = True; engine.begin_task(1)
     row = engine.apply(model, [site], batch, MSE(), dict(targets=batch[1]), optimizer, 1)
     assert row['exact_cg_converged'] is False
     assert row['false_skip'] is False
     assert engine.exact_checks == engine.false_skips == 0
     assert engine.tol == 1e-3 and engine.power_iters == 5
+
+
+def test_full_schedule_skips_exact_check_and_keeps_solver_settings():
+    model, site, batch, optimizer = mlp()
+    class Scheduled(V3Engine):
+        def _direction(self, p, op, mu, **kwargs):
+            assert not kwargs.get('exact')
+            return super()._direction(p, op, mu, **kwargs)
+    engine = Scheduled('vna')
+    engine.configure_schedule(dict(K_base=100, cg_tol=2e-4, tol=7e-4, power_iters=11))
+    engine.begin_task(1)
+    row = engine.apply(model, [site], batch, MSE(), dict(targets=batch[1]), optimizer, 1)
+    assert row['exact_cg'] is None and row['exact_cg_converged'] is None
+    assert row['cos_cg_exact'] is None and row['h_exact'] is None
+    assert row['exact_check_seconds'] == 0.
+    assert engine.tol == 7e-4 and engine.power_iters == 11
 
 
 def test_real_sgd_momentum_and_weight_decay_remain_native_after_correction():

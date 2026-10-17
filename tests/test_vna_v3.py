@@ -134,7 +134,7 @@ def test_zero_lambda_is_bitwise_and_readonly_preflight_state():
 
 def test_exact_check_is_apply_only_and_timed_separately(monkeypatch):
     model, site, batch, spec, ctx, optimizer = problem()
-    engine = V3Engine('vna'); engine.begin_task(1)
+    engine = V3Engine('vna'); engine.preflight_only = True; engine.begin_task(1)
     calls = []
     original = engine._direction
     def direction(*args, **kwargs):
