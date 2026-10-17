@@ -58,13 +58,13 @@ def joint_products(model, sites, A_by_site, inputs, o_params=None, *, cache_bloc
         _assert_unchanged(model, before)
 
 
-def _inverse(action, rhs, cfg):
+def _inverse(action, rhs, cfg, x0=None):
     from experiments.vna_resume import current_measurement
     monitor = current_measurement.get()
     started = time.monotonic()
     if monitor: monitor.begin_solve()
     try:
-        result = conjugate_gradient(action, rhs, max_iter=cfg.cg_iters,
+        result = conjugate_gradient(action, rhs, x0=x0, max_iter=cfg.cg_iters,
                                     tolerance=cfg.cg_tol, eps=1e-30,
                                     callback=monitor.iteration if monitor else None)
     except TimeoutError:
@@ -78,7 +78,8 @@ def _inverse(action, rhs, cfg):
 
 
 def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=None,
-                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None, output_factor=None):
+                     *, mu=None, cotangent=None, loss_spec=None, ctx=None, trace_F=None,
+                     output_factor=None, warm=None):
     """Return (d, V, rho, record), without installing or applying neurons.
 
     GGNConfig selects trace(F)/p or trace(F)/n_out via damping_norm.
@@ -113,7 +114,10 @@ def joint_correction(model, sites, A_by_site, batch, cfg=GGNConfig(), o_params=N
                 first = dict(converged=output_factor.range_ok and output_factor.factor_error is None, iterations=0, relative_residual=output_factor.range_error)
             measurement_update(solve='tiny_V:correction:d')
             if output_factor is None:
-                d, second = _inverse(action, op.COE(p.JET(z).double()), cfg)
+                d, second = _inverse(action, op.COE(p.JET(z).double()), cfg,
+                                     x0=warm.get('d') if warm is not None else None)
+                if warm is not None and torch.isfinite(d).all():
+                    warm['d'] = d.detach().clone()
             else:
                 d = output_factor.d(p, p.JET(z).double(), damping)
                 second = dict(converged=bool(torch.isfinite(d).all()), iterations=0, relative_residual=0.)

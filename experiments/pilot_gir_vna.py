@@ -31,15 +31,18 @@ def slice_rows(a, start, stop=None):
     return {k: None if v is None else v[start:stop].detach().clone() for k, v in a.items()}
 
 
-def exact_cache(model, sites, batch, spec, ctx, cfg):
-    cache = SolveCache(model, sites[0], batch, spec, ctx, cfg, solver='auto', trace=0., mu=1e-12)
+def exact_cache(model, sites, batch, spec, ctx, cfg, *, solver='auto', warm=None):
+    cache = SolveCache(model, sites[0], batch, spec, ctx, cfg, solver=solver)
     factor = cache.factor(batch, ctx, prepare=False)
-    # tr(R J J^T R) = tr(F), available exactly from the constructed matrix.
-    cache.trace = float(factor.matrix.diagonal().sum())
-    cache.mu = max(cfg.damping_rel * cache.trace / factor.size, 1e-12)
+    if factor is not None:
+        # Kept for the stage-B exact path; pilot training uses matrix-free CG.
+        cache.trace = float(factor.matrix.diagonal().sum())
+        cache.mu = max(cfg.damping_rel * cache.trace / factor.size, 1e-12)
     cache.ctx['mu'] = cache.mu
-    factor.prepare(cache.mu)
-    if factor.factor_error: raise RuntimeError(factor.factor_error)
+    cache.ctx['warm'] = warm if warm is not None else {}
+    if factor is not None:
+        factor.prepare(cache.mu)
+        if factor.factor_error: raise RuntimeError(factor.factor_error)
     return cache, factor
 
 
@@ -55,6 +58,9 @@ class PilotEngine:
             raise ValueError('unknown selection: '+selection)
         self.selection = selection
         self.pools, self.positions, self.pool_steps = {}, {}, {}
+        self.selection_cache, self.selection_steps = {}, {}
+        self.applied_vna_steps = 0
+        self.warm = {}
         self.events, self.activities, self.generators = [], [], {}
         self.task = None
 
@@ -80,17 +86,21 @@ class PilotEngine:
         if task != self.task:
             self.task = task
             self.pools.clear(); self.positions.clear(); self.pool_steps.clear()
+            self.selection_cache.clear(); self.selection_steps.clear()
+            self.applied_vna_steps = 0
+            self.warm.clear()
 
     @property
     def cfg(self):
-        return GGNConfig(seed=self.seed, damping_rel=.01, damping_norm='outputs', project_bn=False)
+        return GGNConfig(seed=self.seed, damping_rel=.01, damping_norm='outputs', project_bn=False,
+                         cg_iters=50, cg_tol=1e-3)
 
     def refresh_pool(self, model, sites, batch, spec, ctx, step):
         started = time.monotonic()
         with inference_state(model):
-            cache, factor = exact_cache(model, sites, batch, spec, ctx, self.cfg)
+            cache, factor = exact_cache(model, sites, batch, spec, ctx, self.cfg, solver='cg', warm=self.warm)
             with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
-            z = factor.z(e, cache.mu)
+            z = cache.solve('pool:z', e, batch, ctx)
             for site in sites:
                 a, capture = self.select(model, site, batch, z, self.pool_size)
                 positive = int((capture['generalized_eigenvalues'][:len(a['weight'])] > 0).sum())
@@ -125,27 +135,39 @@ class PilotEngine:
                                 replaced=count, directions_used=used, gir_random_fill=count-used))
         return scale_rows(a, norm)
 
-    def correction(self, model, sites, batch, spec, ctx, step, lr):
+    def correction(self, model, sites, batch, spec, ctx, step, lr, *, apply=True):
         if self.coefficient == 0 or step % self.every: return None
         started = time.monotonic()
         with inference_state(model):
-            cache, factor = exact_cache(model, sites, batch, spec, ctx, self.cfg)
+            cache, factor = exact_cache(model, sites, batch, spec, ctx, self.cfg, solver='cg', warm=self.warm)
             with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
-            z = factor.z(e, cache.mu)
+            z = cache.solve('correction:z', e, batch, ctx)
             proposals = {}
+            refreshed = False
             for site in sites:
                 m = self.positions.get(site.module_name, 0) if self.gir else 0
-                a, _ = self.select(model, site, batch, z, m+self.rank)
+                key = site.module_name
+                if self.gir:
+                    a, _ = self.select(model, site, batch, z, m+self.rank)
+                elif (key not in self.selection_cache or
+                      self.applied_vna_steps - self.selection_steps[key] >= 10):
+                    a, _ = self.select(model, site, batch, z, self.rank)
+                    self.selection_cache[key] = a
+                    self.selection_steps[key] = self.applied_vna_steps
+                    refreshed = True
+                else:
+                    a = self.selection_cache[key]
                 proposals[site] = slice_rows(a, m, m+self.rank)
             if not any(len(a['weight']) for a in proposals.values()):
                 row = dict(kind='correction', task=self.task, step=step, K=self.every,
-                           selection=self.selection, rho=0., skipped=True,
+                           selection=self.selection, A_refreshed=refreshed, rho=0., skipped=True,
                            reason='no unreserved positive directions', seconds=time.monotonic()-started)
                 self.events.append(row); return row
             proposals = {s: a for s, a in proposals.items() if len(a['weight'])}
             active = list(proposals)
             delta, _, rho, record = joint_correction(model, active, proposals, batch, self.cfg,
-                mu=cache.mu, trace_F=cache.trace, loss_spec=spec, ctx=ctx, output_factor=factor)
+                mu=cache.mu, trace_F=cache.trace, loss_spec=spec, ctx=ctx,
+                cotangent=z, output_factor=None, warm=self.warm)
             vna_norm = sum(float(v.double().square().sum()) for v in delta.values())**.5
             if self.ngd:
                 delta, ngd_record = ngd_control(model, active[0], proposals[active[0]], batch, self.cfg,
@@ -153,27 +175,40 @@ class PilotEngine:
                     mu=cache.mu, trace_F=cache.trace, loss_spec=spec, ctx=ctx)
                 record['realized_gain'] = ngd_record['realized_gain']
             skipped = rho < self.rho_min or not record['finite']
-            if not skipped:
+            if not skipped and apply:
                 refs = dict(model.named_parameters())
                 with torch.no_grad():
                     for name, value in delta.items(): refs[name].add_(value.to(refs[name]), alpha=-lr*self.coefficient)
         row = dict(kind='correction', task=self.task, step=step, K=self.every,
-                   selection=self.selection, rho=rho, skipped=skipped,
+                   selection=self.selection, A_refreshed=refreshed, rho=rho, skipped=skipped,
                    rho_gate_skip=rho < self.rho_min, vna_norm=vna_norm,
                    correction_norm=sum(float(v.double().square().sum()) for v in delta.values())**.5,
                    gradient_dot_direction=record['realized_gain'], seconds=time.monotonic()-started,
-                   **factor.metadata())
+                   **({} if factor is None else factor.metadata()))
+        if not apply:
+            # Timing-only preflight solve: no parameter update, log or counter.
+            return row
         self.events.append(row)
+        if not skipped:
+            self.applied_vna_steps += 1
         return row
 
 
 def choose_interval(points, iterations_per_epoch):
-    """Pre-outcome budget: linear n_out extrapolation to task 10, t_VNA/K <= t_iter."""
-    projected = max(p['vna_seconds'] * 12800/p['n_out'] for p in points)
+    """Choose the smallest registered K under the weighted VNA budget."""
+    choices = sorted(set([50, 100, 200, 400, 800] +
+                         [m * iterations_per_epoch for m in (1, 2, 5, 10)]))
+    with_refresh = [p.get('vna_seconds_with_A', p.get('vna_seconds')) for p in points]
+    without_refresh = [p.get('vna_seconds_without_A', p.get('vna_seconds')) for p in points]
+    weighted = [(.1 * a + .9 * b) for a, b in zip(with_refresh, without_refresh)]
+    projected = max(t * 12800/p['n_out'] for t, p in zip(weighted, points))
     iteration = sum(p['iteration_seconds'] for p in points)/len(points)
-    choices = sorted(set([50, 100, 200, 400, 800, iterations_per_epoch]))
     feasible = [k for k in choices if projected/k <= iteration]
-    if not feasible: raise ValueError('no registered K meets the correction budget')
-    return dict(K=min(feasible), every_epoch=min(feasible) not in (50,100,200,400,800), projected_vna_seconds=projected, iteration_seconds=iteration,
+    selected = min(feasible) if feasible else max(choices)
+    return dict(K=selected, budget_exceeded=not bool(feasible),
+                every_epoch=selected not in (50,100,200,400,800), projected_vna_seconds=projected,
+                weighted_vna_seconds=weighted, t_vna_with_A=with_refresh,
+                t_vna_without_A=without_refresh, iteration_seconds=iteration,
                 iterations_per_epoch=iterations_per_epoch, smoke_points=points,
-                rule='max(t_VNA * 12800/n_out) / K <= mean(t_iter)')
+                refresh_weight=0.1, reuse_weight=0.9,
+                rule='max((0.1*t_VNA_with_A + 0.9*t_VNA_without_A) * 12800/n_out) / K <= mean(t_iter)')

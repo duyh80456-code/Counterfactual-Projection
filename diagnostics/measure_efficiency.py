@@ -25,7 +25,12 @@ def solve_z(residual, data, ctx):
                         data[0], ctx['names']) as p:
         op = GGNProducts(p, data[1], ctx['loss_spec'], ctx['loss_ctx'])
         gradient = p.JT(residual.flatten()).double()
-        u, record = _inverse(lambda v: op.F(v)+ctx['mu']*v, gradient, ctx['cfg'])
+        warm = ctx.get('warm', {})
+        key = ctx.get('warm_key', 'z')
+        u, record = _inverse(lambda v: op.F(v)+ctx['mu']*v, gradient, ctx['cfg'],
+                             x0=warm.get(key) if warm else None)
+        if warm is not None and torch.isfinite(u).all():
+            warm[key] = u.detach().clone()
         return op.H(p.Jv(u)).reshape_as(residual), record
 
 

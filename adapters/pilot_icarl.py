@@ -119,18 +119,29 @@ class ICaRLPilot:
         saved_interval = self.engine.every
         if calibrating or epoch_due: self.engine.every = 1
         try:
-            self.engine.correction(model, sites_for(model), self.batch, spec, ctx, hook.steps if calibrating else step,
-                                         optimizer.param_groups[0]['lr'])
+            first_row = self.engine.correction(model, sites_for(model), self.batch, spec, ctx,
+                                               hook.steps if calibrating else step,
+                                               optimizer.param_groups[0]['lr'])
+            second_row = None
+            if calibrating:
+                # The second measurement reuses A and isolates the 9/10
+                # applications in the weighted preflight estimate.
+                second_row = self.engine.correction(model, sites_for(model), self.batch, spec, ctx,
+                                                    hook.steps, optimizer.param_groups[0]['lr'],
+                                                    apply=False)
         finally: self.engine.every = saved_interval
         if device.type=='cuda': torch.cuda.synchronize(device)
         if calibrating:
+            first_row = first_row or {}
             point = dict(task=task, vna_seconds=time.monotonic()-started,
+                vna_seconds_with_A=first_row.get('seconds', time.monotonic()-started),
+                vna_seconds_without_A=(second_row or {}).get('seconds', first_row.get('seconds', 0.)),
                 n_out=len(self.batch[0])*learner._total_classes,
                 iteration_seconds=started-hook.iteration_started)
             self.calibration.append(point)
             self.measured_tasks.add(task)
-            if self.auto_schedule:
+            if self.auto_schedule and len(self.calibration) >= 2:
                 from experiments.pilot_gir_vna import choose_interval
-                schedule = choose_interval([point], len(learner.train_loader))
+                schedule = choose_interval(self.calibration[-2:], len(learner.train_loader))
                 self.engine.every = schedule['K']
                 self.engine.events.append(dict(kind='schedule', task=task, **schedule))

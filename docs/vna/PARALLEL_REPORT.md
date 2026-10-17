@@ -31,9 +31,10 @@ rate and preflight guard coverage, the final validity contracts passed all 14
 tests in 18.19 seconds (`parallel_logs/pytest_validity_contracts.xml`).
 
 The runtime pin for the common notebook and every P1–P6 variant is
-`2d4114b0bfa23e74847c23d15725515ac64397bc`. It includes the validity fixes, smoke-only gate, and handling for
-an infeasible real calibration: the preflight writes `NO_FEASIBLE_K` and its
-measurements, while full runs still reject a schedule without a positive K.
+`84d0137c325df9acadf30cf820faee2a5e580870`. It includes the validity fixes
+and smoke-only gate. The training-solver amendment supersedes the old
+infeasible-calibration behavior by selecting the largest registered K and
+recording `budget_exceeded`.
 
 ## 0.1 Range(H) investigation
 
@@ -144,6 +145,22 @@ Inc10, Inc5, B50 Inc10, B5 paired, and VNA cost tables requested in the task.
 
 ## Validation
 
+## Training solver
+
+The training-time B3/B5 VNA and NGD corrections now use matrix-free CG
+(`tol=1e-3`, `max_iter=50`) with per-arm/site warm starts. Exact output-space
+solves remain in the Stage-B measurement path. A selection matrix is reused
+for nine applications and refreshed at task start and every tenth applied
+step; `vna_log.csv` records `A_refreshed` for every correction.
+
+Preflight schedules use the extended K set `{50,100,200,400,800}` plus
+`{1,2,5,10} * iterations_per_epoch`, and the weighted cost
+`0.1*t_with_A + 0.9*t_without_A`. Expected schedule fields include
+`K`, `budget_exceeded`, `iterations_per_epoch`, `t_vna_with_A`,
+`t_vna_without_A`, `weighted_vna_seconds`, `projected_vna_seconds`,
+`iteration_seconds`, `refresh_weight`, `reuse_weight`, `smoke_points`, and
+the budget rule. An infeasible budget selects the largest K and continues.
+
 - Notebook Python syntax, full commit pin, P1-P6 first-cell-only difference,
   two GPU lanes, four CPU workers and shared full pytest cell are tested.
 - Numerical selection tests verify the top eigendirection of N N^T.
@@ -158,6 +175,5 @@ All local tests use synthetic data/CPU.  They validate code paths and
 identities, not CIFAR-100 or Dohare performance.
 
 An additional synthetic `icarl_vna --auto-schedule` smoke reached inline
-calibration and stopped with `no registered K meets the correction budget`.
-This is the preregistered guard (synthetic timing must not authorize a real
-schedule), not a performance result; feasibility must be decided on T4/CIFAR.
+calibration and exercised the budget-exceeded schedule path. Synthetic timing
+does not authorize a real schedule; T4/CIFAR calibration remains required.

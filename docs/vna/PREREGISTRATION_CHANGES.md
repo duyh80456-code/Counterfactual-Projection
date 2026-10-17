@@ -1,5 +1,37 @@
 # Stage B measurement amendments (2026-10-15)
 
+## Training solver amendment (2026-10-17, before the revised pilots)
+
+Training-time VNA and NGD corrections in B3 and B5 use matrix-free conjugate
+gradient with tolerance `1e-3`, at most 50 iterations, and warm starts from
+the previous solve of the same system. Warm starts are cached per arm/site
+set and reset when a task changes dimensions. The Stage-B measurement path
+continues to use its exact output-space solve; the formula for `d` is
+unchanged.
+
+TINY-V, random-Frobenius, and Euclidean-TINY selection matrices are built at
+task start and after every ten applied VNA steps. Between refreshes only `z`
+and `d` are recomputed. Each correction records `A_refreshed` in
+`vna_log.csv`.
+
+The registered K set is `{50, 100, 200, 400, 800}` union
+`{1, 2, 5, 10} * iterations_per_epoch`. The smallest K whose weighted VNA
+cost fits the measured training budget is used, with one reselection weighted
+at 1/10 and a reused-A computation weighted at 9/10. If no K fits, the
+largest registered K is used and the schedule records `budget_exceeded: true`.
+The schedule stores separate with-A and without-A timings for tasks 1 and 2,
+their weighted means, the extrapolation, and the selected K. NGD uses the
+same solver, K, window, and step-wise d target as VNA.
+
+Because training no longer builds the output-space matrix M, the damping
+mu = 0.01 * tr(F) / n_out uses the 8-probe Hutchinson estimate of tr(F)
+(the registered `GGNConfig` estimator) instead of the exact trace of M.
+The with-A/without-A preflight timings come from two solves at the same
+step; the second is timing-only (no parameter update, no log row, no
+application count). A is reselected once at least ten VNA steps have been
+applied since the last reselection, so rho-gated skips do not force repeated
+reselection.
+
 Round 2 changes the N1 gate statistic from rho = V / ||J^T e||² to
 nu = V / ||e||². Permuting residuals preserves ||e||² but can reduce
 ||J^T e||², inflating null rho. We retain rho and lambda p-values as diagnostics;
@@ -71,10 +103,10 @@ Smoke measures quick at tasks 1 and 2 and linearly extrapolates to 6400
 outputs at task10. Warn above 600 seconds per point and continue.
 
 Before full B3 correction runs, real two-task smoke writes schedule.json and
-appends the measured K decision below. Select the smallest numerical K from
-{50,100,200,400,800,iterations_per_epoch} satisfying
-max(t_VNA_task * 12800/n_out_task)/K <= mean(t_iter).
-No feasible choice stops the run. Shared schedule and windows apply to NGD.
+appends the measured K decision below. The extended K set and weighted budget
+rule are recorded in the training-solver amendment above. If no registered K
+fits, the largest one is used with `budget_exceeded: true`. Shared schedule
+and windows apply to NGD.
 Fake CPU calibration is labeled synthetic and never registers a real K.
 
 ## Euclidean TINY diagnostic (2026-10-17, before parallel runs)

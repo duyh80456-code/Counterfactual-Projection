@@ -58,21 +58,7 @@ def run(args):
         points = intervention.calibration
         if len(points)!=2: raise ValueError('calibration must include task 1 and task 2')
         for point in points: point['iteration_seconds'] = float(__import__('numpy').median(intervention.iteration_times))
-        try:
-            schedule = choose_interval(points, min(intervention.full_batches))
-        except ValueError:
-            # An infeasible real calibration is a valid preflight result. Save
-            # it so the notebook can archive/review the measurements; the
-            # schedule consumer below still refuses to start a full run unless
-            # K is a positive integer.
-            iterations = min(intervention.full_batches)
-            projected = max(p['vna_seconds'] * 12800/p['n_out'] for p in points)
-            iteration = sum(p['iteration_seconds'] for p in points)/len(points)
-            schedule = dict(K=None,
-                status='NO_FEASIBLE_K_SYNTHETIC' if args.fake_data else 'NO_FEASIBLE_K',
-                smoke_points=points, iterations_per_epoch=iterations,
-                projected_vna_seconds=projected, iteration_seconds=iteration,
-                rule='max(t_VNA * 12800/n_out) / K <= mean(t_iter)')
+        schedule = choose_interval(points, min(intervention.full_batches))
         schedule['synthetic'] = args.fake_data
         schedule['arm'] = args.arm
         schedule['authoritative'] = args.arm == 'icarl_vna'

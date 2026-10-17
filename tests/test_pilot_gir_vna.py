@@ -165,7 +165,21 @@ def test_interval_rule_is_fixed_before_outcomes():
               dict(task=2,n_out=2560,vna_seconds=20.,iteration_seconds=1.)]
     assert choose_interval(points, 60)['K']==100
     assert choose_interval(points, 150)['K']==100
-    with pytest.raises(ValueError): choose_interval([dict(n_out=1,vna_seconds=100.,iteration_seconds=.001)],10)
+    schedule = choose_interval([dict(n_out=1,vna_seconds=100.,iteration_seconds=.001)],10)
+    assert schedule['K'] == 800 and schedule['budget_exceeded'] is True
+
+
+def test_training_solver_and_weighted_schedule_contract():
+    engine = PilotEngine(every=40)
+    assert engine.cfg.cg_iters == 50 and engine.cfg.cg_tol == pytest.approx(1e-3)
+    schedule = choose_interval([
+        dict(n_out=1280, vna_seconds_with_A=10., vna_seconds_without_A=2., iteration_seconds=1.),
+        dict(n_out=2560, vna_seconds_with_A=20., vna_seconds_without_A=4., iteration_seconds=1.),
+    ], 40)
+    assert schedule['K'] == 40
+    assert schedule['weighted_vna_seconds'] == pytest.approx([2.8, 5.6])
+    assert schedule['refresh_weight'] == pytest.approx(.1)
+    assert schedule['reuse_weight'] == pytest.approx(.9)
 
 
 def test_active_interventions_resume_exactly_mid_task(tmp_path):
@@ -217,3 +231,56 @@ def test_notebook_builders_pin_code_and_required_lanes():
     assert 'max_workers=4' in cpu and '(0,1,2)' in cpu
     assert 'icarl_gir_vna' in gpu and 'icarl_gir_randdir' in gpu
     assert 'estimate["sessions"] >= 3' in gpu and 'schedule' in gpu
+
+
+def classifier_problem(loss):
+    upstream_imports()
+    from lop.nets.ffnn import FFNN
+    from methods.vna_losses import CE, ICaRLPyCIL
+    torch.manual_seed(5)
+    model = Prediction(FFNN(input_size=3, num_features=4, num_outputs=4)).double().eval()
+    batch = torch.randn(8,3,dtype=torch.float64), torch.randint(0,4,(8,))
+    ctx = {'targets': batch[1]}
+    if loss == 'icarl':
+        ctx.update(known_classes=2, teacher_logits=torch.randn(8,4,dtype=torch.float64))
+        return model, sites_for(model), batch, ICaRLPyCIL(T=2., known_classes=2), ctx
+    return model, sites_for(model), batch, CE(), ctx
+
+
+@pytest.mark.parametrize('loss', ['ce', 'icarl'])
+def test_training_cg_warm_start_matches_exact_direction(loss):
+    model, sites, batch, spec, ctx = classifier_problem(loss)
+    engine = PilotEngine(coefficient=1., every=1)
+    exact, factor = exact_cache(model, sites, batch, spec, ctx, GGNConfig(project_bn=False))
+    with torch.no_grad(): e = spec.residual(model(batch[0]), ctx)
+    a, _ = tiny_V(model, sites[0], [batch], 1, cotangents=[factor.z(e, exact.mu)], cfg=engine.cfg)
+    d_exact, *_ = joint_correction(model, sites[:1], {sites[0]: a}, batch, engine.cfg,
+        mu=exact.mu, trace_F=exact.trace, loss_spec=spec, ctx=ctx, output_factor=factor)
+    warm = {}
+    for repeat in range(2):  # second solve starts from the first solution
+        cg, _ = exact_cache(model, sites, batch, spec, ctx, engine.cfg, solver='cg', warm=warm)
+        cg.mu = cg.ctx['mu'] = exact.mu
+        z = cg.solve('z', e, batch, ctx)
+        d_cg, *_ = joint_correction(model, sites[:1], {sites[0]: a}, batch, engine.cfg,
+            mu=exact.mu, trace_F=exact.trace, loss_spec=spec, ctx=ctx, cotangent=z, warm=warm)
+        flat = lambda d: torch.cat([v.flatten() for _, v in sorted(d.items())]).double()
+        cosine = float(torch.nn.functional.cosine_similarity(flat(d_cg), flat(d_exact), dim=0))
+        assert cosine >= .99
+    assert set(warm) >= {'z', 'd'}
+
+
+def test_selection_reused_between_refreshes_and_reset_at_task_start(monkeypatch):
+    model, sites, batch, spec, ctx = small_problem()
+    engine = PilotEngine(coefficient=1e-6, every=1)
+    calls = []
+    original = engine.select
+    monkeypatch.setattr(engine, 'select', lambda *a, **k: calls.append(1) or original(*a, **k))
+    engine.begin_task(1)
+    refreshed = [engine.correction(model, sites, batch, spec, ctx, step, .01)['A_refreshed']
+                 for step in range(1, 13)]
+    assert refreshed == [True] + [False]*9 + [True, False]
+    assert len(calls) == 2*len(sites)
+    timing = engine.correction(model, sites, batch, spec, ctx, 13, .01, apply=False)
+    assert not timing['A_refreshed'] and engine.applied_vna_steps == 12
+    engine.begin_task(2)
+    assert engine.correction(model, sites, batch, spec, ctx, 1, .01)['A_refreshed']
