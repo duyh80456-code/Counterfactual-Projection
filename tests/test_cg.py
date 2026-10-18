@@ -49,3 +49,13 @@ def test_normalized_cg_matches_original_scale_and_warm_start():
     result = conjugate_gradient(lambda v: matrix @ v, rhs, **kwargs)
     assert old.converged and result.converged
     assert float((result.solution-old.solution).norm()/old.solution.norm()) <= 1e-12
+
+
+def test_bad_warm_start_restarts_from_zero():
+    matrix = torch.diag(torch.tensor([2., 3.], dtype=torch.float64))
+    rhs = torch.tensor([1., 1.], dtype=torch.float64)
+    result = conjugate_gradient(lambda value: matrix @ value, rhs,
+                                x0=torch.tensor([10., -10.], dtype=torch.float64),
+                                max_iter=4, tolerance=1e-12)
+    assert result.warm_reset and result.converged
+    assert result.iterations <= 2

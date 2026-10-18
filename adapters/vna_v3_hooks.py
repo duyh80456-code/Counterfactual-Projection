@@ -90,6 +90,12 @@ class LoPV3(Calibration):
         if len(hook.buffer) >= 32 and self.engine.arm not in ('cbp_gir','cbp_gradmax'):
             self.apply(self.engine, model, lop_sites(model), batch, spec, ctx, learner.opt,
                        hook.step, remaining)
+        if any(not torch.isfinite(parameter).all() for parameter in learner.net.parameters()):
+            self.engine.diverged = True
+            self.engine.events.append(dict(kind='nonfinite_params', step=hook.step,
+                                           task=self.engine.task, nonfinite_params=True))
+            if hook.status:
+                hook.status.update(task=self.engine.task, step=hook.step, phase='DIVERGED', status='DIVERGED')
         self.full_batches = [hook.task_steps]
         for event in self.engine.events[self._event_index:]:
             for swap in event.get('swap_records', []):
@@ -144,7 +150,7 @@ class LoPV3(Calibration):
                         if len(units):
                             proposal = pilot.engine.prepare_gir(model, site, batch, spec, ctx,
                                 gnt.opt, units, pilot.hook.step+1, gradmax='gradmax' in pilot.engine.arm)
-                            proposals.append((site, units, proposal))
+                            proposals.append((site, units, proposal, pilot.engine.gir_fallback))
             native_started = time.monotonic()
             result = original(gnt, features_to_replace, counts)
             native_seconds = time.monotonic()-native_started
@@ -156,7 +162,7 @@ class LoPV3(Calibration):
                             selected_units=[int(u) for u in units],swaps=0,
                             candidate_missing=len(units),gir_fallback=True,
                             seconds=(time.monotonic()-started-native_seconds)/max(1, len(features_to_replace))))
-            for site, units, proposal in proposals:
+            for site, units, proposal, gir_fallback in proposals:
                 used = pilot.engine.install_gir(model, site, proposal, units, gnt.opt)
                 for unit in units[:used]:
                     pilot.insertions.append(dict(task=pilot.engine.task,site=site.module_name,unit=int(unit)))
@@ -164,6 +170,7 @@ class LoPV3(Calibration):
                     iteration=pilot.hook.step+1,site=site.module_name,
                     selected_units=[int(u) for u in units],swaps=used,
                     candidate_missing=len(units)-used,
+                    gir_fallback=gir_fallback,
                     seconds=(time.monotonic()-started-native_seconds)/max(1,len(proposals))))
             return result
         try:

@@ -8,8 +8,8 @@ from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 B5_GROUPS = {
     'A': ('bp_kself', 'cbp_gir', 'bp_gir', 'bp'),
-    'B': ('cbp_vna_gir', 'bp_kself_lf', 'bp_vna_gir', 'cbp'),
-    'C': ('cbp_gradmax', 'bp_vna_lf', 'bp_vna', 'bp_vna_rand'),
+    'B': ('cbp_vna_gir', 'bp_kself', 'bp_vna_gir', 'cbp'),
+    'C': ('cbp_gradmax', 'bp_vna', 'bp_vna', 'bp_vna_rand'),
 }
 
 

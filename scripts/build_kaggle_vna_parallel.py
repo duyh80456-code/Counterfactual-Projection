@@ -13,7 +13,7 @@ from scripts.build_kaggle_pilot_common import notebook
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 B5_ARMS = ('bp','bp_kself','bp_vna','bp_vna_rand','bp_gir','bp_vna_gir',
-           'cbp','cbp_gir','cbp_gradmax','cbp_vna_gir','bp_vna_lf','bp_kself_lf')
+           'cbp','cbp_gir','cbp_gradmax','cbp_vna_gir')
 PM_ARMS = ('bp','bp_kself','bp_vna','bp_vna_rand','cbp','cbp_gir','cbp_gradmax','cbp_vna_gir')
 PRESETS = {
  'P-B5': ([], [], [f'b5_{arm}__s{s}' for s in range(3) for arm in B5_ARMS]+
@@ -22,9 +22,6 @@ PRESETS = {
  'Q1': (['icarl__inc10__s1993'], ['icarl_kself__inc10__s1993'], []),
  'Q2': (['icarl_vna_b0__inc10__s1993'], ['icarl_vna__inc10__s1993'], []),
  'Q3': (['icarl_vna_rand__inc10__s1993'], [], []),
- 'O1': (['er__s0'], ['er_vna__s0'], []),
- 'O2': (['er_kself__s0'], ['er_vna_rand__s0'], []),
- 'O3': (['erace__s0'], ['erace_vna__s0'], []),
  'P7': (['finetune__inc10__s1993','joint__s1993','finetune__b50inc10__s1993'],
         ['wa__inc10__s1993','wa__b50inc10__s1993'], ['b5_l2']),
  'P8': (['podnet__inc10__s1993','podnet__b50inc10__s1993'],
@@ -34,10 +31,6 @@ PRESETS = {
  'P10': (['memo__inc10__s1993','memo__b50inc10__s1993'],
          ['tagfex__inc10__s1993','tagfex__b50inc10__s1993'], []),
 }
-for lane in ('O1','O2','O3'):
-    PRESETS[lane+'-R']=tuple([j.replace('__s0','__nf20__s0') for j in queue] for queue in PRESETS[lane])
-
-
 def source_bundle(path):
     """Capture source bytes including uncommitted changes, excluding outputs/secrets."""
     paths = subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard'],cwd=ROOT,text=True).splitlines()
@@ -107,7 +100,6 @@ def completed(job):
 def setting_for(job):
     if job.startswith('b5_'): return 'regression'
     if job.startswith('pm_'): return 'mnist'
-    if job.startswith(('er__','er_','erace')): return 'online'
     return 'icarl'
 
 def command(job):
@@ -127,12 +119,11 @@ def command(job):
            '--workers','2']
     data_root = globals().get('MNIST_ROOT') if setting == 'mnist' else DATA_ROOT
     if data_root is not None: cmd += ['--data-dir',str(data_root)]
-    if setting == 'online' and '__nf20__' in job: cmd += ['--online-nf','20']
     if label.startswith(('b5_cbp','pm_cbp')):
         rate = re.search(r'__rate([^_]+)',job)
         cmd += ['--replacement-rate',rate.group(1) if rate else '1e-3']
     if label not in ('b5_bp','b5_cbp','pm_bp','pm_cbp','icarl','er','erace'):
-        schedule = ROOT/'_schedules'/f"{setting}{'_nf20' if setting == 'online' and '__nf20__' in job else ''}.json"
+        schedule = ROOT/'_schedules'/f"{setting}.json"
         if not schedule.exists():
             print(f'SKIP {job}: family schedule {schedule.name} missing; attach the authority archive and rerun', flush=True)
             return None
@@ -140,8 +131,7 @@ def command(job):
     return cmd
 
 def prepare_schedule(setting, gpu=None):
-    reduced = setting == 'online' and PRESET and PRESET.endswith('-R')
-    filename = setting+('_nf20' if reduced else '')+'.json'
+    filename = setting+'.json'
     destination = ROOT/'_schedules'/filename
     destination.parent.mkdir(parents=True,exist_ok=True)
     if destination.exists(): return
@@ -154,20 +144,19 @@ def prepare_schedule(setting, gpu=None):
     if attached:
         if any(value != attached[0][1] for _,value in attached): raise ValueError('conflicting authoritative schedules')
         shutil.copy2(attached[0][0],destination); return
-    authority = {'icarl':'Q2','online':'O1'}
-    authority_preset=authority.get(setting,'')+('-R' if reduced else '')
+    authority = {'icarl':'Q2'}
+    authority_preset=authority.get(setting,'')
     if setting in authority and PRESET != authority_preset:
         # Baselines need no schedule; scheduled arms are skipped until the archive is attached.
         print(f'NOTE: attach {authority_preset} archive with {setting}.json to run scheduled {PRESET} arms', flush=True)
         return
-    arm = dict(regression='b5_bp_vna_gir',mnist='pm_bp_vna',icarl='icarl_vna',online='er_vna')[setting]
+    arm = dict(regression='b5_bp_vna_gir',mnist='pm_bp_vna',icarl='icarl_vna')[setting]
     seed = '1993' if setting == 'icarl' else '0'
     cmd = [sys.executable,'-u','-m','experiments.pilot_v3','--setting',setting,'--arm',arm,
            '--seed',seed,'--out',str(ROOT/'_preflight'/setting),'--device','cpu' if gpu is None else 'cuda:0',
            '--resume','--preflight-only','--schedule-output',str(destination)]
     data_root = globals().get('MNIST_ROOT') if setting == 'mnist' else DATA_ROOT
     if data_root is not None: cmd += ['--data-dir',str(data_root)]
-    if reduced: cmd += ['--online-nf','20']
     if gpu is None:
         from experiments.vna_resume import launch_logged
         return launch_logged(cmd,cwd=REPO,env={**ENV,'CUDA_VISIBLE_DEVICES':''},log_path=RUN_ROOT/f'{RUN_TAG}_{setting}_preflight.log',
@@ -196,7 +185,7 @@ try:
     v3jobs = [j for j in JOBS_GPU0+JOBS_GPU1+JOBS_CPU if j not in ('b5_l2','b5_snp','b5_redo')
               and j.split('__')[0].startswith(('b5_','pm_','icarl','er'))]
     for setting in sorted({setting_for(j) for j in v3jobs}):
-        prepare_schedule(setting,0 if setting in ('icarl','online') else None)
+        prepare_schedule(setting,0 if setting == 'icarl' else None)
         if pause_due(): break
     archive_outputs()
     if not pause_due():
@@ -216,11 +205,10 @@ if archive_errors: raise RuntimeError(archive_errors)
 def build(commit, preset=None, run_tag='vna_v3_pilot', source_digest=None):
     result=notebook(commit)
     cells=result['cells']
-    cells[0]=cell('markdown','# VNA v3 decisive pilot\nAttach source bundle and previous archives to resume. Q2/O1 produce shared authority schedules for Q1/Q3 and O2/O3. CPU variants do not require GPU or CIFAR-100. Preflight records calibration and continues training. C-Flat is deferred; Q3 GPU1 is empty.')
+    cells[0]=cell('markdown','# VNA v4 pilot\nAttach the source bundle and previous archives to resume. Q2 provides the iCaRL authority schedule; preflight records calibration and continues training.')
     cells[1]=cell('code',config(commit,PRESETS[preset] if preset else ([],[],[]),run_tag,preset,source_digest))
     cells[2]=cell('code',''.join(cells[2]['source'])+OVERLAY)
     setup=''.join(cells[3]['source'])
-    setup = "if any(j.startswith(('er__','er_','erace')) for j in JOBS_GPU0+JOBS_GPU1):\n    os.environ['VNA_FETCH_ONLINE']='1'\n    subprocess.run([sys.executable,'-m','pip','install','-q','wandb','kornia','umap-learn','einops'],check=True)\n"+setup
     start=setup.index('import torch\n'); end=setup.index('if not (REPO / "experiments/vna_kaggle.py").exists():')
     dataset_setup=setup[start:end]
     setup=setup[:start]+"DATA_ROOT = Path('/kaggle/input')\nMNIST_ROOT = next((p.parent for p in Path('/kaggle/input').rglob('mnist_') if p.is_file()),None)\nif JOBS_GPU0 or JOBS_GPU1:\n"+'\n'.join('    '+line for line in dataset_setup.splitlines())+'\n'+setup[end:]

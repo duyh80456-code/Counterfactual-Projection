@@ -11,3 +11,7 @@ third_party/One-Shot-TAS-CCIL/
 third_party/loss-of-plasticity/
 third_party/PyCIL/
 third_party/RepDistiller/
+third_party/upgd/
+third_party/C-Flat/
+third_party/warm_start/
+third_party/dopamine/

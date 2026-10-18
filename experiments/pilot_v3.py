@@ -17,12 +17,10 @@ from adapters.vna_v3_hooks import LoPV3, ICaRLV3
 from diagnostics.vna_align import MeasurementBuffer
 
 B5_ARMS = tuple('b5_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
-    'bp_gir', 'bp_vna_gir', 'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir',
-    'bp_vna_lf', 'bp_kself_lf'))
+    'bp_gir', 'bp_vna_gir', 'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
 PM_ARMS = tuple('pm_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
     'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
 ICARL_ARMS = ('icarl', 'icarl_kself', 'icarl_vna_b0', 'icarl_vna', 'icarl_vna_rand')
-ONLINE_ARMS = ('er', 'er_kself', 'er_vna', 'er_vna_rand', 'erace', 'erace_vna')
 
 
 def engine_arm(arm):
@@ -38,7 +36,6 @@ def read_schedule(args):
     schedule = json.loads(Path(args.schedule).read_text())
     expected = dict(setting=args.setting, code_commit=code_commit(),
                     source_digest=os.environ.get('VNA_SOURCE_DIGEST'))
-    if args.setting == 'online': expected['model_config'] = online_model_config(args)
     for key, value in expected.items():
         if schedule.get(key) == value: continue
         if key == 'code_commit' and args.setting == 'regression' and args.arm in B5_ARMS and not args.fake_data:
@@ -66,10 +63,6 @@ def make_engine(args):
     return engine
 
 
-def online_model_config(args):
-    return dict(nf=args.online_nf, n_tasks=args.online_tasks, mem_size=args.online_memory)
-
-
 def protocol(args, engine, params, upstream):
     return dict(algorithm_version='v3', setting=args.setting, arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
@@ -77,12 +70,10 @@ def protocol(args, engine, params, upstream):
         preflight_only=args.preflight_only, replacement_rate=params.get('replacement_rate'),
         replacement_rate_checks=[1e-6,1e-5,1e-4,1e-2] if args.setting == 'regression' else [],
         window=('current_augmented_minibatch' if args.setting == 'icarl' else
-                'current augmented stream10 + native replay up to64; 74 after memory warmup' if args.setting == 'online' else
                 'FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples'),
-        step_rule=('min(s_star, K*lr/(1-momentum))' if args.arm.endswith('_lf') else
-                   'min(s_star, lr*norm(g)/norm(d))'), K_units='iterations',
+        step_rule='phase 2', K_units='iterations',
         mu_rel=engine.mu_rel, K_base=engine.K_base,
-        solver=dict(method='parameter-space matrix-free CG', tol=engine.tol, max_iterations=50,
+        solver=dict(method='parameter-space matrix-free CG', tol=engine.tol, max_iterations=200,
                     warm_start=True, spectral_power_iterations=engine.power_iters),
         preflight=read_schedule(args))
 
@@ -121,7 +112,6 @@ def finalize_calibration(args, engine, adapter, out):
         timing_basis='selected-mu read-only trial plus measured GIR component; mean of first three points per task',
         iteration_samples=len(adapter.iteration_times[:200]),
         cos_cg_exact=[r.get('cos_cg_exact') for r in engine.events if r.get('cos_cg_exact') is not None])
-    if args.setting == 'online': schedule['model_config'] = online_model_config(args)
     # B5/PM have fixed output width; only CIL extrapolates the class count.
     if args.setting in ('regression', 'mnist'):
         costs = max(p['vna_seconds'] for p in points)
@@ -211,7 +201,7 @@ def run_lop(args):
         seconds = hook.elapsed_base+time.monotonic()-started
         events_seconds = sum(e.get('seconds',0.) for e in engine.events)
         summary = dict(algorithm_version='v3', setting=args.setting, arm=args.arm, seed=args.seed,
-            status='COMPLETED', tasks=tasks, tasks_run=len(tasks), seconds=seconds,
+            status='DIVERGED' if engine.diverged else 'COMPLETED', tasks=tasks, tasks_run=len(tasks), seconds=seconds,
             code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
             replacement_rate=params['replacement_rate'], steps=hook.step,
             intervention_seconds=events_seconds, training_seconds=max(0.,seconds-events_seconds),
@@ -304,21 +294,18 @@ def run_icarl(args):
 
 
 def run(args):
-    allowed = dict(regression=B5_ARMS,mnist=PM_ARMS,icarl=ICARL_ARMS,online=ONLINE_ARMS)
+    allowed = dict(regression=B5_ARMS,mnist=PM_ARMS,icarl=ICARL_ARMS)
     if args.arm not in allowed[args.setting]: raise ValueError('arm does not belong to setting')
-    if args.preflight_only and args.arm not in ('b5_bp_vna_gir','pm_bp_vna','icarl_vna','er_vna'):
+    if args.preflight_only and args.arm not in ('b5_bp_vna_gir','pm_bp_vna','icarl_vna'):
         raise ValueError('preflight authority must use the registered most expensive VNA arm')
     if not args.preflight_only and engine_arm(args.arm) != 'baseline' and not args.schedule and not args.fake_data:
         raise ValueError('full arm requires a shared authoritative family schedule')
-    if args.setting == 'online':
-        from experiments.pilot_v3_online import run_online
-        return run_online(args)
     return run_icarl(args) if args.setting == 'icarl' else run_lop(args)
 
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--setting',choices=('regression','mnist','icarl','online'),required=True)
+    p.add_argument('--setting',choices=('regression','mnist','icarl'),required=True)
     p.add_argument('--arm',required=True)
     p.add_argument('--seed',type=int,default=0)
     p.add_argument('--out',required=True); p.add_argument('--resume',action='store_true')
@@ -328,9 +315,6 @@ def parser():
     p.add_argument('--schedule'); p.add_argument('--preflight-only',action='store_true')
     p.add_argument('--schedule-output'); p.add_argument('--fake-data',action='store_true')
     p.add_argument('--coefficient',type=float,default=1.)
-    p.add_argument('--online-nf',type=int,choices=(20,64),default=64)
-    p.add_argument('--online-tasks',type=int,choices=(10,20),default=10)
-    p.add_argument('--online-memory',type=int,choices=(1000,2000),default=2000)
     return p
 
 

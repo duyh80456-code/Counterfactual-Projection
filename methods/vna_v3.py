@@ -213,10 +213,12 @@ class V3Engine:
         self.events, self.activities, self.calibration = [], [], []
         self.solver_tightened = False
         self.exact_checks, self.false_skips = 0, 0
+        self.gir_fallback = False
+        self.diverged = False
 
     @property
     def cfg(self):
-        return GGNConfig(damping_rel=self.mu_rel, cg_iters=50, cg_tol=self.tol,
+        return GGNConfig(damping_rel=self.mu_rel, cg_iters=200, cg_tol=self.tol,
                          hutchinson_probes=8, seed=self.seed, project_bn=False)
 
     def state_dict(self): return deepcopy(vars(self))
@@ -254,6 +256,7 @@ class V3Engine:
             if torch.isfinite(result.solution).all(): cache[name] = result.solution.detach().clone()
             records.append(dict(name=name, beta=beta, relative_residual=result.relative_residual,
                 iterations=result.iterations, converged=result.converged, rhs_norm=float(rhs.norm()),
+                warm_reset=result.warm_reset,
                 seconds=time.perf_counter()-start))
             return result.solution
         return solve
@@ -479,24 +482,13 @@ class V3Engine:
             Delta += float((d-raw_d).norm())
             gh, hh = float(g@d), float(gO@d)
             tau_g, tau_h = float(g.norm())*Delta, float(gO.norm())*Delta
-            reason = 'nonfinite' if not torch.isfinite(d).all() or not math.isfinite(Delta) else 'invalid_beta' if values.get('invalid_beta') else 'negative_total_certificate' if gh < -tau_g else 'negative_old_certificate' if hh < -tau_h else None
+            z_record = next((record for record in values['records'] + preliminary['records']
+                             if record['name'] == 'z'), None)
+            reason = 'cg_z' if z_record and z_record['relative_residual'] > .1 else ('nonfinite' if not torch.isfinite(d).all() or not math.isfinite(Delta) else 'invalid_beta' if values.get('invalid_beta') else 'negative_total_certificate' if gh < -tau_g else 'negative_old_certificate' if hh < -tau_h else None)
             skipped = reason is not None
             cos_exact, h_exact, false_skip = None, None, False
             exact_records = None
             exact_check_seconds = 0.
-            if self.preflight_only and apply and self.task in (1, 2) and self.applications < 3:
-                exact_started = time.perf_counter()
-                exact = self._direction(p, op, mu, exact=True)
-                exact_check_seconds = time.perf_counter()-exact_started
-                exact_records = exact['records']
-                cos_exact = float(nn.functional.cosine_similarity(d, exact['d'], dim=0)) if d.norm() and exact['d'].norm() else 1.
-                h_exact = float(exact['gO']@exact['d'])
-                exact_converged = all(r['converged'] for r in exact_records)
-                false_skip = bool(exact_converged and skipped and h_exact >= 0)
-                if self.preflight_only and exact_converged:
-                    self.exact_checks += 1; self.false_skips += int(false_skip)
-                    if cos_exact < .99: self.tol, self.solver_tightened = 1e-4, True
-                    if self.false_skips/self.exact_checks > .1: self.power_iters = 20
             only_gir = (self.arm.endswith('_gir') or self.arm == 'gir') and 'vna' not in self.arm
             s, optimum, binding = (0., 0., 'none') if skipped or only_gir else correction_step(g, d,
                 op.F(d), mu, optimizer.param_groups[0]['lr'], self.K_next,
@@ -578,6 +570,7 @@ class V3Engine:
                 for name, value in captures.items()}
 
     def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None):
+        self.gir_fallback = False
         if not len(units) or not self.valid_slot(site): return []
         with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
@@ -588,7 +581,16 @@ class V3Engine:
                     values = self._direction(p, op, mu, split_only=True, warm={})
                     residual = values['eold']-values['zO'] if bool(values['eold'].any()) else op.g-values['z']
         S, Ns = statistics(model, site, batch, [residual])
-        rows = generalized_rows(Ns[0] if gradmax else Ns[0]@Ns[0].T, S, 4, euclidean=gradmax)
+        matrix = Ns[0] if gradmax else Ns[0]@Ns[0].T
+        if gradmax and (not torch.isfinite(matrix).all() or not torch.isfinite(S).all()):
+            self.gir_fallback = True
+            return []
+        try:
+            rows = generalized_rows(matrix, S, 4, euclidean=gradmax)
+        except torch.linalg.LinAlgError:
+            if not gradmax: raise
+            self.gir_fallback = True
+            return []
         proposals = []
         for row in rows:
             base = rows_proposal(site, row[None])
@@ -658,8 +660,7 @@ class V3Engine:
             for m, mode in modes.items(): m.training = mode
         return capture['x']
 
-    @staticmethod
-    def install_gir(model, site, proposals, units, optimizer):
+    def install_gir(self, model, site, proposals, units, optimizer):
         if not V3Engine.valid_slot(site): return 0
         first, second = site.first_layer.layer, site.second_layer.layer
         count = 0
@@ -681,6 +682,8 @@ class V3Engine:
                     for value in optimizer.state.get(parameter, {}).values():
                         if isinstance(value, torch.Tensor) and value.shape == parameter.shape: value[index] = 0
                 count += 1
+        if count:
+            self.warm.clear()
         return count
 
     def gir_candidates(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False):

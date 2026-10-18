@@ -18,6 +18,7 @@ class CGResult:
     residual_history: tuple[float, ...] = ()
     relative_residual: float = float("inf")
     breakdown: bool = False
+    warm_reset: bool = False
 
 
 def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
@@ -52,10 +53,16 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
     rhs_norm = max(float(torch.linalg.vector_norm(rhs)), eps)
     threshold = tolerance * rhs_norm
     initial_norm = float(torch.linalg.vector_norm(residual))
+    warm_reset = x0 is not None and initial_norm >= float(torch.linalg.vector_norm(rhs))
+    if warm_reset:
+        x = torch.zeros_like(rhs)
+        residual = rhs.clone()
+        initial_norm = float(torch.linalg.vector_norm(residual))
     history = [initial_norm]
     if initial_norm <= threshold:
         return CGResult(
-            x, 0, initial_norm, True, tuple(history), initial_norm / rhs_norm)
+            x, 0, initial_norm, True, tuple(history), initial_norm / rhs_norm,
+            warm_reset=warm_reset)
     precondition = preconditioner or (lambda value: value)
     preconditioned = precondition(residual).detach()
     direction = preconditioned.clone()
@@ -85,7 +92,8 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
             history[-1] = norm
             if norm <= threshold:
                 return CGResult(
-                    x, iteration, norm, True, tuple(history), norm / rhs_norm)
+                    x, iteration, norm, True, tuple(history), norm / rhs_norm,
+                    warm_reset=warm_reset)
             preconditioned = precondition(residual).detach()
             direction = preconditioned.clone()
             residual_product = torch.dot(residual, preconditioned)
@@ -104,4 +112,4 @@ def conjugate_gradient(matvec: Callable[[Tensor], Tensor], rhs: Tensor, *,
     history[-1] = final_norm
     return CGResult(
         x, completed_iterations, final_norm, False, tuple(history),
-        final_norm / rhs_norm, breakdown)
+        final_norm / rhs_norm, breakdown, warm_reset)

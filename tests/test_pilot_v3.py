@@ -144,21 +144,6 @@ def test_cbp_short_buffer_keeps_native_initialization(monkeypatch):
     assert event['gir_fallback'] and event['swaps']==0
 
 
-def test_online_ace_residual_and_curvature_match_native_loss():
-    from experiments.pilot_v3_online import OnlineCE
-    spec=OnlineCE()
-    z=torch.randn(5,4,dtype=torch.float64,requires_grad=True)
-    target=torch.tensor([0,1,2,3,0])
-    ctx=dict(targets=target,stream_size=2,
-             stream_mask=torch.tensor([[True,True,False,False],[True,True,False,False]]))
-    native=torch.nn.functional.cross_entropy(z[:2].masked_fill(~ctx['stream_mask'],-1e9),target[:2])+torch.nn.functional.cross_entropy(z[2:],target[2:])
-    gradient=torch.autograd.grad(native,z,create_graph=True)[0]
-    vector=torch.randn_like(z)
-    hessian=torch.autograd.grad(gradient,z,vector)[0]
-    torch.testing.assert_close(spec.residual(z,ctx),gradient)
-    torch.testing.assert_close(spec.metric_apply(z,vector,ctx),hessian)
-
-
 def test_current_cil_minibatch_and_cross_task_fifo(monkeypatch):
     from types import SimpleNamespace
     import adapters.vna_v3_hooks as hooks
@@ -189,33 +174,13 @@ def test_current_cil_minibatch_and_cross_task_fifo(monkeypatch):
 
 
 def test_engine_arm_matrix_covers_registered_v3_arms():
-    from experiments.pilot_v3 import B5_ARMS, PM_ARMS, ICARL_ARMS, ONLINE_ARMS, engine_arm
-    arms = B5_ARMS + PM_ARMS + ICARL_ARMS + ONLINE_ARMS
-    assert len(arms) == 12 + 8 + 5 + 6
+    from experiments.pilot_v3 import B5_ARMS, PM_ARMS, ICARL_ARMS, engine_arm
+    arms = B5_ARMS + PM_ARMS + ICARL_ARMS
+    assert len(arms) == 10 + 8 + 5
     for registered in arms:
         engine = V3Engine(engine_arm(registered))
         assert engine.kernel_self == ('kself' in registered)
-        assert engine.arm.endswith('_lf') == registered.endswith('_lf')
         assert ('gir' in engine.arm) == ('gir' in registered)
         assert ('vna' in engine.arm) == ('vna' in registered)
         assert ('rand' in engine.arm) == ('rand' in registered)
         assert ('b0' in engine.arm) == ('b0' in registered)
-    assert engine_arm('b5_bp_kself_lf') == 'kernel_self_lf'
-
-
-def test_preflight_selects_common_mu_and_selected_trial_time(tmp_path):
-    from types import SimpleNamespace
-    from experiments.pilot_v3 import parser,finalize_calibration
-    args=parser().parse_args(['--setting','icarl','--arm','icarl_vna','--out',str(tmp_path),'--fake-data'])
-    points=[dict(task=task,classes=10*task,vna_seconds=99.,iteration=i,gir_seconds=0.)
-            for task in (1,2) for i in (1,2,3)]
-    reports=[dict(trials=[dict(mu_rel=mu,Delta_hat=1. if mu==.001 else 0.,
-        g_dot_d=1.,gradient_norm=1.,seconds=seconds) for mu,seconds in ((.001,30.),(.01,2.),(.1,1.))]) for _ in points]
-    adapter=SimpleNamespace(calibration=points,mu_trials=reports,iteration_times=[.1]*200,full_batches=[40,55])
-    engine=V3Engine()
-    schedule=finalize_calibration(args,engine,adapter,tmp_path)
-    assert engine.mu_rel==.01 and schedule['mu_condition_met']
-    assert schedule['t_vna_task2']==[2.]
-    assert schedule['projected_vna_seconds']==10.
-    assert schedule['K_base']==100 and schedule['iteration_samples']==200
-    assert schedule['calibration'][0]['actual_application_seconds']==99.

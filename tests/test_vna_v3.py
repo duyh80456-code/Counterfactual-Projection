@@ -207,6 +207,17 @@ def test_gradmax_is_euclidean_and_differs_from_generalized():
     assert abs(float(euclid[0])) > .99 and abs(float(generalized[0])) < 1e-10
 
 
+def test_gradmax_nonfinite_rows_falls_back_to_native_init(monkeypatch):
+    import methods.vna_v3 as v3
+    model, site, batch, spec, ctx, optimizer = problem()
+    monkeypatch.setattr(v3, 'statistics', lambda *args: (
+        torch.eye(4, dtype=torch.float64),
+        [torch.full((4, 1), float('nan'), dtype=torch.float64)]))
+    engine = V3Engine('gradmax')
+    assert engine.prepare_gir(model, site, batch, spec, ctx, optimizer, [0], 1, gradmax=True) == []
+    assert engine.gir_fallback
+
+
 def test_mnist_preflight_preserves_aliased_parameters_when_active_sites_shrink(monkeypatch):
     from dataclasses import replace
     from experiments.stage_b5 import upstream_imports
