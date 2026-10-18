@@ -1,24 +1,38 @@
-"""Native v3 lifecycle: no-op identities, exact resume, and windows."""
+"""Native baseline identity and exact B5 resume after runner extraction."""
 import copy
+import random
 from contextlib import nullcontext
 import numpy as np
 import pytest
 import torch
 from adapters.lop_hooks import LearnHook, learner_state
-from adapters.vna_v3_hooks import LoPV3, ICaRLV3
+from adapters.vna_v3_hooks import LoPV3
 from diagnostics.vna_align import MeasurementBuffer, _global_state, _assert_bitwise
-from experiments.stage_b5 import upstream_imports, run_native
+from experiments.runners.lop import upstream_imports, run_native, recipe, prepare_data
 from experiments.vna_resume import rng_state
 from methods.vna_v3 import V3Engine
-from tests.test_vna_stage_b5 import fixture, reset
 
+def fixture(benchmark, arm, path, tasks=2):
+    params, meta = recipe(benchmark, arm, 1e-3 if benchmark == 'regression' and arm == 'cbp' else None)
+    params['use_gpu'] = 0
+    path.mkdir(parents=True, exist_ok=True)
+    params['data_file'] = str(path/'logs.pkl'); params['run_idx'] = 0
+    params['num_features'] = 5 if benchmark == 'regression' else 4
+    if benchmark == 'regression': params.update(flip_after=160, num_data_points=tasks*160)
+    elif benchmark == 'mnist': params.update(num_tasks=tasks, change_after=160, fixture_rank_padding=True)
+    else: params.update(num_tasks=tasks, num_showings=1, mini_batch_size=100,
+                        fake_train_images_per_class=100, fake_test_images_per_class=50, examples_per_epoch=200)
+    prepare_data(benchmark, params, path, fake=True, smoke=True)
+    return params
+
+def reset(seed=13):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
 @pytest.fixture(autouse=True)
 def single_thread():
     old=torch.get_num_threads();torch.set_num_threads(1)
     with _global_state():yield
     torch.set_num_threads(old)
-
 
 @pytest.mark.parametrize('base',['bp','cbp'])
 def test_zero_coefficient_native_bitwise(base,tmp_path):
@@ -35,11 +49,10 @@ def test_zero_coefficient_native_bitwise(base,tmp_path):
         states.append(dict(logs=logs,learner=learner_state(hook.last_learner),rng=rng_state()))
     _assert_bitwise(*states)
 
-
 def test_active_resume_preserves_fifo_and_solver_state(tmp_path):
     upstream_imports();params=fixture('regression','bp',tmp_path)
     def make(resume=None,checkpoint=None,observe=None):
-        intervention=LoPV3(V3Engine(arm='vna',seed=13,K_base=100))
+        intervention=LoPV3(V3Engine(arm='vna',seed=13,K0=100))
         hook=LearnHook('regression','bp',params,intervention=intervention,resume=resume,
                        checkpoint=checkpoint,observe=observe)
         hook.buffer=MeasurementBuffer(128)
@@ -65,23 +78,6 @@ def test_active_resume_preserves_fifo_and_solver_state(tmp_path):
         _assert_bitwise(getattr(fp.engine,key),getattr(rp.engine,key))
     assert len(fp.task_metrics)==2
 
-
-def test_icarl_zero_coefficient_native_bitwise(monkeypatch):
-    from experiments.stage_b3 import upstream_imports
-    from adapters.icarl_hooks import ICaRLHook
-    from tests import test_vna_stage_b3 as native
-    upstream_imports();results=[]
-    for enabled in (False,True):
-        torch.manual_seed(0);np.random.seed(0)
-        with monkeypatch.context() as patch:
-            if enabled:
-                patch.setattr(native,'ICaRLHook',lambda *a,**kw:ICaRLHook(*a,**kw,
-                    intervention=ICaRLV3(V3Engine(arm='vna',coefficient=0.))))
-            result,_=native.tiny_run(patch,True)
-            results.append(dict(state=result,rng=rng_state()))
-    _assert_bitwise(*results)
-
-
 def test_mnist_horizon_architecture_and_fixed_cbp_rate():
     from experiments.pilot_v3 import parser,lop_recipe
     args=parser().parse_args(['--setting','mnist','--arm','pm_bp','--out','unused'])
@@ -90,7 +86,6 @@ def test_mnist_horizon_architecture_and_fixed_cbp_rate():
     args=parser().parse_args(['--setting','regression','--arm','b5_cbp','--out','unused'])
     _,params,_=lop_recipe(args)
     assert params['replacement_rate']==1e-3
-
 
 def test_cbp_selection_timing_and_native_rng_preserved(monkeypatch):
     upstream_imports()
@@ -124,7 +119,6 @@ def test_cbp_selection_timing_and_native_rng_preserved(monkeypatch):
         selections.append(dict(selected=chosen,rng=rng_state()))
     _assert_bitwise(selections[0],selections[1]);_assert_bitwise(selections[0],selections[2])
 
-
 def test_cbp_short_buffer_keeps_native_initialization(monkeypatch):
     upstream_imports()
     from lop.algos.cbp import ContinualBackprop
@@ -142,45 +136,3 @@ def test_cbp_short_buffer_keeps_native_initialization(monkeypatch):
         learner.gnt.gen_and_test([torch.ones(4,3,dtype=torch.float64)])
     event=engine.events[-1]
     assert event['gir_fallback'] and event['swaps']==0
-
-
-def test_current_cil_minibatch_and_cross_task_fifo(monkeypatch):
-    from types import SimpleNamespace
-    import adapters.vna_v3_hooks as hooks
-    from experiments.stage_b3 import upstream_imports as cil_imports
-    cil_imports()
-    class Network(torch.nn.Linear):
-        def forward(self,x):return {'logits':super().forward(x)}
-    engine=V3Engine(arm='vna');engine.begin_task(1)
-    adapter=ICaRLV3(engine)
-    batch=(torch.randn(7,3),torch.arange(7)%2)
-    learner=SimpleNamespace(_network=Network(3,2),_known_classes=0,_total_classes=2,
-        _cur_task=0,train_loader=range(10))
-    hook=SimpleNamespace(current_batch=batch,steps=1,current_epoch=0,epoch_step=1)
-    captured=[]
-    monkeypatch.setattr(hooks,'cil_sites',lambda model:[])
-    monkeypatch.setattr(engine,'apply',lambda model,sites,actual,*a,**kw:captured.append(actual))
-    adapter.after_step(hook,learner,torch.optim.SGD(learner._network.parameters(),lr=.1))
-    assert captured[0][0].data_ptr()==batch[0].data_ptr()
-    assert captured[0][1].data_ptr()==batch[1].data_ptr()
-    online=LoPV3(V3Engine(coefficient=0.))
-    fifo_hook=SimpleNamespace(step=0,task_steps=128,buffer=MeasurementBuffer(128))
-    online.before(fifo_hook,None,torch.ones(128,3),torch.ones(128,1))
-    fifo_hook.step=128
-    online.before(fifo_hook,None,torch.zeros(1,3),torch.zeros(1,1))
-    x,y=fifo_hook.buffer.batch()
-    assert len(x)==1 and torch.equal(x[0],torch.zeros(3)) and torch.equal(y[0],torch.zeros(1))
-    assert online.engine.task==2
-
-
-def test_engine_arm_matrix_covers_registered_v3_arms():
-    from experiments.pilot_v3 import B5_ARMS, PM_ARMS, ICARL_ARMS, engine_arm
-    arms = B5_ARMS + PM_ARMS + ICARL_ARMS
-    assert len(arms) == 10 + 8 + 5
-    for registered in arms:
-        engine = V3Engine(engine_arm(registered))
-        assert engine.kernel_self == ('kself' in registered)
-        assert ('gir' in engine.arm) == ('gir' in registered)
-        assert ('vna' in engine.arm) == ('vna' in registered)
-        assert ('rand' in engine.arm) == ('rand' in registered)
-        assert ('b0' in engine.arm) == ('b0' in registered)

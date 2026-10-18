@@ -28,33 +28,108 @@ Khi prompt này và tài liệu khác nhau, **tài liệu thắng**. Ghi lại m
 
 ---
 
-## 1. Dọn code thừa (làm đầu tiên)
+## 1. Dọn code, notebook, output và tài liệu thừa (làm đầu tiên)
 
-**Quy trình:**
-- Với mỗi mục dưới đây, `grep` để chắc không còn tham chiếu nào, rồi xóa.
-- Không giữ cờ tắt cho code chết.
-- Lịch sử vẫn còn trong git.
-- Liệt kê mọi file và hàm đã xóa vào `docs/vna/CLEANUP.md`, kèm lý do.
+Mục tiêu: sau bước này, repo **chỉ còn** những gì cần cho thuật toán T26–T28 và cho các notebook ở §6. Không giữ cờ tắt cho code chết; lịch sử vẫn còn trong git. Mọi thứ đã xóa ghi vào `docs/vna/CLEANUP.md` (đường dẫn, lý do, commit).
+
+Danh sách dưới đây được rút từ ảnh chụp repo ở commit `d8e4be4`. HEAD hiện tại mới hơn, nên **phải chạy lại phép kiểm ở §1.0** trên HEAD rồi mới xóa. Mục nào ở HEAD khác với danh sách thì báo lại.
+
+### 1.0 Cách xác định code chết
+
+- **Điểm vào sau bước này:**
+  - `experiments/pilot_v3.py` (B5, PM, CIL chính);
+  - `experiments/competitors.py`;
+  - `scripts/build_kaggle_vna_parallel.py`, `scripts/collect_parallel.py`;
+  - các test còn giữ ở §1.6.
+- Dựng đồ thị import bằng `ast` (chỉ tính lệnh `import`, **không** tính khớp chuỗi) từ các điểm vào. Module nào không với tới được thì xóa.
+- Ghi kết quả (danh sách với tới được và không với tới được) vào CLEANUP.md.
+
+### 1.1 Tách phần runner khỏi stack đo lường cũ (làm trước khi xóa)
+
+Hiện `pilot_v3.py` và `competitors.py` kéo theo toàn bộ stack đo lường Stage A/B chỉ vì vài tiện ích:
+- từ `stage_b3`: `UPSTREAM_PIN`, `parser`, `recipe`, `run`, `runtime`, `upstream_imports`;
+- từ `stage_b5`: `RATES`, `UPSTREAM`, `UPSTREAM_PIN`, `algos`, `atomic_pickle`, `prepare_data`, `recipe`, `run_native`, `upstream_imports`, `working_directory`, `write_csv`, `write_json`;
+- lớp `NoMeasurement` trong `pilot_v3.py` kế thừa `diagnostics.icarl_measure.B3Measurement`.
+
+Sửa:
+- Chuyển các tiện ích này vào `experiments/runners/pycil.py`, `experiments/runners/lop.py` và `experiments/io_utils.py`. Giữ nguyên hành vi.
+- Viết lại `NoMeasurement` độc lập, không kế thừa `B3Measurement`.
+- **Test:** sau khi tách, chạy `icarl` và `b5_bp` local (2 task, 1 epoch, 1% dữ liệu). Kết quả phải trùng bitwise với trước khi tách.
+
+Sau bước này, `stage_b3`, `stage_b5`, `icarl_measure` và cả stack đo lường sẽ không còn ai import.
+
+### 1.2 Module dự kiến xóa (kiểm lại bằng §1.0)
+
+| Nhóm | Module | Lý do |
+|---|---|---|
+| Đo lường Stage A/B, signal curve, efficiency | `diagnostics/{stage_a, stage_b_smoke, signal_curve, measure_efficiency, vna_gate, vna_solver_validation, icarl_measure, lop_measure}.py`; `experiments/{stage_b3, stage_b4, stage_b5, stage_b12, phase0_discovery}.py` | Phép đo của các vòng thiết kế cũ, đã kết thúc. Thuật toán v4 không dùng |
+| Đường train VNA v1/v2 | `experiments/{run_vna_training, vna_training_kaggle, vna_training_config, vna_training_support, vna_kaggle, vna_compare, vna_support, train_recipe_checkpoints, cifar_pilot, pilot_b3, pilot_b5, pilot_gir_vna}.py`; `training/{datasets, trainer}.py` | Thay bởi `pilot_v3.py`, rồi v4 |
+| Online CIL | `experiments/pilot_v3_online.py` cùng adapter CCL-DC | Setup online ER không kích hoạt thuật toán |
+| Method cũ | `methods/{vna_joint, vna_kfac, vna_output}.py`; trong `methods/vna_select.py` chỉ giữ hàm còn được import (ví dụ `neuron_norms`, `tiny_V`) | Kiểm bằng §1.0. K-FAC chỉ được dùng ở Stage B |
+| Adapter cũ | `adapters/{pilot_lop, pilot_icarl, repdistiller_hooks}.py` | Pilot cũ; teacher RepDistiller của Stage B12 |
+| Probe | `probe/counterfactual_tiny.py`; `probe/gromo_adapter.py` | Xóa, **trừ khi** ablation GIR với khởi tạo TINY (§4, đợt 3) dùng `gromo_adapter`. Nếu giữ thì chuyển vào `methods/` |
+| Script builder cũ | `scripts/build_kaggle_vna_{b3_quick, cifar_pilot, pilot_b5, stage_a_notebook, stage_b_nb1, stage_b_nb2, stage_b_nb3, stage_b_rest, training_notebooks, signal_curve_notebook}.py`; `scripts/{smoke_measure_efficiency, smoke_pilot_gir_vna, recompute_gates, fetch_teachers}.py` | Notebook cũ. Hàm `cell` mà `build_kaggle_vna_parallel.py` đang import từ `build_kaggle_vna_signal_curve_notebook` phải chuyển sang `build_kaggle_pilot_common.py` trước khi xóa |
+
+**Trong các file còn giữ**, xóa các nhánh và tham số chết:
 
 | Xóa | Lý do |
 |---|---|
-| Notebook và preset O1, O2, O3, O1-R, O2-R, O3-R; `experiments/pilot_v3_online.py`; adapter CCL-DC online | Setup online ER không kích hoạt thuật toán (không có KD, không có neuron chết). Bỏ khỏi claim |
-| Các arm `*_lf`, `kernel_self_lf`; quy tắc λ = K, K·lr/(1−m) | T26 thay quy tắc bước; giả thiết A13 không còn cần |
-| Cap bước `lr·‖g‖/‖d̂‖` | T26(e) thay bằng Δ |
-| Lưới `mu_rel ∈ {1e-3, 1e-2, 1e-1}` cùng preflight chọn μ (`mu_trials`, `mu_condition_met`) | T26: μ thích nghi theo ϱ |
-| Exact check trong run full (CG 2000 vòng, `cos_cg_exact`, `exact_check_seconds`) | Chỉ giữ một hàm chẩn đoán dùng trong test §7. Không gọi trong notebook |
-| Dung sai τ từ power iteration (`tau_g`, `tau_h`, `power_iters`, `certificate_norms`) | T26(f): phép kiểm chính xác thay vai trò chứng chỉ. S4 còn lại chỉ là bộ lọc dấu |
-| Cờ `LIVE_SWAP` và nhánh `measured` | T28 thay bằng một quy tắc duy nhất |
-| Residual GIR `r = ẽ_O` của CIL | T27: dùng e_β |
-| Hằng số `S = 1`, bias `{0, −median}`, "làm mới A mỗi 10 lần" | §2.4 |
-| Hằng số lịch K `0.3/ρ`, `clip(¼, 4)` | §2.5 thay bằng lịch hình học theo ngân sách |
-| Code của các phiên bản v1/v2 không còn được import | Dọn |
+| Các arm `*_lf`, `kernel_self_lf`; quy tắc λ = K, K·lr/(1−m) | T26 thay quy tắc bước; A13 không còn cần |
+| Cap bước `lr·‖g‖/‖d̂‖` | T26(e) |
+| Lưới `mu_rel` và preflight chọn μ (`mu_trials`, `mu_condition_met`) | T26: μ thích nghi |
+| Exact check trong run full (`exact_cg`, `cos_cg_exact`, `exact_check_seconds`) | Chỉ giữ một hàm chẩn đoán cho test §7 |
+| τ từ power iteration (`tau_g`, `tau_h`, `power_iters`, `certificate_norms`) | T26(f) |
+| `LIVE_SWAP` và nhánh `measured` | T28 |
+| Residual GIR `r = ẽ_O` | T27 |
+| `S = 1`, bias `{0, −median}`, "làm mới A mỗi 10 lần", hằng số lịch `0.3/ρ`, `clip(¼, 4)` | §2.4, §2.5 |
+| Arm `icarl_vna_b0`, `icarl_vna_rand`, `icarl_kself`, `er_*`, `erace_*`, `*_nf20` | Arm của setup cũ. Ablation mới định nghĩa lại ở §4, đợt 3 |
 
-**Giữ:**
-- B5 và PM (`experiments/pilot_v3.py`, `adapters/vna_v3_hooks.py`: phần LoP).
-- Adapter iCaRL.
-- Checkpoint và resume.
-- Builder notebook (`scripts/build_kaggle_vna_parallel.py`): đổi preset theo §6.
+### 1.3 Notebook và preset
+
+Xóa **mọi** file trong `notebooks/` và mọi preset trong `PRESETS`, rồi dựng lại chỉ các notebook ở §6 (M1–M3, C1–C5, B5w). Lý do cho từng nhóm cũ:
+
+| Nhóm cũ | Vì sao sai setup |
+|---|---|
+| `kaggle_vna_stage_a`, `stage_b_nb1..3`, `signal_curve`, `cifar_pilot`, `b3_quick`, `pilot_b5`, `kaggle_vna_parallel` (gốc) | Phép đo hoặc pilot của các vòng cũ |
+| `O1..O3`, `O1-R..O3-R` | Online ER: không có KD, không có neuron chết |
+| `Q1..Q3` | Inc10, thứ tự ngẫu nhiên (seed 1993), chỉ có BN, thuật toán cũ (cap lr, μ cố định, exact check làm treo run) |
+| `P7..P10` | Đối thủ chạy trên Inc10 và B50 Inc10, thứ tự ngẫu nhiên. Không cùng setup chính, nên không so được với `icarl_full` |
+| `P-B5`, `P-PM` | Thuật toán cũ. Thay bằng `B5w`; PM dựng lại với thuật toán v4 nếu cần |
+
+### 1.4 Output và tài liệu
+
+- **Xóa:** `outputs/measure_efficiency_smoke/` và mọi output khác đang commit trong repo.
+- **`docs/vna/`: chỉ giữ**
+  - `vna_gir_theory.pdf` và source (`theory/`);
+  - các script kiểm số: `final_check_v3.py`, `check_unified_gn.py`, `check_t25.py`, `check_t26_28.py`;
+  - `PREREGISTRATION_CHANGES.md` (giữ các mục cũ làm lịch sử, thêm mục mới ở §8);
+  - `CLEANUP.md`, `survey_competitors.md`, và prompt này.
+- **Xóa phần còn lại của `docs/vna/`:**
+  - mọi `TASK_*.md`;
+  - các báo cáo stage (`STAGE*_REPORT.md`, `MEASURE_*`, `PARALLEL_REPORT.md`, `PILOT_GIR_VNA_REPORT.md`, `CLEANUP_REPORT.md`);
+  - `DESIGN_V2*.md`, `SPEC.md`, `STAGE_AB_*`, `RUN_PLAN.md`, `SETTING_SURVEY.md`, `PROMPT_STAGE_AB.md`;
+  - `THEORY_FINAL_v3.md` và `unified_gn.md` (đã nằm trong bản PDF);
+  - các thư mục log (`*_logs/`, `v3_logs/`, `stage2*_validation/`), `figures/` (sơ đồ thuật toán cũ), các file `*_results.json`, `stage1_*`, `split3_*`;
+  - `__pycache__/`.
+- **Kết quả pilot v3 đã chạy** (B5 3 seed, `er` và `er_vna` của O1): không xóa dữ liệu. Ghi một file tóm tắt `docs/vna/pilot_v3_summary.md` (bảng số, commit, ghi rõ "thuật toán trước T26, không dùng để so với v4"), rồi xóa log thô khỏi repo.
+- Cập nhật `README.md` và `AGENTS.md` theo cấu trúc mới.
+
+### 1.5 `third_party/`
+
+- **Giữ:** `PyCIL` (pin commit mới nếu cần, §3), `loss-of-plasticity` (GnT cho CBP, B5).
+- **Thêm theo §4:** `upgd`, `C-Flat`, `dopamine` (chỉ phần ReDo, để port), và các repo đợt 3 khi cài.
+- **Xóa:** `RepDistiller`, `One-Shot-TAS-CCIL`, CCL-DC (clone lúc chạy và patch trong `patches/`), các patch không còn áp dụng. Với `gromo` thì làm như `probe/gromo_adapter.py` ở trên.
+- Kiểm bằng `grep` rằng không còn code nào tham chiếu tới các repo bị xóa. Cập nhật `SOURCES.md`, `REFERENCES.md` và `scripts/fetch_third_party.sh`.
+
+### 1.6 Test
+
+- **Xóa** test của các module đã xóa: `test_measure_efficiency`, `test_measure_round2`, `test_output_cholesky`, `test_parallel_pilot`, `test_pilot_b3`, `test_pilot_gir_vna`, `test_vna_stage_a`, `test_vna_stage_b*`, `test_vna_stage2`, `test_vna_split3`, `test_vna_training`, `test_vna` (nếu chỉ kiểm đường v1/v2), `test_vna_lemma` (nếu module đã xóa).
+- **Giữ:** `test_cg`, `test_functional`, `test_theory_v3`, `test_vna_v3`, `test_vna_v3_certificates` (cập nhật cho T26–T28), `test_competitors`, `test_kaggle_checkpoint_discovery` (nếu module còn), cộng các test mới ở §7.
+- Theo nguyên tắc §0.5, chỉ chạy các test ở §7 cùng các test đã giữ có liên quan, không chạy toàn bộ.
+
+### 1.7 Notebook trên Kaggle (người dùng tự làm, agent chỉ liệt kê)
+
+Agent liệt kê vào CLEANUP.md tên các kernel Kaggle cũ không còn dùng: `kaggle_vna_parallel_{O*, Q*, P7..P10, P-B5, P-PM}`, `kaggle_vna_stage_*`, `kaggle_vna_signal_curve`, `kaggle_vna_cifar_pilot`, `kaggle_vna_b3_quick`, `kaggle_vna_pilot_b5`. Người dùng sẽ xóa hoặc lưu trữ chúng trên Kaggle. Notebook mới đặt tên có tiền tố `vna4_` để không lẫn với notebook cũ.
 
 ---
 
@@ -294,9 +369,9 @@ Mọi notebook pin cùng commit, dùng checkpoint và resume như hiện tại. 
 
 | Notebook | Nội dung | Ghi chú |
 |---|---|---|
-| **M1** | Đợt 1, noBN, superclass: `icarl`, `icarl_full`, 3 seed | Chạy **preflight K₀** ở đây (authority). Ghi `_schedules/icarl_noBN.json` |
-| **M2** | Đợt 1, BN, superclass: `icarl`, `icarl_full`, 3 seed | Preflight riêng cho BN (authority của bản BN) |
-| **M3** | Đợt 1, noBN, thứ tự ngẫu nhiên: `icarl`, `icarl_full`, 3 seed | Dùng schedule của M1 (attach output M1); nếu chưa có thì tự chạy preflight và ghi `schedule_source=self` |
+| **vna4_M1** | Đợt 1, noBN, superclass: `icarl`, `icarl_full`, 3 seed | Chạy **preflight K₀** ở đây (authority). Ghi `_schedules/icarl_noBN.json` |
+| **vna4_M2** | Đợt 1, BN, superclass: `icarl`, `icarl_full`, 3 seed | Preflight riêng cho BN (authority của bản BN) |
+| **vna4_M3** | Đợt 1, noBN, thứ tự ngẫu nhiên: `icarl`, `icarl_full`, 3 seed | Dùng schedule của M1 (attach output M1); nếu chưa có thì tự chạy preflight và ghi `schedule_source=self` |
 | **C1** | Quét siêu tham số trên seed 0 (noBN): CBP, ReDo, S&P, UPGD | Ghi `best_config.json` cho từng phương pháp |
 | **C2** | PODNet, WA, GEM, C-Flat: 3 seed × 2 backbone | Không cần quét |
 | **C3, C4** | CBP, ReDo, S&P, UPGD với cấu hình tốt nhất: 3 seed × 2 backbone | Attach output C1 |

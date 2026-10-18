@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from scripts.build_kaggle_pilot_common import notebook
-from scripts.build_kaggle_vna_signal_curve_notebook import cell
+from scripts.build_kaggle_pilot_common import cell
 
 TUNED = ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')
 
@@ -41,7 +41,7 @@ def source_bundle(path):
     with zipfile.ZipFile(path,'w',compression=zipfile.ZIP_DEFLATED) as archive:
         for name in sorted(set(paths)):
             file = ROOT/name
-            source = name.startswith(('adapters/','probe/','projection/','training/','methods/','diagnostics/','experiments/','scripts/','tests/','third_party/patches/'))
+            source = name.startswith(('adapters/','probe/','projection/','methods/','diagnostics/','experiments/','scripts/','tests/','third_party/patches/'))
             document = file.parent == ROOT/'docs/vna'
             if file.is_file() and (source or document or name in ('pyproject.toml','requirements-upstream.txt')) and file.suffix in ('.py','.md','.toml','.txt','.sh','.json','.patch'):
                 info = zipfile.ZipInfo(name, (2026,1,1,0,0,0)); info.compress_type=zipfile.ZIP_DEFLATED
@@ -292,7 +292,7 @@ if archive_errors: raise RuntimeError(archive_errors)
 
 
 
-def build(commit, preset=None, run_tag='vna_v3_pilot', source_digest=None):
+def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
     result=notebook('0'*40 if commit == 'PLACEHOLDER' else commit)
     if commit == 'PLACEHOLDER':
         for item in result['cells']:
@@ -311,7 +311,7 @@ def build(commit, preset=None, run_tag='vna_v3_pilot', source_digest=None):
     import re
     setup=re.sub(r'subprocess.run\(\[sys.executable, "-m", "pytest".*?check=True\)\n','',setup,flags=re.S)
     cells[3]=cell('code',setup)
-    runtime=''.join(cells[4]['source']).replace('from experiments.stage_b5 import restore_archives','from experiments.vna_kaggle import restore_stage_archives').replace('RUN_ROOT / "outputs" / "stageB"','RUN_ROOT / "outputs"').replace('restore_archives(Path("/kaggle/input"), STAGE_B)',"restore_stage_archives(Path('/kaggle/input'), STAGE_B, 'outputs')").replace('folders=("outputs/stageB",)','folders=("outputs",)')
+    runtime=''.join(cells[4]['source'])
     cells[4]=cell('code',runtime)
     cells[-1]=cell('code',RUNNER)
     cells.append(cell('code',REPORT))
@@ -323,7 +323,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--commit',required=True)
     parser.add_argument('--run-tag',default='vna_v4_main')
-    parser.add_argument('--output',default=str(ROOT/'notebooks/kaggle_vna_parallel.ipynb'))
+    parser.add_argument('--output',default=str(ROOT/'notebooks/vna4_M1.ipynb'))
     parser.add_argument('--variants',action='store_true')
     parser.add_argument('--source-bundle',help='Write source overlay ZIP here and pin its SHA256 in every notebook')
     args=parser.parse_args(); output=Path(args.output); output.parent.mkdir(parents=True,exist_ok=True)
@@ -331,7 +331,8 @@ def main():
     output.write_text(json.dumps(build(args.commit,'M1',args.run_tag,digest),indent=1)+'\n')
     if args.variants:
         for name in PRESETS:
-            path=output.with_name(output.stem+'_'+name+output.suffix)
+            stem = output.stem[:-3] if output.stem.endswith('_M1') else output.stem
+            path=output.with_name(stem+'_'+name+output.suffix)
             path.write_text(json.dumps(build(args.commit,name,args.run_tag,digest),indent=1)+'\n')
 
 

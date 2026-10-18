@@ -47,11 +47,11 @@ def test_negative_total_certificate_skips_without_parameter_or_buffer_mutation(m
     engine=AdversarialKernel('vna');engine.begin_task(1);engine.tol=1e-12
     # Step sizing must only happen after the certificate has passed.
     def forbidden(*args,**kwargs): raise AssertionError('step size evaluated before certificate')
-    monkeypatch.setattr('methods.vna_v3.correction_step',forbidden)
+    monkeypatch.setattr('methods.vna_v3.trust_region_step',forbidden)
     row=engine.apply(model,[site],batch,MSE(),dict(targets=batch[1]),optimizer,1)
-    assert row['g_dot_d'] < -row['tau_g']
-    assert row['skipped'] and row['skip_reason']=='negative_total_certificate'
-    assert row['s']==0 and row['K_next']==engine.K_base
+    assert row['g_dot_d'] < 0
+    assert row['skipped'] and row['skip_reason']=='negative_certificate'
+    assert row['s']==0 and row['K_next']==engine.K0
     for name,value in before.items(): assert torch.equal(value,model.state_dict()[name])
 
 
@@ -67,39 +67,7 @@ def test_zero_old_residual_with_inexact_cg_does_not_false_skip():
         dict(targets=y,known_classes=2,teacher_logits=teacher),optimizer,1)
     assert row['V_O']==0 and row['h_dot_d']==0
     assert any(r['relative_residual']>1e-3 for r in row['cg'])
-    assert row['tau_g']>0 and not row['skipped'] and not row['false_skip']
-
-
-def test_nonconverged_exact_check_is_logged_but_not_counted():
-    model, site, batch, optimizer = mlp()
-    class IncompleteExact(V3Engine):
-        def _direction(self, p, op, mu, **kwargs):
-            values = super()._direction(p, op, mu, **kwargs)
-            if kwargs.get('exact'):
-                values['records'][0]['converged'] = False
-            return values
-    engine = IncompleteExact('vna'); engine.preflight_only = True; engine.begin_task(1)
-    row = engine.apply(model, [site], batch, MSE(), dict(targets=batch[1]), optimizer, 1)
-    assert row['exact_cg_converged'] is False
-    assert row['false_skip'] is False
-    assert engine.exact_checks == engine.false_skips == 0
-    assert engine.tol == 1e-3 and engine.power_iters == 5
-
-
-def test_full_schedule_skips_exact_check_and_keeps_solver_settings():
-    model, site, batch, optimizer = mlp()
-    class Scheduled(V3Engine):
-        def _direction(self, p, op, mu, **kwargs):
-            assert not kwargs.get('exact')
-            return super()._direction(p, op, mu, **kwargs)
-    engine = Scheduled('vna')
-    engine.configure_schedule(dict(K_base=100, cg_tol=2e-4, tol=7e-4, power_iters=11))
-    engine.begin_task(1)
-    row = engine.apply(model, [site], batch, MSE(), dict(targets=batch[1]), optimizer, 1)
-    assert row['exact_cg'] is None and row['exact_cg_converged'] is None
-    assert row['cos_cg_exact'] is None and row['h_exact'] is None
-    assert row['exact_check_seconds'] == 0.
-    assert engine.tol == 7e-4 and engine.power_iters == 11
+    assert 'tau_g' not in row and 'false_skip' not in row
 
 
 def test_real_sgd_momentum_and_weight_decay_remain_native_after_correction():
@@ -148,7 +116,9 @@ def test_resnet8_cg_cosine_and_later_site_spatial_statistics():
     with training_products(model,sites,seed_proposals(sites),batch[0]) as products:
         op=GGNProducts(products,batch[1],MSE(),dict(targets=batch[1]))
         approximate=engine._direction(products,op,.1)
-        exact=engine._direction(products,op,.1,exact=True)
+        exact_engine = deepcopy(engine)
+        exact_engine.tol = 1e-8
+        exact=exact_engine._direction(products,op,.1,warm={})
         assert nn.functional.cosine_similarity(approximate['d'],exact['d'],dim=0)>=.99
         for record in approximate['records']: assert record['relative_residual']<=1e-3
     for site in sites:
@@ -158,7 +128,7 @@ def test_resnet8_cg_cosine_and_later_site_spatial_statistics():
 
 
 def test_native_icarl_sites_exclude_channels_entering_residual_addition():
-    from experiments.stage_b3 import upstream_imports
+    from experiments.runners.pycil import upstream_imports
     upstream_imports()
     from adapters.icarl_hooks import sites_for, Prediction
     from convs.cifar_resnet import CifarResNet, ResNetBasicblock

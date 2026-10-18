@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from adapters.v4_competitors import CompetitorHook, PINS, ROOT, cflat_module, source_module
 from experiments.competitors import cil_runtime
-from experiments import stage_b3 as cil, stage_b5 as lop
+from experiments.runners import pycil as cil, lop
 from adapters.cil_setup import class_order, skipinit, FixtureBackbone
 from experiments.main_cil import measure_task, training_settings, recipe as main_recipe
 from experiments.vna_provenance import code_commit

@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 import torch
-from experiments.shared_protocol import atomic_torch_save, atomic_json_save
+from experiments.io_utils import atomic_torch_save, atomic_json_save
 from methods.vna import dedicated_generator
 
 
@@ -31,10 +31,6 @@ def restore_rng(state):
 
 def log(message):
     print(f"[{os.environ.get('VNA_LANE', 'CPU')} {os.environ.get('VNA_JOB', 'stageB')}] {message}", flush=True)
-
-
-def file_hash(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def set_locals(frame, values):

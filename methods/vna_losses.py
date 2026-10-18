@@ -96,29 +96,6 @@ class MSE(LossSpec):
 
 
 @dataclass
-class KDRepDistiller(CE):
-    name: str = 'KDRepDistiller'
-    alpha: float = .1
-    beta: float = .9
-    T: float = 4.
-
-    def loss(self, z, ctx):
-        # RepDistiller/distiller_zoo/KD.py: DistillKL.forward.
-        kd = F.kl_div(F.log_softmax(z / self.T, dim=1),
-                      F.softmax(ctx['teacher_logits'] / self.T, dim=1),
-                      reduction='sum') * (self.T ** 2) / z.shape[0]
-        return self.alpha * F.cross_entropy(z, ctx['targets']) + self.beta * kd
-
-    def metric_blocks(self, z, ctx):
-        return self.alpha*super().metric_blocks(z, ctx) + self.beta*CE.metric_blocks(self, z/self.T, ctx)
-
-    def metric_apply(self, z, v, ctx):
-        z, v = z.double(), v.double().reshape_as(z)
-        return (self.alpha * _cov(z.softmax(-1), v) +
-                self.beta * _cov((z / self.T).softmax(-1), v)) / len(z)
-
-
-@dataclass
 class ICaRLPyCIL(CE):
     name: str = 'ICaRLPyCIL'
     T: float = 2.

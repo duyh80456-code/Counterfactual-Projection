@@ -1,1 +1,0 @@
-five power steps: estimate=1.000000495; 1.1*estimate=1.1000005445; true_norm=10

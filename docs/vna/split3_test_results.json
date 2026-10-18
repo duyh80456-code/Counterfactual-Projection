@@ -1,9 +1,0 @@
-{
-  "passed": 101,
-  "skipped": 1,
-  "failed": 0,
-  "errors": 0,
-  "warnings": 39,
-  "seconds": 54.77,
-  "skip_reason": "Matplotlib unavailable; curve-series construction tested separately"
-}

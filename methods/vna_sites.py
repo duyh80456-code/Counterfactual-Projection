@@ -13,7 +13,7 @@ from torch.func import functional_call
 from methods.vna import (_Products, _make_a_layer, _make_matching_b_layer,
                          _as_a_dict, _resolve_site)
 from projection.functional import _preserve_functional_state
-from probe.gromo_adapter import _snapshot, _assert_unchanged
+from methods.gromo_adapter import _snapshot, _assert_unchanged
 
 
 class HookSite:

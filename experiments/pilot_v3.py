@@ -9,7 +9,7 @@ import random
 import time
 import numpy as np
 import torch
-from experiments import stage_b5 as lop
+from experiments.runners import lop
 from experiments.vna_resume import Progress, Status, rng_state
 from experiments.vna_provenance import code_commit
 from adapters.lop_hooks import LearnHook, learner_state
@@ -20,14 +20,14 @@ B5_ARMS = tuple('b5_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
     'bp_gir', 'bp_vna_gir', 'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
 PM_ARMS = tuple('pm_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
     'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
-ICARL_ARMS = ('icarl', 'icarl_kself', 'icarl_vna_b0', 'icarl_vna', 'icarl_vna_rand')
+ICARL_ARMS = ('icarl', 'icarl_vna')
 
 
 def engine_arm(arm):
     for prefix in ('b5_', 'pm_'):
         if arm.startswith(prefix): arm = arm[len(prefix):]
-    if arm in ('bp', 'cbp', 'icarl', 'er', 'erace'): return 'baseline'
-    arm = arm.removeprefix('bp_').removeprefix('icarl_').removeprefix('er_').removeprefix('erace_')
+    if arm in ('bp', 'cbp', 'icarl'): return 'baseline'
+    arm = arm.removeprefix('bp_').removeprefix('icarl_')
     return arm.replace('kself', 'kernel_self')
 
 
@@ -38,8 +38,6 @@ def read_schedule(args):
                     source_digest=os.environ.get('VNA_SOURCE_DIGEST'))
     for key, value in expected.items():
         if schedule.get(key) == value: continue
-        if key == 'code_commit' and args.setting == 'regression' and args.arm in B5_ARMS and not args.fake_data:
-            raise ValueError('legacy B5 schedules must be converted by b5_seed0_resume.py')
         raise ValueError(f'schedule {key} mismatch')
     if not schedule.get('authoritative') or not isinstance(schedule.get('K0'), int) or schedule['K0'] < 1:
         raise ValueError('schedule lacks authoritative positive K0')
@@ -198,12 +196,12 @@ def run_lop(args):
 
 
 def run_icarl(args):
-    from experiments import stage_b3
-    from diagnostics.icarl_measure import B3Measurement
-    stage_b3.upstream_imports()
+    from experiments.runners import pycil
+    from experiments.runners.pycil import NoMeasurement
+    pycil.upstream_imports()
     engine = make_engine(args)
     intervention = ICaRLV3(engine, preflight=args.preflight_only)
-    native_args = stage_b3.parser().parse_args([])
+    native_args = pycil.parser().parse_args([])
     for name in ('out','device','data_dir','seed','workers','fake_data'):
         setattr(native_args, name, getattr(args,name))
     native_args.init_seed = 0
@@ -211,10 +209,8 @@ def run_icarl(args):
     native_args.smoke = args.fake_data or args.preflight_only
     native_args.measure_profile = 'quick'
     native_args.no_measure = True
-    class NoMeasurement(B3Measurement):
-        def __call__(self,*a,**kw): return []
     measure = NoMeasurement(dict(setting='icarl',arm=args.arm),measure_profile='quick')
-    original_runtime = stage_b3.runtime
+    original_runtime = pycil.runtime
     @contextmanager
     def runtime(**kw):
         with original_runtime(**kw):
@@ -222,13 +218,13 @@ def run_icarl(args):
                 from models import icarl
                 icarl.init_epoch = icarl.epochs = 4 if args.fake_data else 5
             yield
-    stage_b3.runtime = runtime
+    pycil.runtime = runtime
     try:
-        hook = stage_b3.run(native_args,measure_override=measure,intervention=intervention,
+        hook = pycil.run(native_args,measure_override=measure,intervention=intervention,
                             observe=intervention.after_epoch)
-    finally: stage_b3.runtime = original_runtime
+    finally: pycil.runtime = original_runtime
     out = Path(args.out)
-    info = protocol(args,engine,stage_b3.recipe(),stage_b3.UPSTREAM_PIN)
+    info = protocol(args,engine,pycil.recipe(),pycil.UPSTREAM_PIN)
     info['expected_tasks'] = 2 if args.fake_data or args.preflight_only else 10
     if args.preflight_only: info['preflight'] = finalize_calibration(args,engine,intervention,out)
     lop.write_json(out/'protocol.json',info)

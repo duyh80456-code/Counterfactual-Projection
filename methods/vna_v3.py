@@ -181,16 +181,6 @@ def trust_region_step(g, d, Fd, mu, delta):
     return s, s_f, 's_F' if s_f <= s_delta else 'Delta'
 
 
-def correction_step(g, d, Fd, mu, lr, K, momentum=0., faithful=False):
-    """Compatibility helper for pre-v4 diagnostic tests; training never calls it."""
-    gain = float(g@d)
-    denominator = float(d@Fd)+mu*float(d@d)
-    if gain <= 0 or denominator <= 0: return 0., 0., 'none'
-    optimum = gain/denominator
-    cap = K*lr/(1-momentum) if faithful else lr*float(g.norm())/max(float(d.norm()), 1e-300)
-    return min(optimum, cap), optimum, 's*' if optimum <= cap else 'norm' if not faithful else 'faithful'
-
-
 def net_gain(e_beta, H_beta, J, J_prime, f_u, mu):
     """T28(a) net gain for a temporarily installed live-slot candidate."""
     metric = H_beta if callable(H_beta) else lambda value: H_beta @ value
@@ -303,7 +293,7 @@ class V3Engine:
         self.mu, self.nu = None, 2.
         self.protocol = {'live_candidates': 4, 'trust_region': True}
         self.task, self.last_iteration = None, None
-        self.applications, self.last_refresh = 0, -10
+        self.applications = 0
         self.warm, self.A = {}, {}
         self.install_ages = {}
         self.events, self.activities, self.calibration = [], [], []
@@ -332,7 +322,7 @@ class V3Engine:
     def begin_task(self, task):
         if task != self.task:
             self.task, self.last_iteration, self.K_next = task, None, self.K0
-            self.applications, self.last_refresh = 0, -10
+            self.applications = 0
             self.warm.clear(); self.A.clear()
 
     @staticmethod
@@ -422,14 +412,13 @@ class V3Engine:
         chi = float(((ps-pt).square()/ps).sum()/n)
         return eold.flatten(), H_old, chi
 
-    def _direction(self, p, op, mu, *, exact=False, split=None, split_only=False, warm=None):
+    def _direction(self, p, op, mu, *, split=None, split_only=False, warm=None):
         records = []
         eold, H_old, chi = self.old_parts(op)
         B = lambda v: p.JT(H_old(p.Jv(v))).double()
-        solve = self._solve(op, mu, B, records, tol=1e-8 if exact else None,
-                            warm={} if exact else warm, max_iter=200 if exact else None)
+        solve = self._solve(op, mu, B, records, warm=warm)
         g, gO = op.gradient, p.JT(eold).double()
-        if split is None or exact:
+        if split is None:
             x = solve('z', g)
             xO = solve('z_O', gO) if bool(eold.any()) else torch.zeros_like(x)
             z, zO = op.H(p.Jv(x)), op.H(p.Jv(xO))
@@ -440,7 +429,7 @@ class V3Engine:
         kernel = p.K if self.kernel_self else p.KE
         u, uR, uN = kernel(z).double(), kernel(zO).double(), kernel(zN).double()
         V, VO = max(float(z@u), 0.), max(float(zO@uR), 0.)
-        if 'b0' in self.arm or not bool(eold.any()):
+        if not bool(eold.any()):
             d = solve('d', p.JT(op.H(u)).double())
             dN, drep = d, torch.zeros_like(d)
             beta = dict(beta=0., beta_branch='unprotected', leak=max(float(d@B(d)), 0.), epsilon_star=None, beta_suf=None)
@@ -659,7 +648,7 @@ class V3Engine:
         return records
 
     def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
-        if self.coefficient == 0 or self.arm in ('baseline', 'bp', 'cbp', 'icarl', 'er', 'erace') or ('cbp' in self.arm and 'vna' not in self.arm): return None
+        if self.coefficient == 0 or self.arm in ('baseline', 'bp', 'cbp', 'icarl') or ('cbp' in self.arm and 'vna' not in self.arm): return None
         if not force and self.last_iteration is not None and iteration-self.last_iteration < self.K_next: return None
         started = time.perf_counter()
         if batch[0].is_cuda: torch.cuda.synchronize(batch[0].device)
@@ -737,7 +726,8 @@ class V3Engine:
             if reason is None and (gh <= 0 or (bool(values['eold'].any()) and hh < 0)):
                 reason = 'negative_certificate'
             if reason is None:
-                pred = float(g @ values['x']) - .5*float(op.H(p.Jv(values['x'])) @ p.Jv(values['x']))
+                Jx = p.Jv(values['x']).double()  # float32 nets: keep the T26 model in float64
+                pred = float(g @ values['x']) - .5*float(op.H(Jx) @ Jx)
                 rho_before, rho_after = self._measure_ratio(model, batch, spec, ctx, p.parameter_refs, values['x'])
                 actual = rho_before[0] - rho_after[0]
                 rho = actual / pred if pred > 0 else float('-inf')
@@ -834,7 +824,6 @@ class V3Engine:
             skip_rate=(sum(bool(r.get('skipped')) for r in self.events)+int(skipped))/(len(self.events)+1))
         if apply:
             if not self.kernel_self: self.A = A
-            if refresh: self.last_refresh = self.applications
             self.last_iteration, self.K_next = iteration, next_K
             self.applications += 1
             self.events.append(row)

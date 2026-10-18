@@ -31,7 +31,7 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
         import math
         from experiments.v4_competitors import recipe, grid, ROUND2, ROUND3, SOURCES
         from adapters.v4_competitors import PINS
-        from experiments.stage_b3 import UPSTREAM_PIN
+        from experiments.runners.pycil import UPSTREAM_PIN
         method = protocol.get('arm')
         backbone, order, seed = (protocol.get(k) for k in ('backbone','order','seed'))
         expected_job = f'{method}__{backbone}__{order}__s{seed}'
@@ -71,7 +71,7 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
             'dataset':fingerprint,'upstream':UPSTREAM_PIN,'pins':PINS,'config':protocol['method_config']}
     if protocol.get('benchmark') == 'cil_competitor':
         from experiments.competitors import cil_recipe, CIL_METHODS
-        from experiments.stage_b3 import UPSTREAM_PIN
+        from experiments.runners.pycil import UPSTREAM_PIN
         match = re.fullmatch(r'('+ '|'.join(CIL_METHODS)+r')__(?:(inc10|b50inc10)__)?s(\d+)', job)
         if not match: raise ValueError(f'{job}: invalid competitor label')
         method, setting, seed = match.groups()
@@ -95,14 +95,14 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
         return commit, ('cil_competitor',method,expected['init_cls'],expected['increment']), {
             'dataset':fingerprint, 'upstream':protocol['upstream_commit']}
     if protocol.get('benchmark') == 'b5_competitor':
-        from experiments import stage_b5
+        from experiments.runners import lop
         from experiments.competitors import b5_recipe
         if job != 'b5_'+protocol.get('arm','') or identity != protocol:
             raise ValueError(f'{job}: mismatched B5 competitor')
         variants = summary.get('variants',[])
         if protocol.get('fake_data') is not False or [r.get('seed') for r in variants] != [0,1,2]:
             raise ValueError(f'{job}: synthetic or incomplete competitor seeds')
-        if protocol.get('upstream_commit') != stage_b5.UPSTREAM_PIN:
+        if protocol.get('upstream_commit') != lop.UPSTREAM_PIN:
             raise ValueError(f'{job}: wrong competitor upstream')
         for variant in variants:
             ident = variant.get('identity',{})
@@ -209,7 +209,7 @@ def validate_baseline(directory, expected_commit, data_root):
     protocol = json.loads((directory/'protocol.json').read_text())
     tasks = json.loads((directory/'tasks.json').read_text())
     validate_record('icarl__inc10__s1993', summary, protocol, tasks, expected_commit)
-    from experiments.stage_b3 import recipe, UPSTREAM_PIN
+    from experiments.runners.pycil import recipe, UPSTREAM_PIN
     expected = recipe()
     actual = dict(protocol['args'])
     for key in ('device','seed'):

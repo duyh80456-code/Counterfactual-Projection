@@ -465,3 +465,32 @@ last-50 online error / negative task loss AUC as stability/plasticity proxies;
 class forgetting/learning accuracy are undefined there. Historical B5 resume
 notebooks retain their separate original-source restoration path. No notebook
 or real training was executed in this phase.
+
+## Cleanup 3 clarification (2026-10-19)
+
+ (theory wins; record each in PREREGISTRATION_CHANGES.md)
+1. T26(d) failure branch: theory says `mu <- 2*mu` when rho <= 0 (and T26(f) rejection counts as
+   rho < 0). Prompt §2.2 uses the Madsen nu-doubling. Implement theory: `mu <- 2*mu`; keep `nu`
+   in state/logs fixed at 2 for schema compatibility. Success branch identical in both.
+2. T26(e): s_F* = g_hat / (d_hat^T F d_hat) (F, not F+mu); infinity if denominator 0.
+3. GIR bias set: prompt §2.4 quantiles {0.1,0.3,0.5,0.7,0.9} plus 0 — consistent with theory §10.4.
+4. CG max iterations 200 (prompt §2.1) replaces the old 50 (training solver amendment 2026-10-17).
+Any further discrepancy you find: do not guess; implement the theory and list it in your final
+report under "DISCREPANCIES".
+
+## GradMax NaN root cause (already diagnosed by the supervisor; for §2.7 / CLEANUP.md)
+Reproduced locally: `b5_cbp_gradmax` seed 0 crashes at ~step 1.7k (Kaggle seed 2 at ~30k) with
+`linalg.svd: input matrix contained non-finite values`. SVD is NOT the cause: all four model
+parameter tensors are already NaN before `prepare_gir` runs. Weights blow up across installs
+(layer-0 bias max 4 -> 47 -> 1066 -> 3.6e3 -> 3.4e8 -> 3.8e31 -> NaN; output weights 1 -> 877 ->
+3490 -> 2e9). An installed GradMax unit had |w|=20, bias=-47 versus native CBP init |w|~0.8:
+`rows_proposal` scales new rows to the mean row norm of [W, b] (bias included) and the bias then
+gets `-median(projected)` added, so large biases feed back into larger new units; large hidden
+activations then make plain SGD on the output layer diverge. The earlier `eigh` failure (pre
+3c41ecf) had the same cause. §2.7 fallback alone therefore cannot rescue a run whose weights are
+NaN: in addition to the §2.7 guard, detect non-finite parameters after each intervention, log
+`nonfinite_params=true` with the step, and mark the run status `DIVERGED` in summary/status
+(no crash, prompt §0.4). Do not change the GradMax formula (prompt §0.1).
+
+
+The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted here; in-flight Kaggle runs use their independently pinned old sources. Entrypoints also include main_cil, v4_competitors, v4_b5_width (added after the snapshot). Nine vna4_ notebooks use PLACEHOLDER for supervisor repinning. V4_PRERUN_REPORT and pilot_v3_summary are additional retained deliverables. Historical local synthetic pilot numbers are preserved in pilot_v3_summary; completed v3 B5/O1 Kaggle numbers are absent locally.

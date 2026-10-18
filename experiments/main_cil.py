@@ -13,9 +13,9 @@ from adapters.cil_setup import class_order, resnet32_nobn
 from adapters.icarl_hooks import ICaRLHook, Prediction, sites_for, loss_context
 from diagnostics.vna_align import _global_state
 from methods import vna_v3
-from experiments import stage_b3 as cil
+from experiments.runners import pycil as cil
 from experiments.competitors import cil_recipe, cil_runtime
-from experiments.stage_b5 import working_directory, write_json, write_csv
+from experiments.runners.lop import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status
 

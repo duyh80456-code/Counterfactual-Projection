@@ -6,9 +6,8 @@ from torch import nn
 from methods.vna_losses import CE, MSE, ICaRLPyCIL
 from methods.vna_ggn import GGNProducts, GGNConfig
 from methods.vna_sites import HookSite
-from methods.vna_joint import joint_correction
 from methods.vna_v3 import (V3Engine, training_products, seed_proposals, beta_rule,
-    correction_step, generalized_rows, schedule_from_points, statistics)
+    generalized_rows, schedule_from_points, statistics)
 
 
 @pytest.fixture(autouse=True)
@@ -31,18 +30,6 @@ def problem(bn=False, outputs=1):
 
 
 def flat(delta): return torch.cat([v.flatten() for v in delta.values()])
-
-
-def test_joint_same_full_scope_is_sum_of_separate_sites():
-    model = nn.Sequential(nn.Linear(2, 3), nn.ReLU(), nn.Linear(3, 3), nn.ReLU(), nn.Linear(3, 1)).double().eval()
-    sites = [HookSite(model, '0', '2', 'linear', between=('1',)), HookSite(model, '2', '4', 'linear', between=('3',))]
-    A = {s: dict(weight=torch.randn(1, s.first_layer.layer.in_features, dtype=torch.float64), bias=torch.zeros(1, dtype=torch.float64)) for s in sites}
-    batch = torch.randn(4, 2, dtype=torch.float64), torch.randn(4, 1, dtype=torch.float64)
-    cfg = GGNConfig(project_bn=False, cg_tol=1e-12, cg_iters=500)
-    joint = joint_correction(model, sites, A, batch, cfg, mu=.2, loss_spec=MSE())[0]
-    separate = [joint_correction(model, [s], {s: A[s]}, batch, cfg, mu=.2, loss_spec=MSE())[0] for s in sites]
-    expected = {name: sum(d[name] for d in separate) for name in joint}
-    assert float((flat(joint)-flat(expected)).norm()/flat(expected).norm()) < 1e-10
 
 
 @pytest.mark.parametrize('bn', [False, True])
@@ -106,15 +93,6 @@ def test_beta_all_branches_verified_upper_and_monotone_leak():
     leaks = [leak(solve('', rhs, beta)) for beta in (0., .01, 1., 10., 100.)]
     assert all(a >= b for a, b in zip(leaks, leaks[1:]))
     _, z = beta_rule(*args, 100., 1., torch.ones(2)); assert z['beta'] == 0.
-
-
-def test_step_and_faithful_and_nonpositive_gain():
-    g = torch.tensor([2., 3.], dtype=torch.float64); d = g*2
-    s, optimum, _ = correction_step(g, d, d, .1, .01, 50)
-    assert 0 < s <= optimum and s <= .01*float(g.norm()/d.norm())
-    faithful, optimum, _ = correction_step(g, d, d, .1, .001, 10, .9, True)
-    assert faithful == min(optimum, 10*.001/(1-.9))
-    assert correction_step(g, -d, -d, .1, .01, 50)[0] == 0.
 
 
 def test_zero_lambda_is_bitwise_and_readonly_preflight_state():
@@ -218,7 +196,7 @@ def test_gradmax_nonfinite_rows_falls_back_to_native_init(monkeypatch):
 
 def test_mnist_preflight_preserves_aliased_parameters_when_active_sites_shrink(monkeypatch):
     from dataclasses import replace
-    from experiments.stage_b5 import upstream_imports
+    from experiments.runners.lop import upstream_imports
     from adapters.lop_hooks import Prediction, sites_for
     upstream_imports()
     from lop.nets.deep_ffnn import DeepFFNN

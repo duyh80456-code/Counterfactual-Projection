@@ -8,7 +8,7 @@ from scipy.optimize import minimize
 from torch import nn
 from diagnostics.vna_align import _assert_bitwise, _global_state
 from experiments.vna_resume import rng_state, restore_rng
-from methods.vna_losses import CE, MSE, ICaRLPyCIL, KDRepDistiller
+from methods.vna_losses import CE, MSE, ICaRLPyCIL
 from methods.vna_v3 import (V3Engine, training_products, seed_proposals, diagnose,
                             trust_region_step, net_gain, statistics)
 from methods.vna_ggn import GGNProducts
@@ -241,7 +241,7 @@ def test_7_4_t25_bound_and_dense_reach():
     assert row['norm_w2'] == pytest.approx(float(expected),abs=1e-10)
 
 
-@pytest.mark.parametrize('spec',[CE(),MSE(reduction='mean'),KDRepDistiller(),ICaRLPyCIL(known_classes=2)])
+@pytest.mark.parametrize('spec',[CE(),MSE(reduction='mean'),ICaRLPyCIL(known_classes=2)])
 def test_loss_blocks_equal_dense_metric(spec):
     z = torch.randn(3,4,dtype=torch.float64)
     ctx = dict(targets=torch.randn_like(z) if isinstance(spec, MSE) else torch.tensor([0,1,2]),

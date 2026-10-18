@@ -1,6 +1,0 @@
-[CPU stageB] regression cbp step=0 checkpoint written (20333 bytes)
-[CPU stageB] regression cbp task=1 steps=500 ms/step=28.444 online_accuracy=None online_error=0.0245463757827097
-[CPU stageB] regression cbp step=500 task=1 steps=500 ms/step=28.443195673986338 online_accuracy=None online_error=0.0245463757827097 checkpoint written (29282 bytes)
-[CPU stageB] regression cbp task=2 steps=500 ms/step=17.038 online_accuracy=None online_error=0.011932084732929078
-[CPU stageB] regression cbp step=1000 task=2 steps=500 ms/step=17.036695184011478 online_accuracy=None online_error=0.011932084732929078 checkpoint written (116752 bytes)
-{"arm": "cbp_gir_randdir", "seed": 0, "replacement_rate": 0.001, "status": "COMPLETED", "mean_last50": 0.01823923025781939, "mean_all": 0.01823923025781939, "seconds": 22.9039469010022, "steps": 1000, "seconds_per_step": 0.0229039469010022, "estimated_full_seconds": 22903.9469010022, "cfg_source": "lop/slowly_changing_regression/cfg/sgd/cbp/relu.json", "step_size_source": "lop/slowly_changing_regression/cfg/sgd/cbp/relu.json", "recipe_decision": "TASK_STAGE_B5.md \u00a75 (2026-10-15)", "step_size": 0.01, "momentum": 0, "effective_maturity": 10, "correction_seconds": 0, "gir_refresh_seconds": 3.895532242982881, "train_seconds_per_step": 0.01900841465801932, "gir_random_fill": 0, "rho_gate_skips": 0}

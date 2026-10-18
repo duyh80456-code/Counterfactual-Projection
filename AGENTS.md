@@ -25,3 +25,12 @@ validation of results, anything in the task spec or PREREGISTRATION_CHANGES.md.
 New non-trivial logic gets one small focused test. Run only the tests the spec names plus the affected
 test files; run the full suite once at most, and only when the spec asks. Do not commit.
 Env: `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+
+## Current layout
+- Main runs: `experiments/{pilot_v3,main_cil,v4_competitors,v4_b5_width}.py`.
+- Native runners: `experiments/runners/{pycil,lop}.py`; atomic artifacts: `experiments/io_utils.py`.
+- Build/collect: `scripts/{build_kaggle_vna_parallel,collect_parallel}.py`; nine `notebooks/vna4_*.ipynb`.
+- Authority and history: theory PDF/source, main-run prompt, PREREGISTRATION_CHANGES.md,
+  CLEANUP.md, V4_PRERUN_REPORT.md and pilot_v3_summary.md in `docs/vna/`.
+- Retired Stage A/B measurement and old B5 resume entrypoints are removed. In-flight Kaggle runs
+  retain their pinned historical sources; do not restore retired modules for new runs.

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from methods.vna_losses import ICaRLPyCIL
-from methods.vna_output import OutputFactor
+from methods.vna_v3 import V3Engine
 
 
 @pytest.fixture(autouse=True)
@@ -41,8 +41,7 @@ def test_unified_reference_with_negative_controls():
     assert all(ok for _, ok in module.RES), module.RES
 
 
-@pytest.mark.parametrize('mode', ['eigh', 'cholesky'])
-def test_push_through_production_saturation_and_no_range_requirement(mode):
+def test_push_through_production_saturation_and_no_range_requirement():
     generator = torch.Generator().manual_seed(2026)
     worst_old = 0.
     for scale in (1., 5., 10., 20., 30.):
@@ -56,27 +55,30 @@ def test_push_through_production_saturation_and_no_range_requirement(mode):
         products = SimpleNamespace(K=lambda r: J @ (J.T @ r.flatten()),
                                    JT=lambda r: J.T @ r.flatten(), JEv=lambda w: JE @ w)
         op = SimpleNamespace(logits=logits, loss_spec=spec, ctx=ctx, p=products)
-        factor = OutputFactor(op, factor_mode=mode)
-        R = torch.block_diag(*factor.root)
         eye = torch.eye(20)
         H = torch.stack([spec.metric_apply(logits, v.reshape_as(logits), ctx).flatten()
                          for v in eye], 1)
+        vals, Q = torch.linalg.eigh(H)
+        R = (Q*vals.clamp_min(0).sqrt()) @ Q.T
         mu = max(.01*float(torch.trace(J.T @ H @ J))/20, 1e-12)
         A = J.T @ H @ J + mu*torch.eye(13)
         # Dense parameter solves are independent of the output factorization.
         expected = H @ J @ torch.linalg.solve(A, J.T @ e)
-        z = factor.z(e, mu, kernel_residual=products.K(e))
+        op.F = lambda v: J.T @ H @ J @ v
+        engine = V3Engine(); engine.tol = 1e-12
+        solve = engine._solve(op, mu, lambda v: torch.zeros_like(v), [], warm={})
+        z = H @ J @ solve('z', J.T @ e)
         torch.testing.assert_close(z, expected, rtol=1e-8, atol=1e-11)
         outside = e + torch.ones_like(e)
-        actual = factor.z(outside, mu, kernel_residual=products.K(outside))
+        actual = H @ J @ solve('outside', J.T @ outside)
         oracle = H @ J @ torch.linalg.solve(A, J.T @ outside)
         torch.testing.assert_close(actual, oracle, rtol=1e-8, atol=1e-11)
-        assert not factor.range_ok and torch.isfinite(actual).all()
+        assert torch.isfinite(actual).all()
         w = JE.T @ z
         stacked = torch.cat((R @ J, mu**.5*torch.eye(13)))
         target = torch.cat((R @ JE @ w, torch.zeros(13)))
         expected_d = torch.linalg.lstsq(stacked, target, driver='gelsd').solution
-        torch.testing.assert_close(factor.d(products, w, mu), expected_d, rtol=1e-8, atol=1e-10)
+        torch.testing.assert_close(solve('d', J.T @ H @ JE @ w), expected_d, rtol=1e-8, atol=1e-10)
         vals, Q = torch.linalg.eigh(H)
         keep = vals > vals.max()*1e-10
         pinv_R = (Q[:, keep]*vals[keep].rsqrt()) @ Q[:, keep].T

@@ -110,8 +110,8 @@ class CompetitorHook:
                     if m.training: self.features[name] = inputs[0].detach()
                 handles.append(block.conv_b.register_forward_pre_hook(capture))
         if self.method == 'icarl_cbp':
-            from experiments import stage_b5
-            stage_b5.upstream_imports()
+            from experiments.runners import lop
+            lop.upstream_imports()
             from lop.algos.res_gnt import ResGnT
             saved = getattr(learner, '_v4_cbp', None)
             for index, (name, block) in enumerate(pairs):

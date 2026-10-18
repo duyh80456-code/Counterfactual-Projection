@@ -25,7 +25,6 @@ class Calibration:
     def __init__(self, preflight=False):
         self.preflight = preflight
         self.calibration, self.iteration_times, self.full_batches = [], [], []
-        self.mu_trials = []
         self.counts = {}
 
     def apply(self, engine, model, sites, batch, spec, ctx, optimizer, iteration, remaining):
@@ -33,9 +32,8 @@ class Calibration:
         if self.preflight and self.counts.get(task,0) >= 3: return None
         calibrating = self.preflight and task in (1, 2) and self.counts.get(task, 0) < 3
         if calibrating:
-            report = engine.preflight(model, sites, batch, spec, ctx, optimizer, iteration,
+            engine.preflight(model, sites, batch, spec, ctx, optimizer, iteration,
                                      remaining=remaining)
-            self.mu_trials.append(dict(task=task, iteration=iteration, **report))
         event = engine.apply(model, sites, batch, spec, ctx, optimizer, iteration,
                              remaining=remaining, force=calibrating)
         if calibrating and event is not None:

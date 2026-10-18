@@ -276,3 +276,21 @@ def test_competitor_and_main_share_table_and_probe_setup():
     rows=table([record('icarl'),reproduction])
     row=next(r for r in rows if r['arm']=='icarl_cflat')
     assert row['class_order']=='superclass/reproduction' and row['paired_seeds']==0
+
+
+def test_rebuilt_notebooks_keep_checkpoint_runtime_and_placeholder_pin(tmp_path, monkeypatch):
+    import ast
+    from scripts.build_kaggle_vna_parallel import main as build_notebooks, PRESETS
+    monkeypatch.setattr('sys.argv', ['build_kaggle_vna_parallel', '--commit', 'PLACEHOLDER',
+        '--variants', '--output', str(tmp_path/'vna4_M1.ipynb')])
+    build_notebooks()
+    assert {p.name for p in tmp_path.glob('*.ipynb')} == {f'vna4_{name}.ipynb' for name in PRESETS}
+    for path in tmp_path.glob('*.ipynb'):
+        notebook = json.loads(path.read_text())
+        source = '\n'.join(''.join(cell['source']) for cell in notebook['cells'])
+        assert "REPO_COMMIT = 'PLACEHOLDER'" in source
+        assert 'launch_logged' in source and 'validate_result' in source
+        assert 'restore_stage_archives' in source and 'VNA_DEADLINE' in source
+        assert 'One-Shot-TAS-CCIL' not in source and 'GROMO' not in source
+        for cell in notebook['cells']:
+            if cell['cell_type'] == 'code': ast.parse(''.join(cell['source']))

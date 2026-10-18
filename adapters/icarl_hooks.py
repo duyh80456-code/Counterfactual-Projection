@@ -14,7 +14,7 @@ from methods.vna_losses import CE, ICaRLPyCIL
 from methods.vna_sites import HookSite
 from experiments.vna_resume import (log, hook_state, restore_hook, rng_state,
                                     restore_rng, projected, set_locals)
-from experiments.shared_protocol import atomic_torch_save
+from experiments.io_utils import atomic_torch_save
 
 
 class Prediction(nn.Module):
