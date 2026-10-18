@@ -40,7 +40,13 @@ def read_schedule(args):
                     source_digest=os.environ.get('VNA_SOURCE_DIGEST'))
     if args.setting == 'online': expected['model_config'] = online_model_config(args)
     for key, value in expected.items():
-        if schedule.get(key) != value: raise ValueError(f'schedule {key} mismatch')
+        if schedule.get(key) == value: continue
+        if key == 'code_commit' and args.setting == 'regression' and args.arm in B5_ARMS and not args.fake_data:
+            from experiments.b5_seed0_resume import validate_b5_schedule
+            validate_b5_schedule(schedule, value)
+            print(f'B5_CALIBRATION_REUSED authority_commit={schedule["code_commit"]} consumer_commit={value}', flush=True)
+            continue
+        raise ValueError(f'schedule {key} mismatch')
     if not schedule.get('authoritative') or not isinstance(schedule.get('K_base'), int) or schedule['K_base'] < 1:
         raise ValueError('schedule lacks authoritative positive K_base')
     if schedule.get('synthetic', False) and not args.fake_data:

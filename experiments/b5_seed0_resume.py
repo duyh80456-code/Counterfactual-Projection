@@ -134,31 +134,52 @@ def select_sources(input_root, outputs, jobs, current_tag, current_commit, seed=
     return selected
 
 
+def validate_b5_schedule(value, current_commit):
+    """Accept registered real B5 calibration while retaining its source identity."""
+    if not isinstance(value, dict): raise ValueError('B5 schedule must be an object')
+    if (value.get('setting') != 'regression' or value.get('authority_arm') != 'b5_bp_vna_gir' or
+            value.get('authoritative') is not True or value.get('synthetic') is not False or
+            value.get('source_digest') is not None or
+            value.get('code_commit') not in LEGACY_COMMITS | {current_commit} or
+            type(value.get('K_base')) is not int or value['K_base'] < 1 or
+            value.get('iterations_per_epoch') != 10000 or
+            value.get('mu_rel') not in (.001, .01, .1) or
+            value.get('cg_tol') not in (.001, .0001) or value.get('power_iters') not in (5, 20)):
+        raise ValueError(f'incompatible B5 calibration: commit={value.get("code_commit")} '
+                         f'setting={value.get("setting")} authority={value.get("authority_arm")}')
+    return value
+
+
 def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
-    """Reuse a seed-0 authority schedule and its exact source for fresh jobs."""
+    """Reuse the unchanged authority artifact with a compatible repaired runner."""
     outputs = Path(outputs)
     destination = outputs/run_tag/'_schedules/regression.json'
     def read(path):
         value = json.loads(path.read_text())
-        if (value.get('setting') != 'regression' or value.get('authority_arm') != 'b5_bp_vna_gir' or
-                value.get('authoritative') is not True or value.get('synthetic') is not False or
-                value.get('source_digest') is not None or
-                value.get('code_commit') not in GRADMAX_FIXED | {current_commit} or
-                type(value.get('K_base')) is not int or value['K_base'] < 1):
-            raise ValueError(f'incompatible shared B5 schedule: {path}')
-        return value
+        if not isinstance(value, dict): raise ValueError('B5 schedule container must be an object')
+        if path.name in ('protocol.json', 'summary.json'):
+            value = value.get('preflight') or value.get('identity', {}).get('preflight')
+            if value is None: return None
+        return validate_b5_schedule(value, current_commit)
     if destination.exists():
         schedule = read(destination)
     else:
         candidates = []
         for root in (Path(input_root), outputs):
-            for path in sorted(root.rglob('regression.json')):
-                try: candidates.append((path, read(path)))
-                except (OSError, ValueError): continue
+            for filename in ('regression.json', 'schedule.json', 'protocol.json', 'summary.json'):
+                for path in sorted(root.rglob(filename)):
+                    try:
+                        value = read(path)
+                        if value is not None: candidates.append((path, value))
+                    except (OSError, ValueError) as error:
+                        print(f'SCHEDULE_REJECTED {path}: {error}', flush=True)
         if not candidates:
-            raise FileNotFoundError('Attach seed-0 Output/archive containing the repaired B5 regression.json; seeds 1/2 reuse that schedule without new preflight')
+            raise FileNotFoundError('No compatible real B5 authority schedule found in Input or restored outputs; see SCHEDULE_REJECTED above. Attach regression.json or the original preflight Output/archive')
         preferred = [current_commit, '4d3008ad031663c93846d27003c9f7935b3f00a2',
-                     '3c41ecf87449b73ebff730c9be600f00818b1d24']
+                     '3c41ecf87449b73ebff730c9be600f00818b1d24',
+                     'f571c6a7f39b6490f880b9ed4bd459741226dbcf',
+                     'd461ce96816ce6ae7e1bbdde2c78d5bed7cc20ab',
+                     '8ea105fcf3194df48807e5c0d315272e8f1f6fd1'] + sorted(LEGACY_COMMITS)
         commit = next(c for c in preferred if any(v['code_commit'] == c for _, v in candidates))
         same = [(p, v) for p, v in candidates if v['code_commit'] == commit]
         if any(value != same[0][1] for _, value in same):
@@ -167,7 +188,7 @@ def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
         write_json(destination, schedule)
         print(f'SHARED_SCHEDULE source={path}', flush=True)
     print(f'SHARED_SCHEDULE K_base={schedule["K_base"]} commit={schedule["code_commit"]}; no new preflight', flush=True)
-    return schedule['code_commit']
+    return current_commit
 
 
 def checkout_sources(repo, sources):

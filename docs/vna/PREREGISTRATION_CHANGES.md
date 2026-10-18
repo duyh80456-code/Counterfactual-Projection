@@ -2,6 +2,20 @@
 
 ## B5 seed-0 preview and numerical repair (2026-10-18)
 
+### Legacy authority schedule loading repair (2026-10-18)
+
+The group notebooks previously rejected the real 8ea105f B5 preflight solely
+because its commit predates the GradMax repair. The B5 authority arm is
+bp_vna_gir, which does not use the repaired Euclidean GradMax eigensolver;
+the regression FFNN has no aliased native layers affected by the MNIST fix.
+Registered real v3 B5 calibrations are now accepted with their original
+code_commit and values intact. Fresh jobs use the compatible repaired runner,
+and protocol/preflight fields distinguish consumer code from calibration source.
+This exception applies only to the registered B5 regression setup; MNIST,
+iCaRL and online schedule commit checks retain their exact-match requirement.
+The loader also reads schedule.json and embedded preflight artifacts from
+protocol/summary files and prints rejection reasons instead of hiding them.
+
 ### Separate seed-1 and seed-2 notebooks (2026-10-18)
 
 Superseded by three arm-group notebooks at the user's request. Groups A/B/C
