@@ -1,6 +1,5 @@
 """Decisive VNA v3 pilot through pinned native training loops."""
 import argparse
-from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -13,21 +12,20 @@ from experiments.runners import lop
 from experiments.vna_resume import Progress, Status, rng_state
 from experiments.vna_provenance import code_commit
 from adapters.lop_hooks import LearnHook, learner_state
-from adapters.vna_v3_hooks import LoPV3, ICaRLV3
+from adapters.vna_v3_hooks import LoPV3
 from diagnostics.vna_align import MeasurementBuffer
 
 B5_ARMS = tuple('b5_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
     'bp_gir', 'bp_vna_gir', 'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
 PM_ARMS = tuple('pm_'+a for a in ('bp', 'bp_kself', 'bp_vna', 'bp_vna_rand',
     'cbp', 'cbp_gir', 'cbp_gradmax', 'cbp_vna_gir'))
-ICARL_ARMS = ('icarl', 'icarl_vna')
 
 
 def engine_arm(arm):
     for prefix in ('b5_', 'pm_'):
         if arm.startswith(prefix): arm = arm[len(prefix):]
-    if arm in ('bp', 'cbp', 'icarl'): return 'baseline'
-    arm = arm.removeprefix('bp_').removeprefix('icarl_')
+    if arm in ('bp', 'cbp'): return 'baseline'
+    arm = arm.removeprefix('bp_')
     return arm.replace('kself', 'kernel_self')
 
 
@@ -64,8 +62,7 @@ def protocol(args, engine, params, upstream):
         upstream_commit=upstream, cfg=params, synthetic=args.fake_data,
         preflight_only=args.preflight_only, replacement_rate=params.get('replacement_rate'),
         replacement_rate_checks=[1e-6,1e-5,1e-4,1e-2] if args.setting == 'regression' else [],
-        window=('current_augmented_minibatch' if args.setting == 'icarl' else
-                'FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples'),
+        window='FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples',
         step_rule='phase 2', K_units='iterations',
         K0=engine.K0, budget=engine.protocol.get('budget', 1.0),
         solver=dict(method='parameter-space matrix-free CG', tol=engine.tol, max_iterations=200,
@@ -195,84 +192,19 @@ def run_lop(args):
     finally: status.close()
 
 
-def run_icarl(args):
-    from experiments.runners import pycil
-    from experiments.runners.pycil import NoMeasurement
-    pycil.upstream_imports()
-    engine = make_engine(args)
-    intervention = ICaRLV3(engine, preflight=args.preflight_only)
-    native_args = pycil.parser().parse_args([])
-    for name in ('out','device','data_dir','seed','workers','fake_data'):
-        setattr(native_args, name, getattr(args,name))
-    native_args.init_seed = 0
-    native_args.arm = args.arm
-    native_args.smoke = args.fake_data or args.preflight_only
-    native_args.measure_profile = 'quick'
-    native_args.no_measure = True
-    measure = NoMeasurement(dict(setting='icarl',arm=args.arm),measure_profile='quick')
-    original_runtime = pycil.runtime
-    @contextmanager
-    def runtime(**kw):
-        with original_runtime(**kw):
-            if args.preflight_only:
-                from models import icarl
-                icarl.init_epoch = icarl.epochs = 4 if args.fake_data else 5
-            yield
-    pycil.runtime = runtime
-    try:
-        hook = pycil.run(native_args,measure_override=measure,intervention=intervention,
-                            observe=intervention.after_epoch)
-    finally: pycil.runtime = original_runtime
-    out = Path(args.out)
-    info = protocol(args,engine,pycil.recipe(),pycil.UPSTREAM_PIN)
-    info['expected_tasks'] = 2 if args.fake_data or args.preflight_only else 10
-    if args.preflight_only: info['preflight'] = finalize_calibration(args,engine,intervention,out)
-    lop.write_json(out/'protocol.json',info)
-    lop.write_csv(out/'continual_eval.csv',intervention.continual_eval)
-    summary = json.loads((out/'summary.json').read_text())
-    info['dataset_fingerprint'] = summary.get('identity',{}).get('dataset_fingerprint')
-    if not args.fake_data and info['dataset_fingerprint'] is None:
-        from experiments.parallel_validity import dataset_fingerprint
-        info['dataset_fingerprint'] = dataset_fingerprint(out/'data')
-    lop.write_json(out/'protocol.json',info)
-    summary.update(algorithm_version='v3', setting='icarl', anytime_accuracy_auc=None,
-                   code_commit=code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'))
-    for task in summary['tasks']:
-        curves = [v for v in intervention.continual_eval if v['task'] == task['task']]
-        losses = intervention.task_losses.get(task['task'],[])
-        half = [v['iteration'] for v in losses if v['loss'] <= losses[0]['loss']*.5]
-        if curves:
-            x = np.array([v['iteration'] for v in curves]); y = np.array([v['accuracy'] for v in curves])
-            old = [v['old_accuracy'] for v in curves if v['old_accuracy'] is not None]
-            reference = summary['tasks'][task['task']-2]['cnn_top1'] if task['task'] > 1 else None
-            recovered = [v for v in curves if reference is not None and v['old_accuracy'] is not None and v['old_accuracy'] >= reference]
-            task.update(learning_accuracy=curves[-1]['new_accuracy'], old_accuracy=curves[-1]['old_accuracy'],
-                        new_accuracy=curves[-1]['new_accuracy'],
-                        anytime_accuracy_auc=float(np.trapezoid(y,x)/max(1,x[-1]-x[0])) if len(x)>1 else float(y[0]),
-                        min_old_accuracy=min(old) if old else None,
-                        stability_gap_depth=max(0.,reference-min(old)) if old and reference is not None else None,
-                        stability_recovery_iterations=recovered[0]['iteration']-curves[0]['iteration'] if recovered else None,
-                        iterations_to_half_loss=half[0]-losses[0]['iteration'] if half else None)
-    if summary['tasks']:
-        summary['anytime_accuracy_auc'] = float(np.mean([t.get('anytime_accuracy_auc',0) for t in summary['tasks']]))
-    lop.write_json(out/'summary.json',summary); lop.write_json(out/'tasks.json',summary['tasks'])
-    write_events(out,engine)
-    return summary
-
-
 def run(args):
-    allowed = dict(regression=B5_ARMS,mnist=PM_ARMS,icarl=ICARL_ARMS)
+    allowed = dict(regression=B5_ARMS,mnist=PM_ARMS)
     if args.arm not in allowed[args.setting]: raise ValueError('arm does not belong to setting')
-    if args.preflight_only and args.arm not in ('b5_bp_vna_gir','pm_bp_vna','icarl_vna'):
+    if args.preflight_only and args.arm not in ('b5_bp_vna_gir','pm_bp_vna'):
         raise ValueError('preflight authority must use the registered most expensive VNA arm')
     if not args.preflight_only and engine_arm(args.arm) != 'baseline' and not args.schedule and not args.fake_data:
         raise ValueError('full arm requires a shared authoritative family schedule')
-    return run_icarl(args) if args.setting == 'icarl' else run_lop(args)
+    return run_lop(args)
 
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--setting',choices=('regression','mnist','icarl'),required=True)
+    p.add_argument('--setting',choices=('regression','mnist'),required=True)
     p.add_argument('--arm',required=True)
     p.add_argument('--seed',type=int,default=0)
     p.add_argument('--out',required=True); p.add_argument('--resume',action='store_true')

@@ -183,3 +183,10 @@ dtype error at the first application of every float32 run; `Jx` is now cast to f
 `kaggle_vna_stage_a`, `kaggle_vna_stage_b_nb1`, `nb2`, `nb3`, `kaggle_vna_signal_curve`,
 `kaggle_vna_cifar_pilot`, `kaggle_vna_b3_quick`, `kaggle_vna_pilot_b5`. New notebooks:
 `vna4_M1`, `vna4_M2`, `vna4_M3`, `vna4_C1`–`vna4_C5`, `vna4_B5w`.
+
+## Pre-run review (2026-10-19)
+
+Removed the old CIL branch of `experiments/pilot_v3.py` (`run_icarl`, `ICARL_ARMS`,
+`--setting icarl`), now dead `adapters/vna_v3_hooks.py:ICaRLV3`, and the dead PyCIL runner in
+`experiments/runners/pycil.py` (`NoMeasurement`, `runtime`, `run`, `parser`); the main CIL path
+is `experiments/main_cil.py`. `runners/pycil.py` keeps the pin, `upstream_imports` and `recipe`.

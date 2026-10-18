@@ -3,7 +3,6 @@ from contextlib import contextmanager
 import time
 import torch
 from adapters.lop_hooks import Prediction as LoPPrediction, sites_for as lop_sites
-from adapters.icarl_hooks import Prediction as CILPrediction, sites_for as cil_sites, loss_context
 from diagnostics.vna_align import _global_state
 from methods.vna_losses import CE, MSE
 from methods.vna import dedicated_generator
@@ -201,80 +200,3 @@ class LoPV3(Calibration):
         finally: GnT.gen_new_features = original
 
 
-class ICaRLV3(Calibration):
-    window = 'current_augmented_minibatch'
-    calibrate = every_epoch = auto_schedule = False
-
-    def __init__(self, engine, *, preflight=False):
-        super().__init__(preflight)
-        self.engine = engine
-        self.continual_eval, self.task_metrics = [], []
-        self.batch = None
-        self.task_losses = {}
-        self._last_tick = None
-
-    def state_dict(self):
-        return {k: v for k, v in vars(self).items() if k not in ('engine', 'hook', '_last_tick')} | {'engine': self.engine.state_dict()}
-
-    def load_state_dict(self, state):
-        self.engine.load_state_dict(state['engine'])
-        for key, value in state.items():
-            if key != 'engine': setattr(self, key, value)
-
-    def start_task(self, learner):
-        self.engine.begin_task(learner._cur_task+1)
-        self.full_batches.append(len(learner.train_loader))
-        self._last_tick = time.monotonic()
-
-    def after_step(self, hook, learner, optimizer):
-        self.hook = hook
-        now = time.monotonic()
-        elapsed = 0. if self._last_tick is None else now-self._last_tick
-        self._last_tick = now
-        elapsed -= sum(e.get('seconds', 0.) for e in self.engine.events
-                       if e.get('iteration') == hook.steps)
-        if elapsed > 0:
-            if len(self.iteration_times) < 200: self.iteration_times.append(elapsed)
-            self.engine.protocol['baseline_iteration_seconds'] = elapsed
-        if self.engine.coefficient == 0: return
-        if self.preflight and self.counts.get(self.engine.task,0) >= 3: return
-        calibrating = self.preflight and self.counts.get(self.engine.task,0) < 3
-        if (not calibrating and self.engine.last_iteration is not None and
-                hook.steps-self.engine.last_iteration < self.engine.K_next): return
-        device = next(learner._network.parameters()).device
-        self.batch = tuple(t.to(device) for t in hook.current_batch)
-        if self.preflight:
-            values = self.iteration_times if hasattr(self, 'iteration_times') else []
-            if values: self.engine.protocol['baseline_iteration_seconds'] = values[-1]
-            self.engine.protocol['task_iterations'] = len(learner.train_loader)
-            self.engine.protocol['iterations_per_epoch'] = len(learner.train_loader)
-        model = CILPrediction(learner._network)
-        spec, ctx = loss_context(learner, self.batch)
-        ctx['classes'] = learner._total_classes
-        from models import icarl
-        epochs = icarl.init_epoch if learner._cur_task == 0 else icarl.epochs
-        remaining = max(0, (epochs-hook.current_epoch)*len(learner.train_loader)-hook.epoch_step)
-        self.apply(self.engine, model, cil_sites(model), self.batch, spec, ctx, optimizer,
-                   hook.steps, remaining)
-
-    def after_epoch(self, learner, optimizer):
-        hook = self.hook
-        row = hook.epochs[-1]
-        task, epoch = row['task'], row['epoch']
-        self.task_losses.setdefault(task, []).append(dict(iteration=hook.steps, loss=row['train_loss']))
-        from models import icarl
-        last = icarl.init_epoch if task == 1 else icarl.epochs
-        if epoch > 10 and epoch % 10 and epoch != last: return
-        old_correct = new_correct = old_total = new_total = 0
-        model = CILPrediction(learner._network)
-        with evaluation(model):
-            for _, x, target in learner.test_loader:
-                target = target.to(learner._device)
-                pred = model(x.to(learner._device)).argmax(1)
-                old = target < learner._known_classes
-                old_correct += int(((pred == target) & old).sum()); old_total += int(old.sum())
-                new_correct += int(((pred == target) & ~old).sum()); new_total += int((~old).sum())
-        self.continual_eval.append(dict(task=task, epoch=epoch, iteration=hook.steps,
-            old_accuracy=100*old_correct/old_total if old_total else None,
-            new_accuracy=100*new_correct/new_total if new_total else None,
-            accuracy=100*(old_correct+new_correct)/max(1,old_total+new_total)))

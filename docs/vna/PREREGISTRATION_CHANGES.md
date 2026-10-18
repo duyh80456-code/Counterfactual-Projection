@@ -516,3 +516,26 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   ported from their ViT/MLP helper to PyCIL resnet32. Rebuilt per task (growing head), step
   counter carried across tasks.
 - **MRFA** pinned but not wired (separate PyCIL fork). **Forget-Forgetting**: no public code.
+
+### Pre-run review fixes (2026-10-19, before any v4 result)
+
+- **LM failure rule now follows the spec** (supersedes item 18 above): rho <= 0 or an exact-check
+  rejection gives `mu <- mu*nu, nu <- 2*nu`; rho > 0 gives `mu <- mu*max(1/3, 1-(2rho-1)^3),
+  nu <- 2`. rho is measured at S1 on x_GN for every application with a trustworthy split
+  (before the S4 sign filter), as in prompt §2.2 step 2.
+- **GIR is independent of the VNA certificate (T28):** swaps run unless the S1 split itself is
+  unusable (`cg_z`, non-finite x_GN). Negative certificate, invalid beta or untrusted rho only
+  skip the VNA step.
+- **ell_beta uses H_beta (T27)** for lambda_max(J_v^T H_beta J_v).
+- **`icarl_gir` ablation** runs the same T28 search as `icarl_full` with beta = 0
+  (e_beta = e, H_beta = H, r_perp from the S1 split); no VNA step.
+- **Cost (no formula change):** lambda_E and lambda_max(J_v^T H_beta J_v) by matrix-free power
+  iteration (20 and 10 steps, dedicated generators) instead of explicit Jacobians; s_v = J_v^T r
+  by one VJP. Gamma (one CG) is solved only for the best `gamma_candidates`=2 proposals by
+  ell_beta (logged in protocol); live-slot exact jumps are checked before any proposal is built;
+  q_hat*(J) is recomputed only after an accepted swap. lambda_E is therefore a lower estimate
+  (Rayleigh quotient); the logged T25 ratio V/(lambda_E B) can exceed 1 by that error.
+- **Preflight times a complete application** (VNA step, exact check, GIR swaps) and restores
+  model, optimizer, RNG and engine state bitwise, so K0 includes GIR cost.
+- **Schedule:** no forced application at the last iteration of a task; once the next geometric
+  gap exceeds the remaining iterations, the task gets no further application.
