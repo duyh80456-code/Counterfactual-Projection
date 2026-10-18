@@ -13,6 +13,7 @@ seed0_failures = {}
 
 def seed0_progress():
     directory = STAGE_B / RUN_TAG
+    active = {lane.get('job') for lane in list(lane_state.values())}
     rows = []
     for job in JOBS_CPU:
         out = directory / job
@@ -28,8 +29,9 @@ def seed0_progress():
         if done:
             validate_result(job, summary, protocol, tasks, REPO_COMMIT, SOURCE_DIGEST)
         state = ('FAILED' if job in seed0_failures else 'COMPLETED' if done else
-                 'PAUSED' if session_paused.is_set() and status else
-                 'RUNNING' if status else 'PENDING')
+                 'RUNNING' if job in active else
+                 'PAUSED' if session_paused.is_set() and (out / 'resume.pkl').exists() else
+                 'WAITING_RESUME' if (out / 'resume.pkl').exists() else 'PENDING')
         rows.append(dict(job=job, status=state, tasks=len(tasks), total=expected,
             step=status.get('step'), online_error=tasks[-1].get('online_error') if tasks else None,
             mean_last50=summary.get('mean_last50') if done else None,
@@ -94,6 +96,9 @@ Older P-B5 archives use another commit/tag and are not reused as revised trainin
     runner = ''.join(cells[-1]['source'])
     runner = runner.replace('from concurrent.futures import ThreadPoolExecutor',
         'from concurrent.futures import ThreadPoolExecutor, as_completed')
+    runner = runner.replace(
+        'futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]',
+        'futures=[gpu_pool.submit(run_gpu,gpu,jobs) for gpu,jobs in enumerate((JOBS_GPU0,JOBS_GPU1)) if jobs]')
     runner = runner.replace('try:\n    v3jobs =', '''native_run_cpu = run_cpu
 def run_cpu(job):
     try: return native_run_cpu(job)
