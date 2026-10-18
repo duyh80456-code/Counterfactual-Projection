@@ -1,0 +1,115 @@
+\section{Đóng các lựa chọn tự do: trust region, GIR có bảo vệ, swap theo lợi ròng}\label{sec:closure}
+
+Bộ khung (\cref{sec:core,sec:select,sec:unified}) không có hằng số tự do, nhưng phần nối các bước còn bốn lựa chọn tay: cỡ bước (cap $\mathrm{lr}\norm g/\norm{\hat d}$, chặn ở 99.5\% lần áp dụng trên B5), damping $\mu$ (chọn từ lưới, điều kiện preflight không đạt), residual của GIR ($\eO$ hay $e$), và slot nào được thay (chỉ slot chết). Mục này thay cả bốn bằng hệ quả của cùng một bài toán: \emph{mô hình GN có bảo vệ, trong vùng mà mô hình đó còn đáng tin}.
+
+Quy ước: $\theta\leftarrow\theta-x$; mô hình GN của loss cửa sổ là $m(x)=L-g\T x+\tfrac12x\T Fx$; $\xGN(\mu)=(F+\mu)^{-1}g$.
+
+\subsection{T26: damping là nhân tử của trust region}
+
+\begin{namedthm}{T26}{trust region thay cho $\mu_{\mathrm{rel}}$ và cap bước}
+Giả thiết A2, $g\ne0$.
+\begin{enumerate}[label=(\alph*)]
+\item \emph{(Moré--Sorensen \cite{more1983}.)} Với mọi $\mu>0$, $\xGN(\mu)$ là nghiệm duy nhất của $\min m(x)$ với $\norm x\le\Delta(\mu):=\norm{\xGN(\mu)}$, và $\mu$ là nhân tử Lagrange. $\Delta(\mu)$ giảm chặt theo $\mu$, nên $\mu$ và bán kính tin cậy $\Delta$ xác định lẫn nhau.
+\item Tương tự, $P_\mu(t)=GJ\T Ht$ là nghiệm của $\min\norm{Jx-t}_H^2$ với $\norm x\le\norm{P_\mu(t)}$. Vậy hiệu chỉnh $\hat d$ là \emph{phép chiếu trong vùng tin cậy} của vận tốc ảo; khi có bảo vệ, $\hat d$ là nghiệm KKT với hai nhân tử: $\beta$ (ràng buộc output cũ) và $\mu$ (ràng buộc vùng tin cậy).
+\item \emph{Ý nghĩa của phép tách.} $z(\mu)=HJ\xGN(\mu)$ là phần residual mà bước GN \emph{trong vùng tin cậy} loại được; $\norm{\rperp(\mu)}_{H^+}$ tăng và $B(\mu)=g\T Gg$ giảm theo $\mu$. Mô hình càng kém tin cậy thì càng nhiều residual được giao cho GIR.
+\item \emph{Đo độ tin cậy.} Với một forward thêm, $\varrho=[L(\theta)-L(\theta-\xGN)]/[m(0)-m(\xGN)]$. Quy tắc cập nhật chuẩn của Levenberg--Marquardt \cite{madsen2004}: nếu $\varrho>0$ thì $\mu\leftarrow\mu\max(\tfrac13,1-(2\varrho-1)^3)$, ngược lại $\mu\leftarrow2\mu$. Các hằng số là hằng số giáo khoa; lý thuyết hội tụ của trust region đúng cho cả một khoảng giá trị \cite{nocedal2006}. Vì các lần áp dụng xen giữa các bước SGD, ở đây \emph{không} khẳng định hội tụ; $\varrho$ chỉ được dùng như độ trung thành đo được của mô hình GN tại điểm đang xét.
+\item \emph{Cỡ bước.} $s=\min(s_F^*,\Delta/\norm{\hat d})$, $s_F^*=\hat g/\hat d\T F\hat d$ ($s_F^*=\infty$ nếu mẫu số bằng $0$). Khi đó $\norm{s\hat d}\le\Delta$ và $m(s\hat d)\le m(0)-\tfrac12s\hat g$.
+\item \emph{Chấp nhận chính xác trên cửa sổ.} Sau khi áp dụng, một forward cho $L(\theta')$, $L_{KD}(\theta')$; chấp nhận khi cả hai không tăng, ngược lại hoàn tác và coi như $\varrho<0$. Khi đó mỗi lần áp dụng \emph{không làm tăng} $L$ và $L_{KD}$ trên cửa sổ một cách chính xác, không chỉ ở bậc một.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) $m$ lồi ($F\succeq0$); KKT của bài toán có ràng buộc: $(F+\mu)x=g$, $\mu\ge0$, $\mu(\norm x-\Delta)=0$; với $\mu>0$ ràng buộc chặt và $x=\xGN(\mu)$ thỏa. Lồi nên KKT đủ; nghiệm duy nhất vì $F+\mu\succ0$. $\Delta(\mu)^2=\sum_ig_i^2/(\lambda_i+\mu)^2$ trong cơ sở riêng của $F$, giảm chặt khi $g\ne0$.
+(b) Như (a) với mục tiêu $\norm{Jx-t}_H^2$, gradient $2(Fx-J\T Ht)$. Với bảo vệ, thêm số hạng $\beta\norm{C(x-\drep)}_W^2$ (\Tref{T1}); KKT có hai nhân tử.
+(c) Trong tọa độ $w$ của \Tref{T25}: $\rperp\leftrightarrow\mu(M+\mu)^{-1}w$, mỗi hệ số $\mu/(\lambda_i+\mu)$ tăng theo $\mu$; $B=\sum\lambda_iw_i^2/(\lambda_i+\mu)$ giảm.
+(d) Định nghĩa và \cite{madsen2004}.
+(e) $\norm{s\hat d}\le\Delta$ theo định nghĩa. $m(s\hat d)-m(0)=-s\hat g+\tfrac12s^2\hat d\T F\hat d\le-s\hat g+\tfrac12s\hat g$ vì $s\le s_F^*$.
+(f) Theo định nghĩa của phép kiểm.
+\end{proof}
+\begin{hequa}
+$\mu$ không còn được chọn: nó là đối ngẫu của bán kính tin cậy, và bán kính được điều chỉnh theo $\varrho$ đo được. Cap $\mathrm{lr}\norm g/\norm{\hat d}$ (đơn vị là ``một bước SGD'') được thay bằng $\Delta$ (đơn vị là ``bước GN mà mạng tin được''). Quy tắc $\lambda=K$, giả thiết A13 và các arm \texttt{\_lf} không còn cần. Phép kiểm (f) cho chứng chỉ chính xác trên cửa sổ; chứng chỉ bậc một của S4 và dung sai $\tau$ chỉ còn là bộ lọc rẻ trước khi thử.
+\end{hequa}
+\begin{kiem}
+\texttt{check\_t26\_28.py}, 200 bài (H suy biến kiểu softmax): T26a so với SLSQP có ràng buộc, 0 vi phạm; T26b ($\Delta$ giảm chặt) 0 vi phạm; T26c ($B$ giảm theo $\mu$) 0 vi phạm.
+\end{kiem}
+
+\subsection{T27: GIR trên bài toán có bảo vệ}
+
+Gọi $x_R=G g_O$ là bước GN trên riêng residual KD và $\delta_O=-Cx_R$ là độ dịch logit cũ mà bước đó tạo ra (đích của phần sửa, tương tự $C\drep$ trong \Tref{T1}). Mô hình có bảo vệ trên độ dịch output $y$:
+\[
+\hat Q(y)=e\T y+\tfrac12y\T Hy+\tfrac\beta2\norm{Oy-\delta_O}_W^2,\qquad \hat q^*(\Jcal)=\min_x\hat Q(\Jcal x)+\tfrac\mu2\norm x^2 .
+\]
+
+\begin{namedthm}{T27}{GIR có bảo vệ}
+Giả thiết A2, A3, $\beta\ge0$ do \textsc{BetaRule} trả về. Đặt $H_\beta=H+\beta O\T WO$, $e_\beta=e-\beta O\T W\delta_O$.
+\begin{enumerate}[label=(\alph*)]
+\item $\hat q^*(\Jcal)=-\tfrac12(\Jcal\T e_\beta)\T(\Jcal\T H_\beta\Jcal+\mu)^{-1}(\Jcal\T e_\beta)+\mathrm{const}$: một mô hình GN thường với metric $H_\beta$ và residual $e_\beta$. Với $\Jcal=J$, ma trận hệ là $J\T H_\beta J+\mu=F+\beta B+\mu=A_\beta$, \emph{đúng ma trận} mà bước S3 giải cho VNA.
+\item Với mọi khối cột mới $J_v$: $\hat q^*(J)-\hat q^*([J,J_v])=\tfrac12s\T S^{-1}s\ge0$, với $s=J_v\T\rperp^\beta$, $\rperp^\beta=\mu(H_\beta K+\mu)^{-1}e_\beta$, $S=J_v\T H_\perp^\beta J_v+\mu$, $H_\perp^\beta=H_\beta-H_\beta JG_\beta J\T H_\beta$. Cận dưới không cần giải hệ và hệ số xấp xỉ giữ như \Tref{T7}(d) với $H\to H_\beta$.
+\item $\beta=0$: $H_\beta=H$, $e_\beta=e$, trở về đúng quy tắc của B5 ($r=e$). $\beta$ lớn: lợi đo phần học mới mà neuron đem lại \emph{trong khi} logit cũ được giữ ở đích $\delta_O$.
+\item Không có tham số mới: $\beta$ là $\beta$ của \textsc{BetaRule}. Quy tắc cũ ``$r=\eO$ trong CIL'' không phải giới hạn nào của họ này và được rút lại.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Khai triển $\hat Q(\Jcal x)=x\T\Jcal\T(e-\beta O\T W\delta_O)+\tfrac12x\T\Jcal\T(H+\beta O\T WO)\Jcal x+\tfrac\beta2\norm{\delta_O}_W^2$; cực tiểu của hàm bậc hai lồi chặt. $J\T O\T WOJ=C\T WC=B$.
+(b) $e\in\range(H)$ (\Tref{L5}) và $O\T W\delta_O\in\range(O\T WO)$; vì $H,O\T WO\succeq0$, $\range(H_\beta)=\range(H)+\range(O\T WO)$, nên $e_\beta\in\range(H_\beta)$. Áp \Tref{T7}(b) với $(H,r)\to(H_\beta,e_\beta)$. Không âm vì $\hat q^*$ là cực tiểu của \emph{cùng một} hàm trên span lớn hơn ($\delta_O$ cố định theo $J$ hiện tại, không phụ thuộc $J_v$).
+(c) Thay $\beta=0$; giới hạn $\beta\to\infty$ như \Tref{T2}(b) với ràng buộc $\Lambda(Oy-\delta_O)=0$.
+(d) Định nghĩa.
+\end{proof}
+\begin{hequa}
+Bước S6 dùng $\rperp^\beta$ thay cho $\rperp(\eO)$ hay $\rperp(e)$. VNA và GIR nay giải \emph{cùng một} mô hình (metric $H_\beta$, ma trận $A_\beta$): VNA tìm hệ số trên span hiện tại cho vận tốc ảo, GIR mở rộng span; $\beta$ là một con số duy nhất cân giữa học mới và giữ cũ cho cả hai. \Tref{T25} đúng nguyên văn với $(H,e)\to(H_\beta,e_\beta)$.
+\end{hequa}
+\begin{kiem}
+T27a (dạng đóng so với cực tiểu trực tiếp) và T27b ($A_\beta=J\T H_\beta J+\mu$): 0 vi phạm; T27c (Schur so với hiệu $\hat q^*$ tính trực tiếp, và $\ge0$): 0/200 vi phạm.
+\end{kiem}
+
+\subsection{T28: thay slot theo lợi ròng}
+
+Slot sống $u$ có đóng góp $f_u$ và các cột $J_u$; thay bằng $v$ ($B_v=0$) thì output thành $f-f_u$ và span thành $J'=[J_{\setminus u},J_v]$.
+
+\begin{namedthm}{T28}{lợi ròng của swap; slot chết là trường hợp riêng}
+Giả thiết như \Tref{T27}.
+\begin{enumerate}[label=(\alph*)]
+\item Mô hình sau swap và hồi phục trong span mới:
+\[\hat q_{\mathrm{sau}}=\hat Q(-f_u)-\tfrac12(J'^{\top}e')\T(J'^{\top}H_\beta J'+\mu)^{-1}(J'^{\top}e'),\qquad e'=e_\beta-H_\beta f_u .\]
+Lợi ròng $\Gamma(u,v)=\hat q^*(J)-\hat q_{\mathrm{sau}}$ gồm ba phần: giá của bước nhảy $\hat Q(-f_u)-\hat Q(0)$ (đã gồm phạt trên logit cũ), mất span của $u$, và lợi span của $v$.
+\item Slot chết ($f_u=0$, $J_u=0$): $\Gamma(u,v)$ bằng đúng lợi của \Tref{T27}(b). Quy tắc slot chết là trường hợp riêng.
+\item \emph{Quy tắc.} Swap khi $\Gamma(u,v)>0$ \emph{và} bước nhảy đo chính xác thỏa $j_u^L\le0$, $j_u^{KD}\le0$ (\Tref{T7}(i.5)). Điều kiện thứ hai là chứng chỉ chính xác tức thời; điều kiện thứ nhất là dự báo của mô hình GN về lợi sau hồi phục. Với slot chết cả hai tự động đúng khi $s\ne0$.
+\item Thứ tự xét ứng viên $u$ theo $\norm{f_u}_{H_\beta}$ (đóng góp đo trong cùng metric) chỉ là thứ tự tìm kiếm, không phải tiêu chí quyết định.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) $\hat Q(-f_u+J'x)=\hat Q(-f_u)+x\T J'^{\top}\nabla\hat Q(-f_u)+\tfrac12x\T J'^{\top}H_\beta J'x$ với $\nabla\hat Q(-f_u)=e-Hf_u-\beta O\T W(Of_u+\delta_O)=e_\beta-H_\beta f_u$; cực tiểu theo $x$ cùng số hạng $\tfrac\mu2\norm x^2$.
+(b) Thay $f_u=0$; các cột bằng $0$ không đổi $\hat q^*$; còn lại là \Tref{T27}(b).
+(c) \Tref{T7}(i.1, i.5).
+(d) Định nghĩa.
+\end{proof}
+\begin{hequa}
+Bước S6 không còn phân biệt ``slot chết'' và ``slot sống'' như hai cơ chế: một quy tắc duy nhất, slot chết là trường hợp $f_u=0$. Đây là điều kiện để GIR hoạt động trên mạng có BN. Phần chứng nhận được vẫn chỉ là tức thời; $\Gamma>0$ là dự báo, phụ thuộc độ trung thành của mô hình hồi phục. Trust region của \Tref{T26} làm dự báo này đáng tin hơn: ở damping lớn, dấu dự báo khớp bước GN thực hiện ở 194/198 cặp, so với 87/198 ở $\mu_{\mathrm{rel}}=10^{-2}$ (\st{empirical}, \Tref{T16}).
+\end{hequa}
+\begin{kiem}
+T28a (dạng đóng so với BFGS trực tiếp) 0/200 vi phạm; T28b (slot chết trùng \Tref{T27}) 0/200 vi phạm.
+\end{kiem}
+
+\subsection{Các lựa chọn nhỏ còn lại}
+
+\begin{itemize}
+\item \textbf{Số swap.} Mọi slot thỏa \Tref{T28}(c), không giới hạn $S$; cập nhật phần bù tuần tự theo \Tref{T13}(b); tổng lợi là telescoping (\Tref{T13}(a)).
+\item \textbf{Bias của neuron mới.} Chọn $b$ cực đại $\ell_\beta(v)$ trên các quantile của $\sigma Xa_k$; cùng tiêu chí gain, không thêm tiêu chí.
+\item \textbf{Làm mới $A$.} Mỗi lần áp dụng (tiny\_V rẻ hơn một lần giải CG); bỏ hằng số ``10 lần''.
+\item \textbf{Dung sai $\tau$.} Không còn quyết định gì: phép kiểm chính xác \Tref{T26}(f) thay vai trò chứng chỉ.
+\end{itemize}
+
+\paragraph{Sau mục này, thuật toán còn đúng ba tham số:} $r$ (độ rộng ảo, tham số khái niệm của chính câu chuyện), ngân sách compute (quyết định $K$), và base method cùng cửa sổ của nó. Mọi đại lượng khác ($\mu$, cỡ bước, $\beta$, residual của GIR, slot được thay, bias) là nghiệm của mô hình GN có bảo vệ trong vùng tin cậy.
+
+\begin{tabularx}{\linewidth}{@{}lXl@{}}
+\toprule
+Lựa chọn & Trước & Sau \\
+\midrule
+damping $\mu$ & lưới $\mu_{\mathrm{rel}}$ + preflight & nhân tử trust region, cập nhật theo $\varrho$ (T26) \\
+cỡ bước & $\min(s^*,\mathrm{lr}\norm g/\norm{\hat d})$ & $\min(s_F^*,\Delta/\norm{\hat d})$ + kiểm chính xác (T26) \\
+chứng chỉ & bậc một, dung sai $\tau$ & chính xác trên cửa sổ (T26f) \\
+residual GIR & $\eO$ (CIL) / $e$ (B5) & $e_\beta$, metric $H_\beta$ (T27) \\
+slot được thay & chỉ slot chết, $S=1$ & mọi slot có $\Gamma>0$ và $j\le0$ (T28) \\
+bias neuron mới & $\{0,-\mathrm{median}\}$ & cực đại $\ell_\beta$ \\
+làm mới $A$ & mỗi 10 lần & mỗi lần \\
+\bottomrule
+\end{tabularx}

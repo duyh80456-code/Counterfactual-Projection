@@ -1,0 +1,57 @@
+\section{Giới thiệu và phạm vi đóng góp}\label{sec:intro}
+
+\subsection{Bài toán}
+
+Ta xét một mạng có kiến trúc \emph{cố định} được huấn luyện liên tục trên một chuỗi task. Hai hiện tượng làm việc này khó:
+\begin{itemize}
+  \item \textbf{Mất plasticity} \cite{dohare2024}: sau nhiều task, mạng mất khả năng học tiếp; nhiều neuron rơi vào trạng thái chết (dormant) \cite{sokar2023redo}.
+  \item \textbf{Quên thảm họa} trong học tăng dần theo lớp: khi học lớp mới, output trên lớp cũ bị trôi; hiện tượng mạnh nhất ngay sau khi chuyển task \cite{delange2023gap}.
+\end{itemize}
+Các phương pháp \emph{mở rộng thật} (thêm neuron, thêm nhánh) giải quyết dung lượng bằng cách làm model lớn dần. Câu hỏi của chúng tôi là: có thể lấy được \emph{động lực} mà một mạng lớn hơn sẽ có, nhưng giữ nguyên kích thước mạng, không?
+
+\subsection{Ý tưởng trong một đoạn}
+
+Ở mỗi lần áp dụng (mỗi $K$ iteration), ta:
+\begin{enumerate}
+  \item dùng một bước Gauss--Newton có damping để tách residual $e$ thành phần mà mạng hiện tại với tới được, $z$, và phần còn lại, $\rperp=e-z$ (\Tref{T20});
+  \item chọn vài neuron ảo theo tiêu chí grow (tiny\_V) và tính vận tốc output $K_E z$ mà chúng sẽ đóng góp;
+  \item chiếu vận tốc đó về tham số đang có theo Dirac--Frenkel với metric $H$, được hiệu chỉnh $d$ (\Tref{T19}); trong CIL, tách $d$ thành phần sửa lớp cũ và phần học mới bị chặn rò rỉ (\Tref{T1}, \Tref{T3});
+  \item kiểm chứng chỉ trên đúng vector sẽ áp dụng; bỏ qua nếu chứng chỉ âm (\Tref{T5}, \Tref{T9});
+  \item nếu có slot chết, lắp neuron mới chọn theo $\rperp$ vào slot với trọng số ra bằng $0$ (\Tref{T7}).
+\end{enumerate}
+Optimizer gốc (SGD của iCaRL, BP hay CBP) chạy ở mọi iteration như bình thường, \emph{không} bị thay đổi.
+
+\subsection{Đóng góp (phạm vi trung thực)}
+
+\begin{enumerate}[label=(C\arabic*)]
+  \item \textbf{Một họ cập nhật duy nhất.} Hiệu chỉnh $d$ là phép chiếu Dirac--Frenkel có damping \emph{chính xác} của phần ảo của vận tốc mạng mở rộng tại $w=0$, trên cotangent $z$ (\Tref{T19}). Mọi ablation (thay $K_E$ bằng $K$, chọn $A$ ngẫu nhiên, $\beta=0$, không swap, $\lambda=0$) là thành viên của cùng họ đó; chúng chỉ khác nhau ở \emph{kernel} đưa vào cùng một phép chiếu (\cref{sec:ablation}).
+  \item \textbf{Chứng chỉ cho từng lần áp dụng.} Với $\beta=0$, $g\T d=V\ge 0$ (\Tref{T2}); với $\beta>0$, chứng chỉ được tính trực tiếp trên vector áp dụng, có dung sai từ sai số CG (\Tref{T9}); quy tắc bỏ qua bảo đảm không làm tăng loss và KD ở bậc một (\Tref{T5}).
+  \item \textbf{Bảo vệ lớp cũ có nguyên tắc.} Phân rã $d^*=\drep+\dN$; $\beta$ là nhân tử KKT duy nhất của ngân sách quên $\varepsilon^*$ không có tham số tự do (\Tref{T3}); giới hạn cứng đúng là $\Lambda C(d-\drep)=0$ (\Tref{T2}).
+  \item \textbf{GIR có chứng chỉ cho slot chết.} Lắp với $B_v=0$ bảo toàn hàm chính xác; lợi được cho bởi dạng Schur theo $\rperp$ cho mọi phi tuyến (\Tref{T7}); có quy tắc nhiều slot, đặt lại optimizer, BN (\Tref{T13}, \Tref{T17}).
+  \item \textbf{Các trường hợp suy biến và phạm vi} (V$_O=0$, $e_O=0$, BN, momentum, CG không chính xác) được xử lý tường minh (\Tref{T9}--\Tref{T11}, \Tref{T18}).
+\end{enumerate}
+
+\textbf{Những gì tài liệu \emph{không} khẳng định:}
+\begin{itemize}
+  \item không khẳng định mạng ``train như một mạng lớn hơn'' theo nghĩa quỹ đạo; bảo đảm là bậc một, cho từng lần áp dụng (\Tref{T8});
+  \item không khẳng định bước SGD của optimizer gốc là một phần của cùng phép chiếu; đó chỉ là một \st{interpretation} xấp xỉ (\Tref{T20}, \Tref{T22});
+  \item không khẳng định tương đương với DER hay ``growth với hàm cũ đóng băng'';
+  \item không khẳng định gì về accuracy trên tập test; câu hỏi ``kernel ảo $K_E$ có hơn kernel của chính mạng $K$ không'' là câu hỏi \emph{thực nghiệm} (\cref{sec:open}).
+\end{itemize}
+
+\subsection{Quy ước trạng thái}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Trạng thái & Ý nghĩa \\
+\midrule
+\st{proven} & có chứng minh đầy đủ dưới các giả thiết đã liệt kê \\
+\st{assumption} & giả thiết được nêu rõ, có cách kiểm lúc chạy hoặc lý do \\
+\st{empirical} & chỉ có bằng chứng số (thường trên toy) \\
+\st{interpretation} & diễn giải hay liên hệ, không phải định lý \\
+\st{measured} & đại lượng đo chính xác lúc chạy nhưng không có bảo đảm về hệ quả \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Tên các định lý (T1--T24) và bổ đề (L1--L10) giữ đúng như trong tài liệu nghiên cứu và mã kiểm số, để có thể đối chiếu trực tiếp với \texttt{final\_check\_v3.py} và \texttt{check\_unified\_gn.py} (\cref{app:verification}).

@@ -1,0 +1,129 @@
+\section{Một họ cập nhật: tách residual và phép chiếu phần ảo}\label{sec:unified}
+
+Mục này trả lời câu hỏi: hiệu chỉnh $d$, bước Gauss--Newton có sẵn ở bước S1, optimizer gốc và GIR liên hệ với nhau thế nào? Kết luận (đã qua phản biện vòng 5) là:
+\begin{itemize}
+  \item $d$ là \emph{phép chiếu chính xác} của phần ảo của vận tốc mạng mở rộng, trên cotangent $z$ (\Tref{T19});
+  \item bước GN có damping đóng vai \emph{bộ tách} $e=z+\rperp$ (\Tref{T20});
+  \item optimizer gốc giữ nguyên động lực của chính nó; việc coi nó là ``phần $K$ của cùng phép chiếu'' chỉ là một \st{interpretation} xấp xỉ, sai khác $O(\mu\norm G)$ phụ thuộc phổ (\Tref{T20}(c), \Tref{T22});
+  \item GIR tác động qua $\rperp$; vai trò của các thành phần là \emph{bổ sung} cho nhau dưới phép tách GN có damping, không tách bạch tuyệt đối (\Tref{T23}).
+\end{itemize}
+
+Định nghĩa phép chiếu có damping $P(t):=\argmin_x\norm{Jx-t}_H^2+\mu\norm x^2=GJ\T Ht$ (nghiệm duy nhất vì $\mu>0$). Mạng mở rộng có Jacobian $[J,J_E]$ và kernel $K+K_E$ tại trọng số ra $w=0$.
+
+\begin{namedthm}{T19}{phân rã vận tốc mở rộng đã chiếu}
+(a) $P((K+K_E)z)=P(Kz)+P(K_Ez)=x_K+d$, với $d=GJ\T HK_Ez$ (VNA ở $\beta=0$) và $x_K:=GJ\T HKz$.
+(b) $x_K=GF(J\T z)=GF\cdot FGg=(FG)^2g$.
+(c) $x_K$ chính là $d$ khi thay $K_E$ bằng $K$; arm này được gọi là \texttt{kernel\_self}.
+(d) Nói chung $x_K\ne\xGN:=Gg$: khi $\mu\to0$ trên $\range(F)$, $x_K\to P_{\range F}\,g$ còn $\xGN\to F^+g$.
+\end{namedthm}
+\begin{proof}
+(a) $P$ tuyến tính. (b) $Kz=J(J\T z)$ và $J\T z=J\T HJGg=FGg$; $F$, $G$ giao hoán. (c) Thay $K_E\to K$ trong $d$. (d) $FG\to P_{\range F}$ và $G\to F^+$ trên $\range(F)$.
+\end{proof}
+\begin{remark}
+Dưới z-flow của mạng mở rộng ($\dot\theta=-J\T z$, $\dot w=-J_E\T z$), vận tốc thực của tham số cũ là $J\T z=FGg=g-\mu\xGN$; $x_K$ là vận tốc đó bị damping thêm một lần bởi phép chiếu có damping. Vì vậy việc gọi $x_K$ là ``phần $K$ trung thực'' phụ thuộc vào lựa chọn phép chiếu; điều được khẳng định chắc chắn là (a)--(c).
+\end{remark}
+\begin{hequa}
+Bước S3 ở $\beta=0$ đúng là $P(K_Ez)$. Arm \texttt{kernel\_self} khác VNA \emph{chỉ ở kernel} đưa vào cùng phép chiếu, nên so sánh VNA với \texttt{kernel\_self} đo đúng đóng góp của kernel ảo.
+\end{hequa}
+
+\begin{namedthm}{T20}{tách residual bằng bước GN}
+Với $\xGN=Gg$ (lần giải đầu tiên của bước S1):
+(a) $z=HJ\xGN=HK(HK+\mu)^{-1}e$ và $\rperp=e-z=\mu(HK+\mu)^{-1}e$.
+(b) $Ke-Kz=\mu J\xGN$ và $J\T\rperp=\mu\xGN$.
+(c) Nếu $g\in\range(F)$ (đúng khi $e\in\range(H)$, tức đúng cho CE + KD theo \Tref{L5}) thì $\norm{Ke-Kz}/\norm{Ke}\to0$ khi $\mu\to0$. Hằng số không đều: sai khác cỡ $O(\mu\norm G)$ trên phần phổ của $F$ mà $g$ có năng lượng; với phổ lũy thừa có thể lớn ($\approx127\mu_{\mathrm{rel}}$ trong một thí nghiệm của phản biện).
+(d) Với $\Delta^*=-J\xGN$: $z=-H\Delta^*$ là phần residual mà \emph{bước GN có damping} loại bỏ; $\rperp=e+H\Delta^*$ là gradient của mô hình bậc hai $e\T\Delta+\tfrac12\Delta\T H\Delta$ còn lại tại $\Delta^*$, tức phần bước có damping để lại.
+\end{namedthm}
+\begin{proof}
+Push-through: $J(J\T HJ+\mu)^{-1}J\T=K(HK+\mu)^{-1}$ và $J\T(HK+\mu)^{-1}=GJ\T$. Do đó $z=HK(HK+\mu)^{-1}e$ và $e-z=\mu(HK+\mu)^{-1}e$; $Ke-Kz=\mu K(HK+\mu)^{-1}e=\mu JGJ\T e$; $J\T\rperp=\mu J\T(HK+\mu)^{-1}e=\mu Gg$. (c) Sai khác $\norm{2\mu Gg-\mu^2G^2g}$ tiến về $0$ khi $g$ nằm trong range của $F$; khi $e\notin\range(H)$ và $H$ suy biến, phản ví dụ cho sai khác 0.58 ở $\mu_{\mathrm{rel}}=10^{-8}$. (d) Thay $\Delta^*$.
+\end{proof}
+\begin{hequa}
+Bước S1 tính $\xGN$ và lưu lại: từ đó có $z$ (cho VNA) và $\rperp$ (cho GIR) mà không cần giải thêm. Với $\mu>0$, $\rperp$ \emph{không} hoàn toàn ngoài tầm với của mạng hiện tại ($J\T\rperp=\mu\xGN\ne0$), và optimizer gốc vẫn tác động lên toàn bộ $e$; do đó vai trò ``VNA trên $z$, GIR trên $\rperp$'' là bổ sung, không tách bạch.
+\end{hequa}
+
+\begin{namedthm}{T21}{phân rã mức giảm bậc một; ý nghĩa của $\rho$}
+Với $\beta=0$: $g\T x_K=\norm{FGg}^2\ge0$ và $g\T d=z\T K_Ez=V\ge0$. Dưới cập nhật thực sự chạy (bước của optimizer gốc theo $g$ cộng $\lambda d$), $\rho=V/\norm g^2$ là \emph{tỉ số} giữa mức giảm bậc một của mạng cố định do phần ảo và do phần nền, trên một đơn vị trọng số. Ngoài ra $\rho\le\rho_{\mathrm{proj}}:=V/\norm{FGg}^2$, tỉ số tương ứng cho z-flow đã chiếu.
+\end{namedthm}
+\begin{proof}
+$g\T GF^2Gg=\norm{FGg}^2$; $g\T GJ\T HK_EHJGg=z\T K_Ez$ (\Tref{L4}); $\norm{FGg}\le\norm g$ vì $FG\preceq I$.
+\end{proof}
+\begin{remark}
+$\rho$ là tỉ số (ảo trên nền), không phải ``tỉ phần''; tỉ phần sẽ là $V/(\norm{FGg}^2+V)$. Cả hai đại lượng là mức giảm của \emph{mạng cố định} sau khi chiếu, không phải tốc độ của mạng mở rộng: tốc độ giảm loss của mạng mở rộng, $e\T(K+K_E)z$, không có chứng chỉ (phần ảo $e\T K_Ez=V+\rperp\T K_Ez$ âm ở 79/400 bài ngẫu nhiên). Với $\beta>0$, $g\T d^*$ không còn xác định dấu (\Tref{T5}(g)).
+\end{remark}
+\begin{hequa}
+Bước S7 log $\rho$ với đúng nghĩa trên. Cổng chẩn đoán dựa trên $\rho$ được giữ như đã đăng ký trước, nhưng phải đọc là ``tỉ số ảo trên nền'', không phải ``phần tiến bộ của mạng mở rộng đến từ neuron ảo''.
+\end{hequa}
+
+\begin{namedthm}{T22}{động lực GN của mạng mở rộng}
+Bước $\theta$ của GN có damping cho mạng mở rộng là $\delta'_\theta=-J\T(HK'+\mu)^{-1}e$, $K'=K+K_E$. Tại $K_E=0$ nó bằng $-\xGN$, và đạo hàm bậc một theo $K_E$ là
+\[
+\partial\delta'_\theta/\partial K_E[K_E]=GJ\T HK_E(HK+\mu)^{-1}e=\tfrac1\mu GJ\T HK_E\rperp .
+\]
+Theo quy ước cập nhật $\theta\leftarrow\theta-x$, phần ảo của động lực này là $\xGN-\tfrac1\mu GJ\T HK_E\rperp$ ở bậc một, đúng khi $\norm{HK_E}/\mu\ll1$. Số hạng này khác $d$ (lệch tương đối $\ge43$ trên bài kiểm).
+\end{namedthm}
+\begin{proof}
+$(HK'+\mu)^{-1}=(HK+\mu)^{-1}-(HK+\mu)^{-1}HK_E(HK+\mu)^{-1}+O(K_E^2)$, $J\T(HK+\mu)^{-1}=GJ\T$, và \Tref{T20}(a).
+\end{proof}
+\begin{remark}[phát biểu định lượng thay cho phát biểu định tính đã rút lại]
+Khẳng định cũ ``$\xGN+d$ không phải phép chiếu của bất kỳ động lực mở rộng nào'' là \emph{sai}: tồn tại cotangent chung $c$ sao cho $P((K+K_E)c)=\xGN+d$ chính xác. Điều còn đúng là định lượng: $\xGN$ lệch khỏi phần $K$ của z-flow một lượng $O(1)$, còn $g$ lệch $O(\mu\norm G)$. Theo cùng tiêu chí, cập nhật ``optimizer gốc $+\lambda d$'' cũng là một tổ hợp (khối $\theta$ của gradient flow mở rộng cộng phần ảo của z-flow). Chúng tôi chọn tổ hợp này vì nó giữ nguyên optimizer gốc (plug-in) và có chứng chỉ \Tref{T5}; đó là một \emph{lựa chọn thiết kế}, không phải hệ quả bắt buộc.
+\end{remark}
+\begin{hequa}
+Bước GN $\xGN$ là một baseline \emph{ngoài} (đổi optimizer gốc), không phải ablation; nó có sẵn miễn phí từ bước S1.
+\end{hequa}
+
+\begin{namedthm}{T23}{lợi của swap được điều khiển bởi $\rperp$}
+Mở rộng span bằng cột $J_v$ làm giảm mô hình GN đúng $q^*_e(J)-q^*_e([J,J_v])=\tfrac12s\T S^{-1}s$, $s=J_v\T\rperp$, $S=J_v\T H_\perp J_v+\mu$ (cũng là \Tref{T7}(b)). Sau swap, $K'=K+J_vJ_v\T\succeq K$; ở lần áp dụng kế tiếp, bước S1 tính lại phép tách với $K'$, và phần của $\rperp$ mà neuron vừa lắp với tới được chuyển vào $z'$.
+\end{namedthm}
+\begin{proof}
+\Tref{T7}(b) với $r=e$. Phần sau là \Tref{T7}(g).
+\end{proof}
+\begin{hequa}
+Bước S6 dùng đúng $\rperp$ đã có từ bước S1 (không giải thêm); sau swap, lần áp dụng kế tiếp tự động đưa neuron vừa lắp vào kernel $K'$.
+\end{hequa}
+\begin{remark}
+$S$ cũng phụ thuộc $K$ qua $H_\perp$; ``điều khiển bởi $\rperp$'' nghĩa là tử số của lợi chỉ phụ thuộc $\rperp$.
+\end{remark}
+
+\begin{namedthm}{T24}{cỡ bước dọc $d$}
+Với $\theta\leftarrow\theta-s\,d$, mức giảm của mô hình GN $s\,g\T d-\tfrac12s^2d\T(F+\mu)d$ đạt cực đại tại $s^*=g\T d/d\T(F+\mu)d$.
+\end{namedthm}
+\begin{proof}
+Hàm bậc hai lõm theo $s$.
+\end{proof}
+\begin{hequa}
+Quy tắc $\lambda$ (thiết lập, phải đăng ký trước): $\lambda=\min(\lambda_{\mathrm{faithful}},s^*/\varepsilon)$ với $\lambda_{\mathrm{faithful}}=K$ dưới A13. Bốn lưu ý: (i) quy tắc bỏ qua phải chạy \emph{trước} khi tính $\lambda$, vì với $\beta>0$ có thể $s^*<0$; (ii) $s^*$ bỏ qua $K$ bước nền trong cùng khoảng; (iii) quy tắc momentum $\lambda=K/(1-m)$ là heuristic, không có dẫn xuất; (iv) các điều kiện bậc hai của \Tref{T5}(e,f) và độ lệch $O(\varepsilon\lambda\norm{\hat d})$ của GIR phải tính lại với $\lambda$ đã chọn (với $\lambda=K$ chúng có thể lớn hơn khoảng $K$ lần so với chuẩn hóa cùng norm). Quy tắc cùng norm $\lambda=\norm g/\norm d$ là một quy ước công bằng, báo cáo như thiết lập phụ. Mọi chứng chỉ bậc một bất biến theo $\lambda>0$.
+\end{hequa}
+
+\begin{kiem}
+\texttt{check\_unified\_gn.py}: 15/15 đạt (U1--U9 kèm NEG và WIT; U1 $1.5\cdot10^{-13}$, U3 $7.5\cdot10^{-16}$, U2 $2.3\cdot10^{-12}$ với U2-WIT $\cos(x_K,\xGN)$ trung vị 0.50, U4 $2.9\cdot10^{-11}$, U6 sai phân trung tâm khớp $1.4\cdot10^{-6}$, U6-NEG lệch $\ge43$, U8 $6.2\cdot10^{-12}$). Phản biện vòng 5 tự viết 25 phép kiểm độc lập, gồm 8 nhân chứng chống lại các khẳng định cũ đã được sửa ở trên.
+\end{kiem}
+
+\subsection{T25: lợi của VNA bị chặn bởi phần residual mà mạng sống với tới được}
+
+Mục này hình thức hóa câu ``VNA cần GIR''. Đặt $B(K):=g\T Gg$ với $g=J\T e$, $G=(F+\mu)^{-1}$; theo chứng minh của \Tref{T7}(a), $B(K)=-2q^*_e(J)$ là mức giảm của mô hình GN mà \emph{mạng sống} đạt được trên residual $e$. Viết $e=Rw$ với $R=H^{1/2}$, $w=R^+e$ (hợp lệ vì $e\in\range(H)$, \Tref{L5}) và $M=RKR$; khi đó $B(K)=w\T M(M+\mu)^{-1}w$, chỉ phụ thuộc $J$ qua $K=JJ\T$.
+
+\begin{namedthm}{T25}{chặn trên theo khả năng với tới}
+Giả thiết A2, A3, $\beta=0$, $e\in\range(H)$. Đặt $\lambda_E:=\lambda_{\max}(RK_ER)$.
+\begin{enumerate}[label=(\alph*)]
+\item $V=z\T K_Ez\le\lambda_E\,B(K)$.
+\item $B$ không giảm theo thứ tự Loewner: $K\preceq K'\Rightarrow B(K)\le B(K')$. Đơn vị chết (cột của $J$ bằng $0$ trên cửa sổ) làm $K$ mất số hạng $J_uJ_u\T\succeq0$, nên $B$, và do đó cận ở (a), không tăng.
+\item Chèn khối cột $J_v$ (GIR, $r=e$) làm $B$ tăng \emph{đúng} $2\,\mathrm{gain}(v\mid J)=s\T S^{-1}s$, $s=J_v\T\rperp$ (\Tref{T7}(b), \Tref{T23}). Vậy cận của VNA ở lần áp dụng kế tiếp tăng $2\lambda_E\,\mathrm{gain}(v\mid J)$.
+\item \emph{Chỉ là điều kiện cần.} Bản thân $V$ không đơn điệu theo $K$; (a)--(c) nói: khi phần với tới được nhỏ thì VNA chắc chắn nhỏ, còn khi nó lớn thì VNA \emph{có thể} lớn.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Push-through: $z=HJGg=RM(M+\mu)^{-1}w$ (vì $(RRK+\mu)^{-1}R=R(RKR+\mu)^{-1}$). Đặt $X=M(M+\mu)^{-1}$, $0\preceq X\preceq I$. Khi đó $V=w\T X(RK_ER)Xw\le\lambda_E\,w\T X^2w\le\lambda_E\,w\T Xw=\lambda_E B(K)$, dùng $X^2\preceq X$. Cuối cùng $w\T Xw=e\T JGJ\T e=g\T Gg$ theo cùng đồng nhất push-through.
+(b) $x\mapsto x/(x+\mu)$ là hàm đơn điệu toán tử trên $[0,\infty)$ (Löwner); $K\preceq K'\Rightarrow M\preceq M'$.
+(c) $B([J,J_v])-B(J)=-2[q^*_e([J,J_v])-q^*_e(J)]=2\,\mathrm{gain}(v\mid J)$.
+(d) Phản ví dụ số ở mục kiểm.
+\end{proof}
+\begin{hequa}
+Chuỗi lập luận ``GIR mở không gian, VNA khai thác'' nay là hệ quả: đơn vị chết làm co cận trên của mức giảm bậc một mà VNA có thể cho (b); GIR là thao tác \emph{duy nhất} trong thuật toán làm cận đó tăng, và tăng đúng bằng lợi của chính nó (c). Hệ quả kiểm được: khi tỉ lệ đơn vị chết cao và không có GIR, VNA bị chặn bởi một đại lượng nhỏ (B5: 77--95\% đơn vị chết ở 50 task cuối); lợi của VNA khi có GIR phải lớn dần theo độ rộng mạng. Log $B(K)$ và $\lambda_E$ ở bước S7 để kiểm cận (a) trên dữ liệu thật.
+\end{hequa}
+\begin{kiem}
+\texttt{check\_t25.py}, 300 bài ngẫu nhiên (gồm 30\% $H$ suy biến): (a) 0 vi phạm, độ chặt $V/(\lambda_EB)$ trung vị 0.39, lớn nhất 0.985 (cận không rỗng); (b) bỏ ngẫu nhiên khoảng 40\% cột, 0 vi phạm; (c) $B([J,J_v])-B(J)=2\,\mathrm{gain}$ tới $10^{-8}$; T25d-WIT: $V$ \emph{tăng} sau khi một đơn vị chết ở 119/300 bài, nên chỉ cận là đơn điệu.
+\end{kiem}
+\begin{remark}[bằng chứng hiện có, \st{empirical}]
+B5, 3 seed: VNA không có GIR kém BP (1.315 so với 1.209), nhất quán với (b). VNA có GIR so với GIR: 0.548 so với 0.561, thắng 84/150 task ghép cặp, chưa phân biệt được với nhiễu. Như vậy phần ``cần'' của (d) được dữ liệu ủng hộ, phần ``bổ sung'' chưa được chứng minh bằng thực nghiệm. Trong CIL online có BN (O1) không có đơn vị chết và không có KD, nên cả T25 lẫn \Tref{T3} không có tác dụng; kết quả đó không kiểm định phương pháp.
+\end{remark}
+
+\paragraph{Phát biểu trung thực về ``một cơ chế''.} Đây là \emph{một họ cập nhật} trong đó kernel đưa vào phép chiếu là thành phần duy nhất thay đổi giữa các arm; khi $\mu$ nhỏ so với phổ của $F$ trên $g$, họ cập nhật này xấp xỉ phép chiếu của một z-flow mở rộng duy nhất.

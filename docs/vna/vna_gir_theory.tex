@@ -1,0 +1,124 @@
+% VNA–GIR: cơ sở lý thuyết, chứng minh và thuật toán (bản tổng hợp chặt chẽ)
+% Biên dịch: xelatex vna_gir_theory.tex (hai lần)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc,fit,shapes.geometric}
+\usepackage{xcolor}
+\usepackage{footmisc}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=green!35!black,urlcolor=blue!50!black]{hyperref}
+\usepackage[capitalise,nameinlink]{cleveref}
+
+\setlist{itemsep=2pt,topsep=4pt}
+\renewcommand{\arraystretch}{1.18}
+\setlength{\LTpre}{6pt}\setlength{\LTpost}{6pt}
+
+% ---------- môi trường định lý ----------
+% Định lý và bổ đề mang tên cố định (T1–T24, L1–L10) để khớp với mã kiểm số.
+\newcommand{\thmtag}{}
+\theoremstyle{plain}
+\newtheorem*{namedthminner}{\thmtag}
+\newenvironment{namedthm}[2]{\renewcommand{\thmtag}{#1}\begin{namedthminner}[#2]\phantomsection\label{thm:#1}}{\end{namedthminner}}
+\newcommand{\Tref}[1]{\hyperref[thm:#1]{#1}}
+\theoremstyle{definition}
+\newtheorem*{namedassinner}{\thmtag}
+\newenvironment{namedass}[1]{\renewcommand{\thmtag}{#1}\begin{namedassinner}\phantomsection\label{thm:#1}}{\end{namedassinner}}
+\newtheorem{definition}{Định nghĩa}
+\theoremstyle{remark}
+\newtheorem*{remark}{Nhận xét}
+\newenvironment{hequa}{\par\smallskip\noindent\textbf{Hệ quả cho thuật toán.}\ }{\par\smallskip}
+\newenvironment{kiem}{\par\noindent\textbf{Kiểm số.}\ \small}{\normalsize\par\smallskip}
+\renewcommand{\proofname}{Chứng minh}
+
+\crefname{section}{Mục}{Mục}
+\crefname{subsection}{Mục}{Mục}
+\crefname{appendix}{Phụ lục}{Phụ lục}
+\crefname{equation}{}{}
+\crefformat{equation}{(#2#1#3)}
+\crefname{algorithm}{Thuật toán}{Thuật toán}
+\crefname{figure}{Hình}{Hình}
+\crefname{table}{Bảng}{Bảng}
+\crefname{definition}{Định nghĩa}{Định nghĩa}
+\renewcommand{\figurename}{Hình}
+\renewcommand{\tablename}{Bảng}
+\renewcommand{\abstractname}{Tóm tắt}
+\renewcommand{\refname}{Tài liệu tham khảo}
+\renewcommand{\contentsname}{Mục lục}
+\renewcommand{\appendixname}{Phụ lục}
+\floatname{algorithm}{Thuật toán}
+\algrenewcommand\algorithmicrequire{\textbf{Vào:}}
+\algrenewcommand\algorithmicensure{\textbf{Ra:}}
+
+% ---------- ký hiệu ----------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{^{\top}}
+\newcommand{\range}{\operatorname{range}}
+\newcommand{\nullsp}{\operatorname{null}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\blkdiag}{\operatorname{blkdiag}}
+\newcommand{\sym}{\operatorname{sym}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\argmax}{\operatorname*{arg\,max}}
+\newcommand{\eO}{\tilde e_O}
+\newcommand{\dN}{d_N^{\beta}}
+\newcommand{\drep}{d_{\mathrm{rep}}}
+\newcommand{\leak}{\operatorname{leak}}
+\newcommand{\rperp}{r_{\perp}}
+\newcommand{\xGN}{x_{\mathrm{GN}}}
+\newcommand{\Wcal}{\mathcal{W}}
+\newcommand{\Jcal}{\mathcal{J}}
+\newcommand{\Vcal}{\mathcal{V}}
+\newcommand{\norm}[1]{\lVert #1\rVert}
+\newcommand{\st}[1]{\textsf{\small #1}}   % nhãn trạng thái
+\newcommand{\unv}{\footnote{Tài liệu này được ghi theo trí nhớ, chưa được kiểm lại tại nguồn trong các vòng survey của dự án; cần kiểm trước khi nộp.}}
+
+\title{\textbf{VNA--GIR: chiếu động lực của mạng mở rộng ảo về kiến trúc cố định}\\[4pt]
+\large Cơ sở lý thuyết, chuỗi suy diễn, chứng minh và thuật toán}
+\author{Bản tổng hợp kỹ thuật của dự án}
+\date{18/10/2026 --- bản lý thuyết v3 + T19--T24 (đã qua 5 vòng phản biện độc lập)}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Tài liệu này tổng hợp toàn bộ cơ sở toán học của phương pháp VNA--GIR. Ý tưởng là: một mạng có kích thước cố định được huấn luyện bằng optimizer gốc của nó; định kỳ, ta \emph{tưởng tượng} mạng có thêm vài neuron (neuron ảo), tính vận tốc trong không gian output mà các neuron này sẽ đóng góp, và chiếu vận tốc đó về các tham số đang có theo nguyên lý biến phân Dirac--Frenkel với metric là Hessian của loss theo output. Hiệu chỉnh thu được, ký hiệu $d$, là \emph{phép chiếu chính xác phần ảo} của động lực mạng mở rộng, tính trên cùng cotangent $z$ mà bước Gauss--Newton có damping tách ra từ residual. Trong học tăng dần theo lớp (CIL), hiệu chỉnh được tách thành phần sửa lớp cũ và phần học mới; phần học mới bị chặn rò rỉ sang output lớp cũ bằng một nhân tử $\beta$ là nhân tử KKT của một ngân sách quên không có tham số tự do. Trong bài toán mất plasticity, phần residual mà phép chiếu không với tới được xử lý bằng GIR: lắp neuron ảo vào slot đã chết với trọng số ra bằng $0$, nên hàm số được bảo toàn chính xác tại lúc lắp.
+
+Mọi khẳng định trong tài liệu được gắn một trong năm trạng thái: \st{proven}, \st{assumption}, \st{empirical}, \st{interpretation}, \st{measured}. Mỗi định lý đi kèm phần ``Hệ quả cho thuật toán'' chỉ rõ nó làm cơ sở cho bước nào. Các đồng nhất và bất đẳng thức được kiểm số ở float64 (144/144 phép kiểm cho T1--T18 với 29 đối chứng đột biến; 15/15 cho T19--T24), và đã qua năm vòng phản biện độc lập. Tài liệu cũng ghi rõ những khẳng định đã bị rút lại và những câu hỏi thực nghiệm mà lý thuyết không trả lời được.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\input{theory/s1_intro}
+\input{theory/s2_setting}
+\input{theory/s3_foundations}
+\input{theory/s4_chain}
+\input{theory/s5_lemmas}
+\input{theory/s6_core}
+\input{theory/s7_select_gir}
+\input{theory/s8_robust}
+\input{theory/s9_unified}
+\input{theory/s9b_closure}
+\input{theory/s10_algorithm}
+\input{theory/s11_ablation}
+\input{theory/s12_limits}
+
+\appendix
+\input{theory/a1_verification}
+
+\input{theory/bib}
+
+\end{document}

@@ -1,0 +1,81 @@
+\section{Thiết lập, ký hiệu và giả thiết}\label{sec:setting}
+
+\subsection{Cửa sổ, loss và residual}
+
+\textbf{Cửa sổ.} $\Wcal$ gồm $N$ mẫu (dữ liệu mới cộng exemplar, sau augmentation), forward ở train mode. $f(\theta)\in\R^n$ là logit xếp chồng, $n=N c$ với $c$ là số lớp hiện tại; $\theta_S\in\R^p$ là các tham số được hiệu chỉnh; $J=\partial f/\partial\theta_S\in\R^{n\times p}$ và $K=JJ\T$.
+
+\textbf{Loss} (đúng như iCaRL trong PyCIL \cite{rebuffi2017icarl,zhou2023pycil}): $L=L_{CE}+L_{KD}$ với
+\[
+L_{CE}=\tfrac1N\textstyle\sum_i \mathrm{CE}(f_i,y_i),\qquad
+L_{KD}=-\tfrac1N\textstyle\sum_i p_{t,i}\T\log\operatorname{softmax}(f_{i,\mathrm{old}}/T),
+\]
+tức trung bình, \emph{không} nhân $T^2$. $O\in\{0,1\}^{m\times n}$ chọn $m=Nc_{\mathrm{old}}$ logit cũ, $OO\T=I$.
+
+\textbf{Residual và Hessian theo output.} $e=\partial L/\partial f=e_N+\eO$, với $e_{N,i}=(p_i-\mathbf 1_{y_i})/N$, $\eO=O\T e_O$, $e_{O,i}=(p_{s,i}-p_{t,i})/(NT)$ và $p_{s,i}=\operatorname{softmax}(f_{i,\mathrm{old}}/T)$ là xác suất của \emph{student}. Hessian khối chéo theo mẫu:
+\[
+H_i=\tfrac1N\big(D(p_i)-p_ip_i\T\big)+O_i\T W_iO_i,\qquad W_i=\tfrac{1}{NT^2}\big(D(p_{s,i})-p_{s,i}p_{s,i}\T\big),
+\]
+$W=\blkdiag(W_i)$.
+
+\subsection{Bảng ký hiệu}
+
+\begin{longtable}{@{}p{0.27\linewidth}p{0.68\linewidth}@{}}
+\toprule
+Ký hiệu & Định nghĩa \\
+\midrule
+\endhead
+$C=OJ$, $B=C\T WC$, $F=J\T HJ$ & Jacobian logit cũ; metric KD trên tham số; Gauss--Newton \\
+$g=J\T e$, $g_O=J\T\eO=C\T e_O$ & gradient toàn phần; gradient KD \\
+$\mu>0$, $A_\beta=F+\beta B+\mu I$ & damping; ma trận của bài toán có bảo vệ \\
+$G=A_0^{-1}$, $G_\beta=A_\beta^{-1}$ & nghịch đảo có damping \\
+$z(r)=HJGJ\T r$; $z=z(e)$, $z_O=z(\eO)$, $z_N=z-z_O$ & cotangent đã tách (\Tref{T20}) \\
+$\xGN=Gg$ & bước Gauss--Newton có damping (lần giải đầu tiên ở bước 1) \\
+$\rperp(r)=r-z(r)=\mu(HK+\mu)^{-1}r$ & phần bù theo metric $H$ \\
+$A=[a_1,\dots,a_r]$, $J_{a_j}=\partial f/\partial w_j|_{w_j=0}$ & hướng vào và Jacobian theo trọng số ra của neuron ảo \\
+$K_E=\sum_jJ_{a_j}J_{a_j}\T$ & kernel ảo \\
+$u=K_Ez$, $u_N=K_Ez_N$, $u_R=K_Ez_O$ & vận tốc ảo (toàn phần, học mới, sửa) \\
+$V=z\T K_Ez$, $V_O=z_O\T K_Ez_O$ & năng lượng ảo; năng lượng sửa \\
+$\rho=V/\norm g^2$ & tỉ số ảo trên nền (\Tref{T21}) \\
+$\drep=GJ\T Hu_R$, $\dN=G_\beta J\T Hu_N$, $d^*(\beta)=\drep+\dN$ & hiệu chỉnh \\
+$\Phi(d)=\norm{Jd-u}_H^2+\mu\norm d^2$, $\Phi_N(x)=\norm{Jx-u_N}_H^2+\mu\norm x^2$ & độ trung thành của phép chiếu \\
+$\leak(\beta)=\norm{C\dN}_W^2$, $h(\beta)=g_O\T d^*(\beta)$ & rò rỉ; chứng chỉ KD bậc một \\
+$\chi^2=\norm{e_O}^2_{W^+}$ (\Tref{L6}) & khoảng cách teacher--student \\
+$\varepsilon^*=V_O^2/\chi^2$, $\beta_{\mathrm{suf}}=\chi^2\norm{u_N}_H^2/V_O^2$ & ngân sách quên; cận trên của $\beta$ \\
+$\Lambda$, $\Lambda\T\Lambda=W$; $\hat C=\Lambda C$ & thừa số chính xác của $W$ (\Tref{L7}) \\
+$X$, $\tilde X=X-\mathbf 1\bar x\T$; $S_x=\tilde X\T\tilde X/N+\rho_xI$ & đầu vào của site; ma trận Gram có ridge (\Tref{L9}) \\
+$N_s$: $J_a\T s=N_s\T a$ (trong một vùng mặt nạ) & đặc trưng tuyến tính hóa của neuron ảo \\
+$f_u$, $J_u$, $B_u$; $J_v=\partial f/\partial B_v|_{B_v=0}$ & đóng góp, Jacobian, trọng số ra của slot $u$; neuron mới $v$ \\
+$q^*_r(\Jcal)=-\tfrac12(\Jcal\T r)\T G(\Jcal)(\Jcal\T r)$ & mô hình GN của mức giảm loss trong span$(\Jcal)$ \\
+$H_\perp(\Jcal)=H-H\Jcal G(\Jcal)\Jcal\T H$ & metric phần bù \\
+$E(\Jcal,t)=\min_x\norm{\Jcal x-t}_H^2+\mu\norm x^2$ & hàm chiếu \\
+$j_u^\ell=\ell(f-f_u)-\ell(f)$ & bước nhảy khi bỏ slot sống \\
+\bottomrule
+\end{longtable}
+
+\textbf{Neuron ảo và BN.} Không có BN theo sau: đặc trưng $\varphi(a)=D(a)Xa$ với $D(a)$ là mặt nạ ReLU thực tế. Có BN train mode theo sau (kênh mới, $\gamma=1$, $\beta_{BN}=0$): $\varphi(a)=D(a)\tilde Xa/\sigma(a)$, $\sigma(a)^2=a\T\tilde X\T\tilde Xa/N$.
+
+\textbf{Slot hợp lệ.} Slot $u$ chỉ đi tiếp qua trọng số riêng $B_u$, đặt được về $0$ mà không ảnh hưởng đơn vị khác. Trong ResNet, kênh ra của \texttt{conv1} trong một basic block là hợp lệ; kênh ra của \texttt{conv2} đi vào phép cộng residual thì không.
+
+\subsection{Giả thiết}\label{sec:assumptions}
+
+\begin{longtable}{@{}p{0.07\linewidth}p{0.47\linewidth}p{0.40\linewidth}@{}}
+\toprule
+\# & Giả thiết & Kiểm lúc chạy, hoặc lý do đúng \\
+\midrule
+\endhead
+A1 & $e,J,H$ và bước cập nhật dùng cùng một cửa sổ và cùng forward train-mode; buffer running-stat của BN không bị forward của VNA làm đổi. & So buffer trước và sau mỗi lần áp dụng (phải bằng nhau bitwise). \\
+A2 & Loss là CE trung bình cộng KD của PyCIL; mọi xác suất $>0$. & Theo định nghĩa. Ở float32 xác suất có thể underflow; \Tref{T1}(c,d) không cần range nên vẫn đúng. \\
+A3 & $\mu>0$. & $\mu=\max(\mu_{\mathrm{rel}}\tr(F)/n,10^{-12})$. \\
+A4$'$ & Vùng mặt nạ cố định: các hướng $a$ xét nằm trong cùng vùng $R_D=\{a:D(a)=D\}$. & Mặt nạ đo được. \emph{Chỉ} dùng cho tính tối ưu của bước chọn (\Tref{T6}, \Tref{T7}(d), \Tref{T14}). Tối ưu toàn cục khi mặt nạ đổi là A4-glob, không chứng minh. \\
+A5 & Slot chết trên cửa sổ ($f_u=0$, $J_u=0$) tại đúng tham số lúc chèn, tức sau bước 5. & Đếm mẫu có tiền kích hoạt $>0$ tại $\theta'$ (phải bằng $0$). \\
+A6 & $\nabla L$, $\nabla L_{KD}$ lần lượt $L_s$-, $L_K$-Lipschitz trong không gian tham số. & \emph{Không} kiểm được; chỉ dùng cho phát biểu bậc hai (\Tref{T5}(e,f)). \\
+A6$'$ & $\partial^2L/\partial f^2$ là $L_3$-Lipschitz trong không gian output. & \st{proven}: dạng đóng, chặt (\Tref{L10}); không còn là giả thiết. \\
+A7 & Tham chiếu tự trị: mô hình mở rộng được thay bằng $\dot y=U(y)$ trong không gian output, $U$ là $L_U$-Lipschitz. & Chỉ dùng cho \Tref{T8}. \\
+A8 & CG dừng theo $\rho=\norm{b-A\hat x}/\norm b$. & Tính trực tiếp $\rho$ cuối. \\
+A9 & Hiệu chỉnh cộng \emph{ngoài} momentum buffer; khi swap, trạng thái optimizer của slot đặt bằng $0$. & Kiểm bằng \texttt{torch.optim.SGD} thật (\Tref{T10}, \Tref{T13}). \\
+A10 & Hồi phục trên $L$: sau swap, mạng sống hồi phục bằng một bước GN có damping trên $L$ trong chế độ tuyến tính. & \st{assumption, interpretive}. Chỉ dùng để \emph{diễn giải} lợi về sau; không đúng cho train thật (\Tref{T16}). \\
+A11 & Mọi bảo đảm là cục bộ cho từng lần áp dụng, trên loss thực nghiệm của cửa sổ. & Phạm vi. \\
+A12 & Slot hợp lệ như trên. & Kiểm theo kiến trúc. \\
+A13 & Hiệu chỉnh lười: $\hat d$ thay đổi ít trong khoảng $K$ bước. & \st{assumption, interpretive}; chỉ dùng cho quy tắc $\lambda_{\mathrm{faithful}}=K$ (\Tref{T24}); giống giả thiết staleness của K-FAC/Shampoo. Không chứng chỉ nào dùng nó. \\
+\bottomrule
+\end{longtable}

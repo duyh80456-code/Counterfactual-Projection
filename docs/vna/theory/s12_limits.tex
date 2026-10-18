@@ -1,0 +1,62 @@
+\section{Khẳng định đã rút lại, giới hạn và câu hỏi mở}\label{sec:limits}
+
+\subsection{Các khẳng định đã bị thay thế}
+
+Những khẳng định sau xuất hiện ở các bản trước và \textbf{không còn được dùng}:
+\begin{enumerate}
+\item \textbf{Núm $\gamma$} (trọng số riêng cho phần sửa): $\gamma=1$ chính là VNA hiện tại, còn $\gamma\ne1$ phá bảo đảm giảm loss (\Tref{T5}(c)).
+\item \textbf{Dạng $\norm{Cd+\eta e_{\mathrm{old}}}^2$}: sai dấu và sai metric; thay bằng đích $C\drep$ (\Tref{T1}).
+\item \textbf{Phạt về đích $0$ hay metric $H+\beta H_{KD}$ làm đề xuất chính}: làm mất phần sửa (\Tref{T3}(i)).
+\item \textbf{Giới hạn cứng $Cd=0$}: sai; đúng là $\Lambda C(d-\drep)=0$ (\Tref{T2}(c)).
+\item \textbf{Số hạng bậc một $+\varepsilon e_O\T Cd$}: dấu đúng là $-\varepsilon$ (\Tref{T3}(d)).
+\item \textbf{Hessian KD dùng xác suất teacher}: phải dùng student (\Tref{L8}).
+\item \textbf{``VNA-NS là chiếu của growth kiểu DER'' / ``growth với hàm cũ đóng băng''}: bỏ hẳn; không có định lý nào. Phát biểu hình thức duy nhất là \Tref{T2}(d).
+\item \textbf{Độ khớp tăng đơn điệu theo $\beta$}: sai; chỉ $\Phi_N$ đơn điệu (\Tref{T4}).
+\item \textbf{Các arm $\beta\in\{0,3,\infty\}$}: thay bằng $\beta$ có chứng chỉ.
+\item \textbf{``Một Lagrangian duy nhất $\Psi$'' như một định lý}: rút lại; VNA và swap chỉ có cùng \emph{dạng} hàm chiếu, không cùng thang đo (\Tref{T7}(a)).
+\item \textbf{$h$ đơn điệu, bisection trên $h$}: sai (\Tref{T3}(h)); bisection trên $\leak$.
+\item \textbf{Chọn neuron swap theo toàn bộ $e$}: bị dữ liệu bác bỏ; đúng là $\rperp$ (\Tref{T7}).
+\item \textbf{Swap giao hoán với VNA}: sai (\Tref{T7}(g)).
+\item \textbf{$\beta_{\mathrm{suf}}$ làm mặc định}: quá bảo thủ (trung vị gấp 29 lần $\beta_{\mathrm{cert}}$).
+\item \textbf{``$V_O=0\Rightarrow$ bỏ qua''}: sai; $\beta=0$ có chứng chỉ (\Tref{T3}(g)(iii)).
+\item \textbf{``Slot sống không có chứng chỉ vì $L_3$ không kiểm được''}: sai, $L_3$ có dạng đóng (\Tref{L10}); nhưng \textbf{``slot sống có chứng chỉ trên cửa sổ''} cũng là nói quá; quy tắc Net$_{KD}$ mô hình hồi phục chỉ trên KD, trái A10. Slot sống nay là \st{measured}, tắt mặc định (\Tref{T16}).
+\item \textbf{$L_3\le0.708(1+T^{-3})/N$}: đúng nhưng lỏng 2.6 lần; thay bằng $c_3\approx0.2722$ chặt.
+\item \textbf{Quy tắc chặt $\hat h<0$ khi dùng CG}: bỏ nhầm khoảng một nửa số bước khi $V_O=0$; thay bằng dung sai (\Tref{T9}(e)).
+\item \textbf{``$K_E=0$ cho bước GN''}: sai; $K_E\to K$ cho $x_K$, không phải $\xGN$ (\Tref{T19}).
+\item \textbf{``$\rho_{\mathrm{proj}}$ là phần tiến bộ của mạng mở rộng đến từ neuron ảo''}: sai; $\rho$ là tỉ số ảo trên nền của mạng cố định (\Tref{T21}).
+\item \textbf{``$\xGN+d$ không phải phép chiếu của bất kỳ động lực nào''}: sai; thay bằng phát biểu định lượng (\Tref{T22}).
+\item \textbf{``$\rperp$ nằm ngoài tầm với; chỉ GIR tác động lên nó; vai trò tách bạch''}: sai khi $\mu>0$ (\Tref{T20}(b)).
+\item \textbf{Cap bước $\mathrm{lr}\norm g/\norm{\hat d}$ và lưới $\mu_{\mathrm{rel}}$}: thay bằng trust region (\Tref{T26}); cap cũ chặn 99.5\% lần áp dụng trên B5, nên T24 gần như không được dùng.
+\item \textbf{Residual GIR $r=\eO$ trong CIL}: không suy ra từ bài toán nào; thay bằng $e_\beta$ (\Tref{T27}).
+\item \textbf{Hai cơ chế slot chết / slot sống}: gộp thành một quy tắc lợi ròng (\Tref{T28}).
+\item \textbf{``SGD $+\lambda d$ đã là phép chiếu rời rạc của một động lực mở rộng duy nhất''}: chỉ là \st{interpretation} xấp xỉ.
+\end{enumerate}
+
+\subsection{Giới hạn}
+
+\begin{enumerate}
+\item \textbf{Cục bộ.} Mọi bảo đảm là bậc một (hoặc bậc hai với hằng số A6 không kiểm được), cho từng lần áp dụng, trên loss của cửa sổ. Không có bảo đảm cho cả quỹ đạo (trừ khi defect đo được nhỏ, \Tref{T8}), về tổng quát hóa hay accuracy trên test.
+\item \textbf{Tối ưu của bước chọn chỉ trong một vùng mặt nạ} (A4$'$); tối ưu toàn cục là A4-glob.
+\item \textbf{Bổ đề chiếu lồng nhau.} VNA chỉ phân bổ lại tốc độ trong $\range(K)$; với chuẩn hóa cùng norm, một lần áp dụng không hơn một bước SGD ở bậc một. Lợi ích, nếu có, đến từ thông tin độ cong.
+\item \textbf{Bổ đề nội suy.} Khi model fit hết cửa sổ ($e\to0$) thì $z,\rperp\to0$, nên mọi thành phần cùng tắt; lợi ích dự kiến tập trung ngay sau khi chuyển task.
+\item \textbf{GIR trong CIL} không hoạt động với cấu hình mặc định.
+\item \textbf{$\beta_{\mathrm{cert}}$ bảo thủ}: trung vị gấp 4.5 lần $\beta$ nhỏ nhất cho $h\ge0$ trên lưới.
+\item \textbf{Tỉ lệ bỏ qua}: khoảng 4\% trên toy với $\beta_{\mathrm{cert}}$; tới 42\% với VNA không bảo vệ trong toy kiểu CIL. Phải log trên ResNet32.
+\item \textbf{Chi phí} CIL tới $6+n_b$ lần giải mỗi lần áp dụng.
+\item \textbf{Kiểm số chỉ trên mô hình nhỏ, float64.} Ở float32 phải kiểm lại các đồng nhất chính (T1, T3a, T3e) tại điểm kiểm.
+\item \textbf{A10 không mô tả hồi phục thật}; mọi diễn giải ``lợi về sau'' của GIR là \st{interpretation}; chỉ bảo toàn hàm và chứng chỉ là chính xác.
+\item \textbf{Slot hợp lệ} (A12) loại kênh đi vào phép cộng residual.
+\item \textbf{T25 chỉ là chặn trên}: nó giải thích vì sao VNA một mình thất bại khi nhiều đơn vị chết, nhưng không bảo đảm VNA cộng thêm lợi khi đã có GIR.
+\end{enumerate}
+
+\subsection{Câu hỏi thực nghiệm mở}\label{sec:open}
+
+Lý thuyết không trả lời được, và phải được trả lời bằng thí nghiệm có đăng ký trước:
+\begin{enumerate}
+\item \textbf{$K_E$ so với $K$:} VNA có hơn \texttt{kernel\_self} trên ResNet32 (CIL) và trên B5 không? Đây là so sánh quyết định của toàn bộ phương pháp.
+\item \textbf{tiny\_V so với $A$ ngẫu nhiên:} ở phép đo nhanh CIL trước đây, tiny\_V thua random ở 7/9 dòng. Nếu điều này lặp lại khi train thật, phải bỏ khẳng định ``tiêu chí grow'' và chỉ giữ khẳng định về phép chiếu.
+\item \textbf{GIR so với reset ngẫu nhiên và reset kiểu GradMax} trên B5 với cùng slot, cùng thời điểm.
+\item \textbf{Chi phí thực tế} (GPU-giờ, hệ số so với baseline) và tỉ lệ bỏ qua trên ResNet32.
+\item \textbf{Bổ sung của VNA khi có GIR} (\Tref{T25}): khoảng cách (VNA+GIR) $-$ GIR phải tăng theo độ rộng mạng; kiểm bằng B5 với 5, 20, 100 đơn vị.
+\item \textbf{Dự đoán kiểm được:} $\rho$ giảm trong mỗi task; lợi tập trung sau khi chuyển task; không có lợi trên bài toán đã nội suy (Phase 0 là đối chứng âm được dự đoán).
+\end{enumerate}

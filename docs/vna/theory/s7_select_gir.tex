@@ -1,0 +1,143 @@
+\section{Chọn neuron ảo và GIR}\label{sec:select}
+
+\subsection{T6: chọn hướng vào $A$}
+
+\begin{namedthm}{T6}{chọn neuron ảo}
+Giả thiết A2, A3, A4$'$ (mọi $a_j$ trong vùng mặt nạ cố định $R_D$), $\beta$ cố định, $S_x\succ0$ (\Tref{L9}). Đặt $y_\beta:=HJG_\beta g$ và $M_S(\beta):=\sym(N_zN_{z_O}\T)+\sym(N_{y_\beta}N_{z_N}\T)$.
+\begin{enumerate}[label=(\alph*)]
+\item Không có BN: $g\T d^*(\beta)=\tr(A\T M_S(\beta)A)$. Có BN: $g\T d^*(\beta)=\sum_ja_j\T M_Sa_j/\sigma(a_j)^2$, trở lại dạng vết khi $\sigma(a_j)=1$.
+\item Trên các tập $S_x$-trực chuẩn tối đa $r$ neuron (trong $R_D$), giá trị lớn nhất là tổng các trị riêng \emph{dương} lớn nhất (tối đa $r$) của $(M_S,S_x)$, đạt tại eigvec tương ứng nếu chúng nằm trong $R_D$; nếu không, đó chỉ là cận trên.
+\item Với $\beta=0$: $M_S=N_zN_z\T$, nên tiny\_V$(z)$ \emph{chính xác} là tối ưu.
+\item Với $\beta>0$, đặt $\Delta=\sym(N_{y_\beta-z}N_{z_N}\T)$: độ dưới tối ưu của tiny\_V$(z)$ không quá
+\[2\textstyle\sum_{j\le r}|\lambda_j(S_x^{-1/2}\Delta S_x^{-1/2})|;\]
+ngoài ra $y_\beta-z=-\beta HJG_\beta BGg$.
+\item Quy tắc xen kẽ $A_1=\argmax M_S(\beta_0)$ tối ưu có điều kiện theo $\beta_0$; không có khẳng định tối ưu đồng thời theo $(A,\beta)$. Mọi chứng chỉ đúng với \emph{mọi} $A$.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) \Tref{L4} cho $g\T\drep=z\T K_Ez_O$ và $g\T\dN=y_\beta\T K_Ez_N$; với $s\T K_Et=\sum_ja_j\T N_sN_t\T a_j$ (tuyến tính trong vùng mặt nạ), lấy phần đối xứng. (b) Đổi biến $U=S_x^{1/2}A$ và áp Ky Fan \cite{fan1949}; chỉ giữ trị riêng dương. (c) $y_0=z$ và $\sym(N_zN_{z_O}\T)+\sym(N_zN_{z_N}\T)=N_zN_z\T$. (d) $M_S=N_zN_z\T+\Delta$; $A_t$ tối ưu cho $N_zN_z\T$; phần $\Delta$ chặn bằng Ky Fan cho trị tuyệt đối; $y_\beta-z=HJ(G_\beta-G)g$. (e) Theo định nghĩa.
+\end{proof}
+\begin{hequa}
+Bước S2: làm mới $A$ ở đầu task và sau mỗi 10 lần áp dụng; $A_0=\text{tiny\_V}(z)$, rồi (khi $\beta_0>0$) $A$ là các eigvec suy rộng dương của $(M_S(\beta_0),S_x)$. Tối ưu chỉ được khẳng định trong một vùng mặt nạ; chứng chỉ không phụ thuộc lựa chọn này.
+\end{hequa}
+\begin{kiem}
+T6a $4.2\cdot10^{-12}$ (T6a-NEG: dùng $N_zN_z\T$ khi $\beta>0$ lệch $\ge2.1\cdot10^{-3}$); T6b; T6c; T6d (T6d-WIT: dưới tối ưu tới 91\%). Quy tắc xen kẽ tăng $g\T\hat d$ trung vị 22\% (\st{empirical}).
+\end{kiem}
+
+\begin{namedthm}{T14}{chọn hướng khi có BN; ridge}
+Neuron là một kênh mới, BN train mode theo sau ($\gamma=1$, $\beta_{BN}=0$), có thể có ReLU sau BN. Cho $s\in\R^{N\times q}$ và mặt nạ $D$.
+(a) Với mọi $a$ ($\tilde Xa\ne0$): $\norm{\sum_i\varphi_i(a)s_i}^2=N\,a\T\tilde X\T Dss\T D\tilde Xa/a\T\tilde X\T\tilde Xa$, một thương Rayleigh suy rộng với thống kê \emph{đã trừ trung bình}, bất biến theo tỉ lệ của $a$.
+(b) Không có ReLU: giá trị lớn nhất là $N\lambda_{\max}(\tilde X\T ss\T\tilde X,\tilde X\T\tilde X)$; với $r$ neuron $S_0$-trực giao là $N$ lần tổng $r$ trị riêng đầu.
+(c) Có ReLU: trong $R_D$ giá trị không vượt $N\lambda_{\max}(\tilde X\T Dss\T D\tilde X,\tilde X\T\tilde X)$.
+(d) Dùng thống kê không trừ trung bình là sai khi $\bar x\ne0$.
+Với $\varepsilon_{BN}>0$, (a) có sai số tương đối $\varepsilon_{BN}/(\sigma^2+\varepsilon_{BN})$; hướng tối ưu không đổi.
+\end{namedthm}
+\begin{proof}
+(a) BN train mode cho $\varphi=D\tilde Xa/\sigma(a)$; thay vào $\varphi\T ss\T\varphi$. (b) Rayleigh--Ritz trên $\range(\tilde X\T)$ (\Tref{L9}) và Ky Fan. (c) Trên $R_D$, $D$ cố định; áp (b) với $D\tilde X$ ở tử. (d) Phản ví dụ số.
+\end{proof}
+\begin{hequa}
+Bước S2 và S6 khi slot có BN theo sau: chuẩn hóa hướng theo $S_0$ đã trừ trung bình và giải bài toán Rayleigh suy rộng tương ứng; dùng thống kê không trừ trung bình là sai.
+\end{hequa}
+\begin{kiem}
+T14a $2.0\cdot10^{-14}$; T14b; T14b-NEG (không trừ trung bình sai $\ge1.7\cdot10^{-4}$); T17d (phạm vi $\varepsilon_{BN}$).
+\end{kiem}
+
+\subsection{T7: GIR, đặt neuron vào slot}
+
+Gọi $r\in\range(H)$ là residual mà GIR nhắm tới: $r=\eO$ trong CIL (ưu tiên giữ hàm cũ), $r=e$ trong B5. Đặt $t_r=-H^+r$, và cho mỗi neuron mới $v$: $s_v=J_v\T\rperp$, $S_v=J_v\T H_\perp J_v+\mu I$. Lợi dài hạn của việc thêm cột $J_v$ là $\mathrm{gain}(v\mid J):=q^*_r(J)-q^*_r([J,J_v])$.
+
+\begin{namedthm}{T7}{GIR}
+Giả thiết A2, A3, A12. (f)--(h) cần thêm A5 tại tham số lúc chèn; ý ``tiny\_V'' của (d) cần A4$'$; việc \emph{diễn giải} gain như mức thay đổi loss về sau cần A10.
+\begin{enumerate}[label=(\alph*)]
+\item \emph{Hàm chiếu chung (cấu trúc).} $\mathrm{gain}(v\mid J)=\tfrac12[E(J,t_r)-E([J,J_v],t_r)]$, còn VNA ở $\beta=0$ là nghiệm của $E(J,u)$. Hai bài toán có cùng dạng nhưng \emph{không cùng thang đo}: $u$ là một vận tốc, $t_r$ là một độ dời Newton; VNA tìm hệ số trên span cố định, swap mở rộng span.
+\item \emph{Dạng Schur, mọi $a_v,b_v$, mọi phi tuyến.} $\mathrm{gain}=\tfrac12s_v\T S_v^{-1}s_v$, với $\rperp=r-z(r)=\mu(HK+\mu)^{-1}r=H_\perp H^+r$ và $H_\perp=\mu R(M+\mu)^{-1}R\succeq0$. Hệ quả: $\mathrm{gain}>0\iff J_v\T\rperp\ne0$. Không cần A4$'$.
+\item Tại cực tiểu của mạng sống $x^*=-GJ\T r$, gradient theo $B_v$ bằng $s_v$.
+\item \emph{Chọn $v$.} $\tfrac12\norm{s_v}^2/(\lambda_{\max}(J_v\T HJ_v)+\mu)\le\mathrm{gain}\le\tfrac12\norm{s_v}^2/\mu$. Cận dưới $\ell(v)$ không cần giải hệ và là \emph{chứng chỉ} cho gain. Với $\hat v=\argmax_{v\in\Vcal}\ell(v)$ trên một tập ứng viên hữu hạn: $\mathrm{gain}(\hat v)\ge\frac{\mu}{c_H+\mu}\max_{v\in\Vcal}\mathrm{gain}(v)$, $c_H=\max_v\lambda_{\max}(J_v\T HJ_v)$. Dưới A4$'$, hướng tốt nhất theo $\norm{s_v}$ là tiny\_V với cotangent $\rperp$ (có BN: \Tref{T14}). Vì $\varphi(-a)\ne-\varphi(a)$ với ReLU, $\Vcal$ gồm $\{\sigma a_k+b:\sigma=\pm1,b\in\{0,-\operatorname{median}(\sigma Xa_k)\}\}$, bỏ ứng viên có $\varphi\equiv0$.
+\item $\rperp$ là phần bù \emph{xiên} theo metric $H$; nó trùng phần dư Euclid $(I-JJ^+)r$ chỉ khi $H\propto I$. Tương ứng với bước chọn atom của OMP chỉ chính xác khi $H=I$, $\mu\to0$.
+\item \emph{Slot chết} (A5 tại tham số lúc chèn): bỏ $u$ và chèn $v$ với $B_v=0$ thì hàm trên cửa sổ không đổi \emph{chính xác}, giá bỏ $u$ bằng $0$, không rò rỉ sang logit cũ tại lúc chèn, và các cột của $a_v$ bằng $0$. A5 phải kiểm lại sau bước hiệu chỉnh: một đơn vị chết tại $\theta$ có thể sống tại $\theta'$.
+\item \emph{Swap không giao hoán với VNA.} Sau khi chèn, $K'=K+J_vJ_v\T$; vì vậy $\hat d$ được tính và áp dụng \emph{trước} swap. $\hat d$ không đụng tham số của slot chết: $(\hat d)_u=0$.
+\item \emph{Quyết định swap slot chết không cần chân trời:} lợi ròng bằng $\mathrm{gain}(v\mid J)\ge0$, $>0\iff s_v\ne0$. Với $r=\eO$, ``gain = mức giảm KD về sau'' không suy ra từ A10 (A10 là hồi phục trên $L$); chỉ là ghi chú phạm vi vì nhánh này không kích hoạt trong CIL.
+\item \emph{Slot sống: đo, không chứng nhận.} (i.1) $\ell(\text{sau})-\ell(\text{trước})=j_u^\ell$ chính xác bằng một forward (\st{measured}). (i.2) $|j_u^\ell-(-r\T f_u+\tfrac12f_u\T H_\ell f_u)|\le(L_3/6)\norm{f_u}^3$, $L_3\le c_3(1+T^{-3})/N$ (\Tref{L10}). (i.3) Dự báo nhất quán A10 là $\Delta L_{\mathrm{pred}},\Delta KD_{\mathrm{pred}}$ dọc bước hồi phục trên $L$, mọi đại lượng sau swap tại $f-f_u$ (\Tref{T16}). (i.5) Nếu $j_u^L\le0$ và $j_u^{KD}\le0$ thì tại lúc chèn $L$ và $L_{KD}$ trên cửa sổ không tăng; đây là điều \emph{duy nhất} được chứng nhận cho slot sống.
+\item \emph{GIR trong CIL} (\st{empirical}): tỉ lệ đơn vị chết đo được trên ResNet32 có BN là $0$; với cấu hình mặc định GIR không hoạt động trong CIL.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Vì $r\in\range(H)$, $HH^+r=r$, nên $\norm{\Jcal x-t_r}_H^2=x\T\Jcal\T H\Jcal x+2x\T\Jcal\T r+r\T H^+r$, suy ra $E(\Jcal,t_r)=2q^*(\Jcal)+r\T H^+r$; lấy hiệu. Phần VNA là \Tref{T1}(a) ở $\beta=0$.
+
+(b) Nghịch đảo khối cho $[J,J_v]$: $\tilde b\T\tilde A^{-1}\tilde b=b\T A^{-1}b+(b_v-J_v\T HJGb)\T S_v^{-1}(\cdot)$ với $b=J\T r$, $b_v=J_v\T r$; và $b_v-J_v\T HJGJ\T r=J_v\T(r-z(r))$. Theo \Tref{L1}, $H_\perp=R(I-M(M+\mu)^{-1})R=\mu R(M+\mu)^{-1}R$. Đồng nhất $r-z(r)=\mu(HK+\mu)^{-1}r$ suy từ $z(r)=HK(HK+\mu)^{-1}r$ (push-through).
+
+(c) $\nabla_{B_v}q=J_v\T(r+HJx^*)=J_v\T(r-z(r))$.
+
+(d) $\mu I\preceq S_v\preceq J_v\T HJ_v+\mu I$; do đó $\mathrm{gain}(\hat v)\ge\ell(\hat v)\ge\ell(v^*)\ge\frac{\mu}{c_H+\mu}\mathrm{gain}(v^*)$.
+
+(e) $HK$ đồng dạng trên range với $RKR\succeq0$; $\mu(HK+\mu)^{-1}$ tiến tới phép chiếu lên $\nullsp(HK)$ dọc $\range(HK)=H\range(J)$; nếu $H=I$ thì phép chiếu trực giao.
+
+(f) Đóng góp của $v$ là $h_v(x)B_v\T=0$; đạo hàm theo $a_v$ tỉ lệ với $B_v$ nên bằng $0$; cột của $u$ bằng $0$ trên cửa sổ. Nếu A5 không đúng tại $\theta'$ thì hàm đổi đúng một lượng $-f_u(\theta')$.
+
+(g) Cột mới là $J_v$; với cột $u$ bằng $0$, $F$ có hàng và cột $u$ bằng $0$, nên $G_{uu}=\mu^{-1}I$, các khối chéo bằng $0$, và $(J\T Hy)_u=0$.
+
+(h) Từ (b), (f). (i.1) Sau swap output là $f-f_u$. (i.2) Taylor bậc ba với phần dư Lagrange và \Tref{L10}. (i.3) Xem \Tref{T16}. (i.5) Từ (i.1).
+\end{proof}
+\begin{hequa}
+Bước S6(a): sau bước S5, đếm lại slot chết; với mỗi slot còn chết (tối đa $S$), chọn $v=\argmax\ell(v)$ trên tập ứng viên dựng từ eigvec của $(N_{\rperp}N_{\rperp}\T,S_x)$, đặt $B_v=0$. Lợi được bảo đảm không âm, hàm không đổi. Bước S6(b) (slot sống) chỉ chạy khi bật \texttt{LIVE\_SWAP=measured}, và chỉ có chứng chỉ tức thời (i.5).
+\end{hequa}
+\begin{kiem}
+T7a $3.4\cdot10^{-14}$ (T7a-NEG đích $-r$ lệch $\ge0.99$); T7b $4.5\cdot10^{-11}$ (T7b-NEG $s=J_v\T r$ lệch trung vị 1.95); T7c, T7d, T7e; T7f (hệ số $\mu/(c_H+\mu)$ giữ ở mọi trial; T7f-WIT: argmax $\ell$ không phải argmax gain ở 32/60); T7g ($|\cos|$ giữa phần bù xiên và Euclid trung vị 0.763); T7i (hàm giữ nguyên, 0.0); T7j; T7k (phần dư bậc ba; NEG loại dấu cũ). \st{empirical}: trên toy hai task 40 seed, chọn theo $\rperp$ thắng không-swap 72\% trên CE lớp cũ, nhưng CE trung bình bằng cách chọn theo $e$.
+\end{kiem}
+
+\subsection{T13, T17: nhiều slot, optimizer và BN}
+
+\begin{namedthm}{T13}{nhiều slot, trạng thái optimizer}
+Giả thiết A2, A3. Với $\Jcal$ bất kỳ và khối cột mới $V$, đặt $S=V\T H_\perp(\Jcal)V+\mu I$, $s=V\T\rperp(\Jcal)$.
+(a) $\mathrm{gain}(\{v_1,\dots,v_k\}\mid J)=\sum_j\mathrm{gain}(v_j\mid[J,J_{v_1},\dots,J_{v_{j-1}}])$.
+(b) $\rperp([\Jcal,V])=\rperp(\Jcal)-H_\perp(\Jcal)VS^{-1}s$ và $H_\perp([\Jcal,V])=H_\perp(\Jcal)-H_\perp(\Jcal)VS^{-1}V\T H_\perp(\Jcal)$.
+(c) $\mathrm{gain}(\mathcal S\mid J)\ge\max_{v\in\mathcal S}\mathrm{gain}(v\mid J)$.
+(d) Với SGD momentum thường (nesterov tắt, dampening $0$), sau khi đặt trạng thái của slot bằng $0$: bước đầu của $B_v$ là $-\mathrm{lr}\nabla_{B_v}L$ và của $a_v$ là $-\mathrm{lr}\,\omega a_v$. Với nesterov hệ số là $(1+\nu)$; với dampening $\delta$ (buffer bằng $0$) là $(1-\delta)$; cả hai là bội dương của gradient.
+\end{namedthm}
+\begin{proof}
+(a) $q^*_r$ chỉ phụ thuộc span; tổng là telescoping. (b) Nghịch đảo khối của ${\Jcal'}\T H\Jcal'+\mu I$ với $\Jcal'=[\Jcal,V]$ cho $H\Jcal'G(\Jcal'){\Jcal'}\T H=H\Jcal G(\Jcal)\Jcal\T H+H_\perp VS^{-1}V\T H_\perp$; với $r\in\range(H)$, $\rperp(\Jcal)=H_\perp(\Jcal)H^+r$. (c) Thêm cột không làm $q^*$ tăng. (d) Quy tắc cập nhật của \texttt{torch.optim.SGD}: $m\leftarrow\nu m+(1-\delta)(\nabla+\omega\theta)$, $\theta\leftarrow\theta-\mathrm{lr}\,m$ (hoặc $\theta-\mathrm{lr}((\nabla+\omega\theta)+\nu m)$ với nesterov), với $m=0$ trước bước.
+\end{proof}
+\begin{hequa}
+Bước S6(a): với nhiều slot, bản chính xác cập nhật phần bù theo (b); bản rẻ giữ $\rperp$ và chọn hướng $S_x$-trực giao, được bảo đảm bởi (c). Sau swap, đặt trạng thái optimizer của mọi phần tử thuộc slot bằng $0$ (d).
+\end{hequa}
+\begin{kiem}
+T13a-WIT (18/40 đơn vị chết trước S5 sống sau S5), T13a, T13a-NEG (chèn không kiểm lại đổi hàm 0.108); T13b (SGD thật, sai lệch $0$), T13b-NEG, T13b2; T13d $5.0\cdot10^{-14}$, T13d-NEG; T13e, T13e-WIT; T13f (Schur đúng với ReLU, $9.0\cdot10^{-13}$); T13g; T13h-WIT.
+\end{kiem}
+
+\begin{namedthm}{T17}{slot có BN theo sau}
+Giả thiết A1, A2, A12, BN train mode, kênh $u$ có affine $(\gamma_u,\beta_u)$.
+(a) Với $B_v=0$, đặt $a_v,\gamma_v,\beta_v$ và running stats tùy ý không đổi hàm trên cửa sổ.
+(b) Nếu kênh chết vì $\beta_u\ll0$, giữ nguyên $(\gamma_u,\beta_u)$ thì neuron mới vẫn chết; phải đặt $\gamma_v=\sigma$, $\beta_v$ theo quy tắc dấu/bias.
+(c) Bias trước BN bị triệt tiêu; quy tắc bias tác động lên $\beta_{BN}$: $\beta_v=-\operatorname{median}(\sigma\hat x)$ làm khoảng một nửa cửa sổ kích hoạt.
+(d) \Tref{T7}(b) đúng với $J_v=\varphi\otimes I$ tính từ đặc trưng BN thực tế.
+(e) Đặt running\_mean$_u=0$, running\_var$_u=1$ là quy ước cài đặt, không ảnh hưởng (a)--(d).
+\end{namedthm}
+\begin{proof}
+(a) Đầu ra kênh $u$ chỉ đi qua $B_u$ (A12), mà $B_v=0$; BN theo kênh; ở train mode running stats không vào đầu ra. (b) $\varphi=\mathrm{ReLU}(\gamma\hat x+\beta)\equiv0$ khi $\gamma\hat x_i+\beta\le0$ với mọi $i$. (c) $\hat x$ không phụ thuộc bias trước BN. (d) \Tref{T7}(b) đúng cho mọi đặc trưng. (e) Định nghĩa.
+\end{proof}
+\begin{hequa}
+Bước S6(a) với slot có BN: đặt lại $\gamma,\beta$ và running stats của kênh, áp quy tắc dấu/bias lên $\beta_{BN}$; hàm vẫn được bảo toàn chính xác.
+\end{hequa}
+
+\subsection{T12, T16: slot sống}
+
+\begin{namedthm}{T12}{slot sống: đại lượng chính xác}
+Nội dung là \Tref{T7}(i) và \Tref{L10}: $j_u^\ell$ được đo chính xác; cận Taylor của nó có hằng số chặt $c_3(1+T^{-3})/N$.
+\end{namedthm}
+\begin{kiem}
+T12a (hai phía: đúng và chặt, cấu hình đạt $1.0000$ cận; NEG loại chuẩn hóa $T^{-1}$ và hằng số ${\times}0.1$; WIT: hằng số $0.708$ cũ đúng nhưng lỏng 2.6 lần); T12a2; T12b ($T=1,2,4$; NEG bỏ số hạng KD vi phạm 2.0 lần); T12c [structural]; T12d (hiệu mô hình trên mạng ReLU thật bằng $-$gain Schur, $1.8\cdot10^{-14}$; NEG dùng $J_v\T e$ lệch $\ge1.53$); T12e-WIT (chết trên cửa sổ có thể kích hoạt ngoài cửa sổ).
+\end{kiem}
+
+\begin{namedthm}{T16}{điểm khai triển và độ tin cậy của dự báo slot sống}
+Giả thiết A2. Với mọi $f,f_u,\Delta$ và $\ell\in\{L,L_{KD}\}$:
+(a) $|\ell(f-f_u+\Delta)-[\ell(f-f_u)+\nabla\ell(f-f_u)\T\Delta+\tfrac12\Delta\T\nabla^2\ell(f-f_u)\Delta]|\le(L_3/6)\norm\Delta^3$.
+(b) Nếu dùng $\nabla^2\ell(f)$ thay cho $\nabla^2\ell(f-f_u)$, sai số chỉ bị chặn bởi $(L_3/6)\norm\Delta^3+\tfrac12L_3\norm{f_u}\norm\Delta^2$, có thêm số hạng bậc hai.
+(c) Vì vậy trong dự báo, mọi đại lượng sau swap phải lấy tại $f-f_u$; dưới A10 và trong chế độ tuyến tính, sai số dự báo là $(L_3/6)(\norm\Delta^3+\norm{\Delta'}^3)$ cộng sai số tuyến tính hóa của Jacobian dọc bước hồi phục (thuộc A10).
+\end{namedthm}
+\begin{proof}
+(a) Taylor bậc ba tại $f-f_u$ và \Tref{L10}. (b) Hiệu hai mô hình là $\tfrac12\Delta\T(\nabla^2\ell(f-f_u)-\nabla^2\ell(f))\Delta$, chặn bằng $\tfrac12L_3\norm{f_u}\norm\Delta^2$. (c) Áp (a) cho hai trạng thái rồi lấy hiệu.
+\end{proof}
+\noindent\textbf{Kết quả thực nghiệm quyết định mặc định} (\st{empirical}, MLP ReLU thật, 198 cặp): ở $\mu_{\mathrm{rel}}=10$ dấu của $\Delta L_{\mathrm{pred}}$, $\Delta KD_{\mathrm{pred}}$ khớp bước GN thực hiện ở 194/198 và 193/198 cặp; ở $\mu_{\mathrm{rel}}=10^{-2}$ (damping dùng thật) chỉ 87/198 và 101/198; so với 200 bước GD thì khớp kém kể cả ở $\mu_{\mathrm{rel}}=10$ (131/198, 116/198).
+\begin{hequa}
+Swap slot sống là \st{measured}, \emph{không} \st{proven}, và \textbf{tắt mặc định}. Hệ quả: với cấu hình mặc định, GIR không hoạt động trong CIL (\Tref{T7}(j)).
+\end{hequa}

@@ -1,0 +1,119 @@
+\section{Thuật toán}\label{sec:algorithm}
+
+\subsection{Siêu tham số}
+
+$\mu_{\mathrm{rel}}$ (damping), $K$ (khoảng áp dụng, tính theo iteration), $\lambda$ (theo \Tref{T24}), $r$ (số neuron ảo), $n_b$ (số bước bisection), $k_{\mathrm{lo}}$ (độ rộng khoảng log), $S$ (số swap tối đa mỗi lần áp dụng), $\rho_{\mathrm{rel}}=10^{-6}$ (ridge của $S_x$), \texttt{LIVE\_SWAP}$\in\{$\texttt{off} (mặc định), \texttt{measured}$\}$. \textbf{Cập nhật theo \cref{sec:closure}:} $\mu_{\mathrm{rel}}$, quy tắc $\lambda$ và $S$ được thay bằng trust region (\Tref{T26}) và quy tắc lợi ròng (\Tref{T28}); residual của GIR là $e_\beta$ (\Tref{T27}); \texttt{LIVE\_SWAP} được thay bằng \Tref{T28}(c). Bảng giả mã dưới đây giữ phiên bản đã chạy pilot để đối chiếu log. \textbf{Không có} $\beta$, $\gamma$, $\eta$ hay ngưỡng tự do nào khác: $\beta$ được tính (\Tref{T3}, \Tref{T11}), dung sai $\tau_h,\tau_g$ được tính từ CG (\Tref{T9}).
+
+\begin{algorithm}[p]
+\caption{VNA--GIR (một lần áp dụng, mỗi $K$ iteration; giữa các lần áp dụng, optimizer gốc chạy bình thường)}\label{alg:vna}
+\small
+\begin{algorithmic}[1]
+\Require cửa sổ $\Wcal$ (cùng batch, train mode), tham số $\theta$, $A$ hiện tại, cờ \texttt{CIL}
+\Statex \textbf{S0.} Mỗi iteration: $\theta\leftarrow\theta-\varepsilon m_t$ (optimizer gốc, không đổi)
+\Statex \textbf{S1. Residual và tách} \hfill\Tref{T20}, \Tref{L5}
+\State $e=e_N+\eO$ từ loss; $g=J\T e$, $g_O=J\T\eO$ \Comment{một backward}
+\State $\xGN\leftarrow\mathrm{CG}(A_0,g)$; $z=HJ\xGN$; $z_O=z(\eO)$; $z_N=z-z_O$ \Comment{2 lần giải}
+\State $\rperp=e-z$; với CIL, $\rperp^O=\eO-z_O$ \Comment{không giải thêm}
+\Statex \textbf{S2. Chọn neuron ảo} \hfill\Tref{T6}, \Tref{T14}, \Tref{L9}
+\If{đầu task hoặc đã 10 lần áp dụng từ lần làm mới trước}
+  \State $A_0\leftarrow$ top-$r$ eigvec suy rộng của $(N_zN_z\T,S_x)$ \Comment{tiny\_V$(z)$}
+  \State $\beta_0\leftarrow\textsc{BetaRule}(A_0)$; $y=HJG_{\beta_0}g$ \Comment{1 lần giải}
+  \State $M_S=\sym(N_zN_{z_O}\T)+\sym(N_yN_{z_N}\T)$; $A\leftarrow$ eigvec suy rộng dương lớn nhất của $(M_S,S_x)$, tối đa $r$
+\EndIf
+\Statex \textbf{S3. Hiệu chỉnh} \hfill\Tref{T19}, \Tref{T1}--\Tref{T3}, \Tref{T11}
+\State $u_R=K_Ez_O$, $u_N=K_Ez_N$, $V=\norm{J_E\T z}^2$, $V_O=\norm{J_E\T z_O}^2$
+\If{không phải CIL (B5)} \State $\beta=0$; $\hat d\leftarrow\mathrm{CG}(A_0,J\T HK_Ez)$ \Comment{1 lần giải}
+\Else
+  \State $\drep\leftarrow\mathrm{CG}(A_0,J\T Hu_R)$; $d_N^0\leftarrow\mathrm{CG}(A_0,J\T Hu_N)$ \Comment{2 lần giải}
+  \State $\beta\leftarrow\textsc{BetaRule}(A)$; $\hat d=\drep+\dN$
+\EndIf
+\Statex \textbf{S4. Chứng chỉ trên vector áp dụng} \hfill\Tref{T5}, \Tref{T9}, \Tref{T18}
+\State $\hat h=g_O\T\hat d$, $\hat g=g\T\hat d$; $\hat\Delta$ từ residual cuối của các chuỗi CG; $\tau_h=\norm{g_O}\hat\Delta$, $\tau_g=\norm g\hat\Delta$
+\If{$\hat g<-\tau_g$ \textbf{or} (CIL \textbf{and} $\hat h<-\tau_h$)} \State log ``bỏ qua''; \textbf{chuyển tới S6}
+\EndIf
+\Statex \textbf{S5. Áp dụng} \hfill\Tref{T10}(d), \Tref{T24}
+\State $s^*=\hat g/\hat d\T(F+\mu)\hat d$; $\lambda=\min(K,s^*/\varepsilon)$ \Comment{sau S4, nên $s^*\ge0$ trừ dung sai}
+\State $\theta'\leftarrow\theta-\varepsilon\lambda\hat d$ \emph{ngoài} momentum buffer; khôi phục buffer BN
+\Statex \textbf{S6. GIR} (sau S5) \hfill\Tref{T7}, \Tref{T13}, \Tref{T17}, \Tref{T23}
+\State $r\leftarrow\eO$ (CIL) hoặc $e$ (B5); dùng $\rperp(r)$ tính tại $\theta$
+\State Ứng viên $\Vcal$: hướng $a_k$ = top-$k$ eigvec của $(N_{\rperp}N_{\rperp}\T,S_x)$; $\sigma\in\{\pm1\}$; bias $b\in\{0,-\operatorname{median}(\sigma Xa_k)\}$ (có BN: $\gamma_v=\sigma$, $\beta_v\in\{0,-\operatorname{median}(\sigma\hat x_k)\}$); bỏ ứng viên có $\varphi\equiv0$
+\State $\ell(v)=\tfrac12\norm{J_v\T\rperp}^2/(\lambda_{\max}(J_v\T HJ_v)+\mu)$
+\For{mỗi slot hợp lệ (A12) \emph{còn chết tại $\theta'$} (kiểm lại A5), tối đa $S$}
+  \State $v=\argmax_{\Vcal}\ell$; đặt $a_v$ (và $b_v$ hoặc $\gamma_v,\beta_v$) vào slot; $B_v=0$
+  \State có BN: running\_mean$=0$, running\_var$=1$; đặt trạng thái optimizer của slot bằng $0$
+  \State cập nhật phần bù: chính xác theo \Tref{T13}(b), hoặc bản rẻ (giữ $\rperp$, hướng kế tiếp $S_x$-trực giao)
+\EndFor
+\If{\texttt{LIVE\_SWAP}$=$\texttt{measured}} \State thí nghiệm slot sống: swap chỉ khi $j_u^L\le0$, $j_u^{KD}\le0$, $\Delta L_{\mathrm{pred}}<0$, $\Delta KD_{\mathrm{pred}}<0$ (\Tref{T7}(i), \Tref{T16}); log kết quả thực
+\EndIf
+\Statex \textbf{S7. Log} \hfill\Tref{T3}, \Tref{T8}, \Tref{T21}
+\State $\rho$, $V$, $V_O$, $\hat h$, $\hat g$, $\leak$, $\varepsilon^*$, $\beta$, nhánh của \textsc{BetaRule}, $\Phi_N$, số lần bỏ qua, residual CG, $\cos(\hat d,d_{\mathrm{exact}})$ ở điểm kiểm, defect $\delta_m$, $-\varepsilon\lambda\omega\theta\T\hat d$, số slot chết trước/sau S5, số swap, $\ell(v)$, gain
+\Statex
+\Function{BetaRule}{$A$} \hfill\Tref{T3}(e--g), \Tref{T11}
+  \State $\chi^2=\frac1N\sum_i\chi^2(p_{t,i}\|p_{s,i})$ \Comment{dạng đóng, \Tref{L6}}
+  \If{$\chi^2=0$ \textbf{or} $e_O=0$} \Return $0$ \Comment{\Tref{T3}(g)(iv)}
+  \ElsIf{$V_O=0$} \Return $0$ \Comment{\Tref{T3}(g)(iii)}
+  \EndIf
+  \State $\varepsilon^*=V_O^2/\chi^2$; \textbf{if} $\leak(0)\le\varepsilon^*$ \textbf{then return} $0$
+  \State $\beta_{\mathrm{suf}}=\chi^2\norm{u_N}_H^2/V_O^2$; bisection trên $\log\beta$ trong $[\beta_{\mathrm{suf}}10^{-k_{\mathrm{lo}}},\beta_{\mathrm{suf}}]$, $n_b$ bước, warm start; $\leak(\beta)=\norm{\Lambda C\dN}^2$ (một JVP)
+  \State \Return đầu mút trên đã kiểm $\leak(\beta)\le\varepsilon^*$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Hai biến thể theo bài toán}
+
+\begin{tabularx}{\linewidth}{@{}lXX@{}}
+\toprule
+ & CIL (iCaRL, ResNet32) & B5 (mất plasticity) \\
+\midrule
+Residual GIR nhắm tới & $e_\beta$, metric $H_\beta$ (\Tref{T27}; bản pilot dùng $\eO$) & $e$ (trường hợp $\beta=0$ của \Tref{T27}) \\
+$\beta$ & \textsc{BetaRule} (có lớp cũ) & $0$ (không có lớp cũ) \\
+Chứng chỉ ở S4 & $\hat g$ và $\hat h$ & $\hat g$ \\
+GIR & không kích hoạt với cấu hình mặc định (0\% đơn vị chết; slot sống tắt) & cơ chế chính (nhiều đơn vị chết) \\
+Số lần giải mỗi lần áp dụng & $6+n_b$ (tốt nhất $4$); $9+2n_b$ khi làm mới $A$ & $2$ \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Chi phí}
+
+\begin{tabularx}{\linewidth}{@{}Xccc@{}}
+\toprule
+Phần (số lần giải hệ tuyến tính, trường hợp xấu nhất) & CIL & CIL, làm mới $A$ & B5 \\
+\midrule
+$z$, $z_O$ & 2 & 2 & 1 \\
+\textsc{BetaRule} cho $A_0$ & --- & $2+n_b$ & --- \\
+$y=HJG_{\beta_0}g$ & --- & 1 & --- \\
+$\drep$, $d_N^0$ & 2 & 2 & 1 \\
+bisection cho $A$ đang dùng (khi $\leak(0)>\varepsilon^*$), có thể $+1$ cho $d_N(\beta_{\mathrm{suf}})$ & $2+n_b$ & $2+n_b$ & --- \\
+\midrule
+\textbf{Tổng} & $\mathbf{6+n_b}$ & $\mathbf{9+2n_b}$ & $\mathbf 2$ \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Chứng chỉ, $\leak$, $\varepsilon^*$, $\chi^2$, $\rperp$, $\tau_h$, $\tau_g$ không cần giải thêm. GIR slot chết: $\ell(v)$ không cần giải; deflation chính xác tốn $q+1$ lần giải mỗi slot thêm. Chi phí phải đo trên phần cứng thật và đưa vào quy tắc chọn $K$.
+
+\subsection{Mỗi dòng của \cref{alg:vna} và cơ sở của nó}
+
+\begin{longtable}{@{}p{0.24\linewidth}p{0.30\linewidth}p{0.40\linewidth}@{}}
+\toprule
+Dòng / bước & Cơ sở & Bảo đảm hoặc vai trò \\
+\midrule
+\endhead
+S1: $\xGN$, $z$, $\rperp$ & \Tref{T20}, \Tref{T1}(d) & Tách chính xác; dạng không cần range, đúng cả khi softmax bão hòa. \\
+S2: tiny\_V$(z)$ & \Tref{T6}(c); A4$'$ & Tối ưu bậc một chính xác ở $\beta=0$ trong vùng mặt nạ. \\
+S2: $A$ từ $(M_S,S_x)$ & \Tref{T6}(a, b, e); \Tref{L9} & Tối ưu có điều kiện theo $\beta_0$; $S_x\succ0$ nhờ ridge. \\
+S3: $\hat d$ ở B5 & \Tref{T19}, \Tref{T2}(a) & Phép chiếu chính xác phần ảo; $g\T d=V\ge0$. \\
+S3: $\drep$, $\dN$ & \Tref{T1}(a, b) & Phân rã duy nhất; $\beta$ chỉ tác động lên phần học mới. \\
+\textsc{BetaRule} & \Tref{T3}(c, e--h), \Tref{T11}, \Tref{L6} & $\beta$ trả về luôn có chứng chỉ $h\ge0$; là nhân tử KKT khi $\leak(0)>\varepsilon^*$. \\
+S4: bỏ qua & \Tref{T5}(d, f, g), \Tref{T9}(b, e) & Không làm tăng $L$, $L_{KD}$ ở bậc một (sai khác $\lambda\tau_g$, $\varepsilon\lambda\tau_h$); không bỏ nhầm. \\
+S5: $\lambda$ & \Tref{T24}; A13 & Cực đại mô hình GN; $\lambda_{\mathrm{faithful}}=K$ chỉ là giả thiết diễn giải. \\
+S5: ngoài momentum & \Tref{T10}(d); A9 & Giữ dấu của chứng chỉ. \\
+S6: kiểm lại A5 & \Tref{T7}(f), \Tref{T13}; A5 & Bảo toàn hàm chính xác chỉ khi slot còn chết tại $\theta'$. \\
+S6: chọn $v$ theo $\ell$ & \Tref{T7}(b, d), \Tref{T23} & Lợi $\ge\ell(v)\ge0$; hệ số $\mu/(c_H+\mu)$ so với tốt nhất trong $\Vcal$. \\
+S6: sau S5 & \Tref{T7}(g) & Swap làm $K$ lớn lên, không giao hoán với VNA. \\
+S6: BN, optimizer & \Tref{T17}, \Tref{T13}(d) & Neuron mới không chết vì $\beta_{BN}$; không có dịch chuyển không gradient. \\
+S6: slot sống & \Tref{T7}(i), \Tref{T16} & Chỉ chứng chỉ tức thời; dự báo không đáng tin ở damping thật, nên tắt mặc định. \\
+S7: $\rho$, defect & \Tref{T21}, \Tref{T8} & Nghĩa của chẩn đoán được chứng minh. \\
+\bottomrule
+\end{longtable}

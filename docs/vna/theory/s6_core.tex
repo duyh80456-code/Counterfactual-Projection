@@ -1,0 +1,137 @@
+\section{Hiệu chỉnh: dạng đóng, bảo vệ lớp cũ và chứng chỉ}\label{sec:core}
+
+Mục này chứng minh rằng hiệu chỉnh của bước S3 được xác định duy nhất, tách được thành phần sửa và phần học mới, và có chứng chỉ không làm tăng KD ở bậc một.
+
+\subsection{T1: dạng đóng và phân rã}
+
+\begin{namedthm}{T1}{dạng đóng, phân rã, các dạng không cần range}
+Giả thiết A2, A3, $\beta\ge0$.
+\begin{enumerate}[label=(\alph*)]
+\item Bài toán $(P_\beta)$: $\min_d\Phi(d)+\beta\norm{C(d-\drep)}_W^2$ có nghiệm duy nhất $d^*(\beta)=\drep+\dN$.
+\item $\Phi(\drep+x)=\Phi_N(x)+\mathrm{const}$; do đó $(P_\beta)$ tương đương $\min_x\Phi_N(x)+\beta x\T Bx$, nghiệm $x=\dN$.
+\item \emph{Dạng output-space.} Với $\hat J=[J;C]$, $\hat H=\blkdiag(H,\beta W)=\hat R\T\hat R$ (một thừa số bất kỳ, ví dụ $\hat R=\blkdiag(H^{1/2},\sqrt\beta\Lambda)$), $\hat t=[u;C\drep]$, $\hat M=\hat R\hat J\hat J\T\hat R\T$: $d^*=\hat J\T\hat R\T(\hat M+\mu)^{-1}\hat R\hat t$. Không có pseudo-inverse.
+\item \emph{$z$ không cần range.} Với mọi thừa số $H=\Lambda_h\T\Lambda_h$: $z(r)=\Lambda_h\T(\Lambda_hK\Lambda_h\T+\mu)^{-1}\Lambda_h(Jg_r)$, $g_r=J\T r$.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Hessian của mục tiêu là $2A_\beta\succ0$, nên nghiệm duy nhất. Điều kiện dừng: $A_\beta d=J\T Hu+\beta B\drep$. Thay $d=\drep+x$ và dùng $(F+\mu)\drep=J\T Hu_R$, được $A_\beta x=J\T Hu_N$.
+(b) Khai triển; số hạng chéo là $-2x\T[J\T Hu_R-(F+\mu)\drep]=0$.
+(c) Mục tiêu là $\norm{\hat R(\hat Jd-\hat t)}^2+\mu\norm d^2$, nên $d=(\hat J\T\hat H\hat J+\mu)^{-1}\hat J\T\hat R\T\hat R\hat t$; push-through với $X=\hat R\hat J$.
+(d) $z(r)=\Lambda_h\T\Lambda_hJ(J\T\Lambda_h\T\Lambda_hJ+\mu)^{-1}J\T r$; push-through với $X=\Lambda_hJ$.
+\end{proof}
+\begin{hequa}
+Bước S3 tính $\drep$ và $\dN$ bằng hai hệ tuyến tính riêng; phân rã (b) cho phép áp $\beta$ chỉ lên phần học mới mà không đụng phần sửa. Dạng (c, d) thay công thức cũ $RM(M+\mu)^{-1}R^+e$, vốn sai khi softmax bão hòa vì ngưỡng trị riêng của $R^+$.
+\end{hequa}
+\begin{kiem}
+T1a $3.7\cdot10^{-12}$ (T1a-NEG: bỏ $\beta$ lệch $6\cdot10^{-2}$); T1b $4.0\cdot10^{-12}$; T1c $1.4\cdot10^{-11}$ ở logit scale 1 đến 30 (T1c-NEG: công thức pinv có ngưỡng lệch 0.81 ở scale $\ge20$).
+\end{kiem}
+
+\subsection{T2: trường hợp $\beta=0$, giới hạn cứng và bổ đề chiếu lồng nhau}
+
+\begin{namedthm}{T2}{rút gọn, giới hạn $\beta\to\infty$, chiếu lồng nhau}
+Giả thiết A2, A3.
+\begin{enumerate}[label=(\alph*)]
+\item $\beta=0$: $d^*(0)=GJ\T HK_Ez$ (VNA thuần). Ngoài ra $g\T d^*(0)=V\ge0$ và $d^*(0)=Qg$ với $Q=L\T K_EL\succeq0$, $L=HJG$.
+\item \emph{Giới hạn cứng, $C$ hạng tùy ý.} Với $A:=A_0$, $b:=J\T Hu_N$, $\hat C=\Lambda C$: khi $\beta\to\infty$,
+\[
+\dN\to d_N^\infty:=\argmin\{\Phi_N(x):\hat Cx=0\}=A^{-1}b-A^{-1}\hat C\T(\hat CA^{-1}\hat C\T)^+\hat CA^{-1}b,
+\]
+với $\norm{\dN-d_N^\infty}_A\le\norm{\Pi A^{-1/2}b}/(1+\beta\sigma_{\min}^2)$, trong đó $\sigma_{\min}$ là giá trị suy biến khác $0$ nhỏ nhất của $\hat CA^{-1/2}$ và $\Pi$ là phép chiếu lên không gian hàng của nó. Nếu $\hat C$ có hạng cột đầy thì $d_N^\infty=0$.
+\item Ràng buộc ở giới hạn là $\Lambda Cx=0$, \emph{không phải} $Cx=0$: mỗi mẫu vẫn được dịch đều toàn bộ logit cũ, và KD bất biến với phép dịch đó.
+\item \emph{Chiếu lồng nhau ở giới hạn cứng.} Với $P=I-\hat C^+\hat C$: $Jd_N^\infty\in\range(K_{NS})$, $K_{NS}:=JPJ\T=K-J\hat C\T(\hat C\hat C\T)^+\hat CJ\T$ (phần bù Schur theo khối $[J;\hat C]$). Do đó vận tốc học mới nằm trong $\range(K_{NS})\subseteq\range(K)$.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) \Tref{L4} cho $g\T GJ\T H=z\T$, nên $g\T d=z\T K_Ez$; viết $d=GJ\T HK_EHJGg=L\T K_ELg$.
+(b) Đổi biến $y=A^{1/2}x$: $\min\norm{y-A^{-1/2}b}^2+\beta\norm{\hat CA^{-1/2}y}^2$. Lấy SVD rút gọn $\hat CA^{-1/2}=U\Sigma V\T$; phần của $y$ ngoài $\range(V)$ không phụ thuộc $\beta$; tọa độ thứ $i$ trong range là $b_i/(1+\beta\sigma_i^2)\to0$. Giới hạn là nghiệm KKT, đúng với $(\cdot)^+$ vì $\hat CA^{-1}b\in\range(\hat CA^{-1}\hat C\T)$.
+(c) $\hat Cx=0\iff Cx\in\nullsp(\Lambda)=\nullsp(W)$ (\Tref{L7}).
+(d) $\hat Cd_N^\infty=0$ nên $d_N^\infty=Pd_N^\infty$ và $Jd_N^\infty\in\range(JP)=\range(JPJ\T)$.
+\end{proof}
+\begin{hequa}
+(a) là cơ sở của chứng chỉ ở bước S4 khi $\beta=0$ (B5 và nhánh $\beta=0$ của CIL): bước VNA thuần luôn là hướng giảm ở bậc một. (b, c) cho biết $\beta$ lớn tới đâu thì vẫn còn chỗ học: đúng ràng buộc là $\Lambda C$, và giới hạn cứng chỉ đóng băng hoàn toàn khi $\hat C$ có hạng cột đầy (không xảy ra với ResNet32, vì $p\gg N(c_{\mathrm{old}}-1)$). (d) là \emph{bổ đề chiếu lồng nhau}: phép chiếu không tạo hướng mới ngoài $\range(K)$; đây là lý do cần GIR.
+\end{hequa}
+\begin{kiem}
+T2a $5.2\cdot10^{-16}$; T2b $5.5\cdot10^{-13}$; T2c ($Q\succeq0$); T2d--e (tốc độ $O(1/\beta)$ lệch $\le1.8\%$); T2f (T2f-NEG: ràng buộc $Cx=0$ cách $\ge0.265$); T2g ($C$ hạng thiếu); T2h, T2i (Schur, $1.6\cdot10^{-14}$); T11f (hạng cột đầy: $\norm{\dN}/\norm{d_N^0}=1.3\cdot10^{-8}$ tại $\beta=10^{10}$).
+\end{kiem}
+
+\subsection{T3: sửa, rò rỉ và chứng chỉ không quên thêm}
+
+\begin{namedthm}{T3}{sửa, rò rỉ, nhân tử KKT}
+Giả thiết A2, A3; có lớp cũ (CIL).
+\begin{enumerate}[label=(\alph*)]
+\item \emph{Phần sửa đúng chiều:} $g_O\T\drep=V_O\ge0$.
+\item $h(\beta)=V_O+e_O\T C\dN$ và $|e_O\T C\dN|\le\norm{e_O}_{W^+}\sqrt{\leak(\beta)}$.
+\item \emph{Rò rỉ:} $\leak'(\beta)=-2(B\dN)\T G_\beta(B\dN)\le0$ và $\leak(\beta)\le\min(\leak(0),\norm{u_N}_H^2/\beta)$; $\leak$ giảm chặt khi còn dương và $\to0$.
+\item \emph{Mức quên bậc hai.} Với bước $\theta-\varepsilon d$: $L_{KD}(\theta-\varepsilon d)-L_{KD}(\theta)=-\varepsilon g_O\T d+\tfrac12\varepsilon^2[\norm{Cd}_W^2+\eO\T\nabla^2f[d,d]]+O(\varepsilon^3)$.
+\item \emph{Chứng chỉ.} Với $V_O>0$: nếu $\leak(\beta)\le\varepsilon^*$ thì $h(\beta)\ge0$. Tập $\{\beta:\leak(\beta)\le\varepsilon^*\}$ là khoảng $[\beta_{\mathrm{cert}},\infty)$, $\beta_{\mathrm{cert}}\le\beta_{\mathrm{suf}}$, và $\beta_{\mathrm{cert}}=0\iff\leak(0)\le\varepsilon^*$.
+\item \emph{Nhân tử KKT.} Với $V_O>0$, $d^*(\beta_{\mathrm{cert}})$ là nghiệm duy nhất của $\min\Phi(d)$ với $\norm{C(d-\drep)}_W^2\le\varepsilon^*$, và $\beta_{\mathrm{cert}}$ là nhân tử Lagrange duy nhất (đối ngẫu mạnh). Ngân sách $\varepsilon^*$ không có tham số: đó là ngân sách lớn nhất mà Cauchy--Schwarz ở (b) \emph{đủ} để bảo đảm $h\ge0$ (điều kiện đủ, có tính bảo thủ).
+\item \emph{Biên và suy biến.} (i) Nếu $\beta_{\mathrm{cert}}>0$ thì $0\le h(\beta_{\mathrm{cert}})\le2V_O$. (ii) $h(\infty)=V_O$. (iii) Nếu $V_O=0$ và $e_O\ne0$ thì $h(0)=0$ chính xác, nên $\beta=0$ có chứng chỉ. (iv) Nếu $e_O=0$ thì $h\equiv0$ và $\varepsilon^*=0/0$ không được tính; quy tắc là $\beta=0$.
+\item $h$ \emph{không} đơn điệu: $h(\beta)=V_O+\sum_ic_i/(1+\beta\lambda_i)$ trong cơ sở riêng suy rộng của $(A_0,B)$ với $c_i$ có thể trái dấu. Bisection trên $h$ không hợp lệ; trên $\leak$ thì hợp lệ.
+\item \emph{Phạt về đích $0$ làm mất phần sửa:} với phạt $\beta\norm{Cd}_W^2$ trên toàn bộ $u$:
+\[|g_O\T d_\beta|\le\norm{e_O}_{W^+}\norm u_H/\sqrt\beta\to0.\]
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) \Tref{L4} với $r=\eO$: $g_O\T\drep=z_O\T K_Ez_O$.
+(b) $g_O\T x=e_O\T Cx$; theo \Tref{L5}, $e_O=\Lambda\T w$ với $\norm w=\norm{e_O}_{W^+}$ khi chọn $w$ nhỏ nhất; nên $|e_O\T Cx|\le\norm w\norm{\Lambda Cx}$.
+(c) $dG_\beta/d\beta=-G_\beta BG_\beta$, nên $(\dN)'=-G_\beta B\dN$ và $\leak'=2d\T Bd'$. Cận $1/\beta$: $\beta\leak(\beta)\le\Phi_N(\dN)+\beta\leak(\beta)\le\Phi_N(0)=\norm{u_N}_H^2$.
+(d) Taylor của $L_{KD}\circ f$: gradient $g_O$, Hessian $J\T O\T WOJ+\sum_j(\eO)_j\nabla^2f_j$.
+(e) $h\ge V_O-\norm{e_O}_{W^+}\sqrt{\leak}\ge V_O-\norm{e_O}_{W^+}\sqrt{\varepsilon^*}=0$; tập là khoảng vì $\leak$ không tăng và liên tục; $\beta_{\mathrm{suf}}$ thuộc tập theo (c).
+(f) Theo \Tref{T1}(b) bài toán là $\min\Phi_N(x)$ với $x\T Bx\le\varepsilon^*$. Slater thỏa tại $x=0$; mục tiêu lồi chặt, nên nghiệm duy nhất và đối ngẫu mạnh. KKT: $x=\dN$, $\beta\ge0$, $\beta(\leak(\beta)-\varepsilon^*)=0$; theo (c) nghiệm là $\beta_{\mathrm{cert}}$.
+(g) (i) Tại $\beta_{\mathrm{cert}}>0$, $\leak=\varepsilon^*$ nên $|e_O\T Cd|\le V_O$. (ii) $\Lambda Cd_N^\infty=0$ và $e_O=\Lambda\T w$. (iii) $V_O=\norm{J_E\T z_O}^2=0\Rightarrow u_R=0$ và $h(0)=z_O\T K_Ez_N=(J_E\T z_O)\T J_E\T z_N=0$. (iv) $g_O=C\T e_O=0$.
+(h) Chéo hóa đồng thời $(A_0,B)$; phản ví dụ số ở 62/300 bài.
+(i) Như (b), (c) với $u$ thay $u_N$.
+\end{proof}
+\begin{hequa}
+Đây là cơ sở của bước S3 trong CIL. (a) nói phần sửa luôn kéo KD về đúng chiều. (e, f) cho quy tắc chọn $\beta$: tìm đầu mút trên của khoảng có $\leak\le\varepsilon^*$ bằng bisection trên $\leak$ (không trên $h$, theo (h)). (g)(iii, iv) cho hai nhánh suy biến của quy tắc $\beta$: dùng $\beta=0$, không bỏ qua. (i) giải thích vì sao ràng buộc phải đặt về đích $C\drep$ chứ không về $0$.
+\end{hequa}
+\begin{kiem}
+T3a $2.2\cdot10^{-13}$; T3b (T3b-NEG: dùng $\norm{e_O}_W$ vi phạm); T3c (0 vi phạm); T3e (0/6900 điểm lưới; T3e-WIT: VNA thuần làm KD tăng ở 102/300 bài, nên chứng chỉ không rỗng); T3i (SLSQP $10^{-7}$); T3d-WIT ($h$ không đơn điệu 62/300); T11a--g.
+\end{kiem}
+
+\subsection{T4: cái giá về plasticity của $\beta$}
+
+\begin{namedthm}{T4}{plasticity}
+Giả thiết A2, A3.
+(a) $\beta\mapsto\Phi_N(\dN)$ không giảm.
+(b) $0\le\Phi_N(\dN)-\Phi_N(d_N^0)\le\beta(\leak(0)-\leak(\beta))\le\beta\leak(0)$.
+(c) Riêng độ khớp $\norm{J\dN-u_N}_H^2$ \emph{không} nhất thiết đơn điệu.
+\end{namedthm}
+\begin{proof}
+(a) Điều kiện dừng $\nabla\Phi_N(x_\beta)=-2\beta Bx_\beta$ và $x_\beta'=-G_\beta Bx_\beta$ cho $\frac{d}{d\beta}\Phi_N(x_\beta)=2\beta(Bx_\beta)\T G_\beta(Bx_\beta)\ge0$.
+(b) $x_\beta$ cực tiểu $\Phi_N+\beta\leak$, nên $\Phi_N(x_\beta)+\beta\leak(\beta)\le\Phi_N(x_0)+\beta\leak(0)$.
+(c) Phản ví dụ: $F=\begin{psmallmatrix}2.077&.563\\.563&.265\end{psmallmatrix}$, $B=\begin{psmallmatrix}12.70&-.027\\-.027&10^{-4}\end{psmallmatrix}$, $J\T Hu_N=(.278,.320)$, $\mu=1$: độ khớp (bỏ hằng số) bằng $-0.1434,-0.1443,-0.1451$ tại $\beta=0,0.05,0.2$ (giảm), trong khi $\Phi_N$ tăng.
+\end{proof}
+\begin{hequa}
+$\beta_{\mathrm{cert}}$ là $\beta$ \emph{nhỏ nhất} có chứng chỉ, nên theo (a, b) nó mất ít plasticity nhất trong các lựa chọn an toàn. Đây là lý do không dùng $\beta_{\mathrm{suf}}$ (trung vị lớn gấp 29 lần) làm mặc định.
+\end{hequa}
+
+\subsection{T5: giảm loss và quy tắc bỏ qua}
+
+\begin{namedthm}{T5}{giảm loss, bỏ qua, không có núm $\gamma$}
+Giả thiết A2, A3; (e), (f) thêm A6.
+\begin{enumerate}[label=(\alph*)]
+\item $\norm{\drep}\le\norm{u_R}_H/\sqrt\mu$, $\norm{\dN}\le\norm{u_N}_H/\sqrt\mu$ với mọi $\beta$.
+\item $g\T d^*(\beta)\ge V-\norm g_G\min\big(\sqrt{\beta\leak(0)},2\norm{u_N}_H\big)$.
+\item \emph{Không có $\gamma$.} Với $u_\gamma=K_E(z_N+\gamma z_O)$, $\beta=0$, và $z_N,z_O$ độc lập tuyến tính: $g\T d\ge0$ với mọi $K_E\succeq0$ khi và chỉ khi $\gamma=1$ (tức VNA hiện tại).
+\item Nếu $g\T\hat d\ge0$ thì với mọi $\lambda\ge0$, $p=g+\lambda\hat d$ thỏa $g\T p\ge\norm g^2$.
+\item Với $\rho:=\lambda\norm{\hat d}/\norm g$ và $g\T\hat d\ge0$: $L(\theta-\varepsilon p)\le L(\theta)-\varepsilon\norm g^2(1-\tfrac12L_s\varepsilon(1+\rho)^2)$; $L$ giảm chặt khi $0<\varepsilon<2/(L_s(1+\rho)^2)$.
+\item Với bước baseline $\delta$ bất kỳ (kể cả momentum): $L(\theta+\delta-\varepsilon\lambda\hat d)-L(\theta+\delta)\le-\varepsilon\lambda g\T\hat d+\varepsilon\lambda L_s\norm\delta\norm{\hat d}+\tfrac12L_s\varepsilon^2\lambda^2\norm{\hat d}^2$, và tương tự cho $L_{KD}$ với $\hat h$, $L_K$. Cải thiện chặt khi $\varepsilon$ nhỏ cần $\hat g>0$ (và $\hat h>0$).
+\item Không có bảo đảm vô điều kiện khi $\beta>0$: $g\T d^*(\beta_{\mathrm{cert}})<0$ có thể xảy ra.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) $\norm{G_\beta J\T Hu}^2\le\norm{G_\beta}\norm{J\T Hu}^2_{G_\beta}\le\mu^{-1}\norm{J\T Hu}_G^2\le\mu^{-1}\norm u_H^2$ (\Tref{L2}, \Tref{L1}).
+(b) $g\T(\drep+d_N^0)=V$; $d_N^0-\dN=\beta G_\beta Bd_N^0$; $|g\T\beta G_\beta Bd_N^0|\le\norm g_{G_\beta}\sqrt\beta\norm{\Lambda Cd_N^0}$ (\Tref{L3}); cận thứ hai từ \Tref{L1}, \Tref{L2}.
+(c) $g\T d=z\T K_E(z_N+\gamma z_O)$. Với $\gamma=1$ bằng $z\T K_Ez\ge0$. Với $K_E=vv\T$, $g\T d=(v\T z)(v\T(z_N+\gamma z_O))$, âm với một $v$ nào đó trừ khi $z_N+\gamma z_O=cz$, $c\ge0$, buộc $\gamma=1$.
+(d) $g\T p=\norm g^2+\lambda g\T\hat d$.
+(e) Bất đẳng thức descent $L$-smooth với $g\T p\ge\norm g^2$, $\norm p\le(1+\rho)\norm g$.
+(f) $L$-smooth tại $\theta+\delta$ và $\norm{\nabla L(\theta+\delta)-g}\le L_s\norm\delta$.
+(g) Phản ví dụ số (8/200 bài).
+\end{proof}
+\begin{hequa}
+Đây là cơ sở của quy tắc bỏ qua ở bước S4: khi chứng chỉ không âm, thêm $\lambda\hat d$ không làm xấu bước của optimizer gốc ở bậc một, với \emph{mọi} $\lambda\ge0$ (d, f); khi âm thì bỏ qua (g). (c) loại hẳn núm $\gamma$: trọng số giữa phần sửa và phần học mới không được tự do.
+\end{hequa}
+\begin{kiem}
+T5a, T5b; T5c-WIT ($g\T d^*<0$ ở 8/200 tại $\beta_{\mathrm{cert}}$); T5d (bổ đề descent) và T5d-NEG; T5e (tìm kiếm đối kháng không tìm được $g\T d<0$ khi $\gamma=1$, min $9.7\cdot10^{-18}$; NEG tìm được với $\gamma\in\{0,2,5\}$); T15a, T15b (mức thuật toán trên MLP thật: $L$ giảm ở mọi lần áp dụng; KD không tăng khi $\hat h\ge0$, 0/24).
+\end{kiem}

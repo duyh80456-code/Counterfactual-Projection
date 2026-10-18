@@ -1,0 +1,82 @@
+\section{Quỹ đạo, giải không chính xác và phạm vi}\label{sec:robust}
+
+\begin{namedthm}{T8}{cận Grönwall rời rạc theo defect thực hiện}
+Giả thiết A7. Gọi $x_m=f(\theta_m)$ sau $m$ bước vĩ mô độ dài $\tau$, quỹ đạo tham chiếu $y_{m+1}=y_m+\tau U(y_m)$, $y_0=x_0$, và $\delta_m:=\norm{(x_{m+1}-x_m)/\tau-U(x_m)}$ (đo được lúc chạy). Khi đó $\norm{x_m-y_m}\le\sum_{j<m}(1+\tau L_U)^{m-1-j}\tau\delta_j$.
+\end{namedthm}
+\begin{proof}
+$e_m=\norm{x_m-y_m}$ thỏa $e_{m+1}\le(1+\tau L_U)e_m+\tau\delta_m$; quy nạp.
+\end{proof}
+\begin{remark}
+$\delta_m$ gồm (i) defect chiếu $\lambda\norm{Jd-u}$, đúng đại lượng VNA cực tiểu; (ii) độ trôi kernel; (iii) sai số rời rạc. \textbf{Cận chỉ theo phần (i) là sai:} trên MLP tanh không lazy, defect thực hiện trung bình 0.73 so với phần chiếu 0.02 (T8a-NEG, tỉ số vi phạm 2.7).
+\end{remark}
+\begin{hequa}
+Chỉ khẳng định \emph{tối ưu chiếu cho từng bước}. Khẳng định ``quỹ đạo gần mô hình mở rộng'' chỉ được đưa ra khi $\delta_m$ log ở bước S7 là nhỏ.
+\end{hequa}
+
+\begin{namedthm}{T9}{giải không chính xác}
+Giả thiết A8.
+\begin{enumerate}[label=(\alph*)]
+\item $\norm{\hat x-x}\le\rho\norm b/\mu$; warm start không ảnh hưởng nếu $\rho$ đo so với $\norm b$.
+\item $\hat h=g_O\T\hat d$, $\hat g=g\T\hat d$ và $\leak(\hat d_N)=\norm{\Lambda C\hat d_N}^2$ được tính trực tiếp trên vector áp dụng, không qua solve. Với quy tắc chặt ($\tau=0$), \Tref{T5}(d--f) đúng bất kể sai số solver; với quy tắc có dung sai (e), chúng đúng sai khác tối đa $\lambda\tau_g$ (cho $L$) và $\varepsilon\lambda\tau_h$ (cho KD bậc một).
+\item Nếu $\cos(\hat d,d^*)\ge c$ thì $|g_O\T\hat d/\norm{\hat d}-g_O\T d^*/\norm{d^*}|\le\norm{g_O}\sqrt{2(1-c)}$.
+\item $\norm{\hat d_{\mathrm{rep}}-\drep}\le(\norm{J\T HK_EHJ}\rho_1\norm{g_O}/\mu+\rho_2\norm{\hat b_2})/\mu$.
+\item \emph{Quy tắc bỏ qua có dung sai.} Với chuỗi hai lần giải ($\hat x_1\approx A_\beta^{-1}b_1$, $b_1=J\T e$, residual $\rho_1$; $\hat z=HJ\hat x_1$, $\hat u=K_E\hat z$, $b_2=J\T H\hat u$; $\hat d\approx A_\beta^{-1}b_2$, residual $\rho_2$), đặt
+\[
+\hat\Delta=\norm{J\T HK_E}\norm{HJ}\rho_1\norm{b_1}/\mu^2+\rho_2\norm{b_2}/\mu,\quad\tau_h=\norm{g_O}\hat\Delta,\quad\tau_g=\norm g\hat\Delta.
+\]
+Khi đó $\norm{\hat d-d^*}\le\hat\Delta$, $|\hat h-h^*|\le\tau_h$, $|\hat g-g^*|\le\tau_g$. Nếu $h^*\ge0$ và $g^*\ge0$, quy tắc ``bỏ qua khi $\hat h<-\tau_h$ hoặc $\hat g<-\tau_g$'' không bao giờ bỏ nhầm; bước được áp dụng làm KD tăng bậc một không quá $\varepsilon\lambda\tau_h$.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) $\hat x-x=A^{-1}(A\hat x-b)$, $\norm{A^{-1}}\le\mu^{-1}$. (b) Định nghĩa. (c) Với vector đơn vị, $\norm{u_1-u_2}^2=2-2\cos$; Cauchy--Schwarz. (d) (a) hai lần và bất đẳng thức tam giác. (e) $\norm{\hat x_1-x_1}\le\rho_1\norm{b_1}/\mu$ nên $\norm{\hat z-z}\le\norm{HJ}\rho_1\norm{b_1}/\mu$; với $\tilde d=A_\beta^{-1}b_2$, $\norm{\tilde d-d^*}\le\norm{J\T HK_E}\norm{\hat z-z}/\mu$ và $\norm{\hat d-\tilde d}\le\rho_2\norm{b_2}/\mu$; cộng lại; hai hệ quả còn lại là Cauchy--Schwarz.
+\end{proof}
+\begin{hequa}
+Bước S4: chứng chỉ không bao giờ tính qua solve; dung sai $\tau_h,\tau_g$ lấy từ residual cuối của CG (CIL có hai chuỗi, $\hat\Delta=\hat\Delta_{\mathrm{rep}}+\hat\Delta_N$). Chuẩn phổ ước lượng bằng lặp lũy thừa, nhân hệ số an toàn. Kiểm $\cos(\hat d,d_{\mathrm{exact}})\ge0.99$ ở các điểm kiểm (c).
+\end{hequa}
+\begin{kiem}
+T9a (T9a-NEG: dừng theo residual ban đầu vi phạm $3.2\cdot10^5$ lần); T9b; T18a (0/60 vi phạm); T18a-NEG (bỏ $1/\mu$ vi phạm 26/60); T18b-WIT (quy tắc chặt bỏ nhầm 15/30 khi $V_O=0$); T18c (quy tắc có dung sai bỏ nhầm 0/30).
+\end{kiem}
+
+\begin{namedthm}{T18}{quy tắc bỏ qua có dung sai}
+Nội dung là \Tref{T9}(e); xem phần kiểm số ở trên.
+\end{namedthm}
+
+\begin{namedthm}{T10}{phạm vi: BN, momentum, weight decay, augmentation}
+\begin{enumerate}[label=(\alph*)]
+\item \emph{BN train mode.} Các đồng nhất và chứng chỉ của \Tref{T1}--\Tref{T5}, \Tref{T7}(a--c, e--i), \Tref{T8}, \Tref{T9}, \Tref{T11}, \Tref{T12} chỉ dùng $J,H,W$ của loss trên cửa sổ, nên đúng chính xác dưới A1. Ngoại lệ: tính tối ưu của bước chọn (\Tref{T6}, \Tref{T7}(d)) cần A4$'$, với dạng riêng khi có BN (\Tref{T14}). Đại lượng tính ở eval mode dự báo sai.
+\item Loại tham số BN khỏi $S$: mọi định lý vẫn đúng với $J_S$, và $\range(K_S)\subseteq\range(K)$.
+\item A4 (tuyến tính toàn cục) sai khi BN đứng sau kênh ảo: $\varphi(2a)=\varphi(a)$.
+\item \emph{Momentum.} Cộng ngoài buffer: \Tref{T5}(f) đúng, không phụ thuộc $\nu$. Ghi $\hat d$ vào buffer: $\hat d$ bị phát lại với tổng trọng số $1/(1-\nu)$ ở các điểm nó không được tính, nên dấu không còn được chứng chỉ.
+\item \emph{Weight decay:} hiệu chỉnh thêm số hạng $-\varepsilon\lambda\omega\theta\T\hat d$ vào mục tiêu có regularization; phải log.
+\item \emph{Augmentation:} bảo đảm chỉ cho loss thực nghiệm trên đúng các mẫu đã augment trong cửa sổ.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a, b) Các định lý chỉ dùng tính chất đại số của $(J,H,W)$ tại $\theta$. (c) BN chuẩn hóa nên bất biến tỉ lệ. (d) \Tref{T5}(f); số hạng phát lại là $\sum_k\nu^k$. (e, f) Định nghĩa.
+\end{proof}
+\begin{hequa}
+Bước S5: cộng $-\varepsilon\lambda\hat d$ trực tiếp vào tham số, \emph{không} qua momentum buffer; khôi phục buffer BN sau các forward của VNA (A1).
+\end{hequa}
+\begin{kiem}
+T10a $8.4\cdot10^{-14}$; T10b (T10b-NEG: eval mode lệch 4.87 lần); T10d; T10f (\texttt{torch.optim.SGD} thật, momentum 0.9: cộng ngoài buffer dịch đúng $\mathrm{lr}\cdot d$, tỉ số 1.000000; NEG: qua buffer phát lại 10 lần).
+\end{kiem}
+
+\begin{namedthm}{T11}{các nhánh suy biến của quy tắc $\beta$}
+Giả thiết A2, A3. Quy tắc $\beta$ ở bước S3 cho một $\beta$ mà, với solve chính xác, $h(\beta)\ge0$:
+(a) $e_O=0$ (kể cả $c_{\mathrm{old}}=1$): $\beta=0$, $h\equiv0$.
+(b) $V_O=0$, $e_O\ne0$: $\beta=0$, $h(0)=0$.
+(c) Ngược lại: nếu $\leak(0)\le\varepsilon^*$ thì $\beta=0$; nếu không, bisection trên $\log\beta$ trong $[\beta_{\mathrm{suf}}10^{-k_{\mathrm{lo}}},\beta_{\mathrm{suf}}]$ trả về một đầu mút trên đã kiểm $\leak(\beta)\le\varepsilon^*$. Khoảng này luôn hợp lệ vì $\leak(\beta_{\mathrm{suf}})\le\varepsilon^*$.
+\end{namedthm}
+\begin{proof}
+(a), (b) là \Tref{T3}(g)(iv), (iii). (c) \Tref{T3}(e): mọi $\beta$ có $\leak\le\varepsilon^*$ đều có chứng chỉ; bisection chỉ trả về điểm đã kiểm; tính đơn điệu của $\leak$ (\Tref{T3}(c)) bảo đảm $[\beta_{\mathrm{cert}},\infty)\ni\beta_{\mathrm{suf}}$.
+\end{proof}
+\begin{hequa}
+Hàm \textsc{BetaRule} của \cref{alg:vna} cài đúng ba nhánh (a)--(c); không nhánh nào bỏ qua lần áp dụng, và không có ngưỡng tự do.
+\end{hequa}
+\begin{kiem}
+T11a ($h(0)$ chuẩn hóa $1.6\cdot10^{-14}$ khi $V_O=0$); T11c-WIT (60/60 bài $V_O=0$ có $\leak(0)>0$, nên quy tắc cũ ``bỏ qua khi $V_O=0$'' vứt bỏ các bước an toàn); T11d, T11e; T11g (bisection log 12 bước: 0 sai trên 120 bài).
+\end{kiem}
+
+\begin{namedthm}{T15}{kiểm ở mức thuật toán (không phải định lý mới)}
+Trên MLP tanh thật với CE + KD của PyCIL, chạy đúng bước S3--S4 rồi đi một bước $\theta-\varepsilon(g+\lambda\hat d)$: 24 lần áp dụng, 1 lần bỏ qua; $L$ giảm ở mọi lần áp dụng, dự báo bậc một đúng tới $1.1\cdot10^{-4}$ (tương đối) ở $\varepsilon=10^{-4}$; riêng bước hiệu chỉnh không làm $L_{KD}$ tăng ở lần nào khi $\hat h\ge0$ (0/24). \st{empirical}.
+\end{namedthm}

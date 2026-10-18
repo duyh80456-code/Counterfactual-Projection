@@ -1,0 +1,41 @@
+\section{Ablation là trường hợp riêng; baseline ngoài}\label{sec:ablation}
+
+\subsection{Một họ cập nhật}
+
+Gọi $\mathcal U(\lambda,\kappa,\beta,\text{chọn},S)$ là cập nhật: mỗi iteration optimizer gốc chạy; mỗi $K$ iteration cộng $-\varepsilon\lambda\,P(\kappa z)$ với phân rã bảo vệ của \Tref{T1}, rồi GIR với tối đa $S$ swap. Mọi arm dưới đây là thành viên của họ này; chúng chỉ khác một thành phần, nên so sánh cặp đo đúng đóng góp của thành phần đó.
+
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+Arm & Thiết lập & Câu hỏi được trả lời \\
+\midrule
+baseline (iCaRL / BP / CBP) & $\lambda=0$ & mốc \\
+\texttt{kernel\_self} & $\kappa=K$ (thay $K_E$) & kernel ảo có hơn kernel của chính mạng không? (\Tref{T19}(c)) \\
+VNA & $\kappa=K_E$ (tiny\_V), $\beta=0$ & tác dụng của phần ảo không bảo vệ \\
+VNA + bảo vệ & $\beta=\beta_{\mathrm{cert}}$ & tác dụng của số hạng bảo vệ \\
+A ngẫu nhiên & $\kappa=K_E(A_{\mathrm{rand}})$, cùng vết & tiêu chí grow có quan trọng không? \\
+không swap & $S=0$ & tác dụng của GIR (B5) \\
+GIR, $A$ ngẫu nhiên & swap với hướng ngẫu nhiên, cùng slot & ``reset thành gì'' có quan trọng không? \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Hai so sánh quyết định là \textbf{VNA so với \texttt{kernel\_self}} và \textbf{tiny\_V so với $A$ ngẫu nhiên}: cả hai chỉ khác kernel đưa vào cùng một phép chiếu, nên kết quả không thể đọc là ``một optimizer khác đã thắng''.
+
+\subsection{Baseline ngoài}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Baseline & Vai trò \\
+\midrule
+GN lười ($\xGN$) & đổi optimizer gốc; có sẵn miễn phí từ bước S1 (\Tref{T22}); không phải ablation \\
+K-FAC / Shampoo \cite{martens2015kfac,gupta2018shampoo} & preconditioner độ cong của chính mạng, cùng wall-clock; báo $\cos(d,d_{\mathrm{KFAC}})$ \\
+C-Flat \cite{bian2024cflat} & plug-in optimizer cùng setting PyCIL; mốc hiệu quả và chi phí \\
+CBP \cite{dohare2024}, ReDo \cite{sokar2023redo} & reset ngẫu nhiên với cùng tiêu chí chọn đơn vị \\
+Reset khởi tạo kiểu GradMax \cite{evci2022gradmax} & cùng slot, hướng theo gradient trên $e$ thay vì $\rperp$; trả lời phản biện ``GIR = GradMax áp vào ReDo'' \\
+GPM / EFC \cite{saha2021gpm,magistri2024efc} & bảo vệ lớp cũ không có dung lượng ảo (nếu CIL là track chính) \\
+\bottomrule
+\end{tabularx}
+
+\subsection{Bằng chứng toy hiện có (chỉ để định hướng)}
+
+Trên toy nhỏ, float64, 12 seed, ghép cặp (\st{empirical}): ở bài kiểu CIL, VNA hơn SGD $+0.22$ điểm accuracy trung bình (10/12 seed, kiểm định dấu hai phía $p\approx0.04$), hơn \texttt{kernel\_self} $+0.28$ điểm (8/12, $p\approx0.39$), hơn GN $+0.17$ điểm (8/12, mức nhiễu). Ở bài plasticity không có đơn vị chết, VNA \emph{không} hơn \texttt{kernel\_self} (4/12) hay GN (3/12); tổ hợp $\xGN+d$ có loss cuối trung bình tốt nhất. Các arm toy dùng $\lambda$ chuẩn hóa cùng norm, không phải quy tắc của \Tref{T24}. Những số này không thay đổi lý thuyết và không trả lời câu hỏi quyết định trên ResNet32 và B5.

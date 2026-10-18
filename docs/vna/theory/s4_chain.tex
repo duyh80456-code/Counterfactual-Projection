@@ -1,0 +1,93 @@
+\section{Chuỗi suy diễn}\label{sec:chain}
+
+\Cref{fig:chain} cho sơ đồ phụ thuộc: giả thiết $\to$ bổ đề $\to$ định lý $\to$ bước thuật toán. \Cref{tab:chain} liệt kê cùng thông tin dưới dạng bảng, kèm câu trả lời cho câu hỏi ``bước này suy ra từ đâu''.
+
+\begin{figure}[ht]
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  every node/.style={font=\footnotesize},
+  ass/.style={draw=orange!70!black,fill=orange!8,rounded corners=2pt,minimum width=1.9cm,minimum height=0.55cm,align=center},
+  lem/.style={draw=teal!70!black,fill=teal!8,rounded corners=2pt,minimum width=1.9cm,minimum height=0.55cm,align=center},
+  thm/.style={draw=blue!60!black,fill=blue!6,rounded corners=2pt,minimum width=2.6cm,minimum height=0.55cm,align=center},
+  stp/.style={draw=black!70,fill=black!4,minimum width=3.3cm,minimum height=0.55cm,align=center},
+  ar/.style={-{Stealth[length=2mm]},draw=black!45,thin},
+  node distance=0.32cm]
+% cột tiêu đề
+\node[font=\bfseries\small] at (0,1.0) {Giả thiết};
+\node[font=\bfseries\small] at (3.3,1.0) {Bổ đề};
+\node[font=\bfseries\small] at (7.4,1.0) {Định lý};
+\node[font=\bfseries\small] at (12.2,1.0) {Bước thuật toán};
+% giả thiết
+\node[ass] (A2) at (0,0) {A2 loss CE+KD};
+\node[ass,below=of A2] (A3) {A3 $\mu>0$};
+\node[ass,below=of A3] (A1) {A1 cùng cửa sổ};
+\node[ass,below=of A1] (A4) {A4$'$ vùng mặt nạ};
+\node[ass,below=of A4] (A8) {A8 dừng CG};
+\node[ass,below=of A8] (A5) {A5 slot chết};
+\node[ass,below=of A5] (A12) {A12 slot hợp lệ};
+\node[ass,below=of A12] (A9) {A9 momentum};
+\node[ass,below=of A9] (A10) {A10 hồi phục (diễn giải)};
+\node[ass,below=of A10] (A13) {A13 lười (diễn giải)};
+% bổ đề
+\node[lem] (L1) at (3.3,0) {L1 push-through};
+\node[lem,below=of L1] (L2) {L2--L4 thứ tự, đồng nhất};
+\node[lem,below=of L2] (L5) {L5 range};
+\node[lem,below=of L5] (L6) {L6 $\chi^2$ dạng đóng};
+\node[lem,below=of L6] (L7) {L7 thừa số $\Lambda$};
+\node[lem,below=of L7] (L8) {L8 Hessian student};
+\node[lem,below=of L8] (L9) {L9 ridge $S_x$};
+\node[lem,below=of L9] (L10) {L10 $L_3$ chặt};
+% định lý
+\node[thm] (T20) at (7.4,0) {T20 tách $e=z+r_\perp$};
+\node[thm,below=of T20] (T19) {T19 $d$ = chiếu phần ảo};
+\node[thm,below=of T19] (T1) {T1 dạng đóng, phân rã};
+\node[thm,below=of T1] (T2) {T2 $\beta=0$; giới hạn cứng};
+\node[thm,below=of T2] (T3) {T3 sửa, rò rỉ, KKT};
+\node[thm,below=of T3] (T6) {T6/T14 chọn $A$};
+\node[thm,below=of T6] (T5) {T5 giảm loss, bỏ qua};
+\node[thm,below=of T5] (T9) {T9/T18 CG không chính xác};
+\node[thm,below=of T9] (T10) {T10 BN, momentum};
+\node[thm,below=of T10] (T7) {T7/T13/T17/T23 GIR};
+\node[thm,below=of T7] (T24) {T24 cỡ bước};
+% bước
+\node[stp] (S1) at (12.2,0) {S1 residual; tách $z$, $r_\perp$};
+\node[stp,below=0.9cm of S1] (S2) {S2 chọn neuron ảo $A$};
+\node[stp,below=0.9cm of S2] (S3) {S3 $\beta$ và $d^*=d_{\mathrm{rep}}+d_N^\beta$};
+\node[stp,below=0.9cm of S3] (S4) {S4 chứng chỉ, bỏ qua};
+\node[stp,below=0.9cm of S4] (S5) {S5 áp dụng ngoài momentum};
+\node[stp,below=0.9cm of S5] (S6) {S6 GIR trên slot chết};
+\node[stp,below=0.9cm of S6] (S7) {S7 log, chẩn đoán};
+% cạnh giả thiết -> bổ đề
+\foreach \a/\b in {A2/L5,A2/L6,A2/L7,A2/L8,A2/L10,A3/L1,A3/L2,A4/L9}{\draw[ar] (\a.east)--(\b.west);}
+% bổ đề -> định lý
+\foreach \a/\b in {L1/T20,L1/T19,L1/T1,L2/T1,L2/T5,L5/T1,L5/T3,L6/T3,L7/T2,L7/T3,L8/T3,L9/T6,L10/T7,L2/T6}{\draw[ar] (\a.east)--(\b.west);}
+% giả thiết -> định lý
+\foreach \a/\b in {A8/T9,A5/T7,A12/T7,A9/T10,A1/T10,A10/T7,A13/T24,A4/T6}{\draw[ar,dashed] (\a.east) to[out=0,in=180] (\b.west);}
+% định lý -> bước
+\foreach \a/\b in {T20/S1,T19/S3,T1/S3,T2/S3,T3/S3,T6/S2,T5/S4,T9/S4,T10/S5,T7/S6,T24/S5,T3/S7,T20/S6}{\draw[ar] (\a.east)--(\b.west);}
+\end{tikzpicture}}
+\caption{Sơ đồ phụ thuộc. Mũi tên liền: suy ra trực tiếp. Mũi tên đứt: giả thiết được dùng trực tiếp trong định lý. A10 và A13 chỉ là giả thiết diễn giải; không chứng chỉ nào dựa vào chúng.}
+\label{fig:chain}
+\end{figure}
+
+\begin{longtable}{@{}p{0.2\linewidth}p{0.34\linewidth}p{0.4\linewidth}@{}}
+\caption{Mỗi bước thuật toán suy ra từ đâu.}\label{tab:chain}\\
+\toprule
+Bước & Định lý / giả thiết làm cơ sở & Nội dung suy diễn \\
+\midrule
+\endfirsthead
+\toprule
+Bước & Định lý / giả thiết làm cơ sở & Nội dung suy diễn \\
+\midrule
+\endhead
+S0 optimizer gốc & (baseline, không đổi) & Không có định lý nào về bước này; nó chỉ được \emph{diễn giải} là phần $K$ (\Tref{T20}(c), \Tref{T22}). \\
+S1 tách residual & \Tref{T20}, \Tref{L1}, \Tref{L5} & Bước GN có damping tách chính xác $e=z+\rperp$; $z$ là phần mà bước GN của mạng hiện tại loại bỏ. \\
+S2 chọn $A$ & \Tref{T6}, \Tref{T14}, \Tref{L9}; A4$'$ & Lợi bậc một là một dạng vết theo $A$; tối ưu là eigvec suy rộng; ở $\beta=0$ là tiny\_V$(z)$. \\
+S3 $\beta$, $d^*$ & \Tref{T19}, \Tref{T1}, \Tref{T2}, \Tref{T3}, \Tref{T11}, \Tref{L6}, \Tref{L7} & $d$ là phép chiếu chính xác của phần ảo; phân rã sửa/học mới; $\beta$ là nhân tử KKT của ngân sách $\varepsilon^*$; bisection trên $\leak$ hợp lệ, trên $h$ thì không. \\
+S4 chứng chỉ & \Tref{T5}, \Tref{T9}, \Tref{T18}; A8 & Chứng chỉ tính trực tiếp trên vector áp dụng; dung sai từ sai số CG; bỏ qua bảo đảm không làm tăng $L$, $L_{KD}$ ở bậc một. \\
+S5 áp dụng & \Tref{T10}(d), \Tref{T24}; A9, A13 & Cộng ngoài momentum buffer giữ chứng chỉ; ghi vào buffer thì $\hat d$ bị phát lại $1/(1-\nu)$ lần. \\
+S6 GIR & \Tref{T7}, \Tref{T13}, \Tref{T17}, \Tref{T23}; A5, A12 & Slot chết: bảo toàn hàm chính xác; lợi Schur theo $\rperp$; swap sau hiệu chỉnh; đặt lại optimizer và BN. \\
+S7 log & \Tref{T3}, \Tref{T8}, \Tref{T21} & Các đại lượng chẩn đoán có nghĩa được chứng minh ($\rho$, $\leak$, $h$, defect). \\
+\bottomrule
+\end{longtable}

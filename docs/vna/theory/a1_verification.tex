@@ -1,0 +1,71 @@
+\section{Kiểm số và lịch sử phản biện}\label{app:verification}
+
+\subsection{Bộ kiểm số}
+
+\begin{tabularx}{\linewidth}{@{}lXl@{}}
+\toprule
+Script & Phạm vi & Kết quả \\
+\midrule
+\texttt{final\_check\_v3.py} & L5--L10, T0--T18; float64; chạy \texttt{python3 -I} từ thư mục trống, khoảng 45 giây & 144/144 đạt \\
+\texttt{check\_unified\_gn.py} & T19--T24 (U1--U9) & 15/15 đạt \\
+\texttt{live\_slot\_198.py} & thí nghiệm 198 cặp slot sống của phản biện vòng 3 & xem \Tref{T16} \\
+phản biện vòng 5 (độc lập) & T19--T24 viết lại từ đầu, gồm trường hợp suy biến & 25/25 đạt, 8 nhân chứng chống khẳng định cũ \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Ba loại phép kiểm phụ được phân biệt:
+\begin{itemize}
+\item \textbf{NEG (29): đối chứng đột biến.} Cùng phép kiểm áp cho một công thức \emph{cố ý sai}; chỉ đạt khi công thức sai bị loại với biên độ rõ. Ví dụ: Hessian KD dùng teacher (lệch 0.69), giới hạn $Cx=0$ (cách $\ge0.265$), $s=J_v\T r$ thay $J_v\T\rperp$ (lệch trung vị 1.95), hằng số $L_3$ nhân $0.1$, bỏ hệ số $1/\mu$ trong dung sai CG (vi phạm 26/60).
+\item \textbf{WIT (22): nhân chứng tồn tại.} Chứng tỏ một hiện tượng có xảy ra, nên một khẳng định phủ định là đúng hoặc một quy tắc là cần thiết. Ví dụ: $h$ không đơn điệu (62/300), VNA thuần làm KD tăng (102/300), đơn vị chết sống lại sau bước hiệu chỉnh (18/40).
+\item \textbf{[structural]:} phép kiểm đúng theo cách dựng; ghi rõ để không bị đọc như bằng chứng độc lập (T12c, T13c, T16e).
+\end{itemize}
+
+\subsection{Lịch sử phản biện}
+
+Mỗi vòng do một agent độc lập thực hiện, không thấy quá trình dẫn xuất, tự dẫn lại bằng tay và viết mã kiểm riêng.
+
+\begin{longtable}{@{}p{0.11\linewidth}p{0.2\linewidth}p{0.63\linewidth}@{}}
+\toprule
+Vòng & Kết quả & Phát hiện chính đã được sửa \\
+\midrule
+\endhead
+1 & 55 mục: 34 đúng, 13 cần sửa, 6 sai, 2 không kiểm được & ``Một nguyên lý $\Psi$'' chỉ là phép tương tự; giới hạn $\beta\to\infty$ sai ($Cd=0$ thay vì $W^{1/2}Cd=0$); quy tắc swap mâu thuẫn giữa các tài liệu; ``độ khớp đơn điệu'' sai; lỗi dấu (giá swap, số hạng KD bậc một, hệ số $\eta$); Hessian KD dùng teacher; nhiều phép kiểm rỗng. \\
+2 & 48 mục: 30 đúng, 13 cần sửa, 3 sai, 2 không kiểm được & ``$V_O=0\Rightarrow$ bỏ qua'' sai; slot sống \emph{có} hằng số $L_3$ dạng đóng; GIR: kiểm lại slot chết sau hiệu chỉnh, đặt lại optimizer, quy tắc nhiều slot, dấu/bias ReLU; A4 sai với ReLU/BN (thay bằng A4$'$); $S_x$ cần ridge; chi phí đếm thiếu. \\
+3 & 46 mục: 36 đúng, 8 cần sửa, 1 nói quá, 1 sai & Quy tắc slot sống Net$_{KD}<0$ sai logic dưới A10 (lệch dấu 104/198 cặp); ``có chứng chỉ trên cửa sổ'' là nói quá; $L_3$ lỏng 2.6 lần; BN của slot ($\gamma,\beta$); dung sai CG cho $V_O=0$. \\
+4 & không còn mục sai & Chỉnh câu chữ: đếm lần giải ở bước 4; T9(b) dưới quy tắc có dung sai; T16(c) quy về A10; hai phép kiểm làm hai phía. \\
+5 (T19--T24) & 21 mục: 11 đúng, 5 cần sửa, 4 sai/nói quá, 1 giả thiết & Cách đọc $\rho$ (tỉ số, không phải tỉ phần; không phải tốc độ của mạng mở rộng); ``$\xGN+d$ không phải phép chiếu của bất kỳ động lực nào'' sai; ``$\rperp$ ngoài tầm với, vai trò tách bạch'' sai khi $\mu>0$; ``SGD $+\lambda d$ đã là một phép chiếu duy nhất'' chỉ là diễn giải. Tất cả đã sửa trong \cref{sec:unified}. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Bảng trạng thái tóm tắt}
+
+\begin{longtable}{@{}p{0.13\linewidth}p{0.52\linewidth}p{0.29\linewidth}@{}}
+\toprule
+ID & Khẳng định & Trạng thái \\
+\midrule
+\endhead
+L5--L10 & range; $\chi^2$; $\Lambda$; Hessian student; ridge; $L_3$ chặt & \st{proven} \\
+T1 & dạng đóng duy nhất, phân rã, dạng không cần range & \st{proven} \\
+T2 & $\beta=0$ là VNA, $g\T d=V$; giới hạn cứng $\Lambda Cx=0$; chiếu lồng nhau & \st{proven} \\
+T3 & sửa đúng chiều; rò rỉ đơn điệu; chứng chỉ; KKT; suy biến & \st{proven}; $h$ đơn điệu: \textbf{sai} \\
+T4 & $\Phi_N$ không giảm; cái giá $\le\beta\leak(0)$ & \st{proven}; độ khớp đơn điệu: \textbf{sai} \\
+T5 & cận chuẩn; không có $\gamma$; bậc một/bậc hai có quy tắc bỏ qua & \st{proven} (bậc hai: A6) \\
+T6, T14 & lợi $=\tr(A\T M_SA)$; eigvec suy rộng; tiny\_V tối ưu ở $\beta=0$ & \st{proven} (A4$'$) \\
+T7 & Schur theo $\rperp$; chọn theo $\ell$; slot chết bảo toàn hàm; không giao hoán & \st{proven}; diễn giải lợi về sau: A10 \\
+T7(i), T12 & slot sống: $j_u$ đo chính xác; cận Taylor; chứng chỉ tức thời & \st{proven} / \st{measured} \\
+T16 & điểm khai triển $f-f_u$; dự báo đáng tin ở damping thật & \st{proven}; \textbf{sai} (\st{empirical}) \\
+T7(j) & GIR không hoạt động trong CIL (mặc định) & \st{empirical} \\
+T8 & Grönwall theo defect thực hiện & \st{proven} (A7) \\
+T9, T18 & sai số CG; chứng chỉ trên vector áp dụng; dung sai & \st{proven} (A8) \\
+T10 & BN train mode; momentum; weight decay; augmentation & \st{proven} (A1, A9) \\
+T11 & quy tắc $\beta$ và các nhánh suy biến & \st{proven} \\
+T13, T17 & nhiều slot; optimizer; BN của slot & \st{proven} \\
+T15 & kiểm ở mức thuật toán & \st{empirical} \\
+T19--T21, T23, T24 & phân rã chiếu; tách residual; tỉ số $\rho$; lợi swap; cỡ bước & \st{proven} \\
+T22 & đạo hàm của GN mở rộng; phát biểu định lượng & \st{proven}; phát biểu định tính cũ: \textbf{sai} \\
+--- & optimizer gốc là phần $K$ của cùng phép chiếu & \st{interpretation} \\
+--- & $\lambda_{\mathrm{faithful}}=K$ & \st{assumption} (A13) \\
+--- & nguyên lý Gauss, điều khiển ưu tiên, OMP, BUG & \st{interpretation} \\
+\bottomrule
+\end{longtable}

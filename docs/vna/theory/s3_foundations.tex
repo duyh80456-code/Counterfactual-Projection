@@ -1,0 +1,67 @@
+\section{Cơ sở lý thuyết từ các nghiên cứu trước}\label{sec:foundations}
+
+Mỗi mục dưới đây nêu: nguồn, \emph{chính xác} điều chúng tôi dùng, và nơi nó đi vào chuỗi suy diễn. Những nguồn chỉ được ghi theo trí nhớ (chưa kiểm lại tại nguồn trong các vòng survey của dự án) được đánh dấu bằng chú thích.
+
+\subsection{Phép chiếu biến phân Dirac--Frenkel và các dạng số của nó}
+
+\paragraph{Nguyên lý Dirac--Frenkel--McLachlan.} Cho một đa tạp xấp xỉ $\mathcal M$ và một động lực $\dot y=U(y)$ trong không gian lớn, nguyên lý chọn vận tốc trên không gian tiếp tuyến của $\mathcal M$ gần $U$ nhất theo một metric \cite{lubich2008book,kochlubich2007}. \emph{Điều chúng tôi dùng:} với tham số hóa $\theta\mapsto f(\theta)$, không gian tiếp tuyến là $\range(J)$, metric là $H$, và có thêm damping $\mu$; vận tốc tham số là
+\[
+P(t)=\argmin_x\norm{Jx-t}_H^2+\mu\norm x^2=GJ\T Ht.
+\]
+Đây là định nghĩa của hiệu chỉnh $d$ khi $t=K_Ez$ (\Tref{T19}).
+
+\paragraph{Neural Galerkin \cite{bruna2024neuralgalerkin}.} Chiếu Dirac--Frenkel liên tục động lực của PDE lên đa tạp tham số của mạng, giải bằng bình phương tối thiểu có regularization. \emph{Điều chúng tôi dùng:} khuôn mẫu ``chiếu liên tục từng bước nhỏ'' và việc giải hệ chuẩn tắc có damping. Khác biệt: động lực được chiếu là của một \emph{mạng mở rộng ảo}, không phải PDE.
+
+\paragraph{Dynamical low-rank và BUG thích nghi hạng \cite{ceruti2022bug,schotthofer2022dlrt}.} Lược đồ ``mở rộng cơ sở $\to$ bước Galerkin $\to$ cắt về hạng cố định''. \emph{Điều chúng tôi dùng:} chỉ ở mức \st{interpretation}: thêm neuron ảo tương ứng mở rộng, VNA tương ứng bước Galerkin, và GIR tương ứng việc tái dùng bậc tự do. Không có định lý nào của chúng tôi dựa vào kết quả hội tụ của các lược đồ này.
+
+\subsection{Gauss--Newton, natural gradient và kernel}
+
+\paragraph{Gauss--Newton và natural gradient \cite{amari1998,martens2020}.} Bước $(J\T HJ+\mu I)^{-1}J\T e$ là bước Gauss--Newton có damping (Levenberg--Marquardt), đồng thời là natural gradient theo metric output. \emph{Điều chúng tôi dùng:} bước $\xGN=Gg$ làm bộ tách residual $e=z+\rperp$ (\Tref{T20}), và mô hình bậc hai $q^*$ của mức giảm loss (\cref{sec:setting}).
+
+\paragraph{Energy natural gradient \cite{muller2023engd}.} Natural gradient trong không gian hàm như một phép chiếu lên không gian tiếp tuyến, kèm damping, chạy được trên mô hình nhỏ. \emph{Điều chúng tôi dùng:} tiền lệ cho tính khả thi; đồng thời ENGD/GN chính là trường hợp $K_E=0$ của khung chiếu, nên là đối chứng bắt buộc.
+
+\paragraph{Neural tangent kernel \cite{jacot2018ntk}.} $K=JJ\T$ là kernel tiếp tuyến thực nghiệm. \emph{Điều chúng tôi dùng:} ngôn ngữ kernel để phát biểu bổ đề chiếu lồng nhau ($Jd\in\range(K)$) và phần bù Schur $K_{NS}$ (\Tref{T2}). Không dùng kết quả nào về giới hạn độ rộng vô hạn.
+
+\paragraph{K-FAC, Shampoo \cite{martens2015kfac,gupta2018shampoo,purifyingshampoo}.} Các preconditioner bậc hai này xấp xỉ độ cong của \emph{chính} mạng hiện có và cập nhật preconditioner mỗi vài chục đến vài trăm bước. \emph{Điều chúng tôi dùng:} (i) tiền lệ cho việc áp hiệu chỉnh mỗi $K\approx100$ bước, với giả thiết staleness tương tự A13; (ii) điểm phân biệt: VNA là preconditioner $P=GJ\T HK_EHJG\succeq0$ dựng từ kernel $K_E$ của neuron \emph{không tồn tại}, thứ mà không phương pháp độ cong nào tạo ra.
+
+\subsection{Tiêu chí grow}
+
+\paragraph{TINY \cite{verbockhaven2024tiny}, GradMax \cite{evci2022gradmax}, Firefly \cite{wu2020firefly}.} Các phương pháp này \emph{thêm} neuron thật và khởi tạo chúng theo hướng làm giảm loss nhanh nhất (cực đại chuẩn gradient theo trọng số ra, hoặc giải bài toán trị riêng trên thống kê đặc trưng). \emph{Điều chúng tôi dùng:} bài toán chọn hướng vào $A$ là bài toán trị riêng suy rộng $(N_sN_s\T,S_x)$, cùng họ với TINY; chúng tôi dùng nó \emph{ảo} (VNA) hoặc để \emph{khởi tạo lại slot chết} (GIR). Ở $\beta=0$, chúng tôi chứng minh tiny\_V với cotangent $z$ là lựa chọn bậc một tối ưu trong một vùng mặt nạ (\Tref{T6}).
+
+\subsection{Mất plasticity và reset}
+
+\paragraph{Mất plasticity \cite{dohare2024}; CBP \cite{dohare2024}; ReDo \cite{sokar2023redo}.} Mạng mất khả năng học tiếp; nhiều đơn vị chết. CBP và ReDo chọn đơn vị theo utility hoặc theo độ hoạt động rồi \emph{khởi tạo lại ngẫu nhiên}, trọng số ra bằng $0$. \emph{Điều chúng tôi dùng:} cơ chế ``trọng số ra bằng 0 thì bảo toàn hàm'' và tiêu chí đơn vị chết; điểm khác của GIR là hướng vào được chọn theo $\rperp$ (\Tref{T7}). Các phương pháp reset khác tìm được trong survey (ReGraMa, SWR, Calibrated Partial Resets) đều khởi tạo ngẫu nhiên hoặc bằng $0$.
+
+\subsection{Học liên tục}
+
+\paragraph{iCaRL \cite{rebuffi2017icarl}.} Exemplar cộng KD với model cũ. \emph{Điều chúng tôi dùng:} đúng loss của PyCIL làm $L$; model cũ làm teacher $p_t$; exemplar nằm trong cửa sổ.
+
+\paragraph{Chiếu gradient: GPM \cite{saha2021gpm}, Adam-NSCL \cite{wang2021nscl}, TRGP \cite{lin2022trgp}, SGP \cite{saha2023sgp}.} Chiếu cập nhật vào phần bù của không gian đặc trưng cũ, cứng (GPM, Adam-NSCL) hoặc mềm (TRGP, SGP). TRGP chỉ ra ràng buộc cứng hại việc học task mới. \emph{Điều chúng tôi dùng:} (i) lý do chọn ràng buộc \emph{mềm} với $\beta$ hữu hạn; (ii) phép chiếu null-space ở giới hạn $\beta\to\infty$ (\Tref{T2}(b,d)). Phần null space \emph{không} phải đóng góp của chúng tôi.
+
+\paragraph{NCL \cite{kao2021ncl}.} Natural gradient cộng chiếu, bảo vệ trong suốt quá trình tối ưu; chiếu kiểu OWM xấp xỉ một preconditioner Fisher. \emph{Điều chúng tôi dùng:} tiền lệ cho ``preconditioner + chiếu'' (không mới), và lập luận áp bảo vệ ở \emph{mỗi} lần hiệu chỉnh.
+
+\paragraph{FROMP \cite{pan2020fromp}, EFC \cite{magistri2024efc}.} Regularize trong không gian hàm qua kernel GP/GGN (FROMP); phạt độ trôi đặc trưng bậc hai theo các hướng quan trọng (EFC). \emph{Điều chúng tôi dùng:} tiền lệ cho phạt \emph{theo metric KD}, gần với $\beta\norm{C(d-\drep)}_W^2$. EFC là hàng xóm hình thức gần nhất của số hạng bảo vệ.
+
+\paragraph{Stability gap \cite{delange2023gap,harun2024gap}.} Quên mạnh ngay đầu task rồi hồi phục; giữ output cũ trong lúc học giảm gap. \emph{Điều chúng tôi dùng:} dự đoán kiểm được (lợi tập trung sau khi chuyển task) và giao thức đánh giá theo iteration.
+
+\paragraph{C-Flat \cite{bian2024cflat,cflatpp}.} Plug-in optimizer trên PyCIL cùng setting (ResNet32, CIFAR-100); lợi trên iCaRL khoảng $+0.3$ đến $+0.95$ điểm với chi phí khoảng $2.9\times$. \emph{Điều chúng tôi dùng:} mốc hiệu quả và chi phí của một đóng góp cùng loại.
+
+\subsection{Liên hệ ngoài ngành (chỉ là diễn giải)}
+
+\paragraph{Nguyên lý ràng buộc tối thiểu của Gauss và phương trình Udwadia--Kalaba \cite{udwadia1992,udwadia2005}.} Bài toán $\min\Phi(d)$ với ràng buộc $\norm{C(d-\drep)}_W^2\le\varepsilon^*$ (\Tref{T3}(f)) là một bài toán ``vận tốc khả thi gần nhất'' theo metric $(H,\mu)$. \st{interpretation}.
+
+\paragraph{Điều khiển ưu tiên tác vụ \cite{nakamura1987,siciliano1991,chiaverini1997}.} Ưu tiên 1 là giữ hàm cũ, ưu tiên 2 là học mới trong null space của ưu tiên 1; ở giới hạn cứng đúng là \Tref{T2}(d). Khi null space cạn, robot thêm bậc tự do; ở đây là GIR. \st{interpretation}.
+
+\subsection{Hàng xóm cần phân biệt}
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Công trình & Khác biệt với VNA \\
+\midrule
+LoRA-Pro \cite{wang2025lorapro} & Chiếu gradient của fine-tune toàn phần lên cấu trúc low-rank (tuyến tính, metric Frobenius trên gradient). VNA: neuron ảo \emph{phi tuyến}, chiếu trong không gian output với metric $H$, kiến trúc bất kỳ, có chứng chỉ và bảo vệ lớp cũ. \\
+NetAug \cite{cai2022netaug} & Train mạng nhỏ nhờ các bản mở rộng dùng chung trọng số; có tham số thật lúc train và loss phụ. VNA không có tham số thêm và chiếu giải tích. \\
+Virtual Width Networks \cite{vwn2025}, FPE \cite{fpe2025} & Trùng thuật ngữ; mở rộng biểu diễn hoặc chia neuron thật, không có động lực ảo được chiếu. \\
+CL through Control Minimization \cite{dehaan2026control} & Cân bằng tín hiệu học và tín hiệu giữ; gần số hạng $\beta$; không có dung lượng ảo, không tái dùng slot. \\
+FOSTER, Progress \& Compress & Mở rộng thật rồi nén ở cuối; VNA chiếu liên tục từng bước, không train model phụ. \\
+\bottomrule
+\end{tabularx}

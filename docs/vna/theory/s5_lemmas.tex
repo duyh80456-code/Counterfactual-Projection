@@ -1,0 +1,85 @@
+\section{Bổ đề}\label{sec:lemmas}
+
+Các bổ đề dưới đây là công cụ đại số dùng lại trong mọi định lý. Ta viết $R=H^{1/2}$, $M=RKR$.
+
+\begin{namedthm}{L1}{push-through}
+$RJGJ\T R=M(M+\mu)^{-1}\preceq I$. Hệ quả: $\norm{J\T Hu}_G^2\le\norm u_H^2$ với mọi $u$.
+\end{namedthm}
+\begin{proof}
+Đồng nhất push-through $X(X\T X+\mu)^{-1}X\T=(XX\T+\mu)^{-1}XX\T$ với $X=RJ$ cho $(RJ)(J\T R^2J+\mu)^{-1}(RJ)\T=(RJJ\T R+\mu)^{-1}RJJ\T R=M(M+\mu)^{-1}$, có trị riêng trong $[0,1)$. Do đó $u\T HJGJ\T Hu=(Ru)\T M(M+\mu)^{-1}(Ru)\le\norm{Ru}^2$.
+\end{proof}
+
+\begin{namedthm}{L2}{thứ tự}
+$G_\beta\preceq G\preceq\mu^{-1}I$, vì $B,F\succeq0$.
+\end{namedthm}
+
+\begin{namedthm}{L3}{chặn bảo vệ}
+$\beta G_\beta^{1/2}BG_\beta^{1/2}\preceq I$, vì $\beta B\preceq A_\beta$.
+\end{namedthm}
+
+\begin{namedthm}{L4}{đồng nhất cotangent}
+$(J\T r)\T GJ\T H=z(r)\T$ với mọi $r$, vì $H$ và $G$ đối xứng.
+\end{namedthm}
+
+\begin{namedthm}{L5}{range}
+Dưới A2: $\nullsp(H_i)=\operatorname{span}(\mathbf 1_c)$, $\nullsp(W_i)=\operatorname{span}(\mathbf 1_{c_{\mathrm{old}}})$, và $\mathbf 1\T e_{N,i}=\mathbf 1\T e_{O,i}=0$. Do đó $e_N,\eO,e\in\range(H)$ và $e_O\in\range(W)$.
+\end{namedthm}
+\begin{proof}
+$x\T(D(p)-pp\T)x=\operatorname{Var}_p(x)$, bằng $0$ khi và chỉ khi $x$ là hằng (vì $p>0$). $H_i$ là tổng của phần CE (bằng $0$ khi và chỉ khi $x$ hằng) và phần KD (bằng $0$ khi và chỉ khi $x_{\mathrm{old}}$ hằng), nên $\nullsp(H_i)=\operatorname{span}(\mathbf 1)$. Các residual có tổng bằng $0$ vì $\sum p=\sum\mathbf 1_y=1$ và $\sum p_s=\sum p_t=1$. Với $\eO$: $\range(H)\supseteq\range(O\T WO)=O\T\range(W)\ni O\T e_O$.
+\end{proof}
+
+\begin{namedthm}{L6}{dạng đóng của $\chi^2$}
+$\norm{e_O}_{W^+}^2=\frac1N\sum_i\chi^2(p_{t,i}\,\|\,p_{s,i})$, với $\chi^2(p_t\|p_s)=\sum_j(p_{s,j}-p_{t,j})^2/p_{s,j}$.
+\end{namedthm}
+\begin{proof}
+Với $v\perp\mathbf 1$, $x=D^{-1}v$ thỏa $(D-pp\T)x=v-p(\mathbf 1\T v)=v$. Hình chiếu của $x$ lên range khác $x$ một bội của $\mathbf 1$, nên $v\T(D-pp\T)^+v=v\T D^{-1}v$. Thay hệ số: $e_i\T W_i^+e_i=(NT)^{-2}(NT^2)\sum_j(p_s-p_t)^2/p_s=\chi^2_i/N$.
+\end{proof}
+
+\begin{namedthm}{L7}{thừa số chính xác của $W$}
+$\Lambda_i:=(NT^2)^{-1/2}\big(D(p_s)^{1/2}-\sqrt{p_s}\,p_s\T\big)$ thỏa $\Lambda_i\T\Lambda_i=W_i$ và $\nullsp(\Lambda_i)=\operatorname{span}(\mathbf 1)$.
+\end{namedthm}
+\begin{proof}
+Đặt $S=D^{1/2}$; vì $S\sqrt p=p$, ta có $\Lambda\T\Lambda\propto(S-p\sqrt p\T)(S-\sqrt pp\T)=D-pp\T-pp\T+p(\sqrt p\T\sqrt p)p\T=D-pp\T$. Và $\Lambda x=0\iff Sx=\sqrt p(p\T x)\iff x_j=p\T x\ \forall j\iff x$ là hằng.
+\end{proof}
+\noindent\emph{Hệ quả cài đặt.} Mọi chuẩn $\norm\cdot_W$ và ràng buộc ở giới hạn cứng dùng $\Lambda$; không dùng căn bậc hai qua trị riêng, vì trị riêng xấp xỉ $0$ sinh hạng giả.
+
+\begin{namedthm}{L8}{đạo hàm KD}
+$\partial L_{KD}/\partial f=O\T e_O$ và $\partial^2L_{KD}/\partial f^2=O\T WO$, với $p_s$ của \emph{student}. Hessian dựng từ xác suất teacher là sai, trừ khi $p_s=p_t$.
+\end{namedthm}
+\begin{proof}
+$L_{KD}$ của mẫu $i$ là $\frac1N\big(\operatorname{LSE}(f_{i,\mathrm{old}}/T)-p_{t,i}\T f_{i,\mathrm{old}}/T\big)$; gradient của LSE là softmax của student, Hessian là $D(p_s)-p_sp_s\T$; quy tắc dây chuyền cho thêm $1/T$ và $1/T^2$.
+\end{proof}
+
+\begin{namedthm}{L9}{$S_x$ có ridge}
+Cho $S_0=\tilde X\T\tilde X/N$, $S_x=S_0+\rho_xI$ với $\rho_x>0$, và $M$ đối xứng với $\range(M)\subseteq\range(\tilde X\T)$. Gọi $\mathcal B$ là một cơ sở trực chuẩn của $\range(\tilde X\T)$. Khi đó:
+(1) $S_x\succ0$ với mọi $d_a$, kể cả $d_a>N$;
+(2) mọi eigvec suy rộng của $(M,S_x)$ với trị riêng khác $0$ nằm trong $\range(\tilde X\T)$;
+(3) các trị riêng khác $0$ đó là trị riêng của bút chì thu hẹp $(\mathcal B\T M\mathcal B,\mathcal B\T S_0\mathcal B+\rho_xI)$, hội tụ khi $\rho_x\to0$;
+(4) với $a$ $S_x$-chuẩn hóa trong $\range(\tilde X\T)$: $a\T S_0a\in[1-\rho_x/\lambda^+_{\min}(S_0),1]$.
+\end{namedthm}
+\begin{proof}
+(1) $S_0\succeq0$, $\rho_x>0$. (2) Viết $a=a_r+a_n$, $a_r\in\range(\tilde X\T)$, $a_n\in\nullsp(\tilde X)$; $S_0$ và $I$ giữ cả hai không gian. Chiếu $Ma=\lambda S_xa$ lên $\nullsp(\tilde X)$ cho $0=\lambda\rho_xa_n$, nên $\lambda\ne0\Rightarrow a_n=0$. (3) Thay $a=\mathcal Bc$ và nhân $\mathcal B\T$; $\mathcal B\T S_0\mathcal B\succ0$ nên trị riêng liên tục tại $\rho_x=0$. (4) $a\T S_xa=1\Rightarrow a\T S_0a=1-\rho_x\norm a^2$, và $\norm a^2\le1/\lambda^+_{\min}(S_0)$ trên $\range(\tilde X\T)$.
+\end{proof}
+
+\begin{namedthm}{L10}{$L_3$ dạng đóng, chặt}
+Đặt $c_3=2\sqrt2/(6\sqrt3)=\sqrt2/(3\sqrt3)\approx0.2722$. Với $L$ là CE trung bình cộng KD của PyCIL, với mọi $f$ và $h\in\R^n$:
+\[
+|D^3L(f)[h,h,h]|\le c_3\,\frac{1+T^{-3}}{N}\,\norm h^3 .
+\]
+Hằng số $c_3$ là chặt cho từng thành phần: đạt ở giới hạn một mẫu, hai lớp mang xác suất $q^*=(3-\sqrt3)/6$ và $1-q^*$, các lớp khác có xác suất $\to0$, $h=(1,-1,0,\dots)/\sqrt2$.
+\end{namedthm}
+\begin{proof}
+Với $p=\operatorname{softmax}(x)$: $D^3\operatorname{LSE}(x)[h,h,h]=\mathbb E_p[(X-\mathbb E_pX)^3]$, trong đó $X$ nhận giá trị $h_j$ với xác suất $p_j$ (đạo hàm bậc ba của hàm sinh tích lũy là tích lũy bậc ba).
+
+\emph{Cực đại của mô-men trung tâm bậc ba.} Gọi $Y=X-\mathbb EX$, nhận giá trị trong $[-\alpha,\beta]$ với $\alpha+\beta\le R:=\max_jh_j-\min_jh_j$. Bài toán $\max\mathbb EY^3$ trên mọi phân phối có $\mathbb EY=0$ là một bài toán mô-men tuyến tính với hai ràng buộc; theo định lý Richter--Rogosinski \cite{richter1957,rogosinski1958}, cực trị đạt tại phân phối có tối đa hai điểm. Với hai điểm $-s<0<t$ (xác suất $t/(s+t)$ tại $-s$): $\mathbb EY^2=st$, $\mathbb EY^3=st(t-s)$, $s+t\le R$. Biểu thức tăng khi phóng to $(s,t)$, nên lấy $s+t=R$, $s=Rx$: $\mathbb EY^3=R^3x(1-x)(1-2x)$, cực đại tại $x=(3-\sqrt3)/6$ với giá trị $R^3/(6\sqrt3)$. Đối xứng cho cực tiểu. Vậy $|\mathbb EY^3|\le R^3/(6\sqrt3)$.
+
+$R\le\sqrt2\norm h$ vì $(h_i-h_j)^2\le2(h_i^2+h_j^2)$, nên $|D^3\operatorname{LSE}[h,h,h]|\le c_3\norm h^3$. CE của mẫu $i$ là $\operatorname{LSE}(f_i)-f_{i,y_i}$ chia $N$; KD của mẫu $i$ là $(\operatorname{LSE}(f_{i,\mathrm{old}}/T)-p_{t,i}\T f_{i,\mathrm{old}}/T)/N$, có thêm hệ số $T^{-3}$ và chỉ phụ thuộc $h_{i,\mathrm{old}}$. Cộng theo mẫu và dùng $\sum_i\norm{h_i}^3\le(\sum_i\norm{h_i}^2)^{3/2}$.
+
+\emph{Đạt cận.} Với $h=(1,-1,0,\dots)/\sqrt2$, $\norm h=1$, $R=\sqrt2$ và phân phối của $X$ dồn về $\pm1/\sqrt2$ với xác suất $q^*$, $1-q^*$: cả hai bất đẳng thức thành đẳng thức ở giới hạn.
+\end{proof}
+\begin{hequa}
+A6$'$ không còn là giả thiết. Cận Taylor của bước nhảy $j_u$ khi bỏ một slot sống có hằng số tính được (\Tref{T7}(i.2)), dùng để lọc ứng viên ở bước S6(b).
+\end{hequa}
+\begin{kiem}
+T0a--T0f (L5--L8, sai số $\le2.5\cdot10^{-11}$; T0c-NEG loại mẫu số $p_t$, T0e-NEG loại Hessian teacher lệch 0.69); T14c, T14c-WIT (L9); T12a, T12a2 (L10, cấu hình hai điểm đạt $1.0000$ cận; NEG loại hằng số ${\times}0.1$ và chuẩn hóa $T^{-1}$).
+\end{kiem}
