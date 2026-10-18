@@ -1,7 +1,6 @@
 """Training VNA–GIR v3: joint parameter CG, protected correction and dead slots."""
 from contextlib import contextmanager, ExitStack
 from copy import copy, deepcopy
-from dataclasses import replace
 import math
 import time
 import torch
@@ -9,7 +8,8 @@ from torch import nn
 from torch.func import functional_call
 from diagnostics.vna_align import _global_state
 from methods.vna import dedicated_generator, _unflatten
-from methods.vna_ggn import GGNConfig, GGNProducts, relative_damping
+from methods.vna_ggn import GGNConfig, GGNProducts
+from methods.vna_losses import CE
 from methods.vna_sites import HookProducts
 from projection.cg import conjugate_gradient
 from projection.functional import _preserve_functional_state
@@ -136,16 +136,6 @@ def seed_proposals(sites):
         bias=None if s.first_layer.layer.bias is None else s.first_layer.layer.bias[:1].detach()) for s in sites}
 
 
-def spectral_norm(action, transpose, template, generator, iterations):
-    v = torch.randn(template.shape, device=template.device, dtype=torch.float64, generator=generator)
-    v /= v.norm().clamp_min(1e-300)
-    for _ in range(iterations):
-        v = transpose(action(v)).double()
-        if float(v.norm()) == 0: return 0.
-        v /= v.norm()
-    return 1.1*float(action(v).norm())
-
-
 def beta_rule(solve, rhs, action_B, H, uN, VO, chi, eold):
     d0 = solve('d_N', rhs, 0.)
     leak = lambda d: max(float(d@action_B(d)), 0.)
@@ -176,7 +166,23 @@ def beta_rule(solve, rhs, action_B, H, uN, VO, chi, eold):
                           epsilon_star=epsilon, beta_suf=suf)
 
 
+def trust_region_step(g, d, Fd, mu, delta):
+    """T26(e): choose the damped direction scale inside the GN trust region."""
+    gain = float(g @ d)
+    if gain <= 0:
+        return 0., 0., 'none'
+    norm_d = float(d.norm())
+    if norm_d == 0:
+        return 0., 0., 'none'
+    denom = float(d @ Fd)
+    s_f = gain / denom if denom > 0 else float('inf')
+    s_delta = float(delta) / norm_d
+    s = min(s_f, s_delta)
+    return s, s_f, 's_F' if s_f <= s_delta else 'Delta'
+
+
 def correction_step(g, d, Fd, mu, lr, K, momentum=0., faithful=False):
+    """Compatibility helper for pre-v4 diagnostic tests; training never calls it."""
     gain = float(g@d)
     denominator = float(d@Fd)+mu*float(d@d)
     if gain <= 0 or denominator <= 0: return 0., 0., 'none'
@@ -185,40 +191,128 @@ def correction_step(g, d, Fd, mu, lr, K, momentum=0., faithful=False):
     return min(optimum, cap), optimum, 's*' if optimum <= cap else 'norm' if not faithful else 'faithful'
 
 
+def net_gain(e_beta, H_beta, J, J_prime, f_u, mu):
+    """T28(a) net gain for a temporarily installed live-slot candidate."""
+    metric = H_beta if callable(H_beta) else lambda value: H_beta @ value
+    def q(Jx, e):
+        gram = Jx.T @ metric(Jx) + mu * torch.eye(Jx.shape[1], dtype=Jx.dtype, device=Jx.device)
+        rhs = Jx.T @ e
+        return -.5 * float(rhs @ torch.linalg.solve(gram, rhs))
+    e_prime = e_beta - metric(f_u)
+    jump = -float(e_beta @ f_u) + .5 * float(f_u @ metric(f_u))
+    return -jump + q(J, e_beta) - q(J_prime, e_prime)
+
+
+def diagnose(model, batch, *, sites=None, spec=None, ctx=None):
+    """Read-only T25 probe; all model state, buffers and RNG are restored."""
+    spec = spec or CE()
+    ctx = dict(ctx or {})
+    if 'targets' not in ctx:
+        ctx['targets'] = batch[1]
+    parameters = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    buffers = {n: b.detach().clone() for n, b in model.named_buffers()}
+    buffer_state = {n: b.clone() for n, b in buffers.items()}
+    parameter_state = {n: p.detach().clone() for n, p in parameters}
+    gradients = {n: None if p.grad is None else p.grad.detach().clone() for n, p in parameters}
+    modes = {m: m.training for m in model.modules()}
+    try:
+        with _global_state(), torch.enable_grad():
+            model.train()
+            with torch.no_grad():
+                output = model(batch[0])
+                if isinstance(output, dict): output = output['logits']
+                logits = output.reshape(len(batch[0]), -1).double()
+            e = spec.residual(logits, ctx).reshape(-1).double()
+            with training_products(model, sites or [], seed_proposals(sites or []), batch[0]) as products:
+                op = GGNProducts(products, batch[1], spec, ctx)
+                mu = max(1e-12, 1e-2*op.trace(GGNConfig())/max(op.size, 1))
+                solve = conjugate_gradient(lambda v: op.F(v)+mu*v, op.gradient,
+                    max_iter=200, tolerance=1e-3, eps=1e-30)
+                B = max(float(op.gradient @ solve.solution), 0.)
+            blocks = spec.metric_blocks(logits, ctx)
+            target = e.reshape_as(logits)
+            norm_w = max(float(torch.einsum('ni,nij,nj->', target,
+                torch.linalg.pinv(blocks, hermitian=True), target)), 0.)
+            reach = min(1., max(0., B / norm_w)) if norm_w else 0.
+            result = dict(B=B, norm_w2=norm_w, reach=reach, unreach=1.-reach,
+                          cg=dict(relative_residual=solve.relative_residual,
+                                   iterations=solve.iterations, converged=solve.converged), sites={})
+        if sites is not None:
+            captures = {}
+            handles = [site.second_layer.layer.register_forward_pre_hook(
+                lambda _m, args, name=site.module_name: captures.__setitem__(name, args[0].detach()))
+                for site in sites]
+            with _global_state(), torch.no_grad(): model(batch[0])
+            for handle in handles: handle.remove()
+            for site in sites:
+                value = captures.get(site.module_name)
+                if value is None: continue
+                flat = value.movedim(1, -1).reshape(-1, value.shape[1])
+                dormant = flat.abs().mean(0) / flat.abs().mean().clamp_min(1e-30) <= .025
+                result['sites'][site.module_name] = dict(
+                    dead=float(flat.eq(0).all(0).double().mean()),
+                    dormant=float(dormant.double().mean()))
+        return result
+    finally:
+        with torch.no_grad():
+            model.load_state_dict({**parameter_state, **buffer_state}, strict=False)
+            for name, value in gradients.items(): dict(model.named_parameters())[name].grad = None if value is None else value.clone()
+        for module, mode in modes.items(): module.training = mode
+        # _global_state restores torch, Python, and NumPy RNG state.
+
+
 def schedule_from_points(points, iterations_per_epoch, final_classes=100):
-    second = [p for p in points if p.get('task') == 2] or points
-    cost = sum(p['vna_seconds'] for p in second)/len(second)
-    classes = second[-1].get('classes', second[-1].get('n_out', 2560)/128)
-    projected = cost*final_classes/classes
-    iteration = sum(p['iteration_seconds'] for p in points)/len(points)
-    candidates = sorted(set([50, 100, 200, 400, 800]+[m*iterations_per_epoch for m in (1, 2, 5, 10)]))
-    feasible = [k for k in candidates if projected/k <= iteration]
-    return dict(K_base=min(feasible) if feasible else max(candidates), budget_exceeded=not bool(feasible),
+    points = list(points)
+    if not points: raise ValueError('schedule calibration needs at least one point')
+    tasks = sorted({p.get('task', 1) for p in points})
+    baseline = sum(float(p.get('iteration_seconds', 0.)) for p in points) / len(points)
+    application = sum(float(p['vna_seconds']) for p in points) / len(points)
+    candidates = sorted(set([1, 2, 4, 8, 16, 32, 64, 128, 256, 512] +
+                            [m*iterations_per_epoch for m in (1, 2, 5, 10)]))
+
+    def count(K, length):
+        if length < 1: return 0
+        used, gap = 1, K
+        while gap < length:
+            used += 1
+            gap += K * (2 ** (used-1))
+        return used
+
+    lengths = {task: max(1, int(next((p.get('task_iterations', p.get('iterations_per_epoch', iterations_per_epoch))
+                                      for p in points if p.get('task') == task), iterations_per_epoch)))
+               for task in tasks}
+    feasible = [K for K in candidates if all(count(K, length)*application <= length*baseline
+                                             for length in lengths.values())]
+    K0 = min(feasible) if feasible else max(candidates)
+    return dict(K0=K0, budget=1.0, seconds_per_application=application,
+        budget_exceeded=not bool(feasible),
         t_vna_task1=[p['vna_seconds'] for p in points if p.get('task') == 1],
         t_vna_task2=[p['vna_seconds'] for p in points if p.get('task') == 2],
-        projected_vna_seconds=projected, iteration_seconds=iteration, candidates=candidates,
+        projected_vna_seconds={task: count(K0, length)*application for task, length in lengths.items()},
+        iteration_seconds=baseline, candidates=candidates,
         iterations_per_epoch=iterations_per_epoch, calibration=deepcopy(points),
-        extrapolation='linear in classes, task2 to final task', K_units='iterations')
+        task_iterations=lengths, K_units='iterations')
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K_base=100):
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100):
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
-        self.K_base, self.every = K_base, K_base
-        self.mu_rel, self.tol, self.power_iters = .01, 1e-3, 5
-        self.task, self.last_iteration, self.K_next = None, None, 1
+        self.K0 = self.K_next = K0
+        self.tol = 1e-3
+        self.mu, self.nu = None, 2.
+        self.protocol = {'live_candidates': 4, 'trust_region': True}
+        self.task, self.last_iteration = None, None
         self.applications, self.last_refresh = 0, -10
         self.warm, self.A = {}, {}
+        self.install_ages = {}
         self.events, self.activities, self.calibration = [], [], []
-        self.solver_tightened = False
-        self.exact_checks, self.false_skips = 0, 0
         self.gir_fallback = False
         self.diverged = False
 
     @property
     def cfg(self):
-        return GGNConfig(damping_rel=self.mu_rel, cg_iters=200, cg_tol=self.tol,
+        return GGNConfig(damping_rel=0., cg_iters=200, cg_tol=self.tol,
                          hutchinson_probes=8, seed=self.seed, project_bn=False)
 
     def state_dict(self): return deepcopy(vars(self))
@@ -231,16 +325,64 @@ class V3Engine:
     def gir_only(self): return self.arm == 'gir'
 
     def configure_schedule(self, schedule):
-        self.K_base = self.every = int(schedule['K_base'])
+        self.K0 = self.K_next = int(schedule['K0'])
         if 'cg_tol' in schedule: self.tol = schedule['cg_tol']
-        for name in ('mu_rel', 'tol', 'power_iters'):
-            if name in schedule: setattr(self, name, schedule[name])
+        if 'tol' in schedule: self.tol = schedule['tol']
 
     def begin_task(self, task):
         if task != self.task:
-            self.task, self.last_iteration, self.K_next = task, None, 1
+            self.task, self.last_iteration, self.K_next = task, None, self.K0
             self.applications, self.last_refresh = 0, -10
             self.warm.clear(); self.A.clear()
+
+    @staticmethod
+    def _loss_parts(model, batch, spec, ctx):
+        logits = model(batch[0]).reshape(len(batch[0]), -1).double()
+        total = float(spec.loss(logits, ctx))
+        ce = float(torch.nn.functional.cross_entropy(logits, ctx['targets']))
+        return total, total-ce if ctx.get('known_classes', 0) else None
+
+    def _measure_ratio(self, model, batch, spec, ctx, refs, x):
+        params = dict(model.named_parameters())
+        before = {n: p.detach().clone() for n, p in params.items()}
+        buffers = {n: b.detach().clone() for n, b in model.named_buffers()}
+        rng = torch.random.get_rng_state()
+        modes = {m: m.training for m in model.modules()}
+        try:
+            model.train()
+            with torch.no_grad():
+                for (name, parameter), value in zip(refs, x.split([p.numel() for _, p in refs])):
+                    params[name].add_(value.reshape_as(parameter).to(parameter), alpha=-1.)
+            after = self._loss_parts(model, batch, spec, ctx)
+            with torch.no_grad():
+                for name, value in before.items(): params[name].copy_(value)
+                for name, value in buffers.items(): model.get_buffer(name).copy_(value)
+            before_loss = self._loss_parts(model, batch, spec, ctx)
+            return before_loss, after
+        finally:
+            with torch.no_grad():
+                for name, value in before.items(): params[name].copy_(value)
+                for name, value in model.named_buffers(): value.copy_(buffers[name])
+            for module, mode in modes.items(): module.training = mode
+            torch.random.set_rng_state(rng)
+
+    @staticmethod
+    def _restore_params(model, state):
+        with torch.no_grad():
+            for name, value in model.named_parameters(): value.copy_(state[name])
+
+    def _evaluate_current(self, model, batch, spec, ctx):
+        buffers = {n: b.detach().clone() for n, b in model.named_buffers()}
+        rng = torch.random.get_rng_state()
+        modes = {m: m.training for m in model.modules()}
+        try:
+            model.train()
+            return self._loss_parts(model, batch, spec, ctx)
+        finally:
+            with torch.no_grad():
+                for name, value in model.named_buffers(): value.copy_(buffers[name])
+            for module, mode in modes.items(): module.training = mode
+            torch.random.set_rng_state(rng)
 
     def _solve(self, op, mu, B, records, *, tol=None, warm=None, max_iter=None):
         cfg = self.cfg
@@ -251,7 +393,7 @@ class V3Engine:
             initial = cache.get(name)
             if initial is not None and initial.shape != rhs.shape: initial = None
             result = conjugate_gradient(action, rhs.double(), x0=initial,
-                max_iter=cfg.cg_iters if max_iter is None else max_iter,
+                max_iter=min(200, cfg.cg_iters if max_iter is None else max_iter),
                 tolerance=cfg.cg_tol if tol is None else tol, eps=1e-30)
             if torch.isfinite(result.solution).all(): cache[name] = result.solution.detach().clone()
             records.append(dict(name=name, beta=beta, relative_residual=result.relative_residual,
@@ -285,7 +427,7 @@ class V3Engine:
         eold, H_old, chi = self.old_parts(op)
         B = lambda v: p.JT(H_old(p.Jv(v))).double()
         solve = self._solve(op, mu, B, records, tol=1e-8 if exact else None,
-                            warm={} if exact else warm, max_iter=2000 if exact else None)
+                            warm={} if exact else warm, max_iter=200 if exact else None)
         g, gO = op.gradient, p.JT(eold).double()
         if split is None or exact:
             x = solve('z', g)
@@ -362,17 +504,29 @@ class V3Engine:
             result[name] = proposal
         return result
 
-    def preflight(self, model, sites, batch, spec, ctx, optimizer, iteration=1):
+    def preflight(self, model, sites, batch, spec, ctx, optimizer, iteration=1, remaining=None):
+        """Measure one read-only point; the adapter calls this three times per task."""
         saved = self.state_dict()
-        trials = []
+        started = time.perf_counter()
         try:
-            for mu_rel in (.001, .01, .1):
-                self.mu_rel = mu_rel
-                row = self.apply(model, sites, batch, spec, ctx, optimizer, iteration, force=True, apply=False)
-                trials.append({**row, 'mu_rel': mu_rel})
-        finally: self.load_state_dict(saved)
-        selected = next((r for r in trials if r['Delta_hat'] <= .1*abs(r['g_dot_d'])/max(r['gradient_norm'], 1e-300)), trials[-1])
-        return dict(mu_rel=selected['mu_rel'], mu_condition_met=selected['Delta_hat'] <= .1*abs(selected['g_dot_d'])/max(selected['gradient_norm'], 1e-300), trials=trials)
+            row = self.apply(model, sites, batch, spec, ctx, optimizer, iteration,
+                             remaining=remaining, force=True, apply=False)
+        finally:
+            self.load_state_dict(saved)
+        point = {**(row or {}), 'task': self.task,
+                 'vna_seconds': time.perf_counter()-started,
+                 'iteration_seconds': float(self.protocol.get('baseline_iteration_seconds', 0.)),
+                 'task_iterations': int(self.protocol.get('task_iterations', remaining or 1))}
+        points = self.protocol.setdefault('preflight_points', [])
+        points.append(point)
+        if len(points) >= 6:
+            schedule = schedule_from_points(points, max(1, int(self.protocol.get('iterations_per_epoch', remaining or 1))))
+            self.K0 = self.K_next = schedule['K0']
+            self.protocol.update(K0=schedule['K0'], seconds_per_application=schedule['seconds_per_application'],
+                                budget=schedule['budget'])
+        return dict(K0=self.protocol.get('K0', self.K0),
+                    seconds_per_application=self.protocol.get('seconds_per_application'),
+                    budget=self.protocol.get('budget', 1.0), trials=[point])
 
     def apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
         state = self.state_dict() if not apply else None
@@ -381,6 +535,129 @@ class V3Engine:
         finally:
             if state is not None: self.load_state_dict(state)
 
+    @staticmethod
+    def _training_state(model, optimizer):
+        return (deepcopy(model.state_dict()), deepcopy(optimizer.state_dict()),
+                {m: m.training for m in model.modules()}, torch.random.get_rng_state().clone())
+
+    @staticmethod
+    def _restore_training_state(model, optimizer, state):
+        model_state, optimizer_state, modes, rng = state
+        with torch.no_grad():
+            model.load_state_dict(model_state, strict=True)
+        optimizer.load_state_dict(optimizer_state)
+        for module, mode in modes.items(): module.training = mode
+        torch.random.set_rng_state(rng)
+
+    @staticmethod
+    def _forward_logits(model, x):
+        output = model(x)
+        if isinstance(output, dict): output = output['logits']
+        return output.reshape(len(x), -1).double()
+
+    def _slot_contribution(self, model, site, batch, spec, ctx, unit):
+        state = {n: p.detach().clone() for n, p in model.named_parameters()}
+        buffers = {n: b.detach().clone() for n, b in model.named_buffers()}
+        modes = {m: m.training for m in model.modules()}
+        rng = torch.random.get_rng_state().clone()
+        try:
+            model.train()
+            with torch.no_grad():
+                full = self._forward_logits(model, batch[0])
+                site.second_layer.layer.weight[:, unit] = 0
+                without = self._forward_logits(model, batch[0])
+            return (full-without).flatten()
+        finally:
+            with torch.no_grad():
+                for name, value in state.items(): dict(model.named_parameters())[name].copy_(value)
+                for name, value in buffers.items(): dict(model.named_buffers())[name].copy_(value)
+            for module, mode in modes.items(): module.training = mode
+            torch.random.set_rng_state(rng)
+
+    def _slot_jump(self, model, site, batch, spec, ctx, unit):
+        state = {n: p.detach().clone() for n, p in model.named_parameters()}
+        buffers = {n: b.detach().clone() for n, b in model.named_buffers()}
+        modes = {m: m.training for m in model.modules()}
+        rng = torch.random.get_rng_state().clone()
+        try:
+            before = self._evaluate_current(model, batch, spec, ctx)
+            with torch.no_grad(): site.second_layer.layer.weight[:, unit] = 0
+            after = self._evaluate_current(model, batch, spec, ctx)
+            return after[0]-before[0], (None if before[1] is None else after[1]-before[1])
+        finally:
+            with torch.no_grad():
+                for name, value in state.items(): dict(model.named_parameters())[name].copy_(value)
+                for name, value in buffers.items(): dict(model.named_buffers())[name].copy_(value)
+            for module, mode in modes.items(): module.training = mode
+            torch.random.set_rng_state(rng)
+
+    def _run_gir(self, model, sites, active, A, batch, spec, ctx, optimizer, units_by_site,
+                 iteration, values, mu):
+        """Run the T28 dead/live search and return swap logs."""
+        if not ('gir' in self.arm and 'cbp' not in self.arm): return []
+        e_beta, H_beta = values['e_beta'], values['H_beta']
+        rperp = values['rperp_beta']
+        records = []
+        for site in sites:
+            units = units_by_site.get(site.module_name, [])
+            if not units: continue
+            used_directions = []
+            width = site.second_layer.layer.weight.shape[1]
+            contributions = {u: self._slot_contribution(model, site, batch, spec, ctx, u)
+                             for u in range(width)}
+            norms = {u: math.sqrt(max(float(f @ H_beta(f)), 0.)) for u, f in contributions.items()}
+            dead = [u for u in units if not bool(contributions[u].any())]
+            live = sorted((u for u in units if u not in dead), key=lambda u: norms[u])
+            live = live[:int(self.protocol.get('live_candidates', 4))]
+            for unit in dead + live:
+                proposals = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
+                    [unit], iteration, residual=rperp, used_directions=used_directions)
+                if not proposals: break
+                jump_L, jump_KD = (0., 0.) if unit in dead else self._slot_jump(
+                    model, site, batch, spec, ctx, unit)
+                if jump_L > 0 or (jump_KD is not None and jump_KD > 0): continue
+                best = None
+                with training_products(model, active, A, batch[0]) as p0:
+                    rhs0 = p0.JT(e_beta).double()
+                    current = conjugate_gradient(lambda v: p0.JT(H_beta(p0.Jv(v)))+mu*v,
+                        rhs0, max_iter=200, tolerance=self.tol, eps=1e-30)
+                    q0 = -.5*float(rhs0 @ current.solution)
+                for proposal in proposals:
+                    snapshot = self._training_state(model, optimizer)
+                    warm, ages = deepcopy(self.warm), deepcopy(self.install_ages)
+                    try:
+                        with torch.no_grad(): self.install_gir(model, site, [proposal], [unit], optimizer)
+                        f_u = contributions[unit]
+                        with training_products(model, active, A, batch[0]) as pc:
+                            ep = e_beta - H_beta(f_u)
+                            rhs = pc.JT(ep).double()
+                            action = lambda v: pc.JT(H_beta(pc.Jv(v))) + mu*v
+                            cg = conjugate_gradient(action, rhs, max_iter=200,
+                                tolerance=self.tol, eps=1e-30)
+                            q_prime = -.5*float(rhs @ cg.solution)
+                        jump = -float(e_beta @ f_u) + .5*float(f_u @ H_beta(f_u))
+                        gamma = -jump + q0-q_prime
+                        candidate = dict(site=site.module_name, unit=int(unit),
+                            slot_kind='dead' if unit in dead else 'live',
+                            f_u_norm_Hb=norms[unit], j_L=jump_L, j_KD=jump_KD,
+                            Gamma=gamma, ell_beta=proposal['score'], bias_q=proposal.get('bias_q'),
+                            task=self.task, iteration=iteration,
+                            cg_iterations=cg.iterations, cg_relative_residual=cg.relative_residual)
+                        if gamma > 0 and (unit in dead or (jump_L <= 0 and (jump_KD is None or jump_KD <= 0))):
+                            if best is None or gamma > best[0]: best = (gamma, proposal, candidate)
+                    finally:
+                        self._restore_training_state(model, optimizer, snapshot)
+                        self.warm, self.install_ages = warm, ages
+                if best is not None:
+                    gamma, proposal, record = best
+                    self.install_gir(model, site, [proposal], [unit], optimizer)
+                    used_directions.append(proposal['direction'])
+                    record['contribution_norm'] = {1: None, 5: None, 10: None}
+                    self.install_ages[(site.module_name, int(unit))] = dict(
+                        site=site.module_name, unit=int(unit), task=self.task, iteration=iteration)
+                    records.append(record)
+        return records
+
     def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
         if self.coefficient == 0 or self.arm in ('baseline', 'bp', 'cbp', 'icarl', 'er', 'erace') or ('cbp' in self.arm and 'vna' not in self.arm): return None
         if not force and self.last_iteration is not None and iteration-self.last_iteration < self.K_next: return None
@@ -388,11 +665,14 @@ class V3Engine:
         if batch[0].is_cuda: torch.cuda.synchronize(batch[0].device)
         sites = [site for site in sites if self.valid_slot(site)]
         initial = seed_proposals(sites)
-        refresh = not self.A or self.applications-self.last_refresh >= 10
+        refresh = True
         with training_products(model, sites, initial, batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
             trace = op.trace(self.cfg)
-            mu = relative_damping(self.cfg, trace, op)
+            if self.mu is None:
+                self.mu = max(1e-12, 1e-2 * trace / max(op.size, 1))
+                self.protocol['mu0'] = self.mu
+            mu = self.mu
             preliminary = self._direction(p, op, mu, split_only=True)
         if self.gir_only:
             gir_started = time.perf_counter()
@@ -404,23 +684,20 @@ class V3Engine:
                 units = before.get(site.module_name, [])
                 if units:
                     proposal = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
-                        units[:1], iteration, residual=residual)
-                    swaps += self.install_gir(model, site, proposal, units[:1], optimizer)
+                        units, iteration, residual=residual)
+                    swaps += self.install_gir(model, site, proposal, units, optimizer)
                     if proposal:
                         gains.append(proposal[0]['score'])
                         swap_records.append(dict(site=site.module_name, unit=int(units[0]),
                             score=proposal[0]['score']))
-                    break
-            next_K = self.K_base if remaining is None or remaining <= 0 else min(self.K_base, remaining)
+            next_K = self.K_next * 2
             row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration,
                 K=self.K_next, K_next=next_K, refresh_A=False, skipped=False, skip_reason=None,
-                d=None, d_N=None, d_rep=None, Delta_hat=0., g_dot_d=0., h_dot_d=0.,
-                gradient_norm=float(preliminary['g'].norm()), rho=0., rho_proj=0., V=0., V_O=0.,
-                mu=mu, mu_rel=self.mu_rel, beta=0., beta_branch=None, s=0., s_star=0.,
-                swaps=swaps, swap_records=swap_records, ell=gains, exact_cg=None,
-                exact_cg_converged=None, false_skip=False, solver_tightened=self.solver_tightened,
-                power_iters=self.power_iters, gir_seconds=time.perf_counter()-gir_started,
-                exact_check_seconds=0.,
+                d=None, d_N=None, d_rep=None, Delta=0., g_dot_d=0., h_dot_d=0.,
+                gradient_norm=float(preliminary['g'].norm()), rho_tr=None, V=0.,
+                mu=mu, nu=self.nu, beta=0., beta_branch=None, s=0., s_F_star=0.,
+                swaps=swaps, swap_records=swap_records, ell=gains,
+                gir_seconds=time.perf_counter()-gir_started,
                 seconds=time.perf_counter()-started,
                 skip_rate=sum(bool(r.get('skipped')) for r in self.events)/max(1,len(self.events)))
             if apply:
@@ -429,27 +706,16 @@ class V3Engine:
                 self.events.append(row)
             return row
         selection_started = time.perf_counter()
-        A = seed_proposals(sites) if self.kernel_self else self.A
-        if refresh and not self.kernel_self:
-            A = self._select(model, sites, batch, preliminary)
-            selected_sites = [s for s in sites if s.module_name in A]
-            if A and bool(preliminary['eold'].any()) and 'b0' not in self.arm:
-                with training_products(model, selected_sites, A, batch[0]) as p:
-                    op = GGNProducts(p, batch[1], spec, ctx)
-                    first = self._direction(p, op, mu, split=(preliminary['x'], preliminary['xO'], preliminary['z'], preliminary['zO']))
-                    y = op.H(p.Jv(first['solve']('alternating_y', first['g'], first['beta'])))
-                A = self._select(model, sites, batch, preliminary,
-                    matrix_values=[preliminary['z'], preliminary['zO'], y, preliminary['zN']])
-            if 'rand' in self.arm: A = self._randomize(model, sites, batch, A)
+        A = seed_proposals(sites) if self.kernel_self else self._select(model, sites, batch, preliminary)
+        if 'rand' in self.arm: A = self._randomize(model, sites, batch, A)
         tiny_seconds = time.perf_counter()-selection_started
         active = sites if self.kernel_self else [s for s in sites if s.module_name in A]
         if not active:
-            next_K = min(self.K_base, remaining) if remaining is not None and remaining > 0 else self.K_base
+            next_K = self.K_next * 2
             row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration,
                 K=self.K_next, K_next=next_K, refresh_A=refresh, skipped=True,
-                skip_reason='no_positive_directions', Delta_hat=float('inf'), g_dot_d=0.,
-                h_dot_d=0., gradient_norm=float(preliminary['g'].norm()), rho=0., V=0.,
-                V_O=0., mu=mu, mu_rel=self.mu_rel, cos_cg_exact=None, exact_check_seconds=0.,
+                skip_reason='no_positive_directions', gradient_norm=float(preliminary['g'].norm()),
+                rho_tr=None, V=0., mu=mu, nu=self.nu,
                 swaps=0, swap_records=[], seconds=time.perf_counter()-started)
             if apply:
                 self.last_iteration, self.K_next = iteration, next_K
@@ -460,82 +726,111 @@ class V3Engine:
             op = GGNProducts(p, batch[1], spec, ctx)
             values = self._direction(p, op, mu, split=(preliminary['x'], preliminary['xO'], preliminary['z'], preliminary['zO']))
             d, g, gO = values['d'], values['g'], values['gO']
-            raw_d = d
-            d = torch.cat([v.to(ref).double().flatten() for (_, ref), v in zip(p.parameter_refs,
-                d.split([r.numel() for _, r in p.parameter_refs]))])
-            generator = dedicated_generator(self.seed, f'v3-power:{self.task}:{self.applications}', batch[0].device)
-            nHJ = spectral_norm(lambda v: op.H(p.Jv(v)), lambda v: p.JT(op.H(v)).double(), g, generator, self.power_iters)
-            nJHK = spectral_norm(lambda v: p.JT(op.H(values['kernel'](v))).double(),
-                lambda v: values['kernel'](op.H(p.Jv(v))).double(), op.g, generator, self.power_iters)
-            error_z = float((g-op.F(values['x'])-mu*values['x']).norm())
-            error_old = float((gO-op.F(values['xO'])-mu*values['xO']).norm())
-            if bool(values['eold'].any()) and values['beta_branch'] != 'unprotected':
-                error_new = float(((g-gO)-op.F(values['x']-values['xO'])-mu*(values['x']-values['xO'])).norm())
-                rhs_R = p.JT(op.H(values['kernel'](values['zO']))).double()
-                rhs_N = p.JT(op.H(values['uN'])).double()
-                err_R = float((rhs_R-op.F(values['d_rep'])-mu*values['d_rep']).norm())
-                err_N = float((rhs_N-op.F(values['d_N'])-values['beta']*values['B'](values['d_N'])-mu*values['d_N']).norm())
-                Delta = nJHK*nHJ*(error_old+error_new)/mu**2+(err_R+err_N)/mu
-            else:
-                rhs = p.JT(op.H(values['kernel'](values['z']))).double()
-                Delta = nJHK*nHJ*error_z/mu**2+float((rhs-op.F(d)-mu*d).norm())/mu
-            Delta += float((d-raw_d).norm())
+            d = d.double()
+            Delta = float(values['x'].norm())
             gh, hh = float(g@d), float(gO@d)
-            tau_g, tau_h = float(g.norm())*Delta, float(gO.norm())*Delta
             z_record = next((record for record in values['records'] + preliminary['records']
                              if record['name'] == 'z'), None)
-            reason = 'cg_z' if z_record and z_record['relative_residual'] > .1 else ('nonfinite' if not torch.isfinite(d).all() or not math.isfinite(Delta) else 'invalid_beta' if values.get('invalid_beta') else 'negative_total_certificate' if gh < -tau_g else 'negative_old_certificate' if hh < -tau_h else None)
+            rho = None
+            rho_before = rho_after = None
+            reason = 'cg_z' if z_record and z_record['relative_residual'] > .1 else ('nonfinite' if not torch.isfinite(d).all() or not math.isfinite(Delta) else 'invalid_beta' if values.get('invalid_beta') else None)
+            if reason is None and (gh <= 0 or (bool(values['eold'].any()) and hh < 0)):
+                reason = 'negative_certificate'
+            if reason is None:
+                pred = float(g @ values['x']) - .5*float(op.H(p.Jv(values['x'])) @ p.Jv(values['x']))
+                rho_before, rho_after = self._measure_ratio(model, batch, spec, ctx, p.parameter_refs, values['x'])
+                actual = rho_before[0] - rho_after[0]
+                rho = actual / pred if pred > 0 else float('-inf')
+                if rho > 0:
+                    self.mu = mu * max(1/3, 1-(2*rho-1)**3)
+                else:
+                    self.mu = mu * 2.
+                self.nu = 2.
+                if rho <= 0: reason = 'untrusted'
             skipped = reason is not None
-            cos_exact, h_exact, false_skip = None, None, False
-            exact_records = None
-            exact_check_seconds = 0.
             only_gir = (self.arm.endswith('_gir') or self.arm == 'gir') and 'vna' not in self.arm
-            s, optimum, binding = (0., 0., 'none') if skipped or only_gir else correction_step(g, d,
-                op.F(d), mu, optimizer.param_groups[0]['lr'], self.K_next,
-                optimizer.param_groups[0].get('momentum', 0.), self.arm.endswith('_lf'))
+            s, optimum, binding = (0., 0., 'none') if skipped or only_gir else trust_region_step(
+                g, d, op.F(d), mu, Delta)
             delta = _unflatten(d, p.parameter_refs)
-            phi_N = float((p.Jv(values['d_N'])-values['uN'])@op.H(p.Jv(values['d_N'])-values['uN']))+mu*float(values['d_N']@values['d_N'])
-            projected_gain = float(p.JT(values['z']).double().square().sum())
+            known = int(op.ctx.get('known_classes', 0))
+            if known and values['beta'] > 0:
+                logits_old = p.Jv(values['xO']).reshape_as(op.logits)
+                delta_old = torch.zeros_like(op.logits)
+                delta_old[:, :known] = -logits_old[:, :known]
+                e_beta = op.g-values['beta']*values['H_old'](delta_old.flatten())
+                h_beta = lambda v: op.H(v)+values['beta']*values['H_old'](v)
+                self.warm['gir_residual'] = values['d_N'].detach().clone()
+                gir_x = values['solve']('gir_residual', p.JT(e_beta).double(), values['beta'])
+                rperp = e_beta-h_beta(p.Jv(gir_x))
+            else:
+                e_beta, h_beta, gir_x, rperp = op.g, op.H, values['x'], op.g-values['z']
+            values.update(e_beta=e_beta, H_beta=h_beta, gir_x=gir_x, rperp_beta=rperp)
+            extension_size = sum(ref.numel() for _, ref in p.extension_refs)
+            if extension_size:
+                basis = torch.eye(extension_size, dtype=p.extension_refs[0][1].dtype,
+                                   device=batch[0].device)
+                JE = torch.stack([p.JEv(v).double() for v in basis], 1)
+                extension_gram = JE.T @ torch.stack([op.H(column) for column in JE.T], 1)
+                lambda_E = max(float(torch.linalg.eigvalsh((extension_gram+extension_gram.T)/2).max()), 0.)
+            else:
+                lambda_E = 0.
+            B_reach = max(float(g @ values['x']), 0.)
+            V_t25 = float(values['V'])
+            logits_shape = op.logits.shape
+            e_output = op.g.reshape(logits_shape)
+            blocks = spec.metric_blocks(op.logits, op.ctx)
+            range_energy = float(torch.einsum('ni,nij,nj->', e_output,
+                torch.linalg.pinv(blocks, hermitian=True), e_output))
+            reach = min(1., max(0., B_reach/range_energy)) if range_energy else 0.
+            values.update(lambda_E=lambda_E, B_reach=B_reach, V_t25=V_t25,
+                          norm_w2=range_energy, reach=reach, unreach=1.-reach,
+                          lambda_E_B=lambda_E*B_reach,
+                          reach_ratio=V_t25/(lambda_E*B_reach) if lambda_E*B_reach else None)
         certificate_seconds = time.perf_counter()-certificate_started
         before = self.dead_slots(model, sites, batch)
+        parameter_before = {n: p.detach().clone() for n, p in model.named_parameters()}
+        rejected = False
         if apply and not skipped and s > 0:
             refs = dict(model.named_parameters())
             with torch.no_grad():
                 for name, value in delta.items(): refs[name].add_(value.to(refs[name]), alpha=-s)
+            after_loss = self._evaluate_current(model, batch, spec, ctx)
+            rejected = (rho_before is not None and after_loss[0] > rho_before[0]) or (
+                rho_before is not None and rho_before[1] is not None and after_loss[1] > rho_before[1])
+            if rejected:
+                self._restore_params(model, parameter_before)
+                self.mu = mu * 2.
+                self.nu = 2.
+        else:
+            after_loss = rho_before
         after = self.dead_slots(model, sites, batch)
-        gir_started = time.perf_counter(); swaps, gains, swap_records = 0, [], []
-        if apply and not skipped and ('gir' in self.arm and 'cbp' not in self.arm):
-            for site in sites:
-                units = after.get(site.module_name, [])
-                if units:
-                    proposal = self.prepare_gir(model, site, batch, spec, ctx, optimizer, units[:1], iteration,
-                        residual=(values['eold']-values['zO']) if bool(values['eold'].any()) else (op.g-values['z']))
-                    swaps += self.install_gir(model, site, proposal, units[:1], optimizer)
-                    if proposal:
-                        gains.append(proposal[0]['score'])
-                        swap_records.append(dict(site=site.module_name, unit=int(units[0]), score=proposal[0]['score']))
-                    break
-        rho = values['V']/max(float(g.square().sum()), 1e-300)
-        next_K = self.K_base if skipped else max(1, int(math.floor(self.K_base*min(4., max(.25, .3/max(rho, 1e-300))))+.5))
+        gir_started = time.perf_counter()
+        units_by_site = {site.module_name: list(range(site.second_layer.layer.weight.shape[1])) for site in sites}
+        swap_records = self._run_gir(model, sites, active, A, batch, spec, ctx, optimizer,
+            units_by_site, iteration, values, mu) if apply and (not skipped or reason == 'untrusted') else []
+        swaps = len(swap_records)
+        next_K = self.K_next * 2
         if remaining is not None and remaining > 0: next_K = min(next_K, remaining)
         if batch[0].is_cuda: torch.cuda.synchronize(batch[0].device)
         row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration, K=self.K_next,
-            K_next=next_K, refresh_A=refresh, rho=rho, rho_proj=values['V']/max(projected_gain, 1e-300),
-            V=values['V'], V_O=values['V_O'], g_dot_d=gh, h_dot_d=hh, tau_g=tau_g, tau_h=tau_h,
-            Delta_hat=Delta, skipped=skipped, skip_reason=reason, beta=values['beta'], beta_branch=values['beta_branch'],
+            K_next=next_K, refresh_A=refresh, rho_tr=rho,
+            V=values['V_t25'], B=values['B_reach'], lambda_E=values['lambda_E'],
+            norm_w2=values['norm_w2'], reach=values['reach'], unreach=values['unreach'],
+            lambda_E_B=values['lambda_E_B'], ratio=values['reach_ratio'],
+            V_O=values['V_O'], g_dot_d=gh, h_dot_d=hh,
+            Delta=Delta, skipped=skipped, skip_reason=reason, beta=values['beta'], beta_branch=values['beta_branch'],
             beta_over_suf=values['beta']/values['beta_suf'] if values.get('beta_suf') else None,
-            leak=values['leak'], epsilon_star=values['epsilon_star'], chi2=values['chi2'], Phi_N=phi_N,
-            kappa=None, kappa_reason='V_NS is not defined in supplied theory', s=s, s_star=optimum, cap_binding=binding, cg=values['records']+preliminary['records'],
-            cos_cg_exact=cos_exact, exact_cg=exact_records,
-            exact_cg_converged=all(r['converged'] for r in exact_records) if exact_records else None,
-            exact_check_seconds=exact_check_seconds,
-            h_exact=h_exact, false_skip=false_skip, solver_tightened=self.solver_tightened,
-            power_iters=self.power_iters, gradient_norm=float(g.norm()), mu=mu, mu_rel=self.mu_rel,
+            leak=values['leak'], epsilon_star=values['epsilon_star'], chi2=values['chi2'],
+            s=0. if rejected else s, s_F_star=optimum, cap_binding=binding, rejected=rejected,
+            nu=self.nu,
+            L_before=None if rho_before is None else rho_before[0], L_after=None if after_loss is None else after_loss[0],
+            KD_before=None if rho_before is None else rho_before[1], KD_after=None if after_loss is None else after_loss[1], cg=values['records']+preliminary['records'],
+            gradient_norm=float(g.norm()), mu=mu,
             dead_before_step5=sum(map(len, before.values())), dead_after_step5=sum(map(len, after.values())),
-            swaps=swaps, swap_records=swap_records, ell=gains, gain=None, tiny_V_seconds=tiny_seconds,
+            swaps=swaps, swap_records=swap_records, ell=[r['ell_beta'] for r in swap_records], tiny_V_seconds=tiny_seconds,
             certificate_seconds=certificate_seconds, gir_seconds=time.perf_counter()-gir_started,
             solve_seconds=sum(r['seconds'] for r in values['records']+preliminary['records']),
-            seconds=time.perf_counter()-started, certificate_norms='power estimates x1.1',
+            seconds=time.perf_counter()-started,
             skip_rate=(sum(bool(r.get('skipped')) for r in self.events)+int(skipped))/(len(self.events)+1))
         if apply:
             if not self.kernel_self: self.A = A
@@ -569,17 +864,27 @@ class V3Engine:
         return {name: torch.where(value.movedim(1, 0).flatten(1).eq(0).all(1))[0].tolist()
                 for name, value in captures.items()}
 
-    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None):
+    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=()):
         self.gir_fallback = False
         if not len(units) or not self.valid_slot(site): return []
         with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
-            mu = relative_damping(self.cfg, op.trace(self.cfg), op)
+            mu = self.mu if self.mu is not None else max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
             if residual is None:
                 if gradmax: residual = op.g
                 else:
-                    values = self._direction(p, op, mu, split_only=True, warm={})
-                    residual = values['eold']-values['zO'] if bool(values['eold'].any()) else op.g-values['z']
+                    values = self._direction(p, op, mu, warm={})
+                    known = int(op.ctx.get('known_classes', 0))
+                    if known and values['beta'] > 0:
+                        delta_old = torch.zeros_like(op.logits)
+                        delta_old[:, :known] = -p.Jv(values['xO']).reshape_as(op.logits)[:, :known]
+                        e_beta = op.g-values['beta']*values['H_old'](delta_old.flatten())
+                        H_beta = lambda v: op.H(v)+values['beta']*values['H_old'](v)
+                        self.warm['gir_residual'] = values['d_N'].detach().clone()
+                        gir_x = values['solve']('gir_residual', p.JT(e_beta).double(), values['beta'])
+                        residual = e_beta-H_beta(p.Jv(gir_x))
+                    else:
+                        residual = op.g-values['z']
         S, Ns = statistics(model, site, batch, [residual])
         matrix = Ns[0] if gradmax else Ns[0]@Ns[0].T
         if gradmax and (not torch.isfinite(matrix).all() or not torch.isfinite(S).all()):
@@ -592,57 +897,43 @@ class V3Engine:
             self.gir_fallback = True
             return []
         proposals = []
+        bn = next((model.get_submodule(n) for n in site.between
+                   if isinstance(model.get_submodule(n), nn.modules.batchnorm._BatchNorm)), None)
+        x = self._site_input(model, site, batch)
+        first = site.first_layer.layer
         for row in rows:
+            row = row.clone()
+            for used in used_directions:
+                denominator = used @ S @ used
+                if denominator > 0:
+                    row -= used * ((used @ S @ row)/denominator)
+            if float(row @ S @ row) <= 1e-20: continue
             base = rows_proposal(site, row[None])
             for sign in (1., -1.):
                 trial = {k: None if v is None else sign*v for k, v in base.items()}
-                bn = next((model.get_submodule(n) for n in site.between if isinstance(model.get_submodule(n), nn.modules.batchnorm._BatchNorm)), None)
-                x = self._site_input(model, site, batch)
-                first = site.first_layer.layer
                 projected = nn.functional.linear(x, trial['weight'], trial['bias']) if site.kind == 'linear' else nn.functional.conv2d(x, trial['weight'], trial['bias'], first.stride, first.padding, first.dilation)
                 if bn is not None:
                     axes = (0, *range(2, projected.ndim))
                     projected = (projected-projected.mean(axes, keepdim=True))/(projected.var(axes, unbiased=False, keepdim=True)+bn.eps).sqrt()
-                for shift in (0., -float(projected.median())):
+                quantiles = (0., .1, .3, .5, .7, .9)
+                shifts = [(0., None)] + [(-float(torch.quantile(projected.reshape(-1), q)), q) for q in quantiles[1:]]
+                for shift, bias_q in shifts:
                     candidate = deepcopy(trial)
                     if bn is not None:
                         candidate['bn_weight'] = torch.ones(1, device=x.device)
                         candidate['bn_bias'] = torch.tensor([shift], device=x.device)
                     elif first.bias is not None: candidate['bias'] = trial['bias']+shift
                     elif shift != 0: continue
-                    if not bool((projected+shift > 0).any()): continue
+                    if not bool((projected+shift).ne(0).any()): continue
                     with training_products(model, [site], {site.module_name: candidate}, batch[0]) as pv:
                         size = sum(v.numel() for _, v in pv.extension_refs)
                         Jv = torch.stack([pv.JEv(v).double() for v in torch.eye(size, device=x.device)], 1)
+                    if not torch.isfinite(Jv).all() or not bool(Jv.norm()): continue
                     Hv = torch.stack([op.H(v) for v in Jv.T], 1)
                     score = .5*float((Jv.T@residual).square().sum())/(max(float(torch.linalg.eigvalsh(Jv.T@Hv).max()), 0.)+mu)
-                    proposals.append(dict(A=candidate, score=score, Jv=Jv, curvature=Jv.T@Hv))
-        selected = []
-        if not proposals: return selected
-        complement = residual.clone()
-        deflations = []
-        with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
-            live = GGNProducts(p, batch[1], spec, ctx)
-            solve = self._solve(live, mu, lambda v: torch.zeros_like(v), [])
-            def Hperp(v):
-                value = live.H(v)-live.H(p.Jv(solve('gir_deflate', p.JT(live.H(v)).double())))
-                for left, inverse in deflations:
-                    value = value-left@(inverse@(left.T@v))
-                return value
-            for _ in range(min(len(units), len(proposals))):
-                for candidate in proposals:
-                    candidate['score'] = .5*float((candidate['Jv'].T@complement).square().sum())/(max(float(torch.linalg.eigvalsh(candidate['curvature']).max()), 0.)+mu)
-                best = max(proposals, key=lambda p: p['score'])
-                proposals = [candidate for candidate in proposals if candidate is not best]
-                selected.append(dict(A=best['A'], score=best['score']))
-                if site.kind == 'linear' and len(selected) < len(units):
-                    Jv = best['Jv']
-                    left = torch.stack([Hperp(v) for v in Jv.T], 1)
-                    schur = Jv.T@left+mu*torch.eye(Jv.shape[1], device=Jv.device)
-                    inverse = torch.linalg.inv(schur)
-                    complement = complement-left@(inverse@(Jv.T@complement))
-                    deflations.append((left, inverse))
-        return selected
+                    proposals.append(dict(A=candidate, score=score, Jv=Jv, curvature=Jv.T@Hv,
+                                          bias_q=bias_q, direction=row.detach().clone()))
+        return sorted(proposals, key=lambda value: value['score'], reverse=True)
 
     @staticmethod
     def _site_input(model, site, batch):
@@ -681,6 +972,8 @@ class V3Engine:
                 for parameter, index in indices:
                     for value in optimizer.state.get(parameter, {}).values():
                         if isinstance(value, torch.Tensor) and value.shape == parameter.shape: value[index] = 0
+                self.install_ages[(site.module_name, int(unit))] = {
+                    'site': site.module_name, 'unit': int(unit), 'task': self.task}
                 count += 1
         if count:
             self.warm.clear()

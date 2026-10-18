@@ -312,3 +312,4 @@ using K instead of K_E; only `vna_b0` and settings without old classes are
 unprotected. Exact checks use up to 2000 CG iterations and affect adaptive
 solver counters only when every exact solve converges.
 17. **Preflight-only exact checks (2026-10-18, before any v3 results).** Full-run arms load and keep the calibrated `cg_tol`, `tol`, and `power_iters` without running exact checks.
+18. **V4 algorithm (2026-10-19).** Theory §9b resolves the prompt’s ν-doubling wording: T26 failure and rejection use `mu <- 2*mu`, while checkpointed `nu` remains fixed at 2 for schema compatibility. The implementation records both fields and uses the geometric K0 schedule; no μ grid or exact run check remains.

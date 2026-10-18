@@ -39,6 +39,10 @@ class LossSpec:
             loss = ctx['loss_fn'](output, ctx) if 'loss_fn' in ctx else self.loss(output, ctx)
             return torch.autograd.grad(loss, output)[0].detach()
 
+    def metric_blocks(self, z, ctx):
+        """Per-sample output Hessians, including the single batch reduction."""
+        raise NotImplementedError
+
     def metric_apply(self, z, v, ctx):
         raise NotImplementedError
 
@@ -53,6 +57,10 @@ class CE(LossSpec):
 
     def loss(self, z, ctx):
         return F.cross_entropy(z, ctx['targets'])
+
+    def metric_blocks(self, z, ctx):
+        p = z.double().softmax(-1)
+        return (torch.diag_embed(p)-p.unsqueeze(-1)*p.unsqueeze(-2))/len(z)
 
     def metric_apply(self, z, v, ctx):
         return _cov(z.double().softmax(-1), v.double().reshape_as(z)) / len(z)
@@ -70,6 +78,10 @@ class MSE(LossSpec):
     def loss(self, z, ctx):
         value = (z - ctx['targets']).square()
         return value.sum() / len(z) if self.reduction == 'batchmean' else value.mean()
+
+    def metric_blocks(self, z, ctx):
+        scale = self.metric_apply(z, torch.ones_like(z), ctx)
+        return torch.diag_embed(scale)
 
     def metric_apply(self, z, v, ctx):
         if 'loss_fn' in ctx:
@@ -97,6 +109,9 @@ class KDRepDistiller(CE):
                       reduction='sum') * (self.T ** 2) / z.shape[0]
         return self.alpha * F.cross_entropy(z, ctx['targets']) + self.beta * kd
 
+    def metric_blocks(self, z, ctx):
+        return self.alpha*super().metric_blocks(z, ctx) + self.beta*CE.metric_blocks(self, z/self.T, ctx)
+
     def metric_apply(self, z, v, ctx):
         z, v = z.double(), v.double().reshape_as(z)
         return (self.alpha * _cov(z.softmax(-1), v) +
@@ -118,6 +133,13 @@ class ICaRLPyCIL(CE):
             soft = torch.softmax(ctx['teacher_logits'][:, :known] / self.T, dim=1)
             loss = loss + -1 * torch.mul(soft, pred).sum() / pred.shape[0]
         return loss
+
+    def metric_blocks(self, z, ctx):
+        blocks = super().metric_blocks(z, ctx)
+        known = ctx.get('known_classes', self.known_classes)
+        if known:
+            blocks[:, :known, :known] += CE.metric_blocks(self, z[:, :known]/self.T, ctx)/self.T**2
+        return blocks
 
     def metric_apply(self, z, v, ctx):
         z, v = z.double(), v.double().reshape_as(z)

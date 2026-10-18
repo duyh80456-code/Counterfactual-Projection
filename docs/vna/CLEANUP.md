@@ -7,8 +7,12 @@ Deleted unused online ER setup and obsolete pilot artifacts:
 - `third_party/patches/CCL-DC/0001-remove-unused-cgi-import.patch` and the optional CCL-DC fetch entry; they had no remaining user.
 - The O1/O2/O3 presets, online runner branches, and `*_lf` arms in the v3 pilot builders/tests; these were obsolete claims and step-rule variants.
 
-Phase-2 replacements are intentionally left importable and marked by the existing v3 paths: μ-grid/preflight selection (`V3Engine.preflight` and calibration reports), the old norm/K step cap (`correction_step`), exact run checks (`_direction(exact=...)`), power-iteration certificates/tau fields, LIVE_SWAP/measured branches, the old GIR residual/bias/refresh rules, and the `0.3/rho`/clipped K schedule. Phase 2 owns their algorithmic replacement.
+Phase 2 removed the v3 μ-grid, norm/K cap, τ certificates, exact run checks, fixed refresh cadence, old GIR residual/bias choices, and clipped adaptive schedule. The engine now uses T26 trust-region damping, T27 residuals, T28 net-gain swaps, and a measured geometric K0 schedule. `correction_step` remains importable only as a compatibility helper for historical diagnostic tests; production code does not call it.
+
+The v4 algorithm keeps the matrix-free CG, JVP/VJP products, BetaRule, and BN/RNG-preserving functional measurement paths shared with v3. Live-slot swaps use the T28 measured net-gain primitive and the four-slot per-site compute budget.
 
 ## GradMax NaN root cause
 
 The SVD/eigh failure is downstream of non-finite model parameters. GradMax row proposals scale new rows to the mean norm of `[W, b]` (including the bias), then add a projected bias shift. A large bias therefore feeds back into larger new units; large hidden activations then make plain SGD on the output layer diverge. Phase 1 guards non-finite eigensolver inputs and catches `LinAlgError`, preserving native CBP initialization and logging `gir_fallback=true`; parameter non-finiteness is handled as run divergence by the training status path.
+
+Phase 2 fix 2 consumes GIR directions with S_x orthogonal projection and rescoring after each accepted swap, computes each slot's measured jumps once, and restores engine caches during rejected trials. Loss specs provide per-sample Hessian blocks for T25 range energy. Task-end B5/PM probes use fixed seeded current-task observations (up to 256), are checkpointed, and log diagnostics for every arm.

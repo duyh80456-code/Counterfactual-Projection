@@ -132,21 +132,19 @@ def test_zero_lambda_is_bitwise_and_readonly_preflight_state():
     for n, v in before.items(): assert torch.equal(v, model.state_dict()[n])
 
 
-def test_exact_check_is_apply_only_and_timed_separately(monkeypatch):
+def test_training_has_no_removed_exact_check_fields(monkeypatch):
     model, site, batch, spec, ctx, optimizer = problem()
-    engine = V3Engine('vna'); engine.preflight_only = True; engine.begin_task(1)
+    engine = V3Engine('vna'); engine.begin_task(1)
     calls = []
     original = engine._direction
     def direction(*args, **kwargs):
         calls.append(kwargs.get('exact', False))
         return original(*args, **kwargs)
     monkeypatch.setattr(engine, '_direction', direction)
-    row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, apply=False)
-    assert True not in calls
-    assert row['exact_check_seconds'] == 0.
-    row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1)
-    assert True in calls
-    assert row['exact_check_seconds'] > 0.
+    for apply in (False, True):
+        row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, apply=apply)
+        assert not any('exact' in key for key in row)
+    assert not any(calls)
 
 
 def test_kernel_self_uses_all_valid_sites_without_selection(monkeypatch):

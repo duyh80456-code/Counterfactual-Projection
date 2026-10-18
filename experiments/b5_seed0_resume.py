@@ -166,7 +166,20 @@ def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
         if path.name in ('protocol.json', 'summary.json'):
             value = value.get('preflight') or value.get('identity', {}).get('preflight')
             if value is None: return None
-        return validate_b5_schedule(value, CALIBRATION_CONSUMER)
+        if 'K0' in value and 'K_base' not in value:
+            if (value.get('setting') != 'regression' or value.get('authoritative') is not True or
+                    value.get('synthetic') is not False or value.get('code_commit') != current_commit or
+                    type(value.get('K0')) is not int or value['K0'] < 1):
+                raise ValueError('incompatible converted B5 calibration')
+            return value
+        value = validate_b5_schedule(value, current_commit).copy()
+        value.setdefault('K0', value['K_base'])
+        value['authority_code_commit'] = value.get('code_commit')
+        value['code_commit'] = current_commit
+        for key in ('K_base', 'mu_rel', 'power_iters', 'cg_tol'):
+            value.pop(key, None)
+        value.setdefault('budget', 1.0)
+        return value
     if destination.exists():
         schedule = read(destination)
     else:
@@ -186,16 +199,16 @@ def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
                      'f571c6a7f39b6490f880b9ed4bd459741226dbcf',
                      'd461ce96816ce6ae7e1bbdde2c78d5bed7cc20ab',
                      '8ea105fcf3194df48807e5c0d315272e8f1f6fd1'] + sorted(LEGACY_COMMITS)
-        commit = next(c for c in preferred if any(v['code_commit'] == c for _, v in candidates))
-        same = [(p, v) for p, v in candidates if v['code_commit'] == commit]
+        commit = next(c for c in preferred if any(v.get('authority_code_commit') == c for _, v in candidates))
+        same = [(p, v) for p, v in candidates if v.get('authority_code_commit') == commit]
         if any(value != same[0][1] for _, value in same):
             raise ValueError('Conflicting B5 authority schedules; attach one seed-0 calibration snapshot')
         path, schedule = same[0]
-        write_json(destination, schedule)
         print(f'SHARED_SCHEDULE source={path}', flush=True)
-    print(f'SHARED_SCHEDULE K_base={schedule["K_base"]} authority_commit={schedule["code_commit"]} '
-          f'consumer_commit={CALIBRATION_CONSUMER}; no new preflight', flush=True)
-    return CALIBRATION_CONSUMER
+    write_json(destination, schedule)
+    print(f'SHARED_SCHEDULE K0={schedule["K0"]} authority_commit={schedule.get("authority_code_commit")} '
+          f'consumer_commit={current_commit}; no new preflight', flush=True)
+    return current_commit
 
 
 def checkout_sources(repo, sources):

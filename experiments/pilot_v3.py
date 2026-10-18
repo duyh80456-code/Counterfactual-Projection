@@ -39,13 +39,10 @@ def read_schedule(args):
     for key, value in expected.items():
         if schedule.get(key) == value: continue
         if key == 'code_commit' and args.setting == 'regression' and args.arm in B5_ARMS and not args.fake_data:
-            from experiments.b5_seed0_resume import validate_b5_schedule
-            validate_b5_schedule(schedule, value)
-            print(f'B5_CALIBRATION_REUSED authority_commit={schedule["code_commit"]} consumer_commit={value}', flush=True)
-            continue
+            raise ValueError('legacy B5 schedules must be converted by b5_seed0_resume.py')
         raise ValueError(f'schedule {key} mismatch')
-    if not schedule.get('authoritative') or not isinstance(schedule.get('K_base'), int) or schedule['K_base'] < 1:
-        raise ValueError('schedule lacks authoritative positive K_base')
+    if not schedule.get('authoritative') or not isinstance(schedule.get('K0'), int) or schedule['K0'] < 1:
+        raise ValueError('schedule lacks authoritative positive K0')
     if schedule.get('synthetic', False) and not args.fake_data:
         raise ValueError('synthetic calibration cannot authorize real training')
     return schedule
@@ -57,7 +54,7 @@ def make_engine(args):
     arm = engine_arm(args.arm)
     engine = V3Engine(arm=arm, seed=args.seed,
         coefficient=0. if arm == 'baseline' else args.coefficient,
-        K_base=schedule['K_base'] if schedule else 100)
+        K0=schedule['K0'] if schedule else 100)
     engine.preflight_only = args.preflight_only
     if schedule: engine.configure_schedule(schedule)
     return engine
@@ -72,55 +69,25 @@ def protocol(args, engine, params, upstream):
         window=('current_augmented_minibatch' if args.setting == 'icarl' else
                 'FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples'),
         step_rule='phase 2', K_units='iterations',
-        mu_rel=engine.mu_rel, K_base=engine.K_base,
+        K0=engine.K0, budget=engine.protocol.get('budget', 1.0),
         solver=dict(method='parameter-space matrix-free CG', tol=engine.tol, max_iterations=200,
-                    warm_start=True, spectral_power_iterations=engine.power_iters),
+                    warm_start=True),
         preflight=read_schedule(args))
 
 
 def finalize_calibration(args, engine, adapter, out):
     from methods.vna_v3 import schedule_from_points
-    if len(adapter.calibration) != 6:
+    points = engine.protocol.get('preflight_points', [])
+    if len(points) != 6:
         raise ValueError('preflight requires three actual applications in tasks 1 and 2')
-    accepted = []
-    for mu in (.001,.01,.1):
-        rows = [next((r for r in report['trials'] if r['mu_rel'] == mu),None)
-                for report in adapter.mu_trials]
-        if all(row is not None and row.get('Delta_hat',float('inf')) <=
-               .1*abs(row.get('g_dot_d',0.))/max(row.get('gradient_norm',0.),1e-300)
-               for row in rows): accepted.append(mu)
-    engine.mu_rel = min(accepted) if accepted else .1
-    for point, report in zip(adapter.calibration, adapter.mu_trials):
-        selected = next(row for row in report['trials'] if row['mu_rel'] == engine.mu_rel)
-        point['actual_application_seconds'] = point['vna_seconds']
-        point['selected_mu_trial_seconds'] = selected['seconds']-selected.get('exact_check_seconds', 0.)
-        point['vna_seconds'] = point['selected_mu_trial_seconds']+point.get('gir_seconds',0.)
-    timing = float(np.mean(adapter.iteration_times[:200]))
-    points = []
-    for task in (1, 2):
-        values = [p for p in adapter.calibration if p['task'] == task]
-        points.append(dict(task=task, classes=values[0]['classes'],
-            vna_seconds=float(np.mean([p['vna_seconds'] for p in values])),
-            iteration_seconds=timing))
     epoch_iters = adapter.full_batches[-1]
     schedule = schedule_from_points(points, epoch_iters)
     schedule.update(setting=args.setting, authoritative=True, authority_arm=args.arm,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-        synthetic=args.fake_data, mu_rel=engine.mu_rel, cg_tol=engine.tol,
-        power_iters=engine.power_iters, tol=engine.tol, calibration=adapter.calibration,
-        mu_trials=adapter.mu_trials, mu_condition_met=bool(accepted),
-        timing_basis='selected-mu read-only trial plus measured GIR component; mean of first three points per task',
-        iteration_samples=len(adapter.iteration_times[:200]),
-        cos_cg_exact=[r.get('cos_cg_exact') for r in engine.events if r.get('cos_cg_exact') is not None])
-    # B5/PM have fixed output width; only CIL extrapolates the class count.
-    if args.setting in ('regression', 'mnist'):
-        costs = max(p['vna_seconds'] for p in points)
-        choices = sorted(set([50,100,200,400,800]+[n*epoch_iters for n in (1,2,5,10)]))
-        feasible = [k for k in choices if costs/k <= timing]
-        schedule.update(K_base=min(feasible) if feasible else max(choices),
-                        budget_exceeded=not bool(feasible), projected_vna_seconds=costs,
-                        projection='fixed output width; no class extrapolation')
-    path = Path(args.schedule_output) if args.schedule_output else out/'schedule.json'
+        synthetic=args.fake_data, tol=engine.tol, calibration=points,
+        timing_basis='three measured applications in tasks 1 and 2 and measured baseline iterations',
+        iteration_samples=len(adapter.iteration_times[:200]))
+    path = Path(args.schedule_output) if args.schedule_output else out/'_schedules'/f'{args.setting}.json'
     lop.write_json(path, schedule)
     print('V3 PREFLIGHT', json.dumps(schedule), flush=True)
     return schedule
@@ -128,8 +95,9 @@ def finalize_calibration(args, engine, adapter, out):
 
 def write_events(out, engine):
     lop.write_json(out/'interventions.json', engine.events)
+    lop.write_json(out/'diagnostics.json', engine.activities)
     if engine.events: lop.write_csv(out/'vna_log.csv', engine.events)
-    else: (out/'vna_log.csv').write_text('task,iteration,K,K_next,rho,seconds,skipped\n')
+    else: (out/'vna_log.csv').write_text('task,iteration,K,K_next,rho_tr,seconds,skipped\n')
 
 
 def lop_recipe(args):
@@ -216,7 +184,8 @@ def run_lop(args):
             summary['anytime_accuracy_auc'] = float(np.mean([t['anytime_accuracy_auc'] for t in tasks]))
         if args.preflight_only:
             identity.update(preflight=finalize_calibration(args,engine,intervention,out))
-        identity.update(mu_rel=engine.mu_rel, K_base=engine.K_base)
+        identity.update(K0=engine.K0, seconds_per_application=engine.protocol.get('seconds_per_application'),
+                        budget=engine.protocol.get('budget', 1.0))
         lop.write_json(out/'protocol.json', identity)
         lop.write_json(out/'summary.json', summary); lop.write_json(out/'tasks.json', tasks)
         lop.write_csv(out/'online.csv', tasks); lop.write_json(out/'activities.json', engine.activities)
