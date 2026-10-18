@@ -4,6 +4,15 @@
 
 ### Separate seed-1 and seed-2 notebooks (2026-10-18)
 
+Superseded by three arm-group notebooks at the user's request. Groups A/B/C
+each contain four distinct arms and both seeds 1 and 2: eight jobs/group,
+24 jobs total, with four CPU workers per independent session. The partition
+balances slower and faster arms using the available seed-0 task timings;
+it does not change algorithms, seeds, horizons, rates or the shared schedule.
+The two per-seed notebook files are removed; the seed-0 notebook is retained.
+Each group restores only its own jobs from the same previous archives, records
+source provenance and plots its four arms separately for seeds 1 and 2.
+
 Each notebook runs the same 12 registered arms for its own seed and full
 100-task horizon with four CPU workers. The four alternative CBP rate checks
 remain seed-0 only; all main CBP arms keep replacement_rate=1e-3.

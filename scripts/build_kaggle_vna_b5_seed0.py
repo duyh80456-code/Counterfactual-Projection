@@ -6,6 +6,12 @@ from pathlib import Path
 from scripts.build_kaggle_vna_parallel import build, PRESETS
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
+B5_GROUPS = {
+    'A': ('bp_kself', 'cbp_gir', 'bp_gir', 'bp'),
+    'B': ('cbp_vna_gir', 'bp_kself_lf', 'bp_vna_gir', 'cbp'),
+    'C': ('cbp_gradmax', 'bp_vna_lf', 'bp_vna', 'bp_vna_rand'),
+}
+
 
 PROGRESS = r'''
 from scripts.collect_parallel import validate_result
@@ -69,8 +75,9 @@ def seed0_results():
     fig.tight_layout()
     fig.savefig(STAGE_B / RUN_TAG / 'seed0_curves.png', dpi=150)
     plt.show()
-    baseline = table[table.job == 'b5_cbp__s0'].iloc[0]
-    if baseline.status == 'COMPLETED':
+    baseline = table[table.job == 'b5_cbp__s0']
+    if not baseline.empty and baseline.iloc[0].status == 'COMPLETED':
+        baseline = baseline.iloc[0]
         better = table[table.job.str.contains('__rate') & (table.status == 'COMPLETED') &
                        (table.mean_last50 < baseline.mean_last50)]
         if not better.empty:
@@ -200,14 +207,66 @@ write_json(ROOT/'resume_sources.json', {job: {**source, 'out': str(source['out']
     return notebook
 
 
+def build_group(commit, group):
+    arms = B5_GROUPS[group]
+    notebook = build_seed0(commit, 1)
+    cells = notebook['cells']
+    jobs = [f'b5_{arm}__s{seed}' for seed in (1, 2) for arm in arms]
+    config = ''.join(cells[0]['source'])
+    lines = config.splitlines(keepends=True)
+    lines = [f'JOBS_CPU = {jobs!r}\n' if line.startswith('JOBS_CPU = ') else
+             f"RUN_TAG = 'vna_v3_b5_group{group}'\n" if line.startswith('RUN_TAG = ') else line
+             for line in lines]
+    cells[0] = cell('code', ''.join(lines))
+    cells[1] = cell('markdown', f'''# B5 group {group}: seeds 1 and 2
+Four arms: {', '.join(arms)}. Each arm runs both seeds: eight full jobs,
+100 tasks/job, with at most four CPU workers. CBP rate remains 1e-3;
+the four alternative rate checks remain in the seed-0 notebook.
+
+Run groups A/B/C in three separate CPU sessions. Attach the same repaired
+seed-0 Output/archive with regression.json to all three, plus any earlier
+B5 Outputs/archives to resume. Each group only runs its own arms and seeds.
+Completed results are validated and skipped; unfinished checkpoints retain
+their original code commit. Missing jobs start fresh using the shared authority
+schedule/source without another preflight. RESUME_APPLIED confirms restoration.
+Pre-repair GradMax is restarted with the numerical repair. Save each group's
+Output/archive and attach it on the next session. Source ZIP and CIFAR are unnecessary.
+''')
+    runtime = ''.join(cells[4]['source'])
+    runtime = runtime.replace(
+        "axis = axes[1] if '__rate' in job or job == 'b5_cbp__s1' else axes[0]",
+        "axis = axes[0] if job.endswith('__s1') else axes[1]")
+    runtime = runtime.replace("('Seed 1 arms', 'CBP reference (rate=1e-3)')", "('Seed 1', 'Seed 2')")
+    cells[4] = cell('code', runtime)
+    runner = ''.join(cells[-1]['source'])
+    runner = runner.replace(
+        "seed1_sources = select_sources(Path('/kaggle/input'), STAGE_B, JOBS_CPU, RUN_TAG, REPO_COMMIT, seed=1)",
+        '''seed1_sources = {}
+for active_seed in (1, 2):
+    seed_jobs = [job for job in JOBS_CPU if job.endswith(f'__s{active_seed}')]
+    seed1_sources.update(select_sources(Path('/kaggle/input'), STAGE_B, seed_jobs,
+        RUN_TAG, REPO_COMMIT, seed=active_seed))''')
+    cells[-1] = cell('code', runner)
+    for item in cells:
+        text = ''.join(item['source']).replace('seed1_', f'group{group}_')
+        text = text.replace('SEED 1:', f'GROUP {group}, SEEDS 1+2:')
+        text = text.replace('Seed-1 preview', f'Group {group} preview (seeds 1+2)')
+        text = text.replace('Seed-1 jobs failed', f'Group {group} jobs failed')
+        item['source'] = text.splitlines(keepends=True)
+    return notebook
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--commit', required=True)
     parser.add_argument('--seed', type=int, choices=(0, 1, 2), default=0)
+    parser.add_argument('--group', choices=tuple(B5_GROUPS))
     parser.add_argument('--output')
     args = parser.parse_args()
-    output = Path(args.output or f'notebooks/kaggle_vna_parallel_P-B5_seed{args.seed}.ipynb')
-    output.write_text(json.dumps(build_seed0(args.commit, args.seed), indent=1)+'\n')
+    suffix = f'group{args.group}' if args.group else f'seed{args.seed}'
+    output = Path(args.output or f'notebooks/kaggle_vna_parallel_P-B5_{suffix}.ipynb')
+    notebook = build_group(args.commit, args.group) if args.group else build_seed0(args.commit, args.seed)
+    output.write_text(json.dumps(notebook, indent=1)+'\n')
 
 
 if __name__ == '__main__': main()

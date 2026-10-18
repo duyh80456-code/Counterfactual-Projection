@@ -57,6 +57,7 @@ def select_sources(input_root, outputs, jobs, current_tag, current_commit, seed=
         parts = Path(identity.get('cfg', {}).get('data_file', '')).parts
         if 'outputs' not in parts: raise ValueError(f'{path}: original output path missing')
         relative = parts[parts.index('outputs')+1:-1]
+        if len(relative) == 2 and relative[1] not in jobs: continue
         known_tags = ('vna_v3_pilot', f'vna_v3_b5_seed{seed}', f'vna_v3_b5_seed{seed}_resume', current_tag)
         if len(relative) != 2 or relative[1] not in jobs or relative[0] not in known_tags:
             raise ValueError(f'{path}: unsupported original job directory')
