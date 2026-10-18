@@ -2,6 +2,22 @@
 
 ## B5 seed-0 preview and numerical repair (2026-10-18)
 
+### Reuse of existing seed-0 work (2026-10-18)
+
+The resume preview accepts old P-B5 archives and standalone resume.pkl files.
+It selects a validated completed result, or the furthest compatible checkpoint,
+for each arm/rate/seed-0 job. Original source directories and code identities
+are retained. Incomplete trajectories execute their original pinned source
+in a separate checkout, with the same upstream, schedule and checkpoint state.
+No identity check is bypassed and no old result is relabelled with a new commit.
+A full checkpoint lacking final artifacts replays its logged prefix without
+optimizer steps to export the missing results. RESUME_APPLIED is logged only
+after model, optimizer, RNG and hook state restoration actually returns.
+Pre-repair GradMax trajectories are excluded and restarted with the repaired
+implementation. The preview reports original commit/tag per row, so the
+result is explicitly a provenance-labelled preview rather than a uniform
+reproduction on the revised commit. The three-seed protocol is unchanged.
+
 The seed-0 preview runs all 12 registered B5 arms and the four baseline CBP
 rate checks for the full 100 tasks, with four CPU workers. It reports partial
 progress separately from validated final scores; it does not replace the
@@ -13,8 +29,8 @@ than eigendecomposing NN^T. These are the same nonzero eigendirections, up
 to sign and bases within tied subspaces; the direct factor avoids the failed
 Gram-matrix eigensolve observed in the earlier seed-0 run. GradMax also omits
 the unused residual CG solve. GIR and VNA selection rules are unchanged.
-The revised preview uses a new run tag and code pin, so old checkpoints are
-not relabelled or mixed with revised trajectories. CPU heartbeat tolerates
+New training uses a new run tag and code pin; reused trajectories keep their
+original directories and provenance as described above. CPU heartbeat tolerates
 an absent nvidia-smi. Existing checkpoint, deadline and archive handling remains.
 
 ## Training solver amendment (2026-10-17, before the revised pilots)

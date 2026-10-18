@@ -9,14 +9,19 @@ from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 PROGRESS = r'''
 from scripts.collect_parallel import validate_result
+from experiments.b5_seed0_resume import select_sources, checkout_sources, RESUME_ENTRY
 seed0_failures = {}
+seed0_sources = {}
+
+def seed0_out(job):
+    return seed0_sources.get(job, {}).get('out', STAGE_B / RUN_TAG / job)
 
 def seed0_progress():
-    directory = STAGE_B / RUN_TAG
     active = {lane.get('job') for lane in list(lane_state.values())}
     rows = []
     for job in JOBS_CPU:
-        out = directory / job
+        out = seed0_out(job)
+        source_commit = seed0_sources.get(job, {}).get('commit', REPO_COMMIT)
         def read(name, default):
             try: return json.loads((out / name).read_text())
             except (OSError, ValueError): return default
@@ -27,13 +32,16 @@ def seed0_progress():
         expected = protocol.get('expected_tasks', 100)
         done = summary.get('status') == 'COMPLETED'
         if done:
-            validate_result(job, summary, protocol, tasks, REPO_COMMIT, SOURCE_DIGEST)
+            validate_result(job, summary, protocol, tasks, source_commit, SOURCE_DIGEST)
         state = ('FAILED' if job in seed0_failures else 'COMPLETED' if done else
                  'RUNNING' if job in active else
                  'PAUSED' if session_paused.is_set() and (out / 'resume.pkl').exists() else
+                 'WAITING_FINALIZE' if seed0_sources.get(job, {}).get('step') == 1000000 else
                  'WAITING_RESUME' if (out / 'resume.pkl').exists() else 'PENDING')
-        rows.append(dict(job=job, status=state, tasks=len(tasks), total=expected,
-            step=status.get('step'), online_error=tasks[-1].get('online_error') if tasks else None,
+        rows.append(dict(job=job, status=state, tasks=sum(r.get('step', 0) % 10000 == 0 for r in tasks), total=expected,
+            step=status.get('step', seed0_sources.get(job, {}).get('step')),
+            source_commit=source_commit[:7], source_tag=out.parent.name,
+            online_error=tasks[-1].get('online_error') if tasks else None,
             mean_last50=summary.get('mean_last50') if done else None,
             error=seed0_failures.get(job, '')))
     import pandas as pd
@@ -50,7 +58,7 @@ def seed0_results():
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(16, 5))
     for job in JOBS_CPU:
-        out = STAGE_B / RUN_TAG / job
+        out = seed0_out(job)
         if not (out / 'tasks.json').exists(): continue
         tasks = json.loads((out / 'tasks.json').read_text())
         axis = axes[1] if '__rate' in job or job == 'b5_cbp__s0' else axes[0]
@@ -68,12 +76,13 @@ def seed0_results():
         if not better.empty:
             print('CBP RATE CHECK: these rates beat 1e-3 on seed 0; rate remains fixed at 1e-3.')
             print(better[['job', 'mean_last50']].to_string(index=False))
-    print('Seed-0 preview only; the registered three-seed conclusions remain pending.')
+    print('Seed-0 preview only; original source commits are retained per trajectory. '
+          'The registered three-seed conclusions remain pending.')
 '''
 
 
 def build_seed0(commit):
-    notebook = build(commit, 'P-B5', 'vna_v3_b5_seed0')
+    notebook = build(commit, 'P-B5', 'vna_v3_b5_seed0_resume')
     cells = notebook['cells']
     jobs = [job for job in PRESETS['P-B5'][2] if job.endswith('__s0')]
     config = ''.join(cells[0]['source'])
@@ -86,8 +95,14 @@ Progress prints every ten minutes and after each job. Final output includes
 scores, curves, rate checks, checkpoints and an archive. No three-seed claims.
 
 Use a fresh session with Internet enabled; source ZIP and CIFAR input are unnecessary.
-To resume this notebook, attach its previous archive and retain the same commit and RUN_TAG.
-Older P-B5 archives use another commit/tag and are not reused as revised training results.
+Attach the old P-B5 Output/archive, this notebook's earlier Output/archive, or a standalone
+resume.pkl as Input. Every selected source is printed before training. Completed jobs
+are validated and skipped. Unfinished jobs continue using their original source commit;
+their existing model, optimizer, RNG and hook state are retained. A full checkpoint
+without summary.json is replayed without training to export its final results.
+Legacy GradMax from before the numerical repair is restarted using the fixed code.
+The table records the actual source commit/tag; trajectories are not relabelled.
+If no reusable checkpoint/result is found, the notebook stops instead of silently starting all jobs over.
 ''')
     runtime = PROGRESS + ''.join(cells[4]['source'])
     runtime = runtime.replace('print_heartbeat(RUN_ROOT / "outputs", SESSION_START, VNA_DEADLINE, lane_state)',
@@ -99,9 +114,37 @@ Older P-B5 archives use another commit/tag and are not reused as revised trainin
     runner = runner.replace(
         'futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]',
         'futures=[gpu_pool.submit(run_gpu,gpu,jobs) for gpu,jobs in enumerate((JOBS_GPU0,JOBS_GPU1)) if jobs]')
-    runner = runner.replace('try:\n    v3jobs =', '''native_run_cpu = run_cpu
+    runner = runner.replace('try:\n    v3jobs =', '''seed0_sources = select_sources(Path('/kaggle/input'), STAGE_B, JOBS_CPU, RUN_TAG, REPO_COMMIT)
+seed0_checkouts = checkout_sources(REPO, seed0_sources)
+
 def run_cpu(job):
-    try: return native_run_cpu(job)
+    try:
+        if pause_due(): return
+        out = seed0_out(job)
+        source = seed0_sources.get(job, {})
+        commit = source.get('commit', REPO_COMMIT)
+        if (out / 'summary.json').exists():
+            summary = json.loads((out / 'summary.json').read_text())
+            if summary.get('status') == 'COMPLETED':
+                validate_result(job, summary, json.loads((out / 'protocol.json').read_text()),
+                    json.loads((out / 'tasks.json').read_text()), commit, SOURCE_DIGEST)
+                print(f'SKIP_COMPLETED {job}: {out}', flush=True)
+                return
+        cmd = command(job)
+        if cmd is None: return
+        cmd[cmd.index('--out')+1] = str(out)
+        checkout = seed0_checkouts.get(commit, REPO)
+        if commit != REPO_COMMIT and '--schedule' in cmd:
+            cmd[cmd.index('--schedule')+1] = str(out.parent / '_schedules/regression.json')
+        if (out / 'resume.pkl').exists():
+            print(f'LOAD_CHECKPOINT {job}: {out / "resume.pkl"} commit={commit}', flush=True)
+            cmd = cmd[:2] + ['-c', RESUME_ENTRY] + cmd[4:]
+        env = {**ENV, 'CUDA_VISIBLE_DEVICES': ''}
+        env['PYTHONPATH'] = env.get('PYTHONPATH', '').replace(str(REPO), str(checkout))
+        from experiments.vna_resume import launch_logged
+        return launch_logged(cmd, cwd=checkout, env=env,
+            log_path=RUN_ROOT/f'{RUN_TAG}_{job}.log', lane=job, job=job,
+            lanes=lane_state, paused=session_paused, deadline=VNA_DEADLINE)
     except Exception as error:
         seed0_failures[job] = str(error)
         raise
