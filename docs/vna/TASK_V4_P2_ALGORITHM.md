@@ -38,3 +38,11 @@ existing CG, JVP, BetaRule, statistics, GGNProducts, install_gir; do not duplica
 Tests (tiny, float64, local only; mirror check_t25.py / check_t26_28.py): 7.1 a–c, 7.2 a–c,
 7.3 a–c, 7.4, 7.8. Keep existing resume/bitwise tests that cover the touched code passing (run
 only those files). Do not commit.
+
+## Phase-1 review follow-ups (do these too)
+- `adapters/vna_v3_hooks.py` divergence check appends a `nonfinite_params` event on every step after
+  divergence: record it once (first step only), keep the run going (prompt §0.4).
+- Phase 1 left the replaced v3 paths importable (see `docs/vna/CLEANUP.md`); delete them here and
+  move `_direction(exact=...)` into a test-only helper.
+- Add the four new clones (pins in TASK_V4_COMMON) to `scripts/fetch_third_party.sh` and
+  `third_party/SOURCES.md` (note: C-Flat and warm_start ship no LICENSE file).
