@@ -1,4 +1,4 @@
-"""Build the full B5 seed-0 preview using the shared resumable pilot runner."""
+"""Build a full B5 notebook for one seed using the shared resumable runner."""
 import argparse
 import json
 from pathlib import Path
@@ -9,7 +9,7 @@ from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 PROGRESS = r'''
 from scripts.collect_parallel import validate_result
-from experiments.b5_seed0_resume import select_sources, checkout_sources, RESUME_ENTRY
+from experiments.b5_seed0_resume import select_sources, checkout_sources, prepare_seed_schedule, RESUME_ENTRY
 seed0_failures = {}
 seed0_sources = {}
 
@@ -81,10 +81,11 @@ def seed0_results():
 '''
 
 
-def build_seed0(commit):
-    notebook = build(commit, 'P-B5', 'vna_v3_b5_seed0_resume')
+def build_seed0(commit, seed=0):
+    if seed not in (0, 1, 2): raise ValueError('B5 seeds must be 0, 1 or 2')
+    notebook = build(commit, 'P-B5', f'vna_v3_b5_seed{seed}_resume')
     cells = notebook['cells']
-    jobs = [job for job in PRESETS['P-B5'][2] if job.endswith('__s0')]
+    jobs = [job for job in PRESETS['P-B5'][2] if job.endswith(f'__s{seed}')]
     config = ''.join(cells[0]['source'])
     config = config.replace(f"JOBS_CPU = {PRESETS['P-B5'][2]!r}", f'JOBS_CPU = {jobs!r}')
     cells[0] = cell('code', config)
@@ -159,16 +160,54 @@ try:
                 archive_outputs()''')
     runner = runner.replace('report(collect([ROOT.parent],RUN_TAG))', 'seed0_results()\narchive_outputs()')
     runner += "\nif seed0_failures: raise RuntimeError(f'Seed-0 jobs failed: {seed0_failures}; see per-job logs')\n"
+    if seed:
+        runner = runner.replace(
+            "seed0_sources = select_sources(Path('/kaggle/input'), STAGE_B, JOBS_CPU, RUN_TAG, REPO_COMMIT)",
+            f"seed0_sources = select_sources(Path('/kaggle/input'), STAGE_B, JOBS_CPU, RUN_TAG, REPO_COMMIT, seed={seed})\n" + '''fresh_commit = prepare_seed_schedule(Path('/kaggle/input'), STAGE_B, RUN_TAG, REPO_COMMIT)
+for job in JOBS_CPU:
+    if job not in seed0_sources:
+        seed0_sources[job] = dict(out=ROOT/job, commit=fresh_commit, step=0, completed=False)
+from experiments.stage_b5 import write_json
+write_json(ROOT/'resume_sources.json', {job: {**source, 'out': str(source['out'])}
+           for job, source in seed0_sources.items()})''')
+        title = ''.join(cells[1]['source'])
+        title = title.replace('12 arms + four baseline CBP rate checks = 16 jobs.',
+                              '12 registered arms; the four CBP rate checks remain seed-0 only.')
+        title = title.replace('If no reusable checkpoint/result is found, the notebook stops instead of silently starting all jobs over.',
+            'Attach the same repaired seed-0 Output/archive to seeds 1 and 2. Both reuse its\n'
+            'authority schedule and source commit without recalibration. Jobs without checkpoints\n'
+            'start fresh; checkpoints from other seeds are not used as training state.')
+        cells[1] = cell('markdown', title)
     cells[-1] = cell('code', runner)
+    if seed:
+        for item in cells:
+            text = ''.join(item['source'])
+            for old, new in (('seed0', f'seed{seed}'), ('seed-0', f'seed-{seed}'),
+                             ('Seed-0', f'Seed-{seed}'), ('SEED 0', f'SEED {seed}'),
+                             ('Seed 0 arms', f'Seed {seed} arms'), ('__s0', f'__s{seed}')):
+                text = text.replace(old, new)
+            # The shared loader file keeps its existing import path.
+            text = text.replace(f'experiments.b5_seed{seed}_resume', 'experiments.b5_seed0_resume')
+            item['source'] = text.splitlines(keepends=True)
+        title = ''.join(cells[1]['source'])
+        title = title.replace(f'the four CBP rate checks remain seed-{seed} only.',
+                              'the four CBP rate checks remain seed-0 only.')
+        title = title.replace(f'the same repaired seed-{seed} Output/archive',
+                              'the same repaired seed-0 Output/archive')
+        cells[1] = cell('markdown', title)
+        progress = ''.join(cells[4]['source']).replace("'CBP rate checks'", "'CBP reference (rate=1e-3)'")
+        cells[4] = cell('code', progress)
     return notebook
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--commit', required=True)
-    parser.add_argument('--output', default='notebooks/kaggle_vna_parallel_P-B5_seed0.ipynb')
+    parser.add_argument('--seed', type=int, choices=(0, 1, 2), default=0)
+    parser.add_argument('--output')
     args = parser.parse_args()
-    Path(args.output).write_text(json.dumps(build_seed0(args.commit), indent=1)+'\n')
+    output = Path(args.output or f'notebooks/kaggle_vna_parallel_P-B5_seed{args.seed}.ipynb')
+    output.write_text(json.dumps(build_seed0(args.commit, args.seed), indent=1)+'\n')
 
 
 if __name__ == '__main__': main()

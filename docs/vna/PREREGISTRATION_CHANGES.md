@@ -2,6 +2,18 @@
 
 ## B5 seed-0 preview and numerical repair (2026-10-18)
 
+### Separate seed-1 and seed-2 notebooks (2026-10-18)
+
+Each notebook runs the same 12 registered arms for its own seed and full
+100-task horizon with four CPU workers. The four alternative CBP rate checks
+remain seed-0 only; all main CBP arms keep replacement_rate=1e-3.
+Both notebooks require the same repaired seed-0 authority schedule as Input
+and reuse its exact source commit for fresh trajectories, without running
+another preflight. Existing completed results are skipped after validation;
+unfinished checkpoints resume only for the requested seed, at their original
+source commit. Missing checkpoints start new trajectories. The two proposed
+additional GIR controls are not included in this scheduling-only update.
+
 ### Reuse of existing seed-0 work (2026-10-18)
 
 The resume preview accepts old P-B5 archives and standalone resume.pkl files.
