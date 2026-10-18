@@ -163,10 +163,14 @@ def print_heartbeat(root, started, deadline, lanes):
     for path in [*Path(root).rglob('status.json'), *Path(root).rglob('heartbeat.json')]:
         try: statuses[str(path.relative_to(root))] = json.loads(path.read_text())
         except (OSError, ValueError): pass
-    gpu = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
-                          '--format=csv,noheader'], capture_output=True, text=True)
+    try:
+        gpu = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+                              '--format=csv,noheader'], capture_output=True, text=True, timeout=10)
+        gpu_status = gpu.stdout.strip() if gpu.returncode == 0 else 'unavailable'
+    except (OSError, subprocess.TimeoutExpired):
+        gpu_status = 'unavailable (CPU session or nvidia-smi missing)'
     print(f'heartbeat elapsed={time.time()-started:.0f}s deadline_in={deadline-time.time():.0f}s '
-          f'lanes={lanes} status={statuses} gpu={gpu.stdout.strip()}', flush=True)
+          f'lanes={lanes} status={statuses} gpu={gpu_status}', flush=True)
 
 
 def launch_logged(cmd, *, cwd, env, log_path, lane, job, lanes, paused, deadline):

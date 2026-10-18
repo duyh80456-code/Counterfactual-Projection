@@ -104,17 +104,19 @@ def statistics(model, site, batch, cotangents):
 
 
 def generalized_rows(matrix, S, rank, *, euclidean=False):
+    if euclidean:
+        # GradMax takes N directly: SVD avoids squaring its condition number in NNᵀ.
+        scale = matrix.abs().max()
+        if scale == 0: return matrix.new_empty((0, len(S)))
+        vectors, values, _ = torch.linalg.svd(matrix/scale, full_matrices=False)
+        return vectors[:, torch.where(values > 0)[0][:rank]].T
     ridge = 1e-6*float(S.trace())/len(S)
     if ridge <= 0: return S.new_empty((0, len(S)))
     L = torch.linalg.cholesky(S+ridge*torch.eye(len(S), device=S.device, dtype=S.dtype))
-    if euclidean:
-        values, vectors = torch.linalg.eigh((matrix+matrix.T)/2)
-        rows = vectors.T
-    else:
-        whitened = torch.linalg.solve_triangular(L, matrix, upper=False)
-        whitened = torch.linalg.solve_triangular(L, whitened.T, upper=False).T
-        values, vectors = torch.linalg.eigh((whitened+whitened.T)/2)
-        rows = torch.linalg.solve_triangular(L.T, vectors, upper=True).T
+    whitened = torch.linalg.solve_triangular(L, matrix, upper=False)
+    whitened = torch.linalg.solve_triangular(L, whitened.T, upper=False).T
+    values, vectors = torch.linalg.eigh((whitened+whitened.T)/2)
+    rows = torch.linalg.solve_triangular(L.T, vectors, upper=True).T
     keep = torch.where(values > 0)[0].flip(0)[:rank]
     return rows[keep]
 
@@ -581,10 +583,12 @@ class V3Engine:
             op = GGNProducts(p, batch[1], spec, ctx)
             mu = relative_damping(self.cfg, op.trace(self.cfg), op)
             if residual is None:
-                values = self._direction(p, op, mu, split_only=True, warm={})
-                residual = op.g if gradmax else values['eold']-values['zO'] if bool(values['eold'].any()) else op.g-values['z']
+                if gradmax: residual = op.g
+                else:
+                    values = self._direction(p, op, mu, split_only=True, warm={})
+                    residual = values['eold']-values['zO'] if bool(values['eold'].any()) else op.g-values['z']
         S, Ns = statistics(model, site, batch, [residual])
-        rows = generalized_rows(Ns[0]@Ns[0].T, S, 4, euclidean=gradmax)
+        rows = generalized_rows(Ns[0] if gradmax else Ns[0]@Ns[0].T, S, 4, euclidean=gradmax)
         proposals = []
         for row in rows:
             base = rows_proposal(site, row[None])

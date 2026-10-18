@@ -1,5 +1,22 @@
 # Stage B measurement amendments (2026-10-15)
 
+## B5 seed-0 preview and numerical repair (2026-10-18)
+
+The seed-0 preview runs all 12 registered B5 arms and the four baseline CBP
+rate checks for the full 100 tasks, with four CPU workers. It reports partial
+progress separately from validated final scores; it does not replace the
+three-seed experiment. Main CBP replacement_rate remains 1e-3.
+
+GradMax obtains its Euclidean directions from the left singular vectors of
+the cross-statistic N directly, with scalar normalization before SVD, rather
+than eigendecomposing NN^T. These are the same nonzero eigendirections, up
+to sign and bases within tied subspaces; the direct factor avoids the failed
+Gram-matrix eigensolve observed in the earlier seed-0 run. GradMax also omits
+the unused residual CG solve. GIR and VNA selection rules are unchanged.
+The revised preview uses a new run tag and code pin, so old checkpoints are
+not relabelled or mixed with revised trajectories. CPU heartbeat tolerates
+an absent nvidia-smi. Existing checkpoint, deadline and archive handling remains.
+
 ## Training solver amendment (2026-10-17, before the revised pilots)
 
 Training-time VNA and NGD corrections in B3 and B5 use matrix-free conjugate

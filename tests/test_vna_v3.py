@@ -202,7 +202,7 @@ def test_gir_dead_slot_preserves_output_and_zeros_optimizer_state():
 def test_gradmax_is_euclidean_and_differs_from_generalized():
     S = torch.diag(torch.tensor([100., 1.], dtype=torch.float64))
     N = torch.tensor([[2., 0.], [0., 1.]], dtype=torch.float64)
-    euclid = generalized_rows(N@N.T, S, 1, euclidean=True)[0]
+    euclid = generalized_rows(N, S, 1, euclidean=True)[0]
     generalized = generalized_rows(N@N.T, S, 1)[0]
     assert abs(float(euclid[0])) > .99 and abs(float(generalized[0])) < 1e-10
 
