@@ -539,3 +539,15 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   model, optimizer, RNG and engine state bitwise, so K0 includes GIR cost.
 - **Schedule:** no forced application at the last iteration of a task; once the next geometric
   gap exceeds the remaining iterations, the task gets no further application.
+- **Runtime compute-budget guard (§2.5, schedule only):** after each application the engine
+  compares cumulative algorithm seconds with iterations x baseline seconds/iteration (schedule
+  `iteration_seconds` for CIL; live per-iteration timing for B5/PM); above the 1.0x budget the
+  next gap is doubled once more and `budget_guard=true`, `budget_ratio` are logged. This is
+  needed because K0 is calibrated on tasks 1–2, where GIR is cheapest. Being wall-clock based,
+  it makes the realized schedule hardware-dependent (resume restores its state; the realized
+  K sequence is logged per application).
+- **Uncertified beta is not used by GIR:** with `invalid_beta` the VNA step is skipped and GIR
+  uses beta = 0 (e_beta = e, H_beta = H).
+- S_x, N and the site input are computed once per site per application (unchanged by B_v = 0
+  swaps). `icarl_gir` applications are no longer logged as skipped.
+- GEM was run locally with quadprog (2 tasks x 1 epoch, enabled): completes.

@@ -119,6 +119,8 @@ class Intervention:
         event = self.engine.apply(model, sites_for(model), batch, spec, ctx, optimizer,
                                   hook.steps, force=True)
         if self.last_iteration is not None: self.interval *= 2
+        # Compute-budget guard (§2.5): over budget -> the next gap doubles once more.
+        if event is not None and event.get('budget_guard'): self.interval *= 2
         self.last_iteration = hook.steps
         if event is not None: self.events.append(event)
         if not all(bool(torch.isfinite(p).all()) for p in learner._network.parameters()):
@@ -286,6 +288,7 @@ def run(args):
         if previous['status'] == 'COMPLETED': return previous
     status = Status(out, args.arm)
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+    if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])

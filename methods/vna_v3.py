@@ -314,6 +314,7 @@ class V3Engine:
         self.events, self.activities, self.calibration = [], [], []
         self.gir_fallback = False
         self.diverged = False
+        self.algorithm_seconds = 0.
 
     @property
     def cfg(self):
@@ -331,6 +332,9 @@ class V3Engine:
 
     def configure_schedule(self, schedule):
         self.K0 = self.K_next = int(schedule['K0'])
+        if schedule.get('iteration_seconds'):
+            self.protocol['baseline_iteration_seconds'] = float(schedule['iteration_seconds'])
+        self.protocol['budget'] = float(schedule.get('budget', 1.0))
         if 'cg_tol' in schedule: self.tol = schedule['cg_tol']
         if 'tol' in schedule: self.tol = schedule['tol']
 
@@ -623,7 +627,7 @@ class V3Engine:
         for site in sites:
             units = units_by_site.get(site.module_name, [])
             if not units: continue
-            used_directions = []
+            used_directions, site_cache = [], {}
             width = site.second_layer.layer.weight.shape[1]
             contributions = {u: self._slot_contribution(model, site, batch, spec, ctx, u)
                              for u in range(width)}
@@ -639,7 +643,7 @@ class V3Engine:
                 proposals = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
                     [unit], iteration, residual=values['e'] if init in ('gradmax', 'tiny') else rperp,
                     used_directions=used_directions, gradmax=init == 'gradmax',
-                    random_rows=init == 'random', H=H_beta)
+                    random_rows=init == 'random', H=H_beta, cache=site_cache)
                 if not proposals: break
                 if q0 is None: q0 = baseline_gain()
                 f_u = contributions[unit]
@@ -679,6 +683,17 @@ class V3Engine:
                     records.append(record)
                     q0 = None
         return records
+
+    def budget_guard(self, row, iteration):
+        """Compute-budget guard (§2.5): if algorithm time exceeds budget x training time so far,
+        double the next gap. Changes only the schedule, never the algorithm."""
+        self.algorithm_seconds += float(row.get('seconds') or 0.)
+        per_iteration = float(self.protocol.get('baseline_iteration_seconds') or 0.)
+        ratio = self.algorithm_seconds/(max(int(iteration), 1)*per_iteration) if per_iteration > 0 else None
+        guard = ratio is not None and ratio > float(self.protocol.get('budget', 1.0))
+        row.update(budget_ratio=ratio, budget_guard=guard)
+        if guard: row['K_next'] = 2*row['K_next']
+        return row['K_next']
 
     def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
         if self.coefficient == 0 or self.arm in ('baseline', 'bp', 'cbp', 'icarl') or ('cbp' in self.arm and 'vna' not in self.arm): return None
@@ -722,8 +737,8 @@ class V3Engine:
                 units_by_site, iteration, values, mu) if apply and split_reason is None else []
             next_K = self.K_next * 2
             row = dict(kind='correction', task=self.task, iteration=iteration, step=iteration,
-                K=self.K_next, K_next=next_K, refresh_A=False, skipped=True,
-                skip_reason=split_reason or 'gir_only', rho_tr=rho, mu=mu, nu=self.nu,
+                K=self.K_next, K_next=next_K, refresh_A=False, skipped=split_reason is not None,
+                skip_reason=split_reason, rho_tr=rho, mu=mu, nu=self.nu,
                 L_before=None if rho_before is None else rho_before[0],
                 KD_before=None if rho_before is None else rho_before[1],
                 gradient_norm=float(preliminary['g'].norm()), V=0., beta=0., s=0., s_F_star=0.,
@@ -733,7 +748,7 @@ class V3Engine:
                 cg=preliminary['records'], seconds=time.perf_counter()-started,
                 skip_rate=sum(bool(r.get('skipped')) for r in self.events)/max(1,len(self.events)))
             if apply:
-                self.last_iteration, self.K_next = iteration, next_K
+                self.last_iteration, self.K_next = iteration, self.budget_guard(row, iteration)
                 self.applications += 1
                 self.events.append(row)
             return row
@@ -750,7 +765,7 @@ class V3Engine:
                 rho_tr=None, V=0., mu=mu, nu=self.nu,
                 swaps=0, swap_records=[], seconds=time.perf_counter()-started)
             if apply:
-                self.last_iteration, self.K_next = iteration, next_K
+                self.last_iteration, self.K_next = iteration, self.budget_guard(row, iteration)
                 self.applications += 1; self.events.append(row)
             return row
         certificate_started = time.perf_counter()
@@ -772,7 +787,8 @@ class V3Engine:
                 g, d, op.F(d), mu, Delta)
             delta = _unflatten(d, p.parameter_refs)
             known = int(op.ctx.get('known_classes', 0))
-            if known and values['beta'] > 0:
+            # An uncertified beta (invalid_beta) is not used by GIR either: beta = 0, e_beta = e.
+            if known and values['beta'] > 0 and not values.get('invalid_beta'):
                 logits_old = p.Jv(values['xO']).reshape_as(op.logits)
                 delta_old = torch.zeros_like(op.logits)
                 delta_old[:, :known] = -logits_old[:, :known]
@@ -848,7 +864,7 @@ class V3Engine:
             skip_rate=(sum(bool(r.get('skipped')) for r in self.events)+int(skipped))/(len(self.events)+1))
         if apply:
             if not self.kernel_self: self.A = A
-            self.last_iteration, self.K_next = iteration, next_K
+            self.last_iteration, self.K_next = iteration, self.budget_guard(row, iteration)
             self.applications += 1
             self.events.append(row)
         return row
@@ -877,7 +893,7 @@ class V3Engine:
         return {name: torch.where(value.movedim(1, 0).flatten(1).eq(0).all(1))[0].tolist()
                 for name, value in captures.items()}
 
-    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=(), random_rows=False, H=None):
+    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=(), random_rows=False, H=None, cache=None):
         self.gir_fallback = False
         if not len(units) or not self.valid_slot(site): return []
         with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
@@ -899,7 +915,10 @@ class V3Engine:
                     else:
                         residual = op.g-values['z']
         metric = op.H if H is None else H
-        S, Ns = statistics(model, site, batch, [residual])
+        # S_x, N and the site input do not change across units of one site (B_v = 0 swaps).
+        cache = {} if cache is None else cache
+        if 'stats' not in cache: cache['stats'] = statistics(model, site, batch, [residual])
+        S, Ns = cache['stats']
         matrix = Ns[0] if gradmax else Ns[0]@Ns[0].T
         if gradmax and (not torch.isfinite(matrix).all() or not torch.isfinite(S).all()):
             self.gir_fallback = True
@@ -917,7 +936,8 @@ class V3Engine:
         proposals = []
         bn = next((model.get_submodule(n) for n in site.between
                    if isinstance(model.get_submodule(n), nn.modules.batchnorm._BatchNorm)), None)
-        x = self._site_input(model, site, batch)
+        if 'x' not in cache: cache['x'] = self._site_input(model, site, batch)
+        x = cache['x']
         first = site.first_layer.layer
         for row in rows:
             row = row.clone()
