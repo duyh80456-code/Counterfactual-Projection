@@ -51,20 +51,8 @@ class MeasurementHook:
         changed_count = False
         with _global_state():
             try:
-                from experiments.vna_resume import MeasurementMonitor, MeasurementTimeout
-                with MeasurementMonitor(getattr(self.measure, 'metadata', {}), ctx,
-                                        **getattr(self.measure, 'runtime', {})) as monitor:
-                    try:
-                        rows = self.measure(model, batch_the_loop_already_has, loss_spec, ctx,
-                                            generator=self.generators[key])
-                        monitor.check_deadline()
-                        if isinstance(rows, list):
-                            for row in rows:
-                                if isinstance(row, dict):
-                                    row['tiny_V_peak_cuda_bytes'] = monitor.tiny_V_peak_cuda_bytes
-                        return rows
-                    except MeasurementTimeout:
-                        return monitor.timeout_rows(self.measure, ctx)
+                return self.measure(model, batch_the_loop_already_has, loss_spec, ctx,
+                                    generator=self.generators[key])
             finally:
                 changed_count = count != sum(p.numel() for p in model.parameters())
                 for module, params, buffers, children in registrations:

@@ -28,7 +28,7 @@ def baseline(tmp_path_factory):
     return result,state(out)
 
 
-@pytest.mark.parametrize('method',v4.ROUND2)
+@pytest.mark.parametrize('method',v4.ROUND2+('icarl_fire','icarl_swr'))
 def test_77_native_wrapper_and_disabled_identity(tmp_path,method,baseline):
     started = time.monotonic()
     disabled = args(tmp_path/'off',method,'--disabled')

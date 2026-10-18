@@ -435,7 +435,11 @@ class V3Engine:
             beta = dict(beta=0., beta_branch='unprotected', leak=max(float(d@B(d)), 0.), epsilon_star=None, beta_suf=None)
         else:
             drep = solve('d_rep', p.JT(op.H(uR)).double())
-            dN, beta = beta_rule(solve, p.JT(op.H(uN)).double(), B, op.H, uN, VO, chi, eold)
+            if self.arm.endswith('_beta0'):
+                dN = solve('d_N', p.JT(op.H(uN)).double())
+                beta = dict(beta=0., beta_branch='ablation_beta0', leak=max(float(dN@B(dN)), 0.), epsilon_star=None, beta_suf=None)
+            else:
+                dN, beta = beta_rule(solve, p.JT(op.H(uN)).double(), B, op.H, uN, VO, chi, eold)
             d = drep+dN
         return dict(d=d, d_N=dN, d_rep=drep, g=g, gO=gO, z=z, zO=zO, zN=zN,
             eold=eold, x=x, xO=xO, V=V, V_O=VO, uN=uN, B=B, H_old=H_old, chi2=chi,
@@ -599,8 +603,10 @@ class V3Engine:
             live = sorted((u for u in units if u not in dead), key=lambda u: norms[u])
             live = live[:int(self.protocol.get('live_candidates', 4))]
             for unit in dead + live:
+                init = next((t[len('girinit-'):] for t in self.arm.split('_') if t.startswith('girinit-')), None)
                 proposals = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
-                    [unit], iteration, residual=rperp, used_directions=used_directions)
+                    [unit], iteration, residual=values['e'] if init in ('gradmax', 'tiny') else rperp,
+                    used_directions=used_directions, gradmax=init == 'gradmax', random_rows=init == 'random')
                 if not proposals: break
                 jump_L, jump_KD = (0., 0.) if unit in dead else self._slot_jump(
                     model, site, batch, spec, ctx, unit)
@@ -696,7 +702,7 @@ class V3Engine:
             return row
         selection_started = time.perf_counter()
         A = seed_proposals(sites) if self.kernel_self else self._select(model, sites, batch, preliminary)
-        if 'rand' in self.arm: A = self._randomize(model, sites, batch, A)
+        if 'rand' in self.arm.split('_'): A = self._randomize(model, sites, batch, A)
         tiny_seconds = time.perf_counter()-selection_started
         active = sites if self.kernel_self else [s for s in sites if s.module_name in A]
         if not active:
@@ -754,7 +760,7 @@ class V3Engine:
                 rperp = e_beta-h_beta(p.Jv(gir_x))
             else:
                 e_beta, h_beta, gir_x, rperp = op.g, op.H, values['x'], op.g-values['z']
-            values.update(e_beta=e_beta, H_beta=h_beta, gir_x=gir_x, rperp_beta=rperp)
+            values.update(e=op.g, e_beta=e_beta, H_beta=h_beta, gir_x=gir_x, rperp_beta=rperp)
             extension_size = sum(ref.numel() for _, ref in p.extension_refs)
             if extension_size:
                 basis = torch.eye(extension_size, dtype=p.extension_refs[0][1].dtype,
@@ -853,7 +859,7 @@ class V3Engine:
         return {name: torch.where(value.movedim(1, 0).flatten(1).eq(0).all(1))[0].tolist()
                 for name, value in captures.items()}
 
-    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=()):
+    def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=(), random_rows=False):
         self.gir_fallback = False
         if not len(units) or not self.valid_slot(site): return []
         with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
@@ -880,7 +886,11 @@ class V3Engine:
             self.gir_fallback = True
             return []
         try:
-            rows = generalized_rows(matrix, S, 4, euclidean=gradmax)
+            if random_rows:
+                generator = dedicated_generator(self.seed, f'v3-gir-random:{self.task}:{iteration}', S.device)
+                rows = torch.randn((4, len(S)), dtype=S.dtype, device=S.device, generator=generator)
+            else:
+                rows = generalized_rows(matrix, S, 4, euclidean=gradmax)
         except torch.linalg.LinAlgError:
             if not gradmax: raise
             self.gir_fallback = True

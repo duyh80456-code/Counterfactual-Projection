@@ -20,7 +20,13 @@ from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status
 
 DATA_ROOT = '/kaggle/input/datasets/nlnk1607/cifar100'
-ARMS = ('icarl', 'icarl_full')
+# Engine arm per CIL arm; ablations (§4 round 3) differ from icarl_full in one component only.
+ENGINE_ARMS = {
+    'icarl_full': 'vna_gir', 'icarl_gir': 'gir', 'icarl_vna': 'vna',
+    'icarl_full_beta0': 'vna_gir_beta0', 'icarl_full_Arand': 'vna_gir_rand',
+    'icarl_kernel_self': 'kernel_self_vna_gir', 'icarl_gir_random': 'vna_gir_girinit-random',
+    'icarl_gir_gradmax': 'vna_gir_girinit-gradmax', 'icarl_gir_tiny': 'vna_gir_girinit-tiny'}
+ARMS = ('icarl',)+tuple(ENGINE_ARMS)
 RESULT_FILES = ('summary.json', 'tasks.json', 'continual_eval.csv', 'diagnostics.json',
                 'protocol.json', 'status.json')
 
@@ -238,8 +244,8 @@ def run(args):
         raise ValueError('nobn_lr_scale applies only to noBN')
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None
-    if args.arm == 'icarl_full' and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
-        raise ValueError('icarl_full requires the backbone authority --schedule (K0 preflight)')
+    if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
+        raise ValueError(f'{args.arm} requires the backbone authority --schedule (K0 preflight)')
     if args.preflight_only and not args.schedule_output: raise ValueError('preflight requires --schedule-output')
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
     if schedule:
@@ -279,7 +285,7 @@ def run(args):
         if previous.get('identity') != protocol: raise ValueError('completed identity mismatch')
         if previous['status'] == 'COMPLETED': return previous
     status = Status(out, args.arm)
-    intervention = Intervention(V3Engine('vna_gir', seed=args.seed, coefficient=args.coefficient, K0=K0), K0, args.preflight_only) if args.arm == 'icarl_full' else None
+    intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])

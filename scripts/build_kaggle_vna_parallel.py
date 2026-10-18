@@ -19,7 +19,19 @@ def cil_jobs(arms, backbones=('nobn',), order='superclass'):
             for seed in range(3) for arm in arms]
 
 
-def lanes(jobs): return (jobs[::2], jobs[1::2], [])
+# Rough relative GPU cost per job (icarl = 1): icarl_full may spend up to 1.0x extra on the
+# algorithm (§2.5 budget), C-Flat reports ~2.9x, sweeps scale with their grid size.
+COST = {'icarl_full': 2., 'icarl_cflat': 2.9, 'gem': 1.5, 'podnet': 1.3,
+        'icarl_cbp__sweep': 4., 'icarl_redo__sweep': 6., 'icarl_snp__sweep': 4., 'icarl_upgd__sweep': 9.}
+
+
+def lanes(jobs):
+    """Balance the two T4 lanes: longest job first onto the less loaded GPU."""
+    load, gpus = [0., 0.], ([], [])
+    for job in sorted(jobs, key=lambda j: -COST.get(j if j.endswith('__sweep') else j.split('__')[0], 1.)):
+        gpu = load.index(min(load))
+        gpus[gpu].append(job); load[gpu] += COST.get(job if job.endswith('__sweep') else job.split('__')[0], 1.)
+    return (gpus[0], gpus[1], [])
 
 
 PRESETS = {

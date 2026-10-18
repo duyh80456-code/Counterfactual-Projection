@@ -494,3 +494,25 @@ NaN: in addition to the §2.7 guard, detect non-finite parameters after each int
 
 
 The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted here; in-flight Kaggle runs use their independently pinned old sources. Entrypoints also include main_cil, v4_competitors, v4_b5_width (added after the snapshot). Nine vna4_ notebooks use PLACEHOLDER for supervisor repinning. V4_PRERUN_REPORT and pilot_v3_summary are additional retained deliverables. Historical local synthetic pilot numbers are preserved in pilot_v3_summary; completed v3 B5/O1 Kaggle numbers are absent locally.
+
+### Round-3 code preparation (2026-10-19, not run in rounds 1–2)
+
+- **Own ablations** are `experiments/main_cil.py` arms sharing the main setup, the backbone K0
+  authority schedule, r=16 and everything else of `icarl_full`; each changes one component:
+  `icarl_gir` (GIR only), `icarl_vna` (VNA only), `icarl_full_beta0` (protected split kept,
+  beta fixed at 0 instead of BetaRule), `icarl_full_Arand` (random virtual A, same trace),
+  `icarl_kernel_self` (kappa = K, T19(c)), and GIR initialization variants on the same slots and
+  the same T28 swap rule: `icarl_gir_random` (seeded Gaussian incoming rows),
+  `icarl_gir_gradmax` (Euclidean top singular directions of N on the full residual e, theory
+  §12.2 "reset kiểu GradMax: hướng theo gradient trên e thay vì r_perp"), `icarl_gir_tiny`
+  (TINY's generalized eigenproblem (N N^T, S_x) on e instead of r_perp^beta; TINY's small
+  amplitude gamma is not used, the swap's B_v = 0 already preserves the function).
+- **FIRE** (`icarl_fire`): unmodified `FIRE/vision/interventions/fire.py:fire`, iter_num 10
+  (their default), applied at the start of every task after the first, matching their
+  "new data arrives" trigger.
+- **SWR** (`icarl_swr`): unmodified `SelectiveWeightReinitialization` with the authors'
+  incremental-CIFAR config (gradient utility, threshold pruning, reinit_freq 128,
+  reinit_factor 5e-4, resample); `reimplemented=true` only for the per-parameter init table,
+  ported from their ViT/MLP helper to PyCIL resnet32. Rebuilt per task (growing head), step
+  counter carried across tasks.
+- **MRFA** pinned but not wired (separate PyCIL fork). **Forget-Forgetting**: no public code.

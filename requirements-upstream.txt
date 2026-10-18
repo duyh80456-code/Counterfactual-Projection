@@ -1,7 +1,6 @@
-# Extra imports of the pinned PyCIL, RepDistiller and LoP entry points.
+# Extra imports of the pinned PyCIL, LoP and v4 competitor entry points.
 # torch/torchvision/numpy/scipy come from the environment and are NOT pinned
 # here, so pip never downgrades the Kaggle image.
-# RepDistiller needs PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python.
 tqdm
 tensorboard_logger
 six

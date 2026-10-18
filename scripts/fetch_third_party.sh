@@ -29,10 +29,8 @@ fetch upgd https://github.com/mohmdelsayed/upgd b75e90ad4b09c28971ac9dbb902a8fd8
 fetch C-Flat https://github.com/WanNaa/C-Flat f57a557523136834bdc28a4902cde9842859b2a8
 fetch warm_start https://github.com/JordanAsh/warm_start 896176b2cf89f259bcde8e241a8987e6019741d0
 fetch dopamine https://github.com/google/dopamine 5873f5494ee0c2d7c016d0ab2ad530354fec59d0
-# Round 3: explicit audited pins are required before fetching absent repositories.
-if [[ "${VNA_FETCH_ROUND3:-0}" == 1 ]]; then
-  fetch SWR https://github.com/JFernando4/collas_2025_swr_paper.git "${VNA_SWR_PIN:?set an audited SWR commit}"
-  fetch MRFA https://github.com/bwnzheng/MRFA_ICML2024.git "${VNA_MRFA_PIN:?set an audited MRFA commit}"
-fi
-# FIRE: official project https://isaac7778.github.io/fire/ (GitHub URL not present locally).
+# Round 3 (code prepared, not run in the first batches).
+fetch FIRE https://github.com/isaac7778/FIRE.git 3f73d7848c42dbd42e7770cb3aa61b4fd3ffe3e1
+fetch SWR https://github.com/JFernando4/collas_2025_swr_paper.git 6637c351e5e34d3c7f7f9fe71d26e2c70bc6a2ac
+fetch MRFA https://github.com/bwnzheng/MRFA_ICML2024.git 2435c35d7d923e79ca5f564739b4f69963fce117
 # Forget-Forgetting: arXiv:2502.07274; no official public repository identified.

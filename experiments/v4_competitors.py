@@ -29,14 +29,14 @@ from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pau
 ROUND2 = ('podnet', 'wa', 'gem', 'icarl_cbp', 'icarl_redo', 'icarl_snp', 'icarl_upgd', 'icarl_cflat')
 ROUND3 = ('icarl_l2init', 'icarl_forget_forgetting', 'icarl_fire', 'icarl_swr', 'icarl_mrfa',
           'bic', 'der', 'foster', 'memo')
-ABLATIONS = ('icarl_gir', 'icarl_vna', 'icarl_full_beta0', 'icarl_full_Arand',
-             'icarl_kernel_self', 'icarl_gir_random', 'icarl_gir_gradmax', 'icarl_gir_tiny')
 SOURCES = {
     'icarl_cbp': dict(source='loss-of-plasticity/lop/algos/res_gnt.py:ResGnT', reimplemented=False),
     'icarl_redo': dict(source='dopamine/dopamine/labs/redo/weight_recyclers.py:BaseRecycler.estimate_neuron_score; NeuronRecycler.recycle_dead_neurons/create_masks; weight_reinit_random/zero; reset_momentum', reimplemented=True),
     'icarl_snp': dict(source='warm_start/run.py:shrink_perturb (126-136), native initialization port', reimplemented=True),
     'icarl_upgd': dict(source='upgd/core/optim/weight_upgd/first_order.py:FirstOrderGlobalUPGD', reimplemented=False),
     'icarl_cflat': dict(source='C-Flat/models/icarl.py:iCaRL; optims/c_flat.py:C_Flat; main.py:setup_parser', reimplemented=False),
+    'icarl_fire': dict(source='FIRE/vision/interventions/fire.py:fire, applied when new data arrives as in FIRE/vision/train.py:189-191', reimplemented=False),
+    'icarl_swr': dict(source='SWR/src/swr_functions/selective_weight_reinitialization.py:SelectiveWeightReinitialization; config experiments/vit_incremental_cifar/config/incremental_cifar/swr_with_reparam_ln.json; init-parameter table ported to PyCIL resnet32 (adapters/v4_competitors.py:swr_init_parameters)', reimplemented=True),
     'icarl_l2init': dict(source='Kumar et al., Regenerative Regularization (CoLLAs 2024), L2-Init penalty lambda ||theta-theta_init||^2', reimplemented=True),
 }
 CFLAT_REFERENCE = dict(value=59.13, metric='average accuracy (published head unspecified)', tolerance_pp=1.5,
@@ -59,6 +59,9 @@ def grid(method):
         'icarl_cbp': dict(replacement_rate=[1e-6,1e-5,1e-4,1e-3]),
         'icarl_redo': dict(tau=[0.,.025,.1], reset_epochs=[1,5]),
         'icarl_snp': dict(shrink=[.4,.8], sigma=[1e-4,1e-2]),
+        'icarl_fire': dict(iter_num=[10]),
+        'icarl_swr': dict(utility_function=['gradient'], pruning_method=['threshold'],
+                          reinit_freq=[128], reinit_factor=[5e-4]),
     }.get(method, upgd_values() if method == 'icarl_upgd' else {})
     return [dict(zip(values, v)) for v in itertools.product(*values.values())] if values else [{}]
 
@@ -85,13 +88,10 @@ def prepare_method(method):
         try: import quadprog  # noqa: F401
         except ImportError as error:
             raise RuntimeError('GEM requires quadprog; install requirements-upstream.txt first') from error
-    if method in ('icarl_fire','icarl_swr','icarl_mrfa'):
-        repo = {'icarl_fire':'FIRE', 'icarl_swr':'SWR', 'icarl_mrfa':'MRFA'}[method]
-        raise RuntimeError(f'fetch first: third_party/{repo}; see scripts/fetch_third_party.sh and third_party/SOURCES.md; native integration requires its fetched API')
+    if method == 'icarl_mrfa':
+        raise RuntimeError('MRFA (third_party/MRFA, 2435c35) is a PyCIL fork with its own models/ and utils/ packages; it needs a dedicated runner that does not share the PyCIL import namespace')
     if method == 'icarl_forget_forgetting':
         raise RuntimeError('Forget-Forgetting needs the paper/supplementary reset and consolidation equations; no official code or full paper is present locally')
-    if method in ABLATIONS:
-        raise RuntimeError('v4 ablation requires the Phase 2/3 merged runner and its public V3Engine.apply API; no legacy v3 substitute is run')
 
 
 @contextmanager
@@ -283,7 +283,7 @@ def run(args):
                         if a[-1] == 0: return
                         return original_run(model,*a,**kw)
                     type(learner)._run = native_run
-                hook = CompetitorHook(method,config) if method in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd') else None
+                hook = CompetitorHook(method,config) if method in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd','icarl_fire','icarl_swr') else None
                 handles = []
                 if method == 'icarl_l2init':
                     initial = getattr(learner,'_v4_initial',{})
@@ -401,7 +401,7 @@ def matched(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--method',choices=('icarl',)+ROUND2+ROUND3+ABLATIONS,required=True)
+    p.add_argument('--method',choices=('icarl',)+ROUND2+ROUND3,required=True)
     p.add_argument('--mode',choices=('run','sweep','matched'),default='run')
     p.add_argument('--out',required=True); p.add_argument('--seed',type=int,default=0)
     p.add_argument('--seeds',type=int,choices=(3,5),default=3)

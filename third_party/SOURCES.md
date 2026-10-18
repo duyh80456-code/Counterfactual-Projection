@@ -8,6 +8,9 @@
 | C-Flat | https://github.com/WanNaa/C-Flat | f57a557523136834bdc28a4902cde9842859b2a8 | no LICENSE file | C-Flat iCaRL comparator |
 | warm_start | https://github.com/JordanAsh/warm_start | 896176b2cf89f259bcde8e241a8987e6019741d0 | no LICENSE file | Ash–Adams Shrink & Perturb comparator |
 | dopamine | https://github.com/google/dopamine | 5873f5494ee0c2d7c016d0ab2ad530354fec59d0 | Apache-2.0 | ReDo dormant score and reset implementation |
+| FIRE | https://github.com/isaac7778/FIRE | 3f73d7848c42dbd42e7770cb3aa61b4fd3ffe3e1 | no LICENSE file | vision/interventions/fire.py:fire (round-3 competitor, called unmodified) |
+| SWR | https://github.com/JFernando4/collas_2025_swr_paper | 6637c351e5e34d3c7f7f9fe71d26e2c70bc6a2ac | MIT | src/swr_functions/selective_weight_reinitialization.py (round-3 competitor); init table ported to resnet32 |
+| MRFA | https://github.com/bwnzheng/MRFA_ICML2024 | 2435c35d7d923e79ca5f564739b4f69963fce117 | no LICENSE file | PyCIL fork with iCaRL-MRFA (round 3; needs a dedicated runner, not wired) |
 
 Run `bash scripts/fetch_third_party.sh`. Clones are ignored; upstream is never
 vendor-edited. Patches: **none** in Stage B core. Any future patches go under
@@ -22,10 +25,8 @@ vendor-edited. Patches: **none** in Stage B core. Any future patches go under
 | warm_start | https://github.com/JordanAsh/warm_start | 896176b2cf89f259bcde8e241a8987e6019741d0 | No LICENSE file | run.py:126-136 shrink_perturb, ported to the native iCaRL initialization; no source vendoring |
 | dopamine | https://github.com/google/dopamine | 5873f5494ee0c2d7c016d0ab2ad530354fec59d0 | Apache-2.0 | dopamine/labs/redo/weight_recyclers.py:estimate_neuron_score, NeuronRecycler recycle/masks, weight_reinit_random/zero, reset_momentum; NCHW port in adapters/v4_competitors.py |
 
-Absent Round 3 code: SWR https://github.com/JFernando4/collas_2025_swr_paper,
-MRFA https://github.com/bwnzheng/MRFA_ICML2024. Set VNA_FETCH_ROUND3=1 and
-VNA_SWR_PIN / VNA_MRFA_PIN to audited 40-character commits to fetch; no moving
-branch is pinned automatically. FIRE project https://isaac7778.github.io/fire/
-has no locally verified repository URL. Forget-Forgetting (arXiv:2502.07274)
-has no locally available full equations or supplementary code. Their runner
-entries fail clearly; implementing guessed reset/consolidation formulas is prohibited.
+Round 3: FIRE, SWR and MRFA are pinned above (fetched 2026-10-19). FIRE and SWR are wired
+(`icarl_fire`, `icarl_swr`); MRFA is a PyCIL fork whose `models/` and `utils/` packages clash
+with PyCIL's, so it still needs a dedicated runner. Forget-Forgetting (arXiv:2502.07274) has no
+public code and no locally available full equations; its runner entry fails clearly, since
+implementing guessed reset/consolidation formulas is prohibited.

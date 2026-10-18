@@ -1,4 +1,5 @@
 """Pinned PyCIL training without the retired measurement stack."""
+import shutil
 import argparse
 from contextlib import contextmanager
 import copy

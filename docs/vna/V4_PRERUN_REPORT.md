@@ -104,6 +104,9 @@ no third-party source was edited or fetched during this phase.
 | S&P | https://github.com/JordanAsh/warm_start | 896176b2cf89f259bcde8e241a8987e6019741d0 | true — native initialization port |
 | UPGD | https://github.com/mohmdelsayed/upgd | b75e90ad4b09c28971ac9dbb902a8fd86709b28c | false |
 | C-Flat | https://github.com/WanNaa/C-Flat | f57a557523136834bdc28a4902cde9842859b2a8 | false |
+| FIRE (round 3) | https://github.com/isaac7778/FIRE | 3f73d7848c42dbd42e7770cb3aa61b4fd3ffe3e1 | false |
+| SWR (round 3) | https://github.com/JFernando4/collas_2025_swr_paper | 6637c351e5e34d3c7f7f9fe71d26e2c70bc6a2ac | true — init table for resnet32 only |
+| MRFA (round 3) | https://github.com/bwnzheng/MRFA_ICML2024 | 2435c35d7d923e79ca5f564739b4f69963fce117 | not wired (separate PyCIL fork) |
 
 ## Preflight estimate and discrepancies
 
@@ -334,3 +337,11 @@ and size 256; local fixtures use size 4 and 4×4 pooled features, memory 20.
 Metrics and the zero-initialized feature probe now follow phase 3 exactly.
 The collector has one v4 table path for main arms and competitors. `quadprog`
 was already listed in requirements; v4 notebook installation includes it.
+
+## Round-3 preparation (added 2026-10-19)
+
+Own ablations (8 arms in `experiments/main_cil.py`) and FIRE/SWR competitors are wired and pass
+two-task fake-data runs (`tests/test_main_cil.py::test_round3_ablation_arms_run_with_engine_variant`,
+`tests/test_competitors.py::test_77_native_wrapper_and_disabled_identity[icarl_fire|icarl_swr]`).
+MRFA needs a dedicated runner; Forget-Forgetting has no public code. Definitions:
+PREREGISTRATION_CHANGES.md "Round-3 code preparation".

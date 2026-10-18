@@ -294,3 +294,19 @@ def test_rebuilt_notebooks_keep_checkpoint_runtime_and_placeholder_pin(tmp_path,
         assert 'One-Shot-TAS-CCIL' not in source and 'GROMO' not in source
         for cell in notebook['cells']:
             if cell['cell_type'] == 'code': ast.parse(''.join(cell['source']))
+
+
+@pytest.mark.parametrize('arm', [a for a in main.ENGINE_ARMS if a != 'icarl_full'])
+def test_round3_ablation_arms_run_with_engine_variant(tmp_path, monkeypatch, arm):
+    main.cil.upstream_imports()
+    monkeypatch.setattr(main, 'resnet32_nobn', Tiny)
+    old_dtype = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
+    try:
+        args = main.parser().parse_args(['--arm', arm, '--fake-data', '--workers', '0',
+                                         '--device', 'cpu', '--out', str(tmp_path/arm)])
+        result = main.run(args)
+        assert result['status'] == 'COMPLETED' and result['tasks_run'] == 2
+        events = json.loads((tmp_path/arm/'interventions.json').read_text())
+        assert events and all(e.get('beta', 0.) == 0. for e in events if arm == 'icarl_full_beta0' and 'beta' in e)
+    finally:
+        torch.set_default_dtype(old_dtype)
