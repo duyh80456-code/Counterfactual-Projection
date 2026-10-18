@@ -30,9 +30,9 @@ source provenance and plots its four arms separately for seeds 1 and 2.
 Each notebook runs the same 12 registered arms for its own seed and full
 100-task horizon with four CPU workers. The four alternative CBP rate checks
 remain seed-0 only; all main CBP arms keep replacement_rate=1e-3.
-Both notebooks require the same repaired seed-0 authority schedule as Input
-and reuse its exact source commit for fresh trajectories, without running
-another preflight. Existing completed results are skipped after validation;
+Both notebooks require the same real seed-0 authority schedule as Input
+and reuse it with compatible repaired code for fresh trajectories, without
+running another preflight. Existing completed results are skipped after validation;
 unfinished checkpoints resume only for the requested seed, at their original
 source commit. Missing checkpoints start new trajectories. The two proposed
 additional GIR controls are not included in this scheduling-only update.

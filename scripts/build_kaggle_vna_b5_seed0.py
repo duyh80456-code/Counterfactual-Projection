@@ -181,8 +181,8 @@ write_json(ROOT/'resume_sources.json', {job: {**source, 'out': str(source['out']
         title = title.replace('12 arms + four baseline CBP rate checks = 16 jobs.',
                               '12 registered arms; the four CBP rate checks remain seed-0 only.')
         title = title.replace('If no reusable checkpoint/result is found, the notebook stops instead of silently starting all jobs over.',
-            'Attach the same repaired seed-0 Output/archive to seeds 1 and 2. Both reuse its\n'
-            'authority schedule and source commit without recalibration. Jobs without checkpoints\n'
+            'Attach the same seed-0 Output/archive to seeds 1 and 2. Both reuse its original\n'
+            'authority schedule without recalibration, using compatible repaired code for new jobs. Jobs without checkpoints\n'
             'start fresh; checkpoints from other seeds are not used as training state.')
         cells[1] = cell('markdown', title)
     cells[-1] = cell('code', runner)
@@ -201,6 +201,7 @@ write_json(ROOT/'resume_sources.json', {job: {**source, 'out': str(source['out']
                               'the four CBP rate checks remain seed-0 only.')
         title = title.replace(f'the same repaired seed-{seed} Output/archive',
                               'the same repaired seed-0 Output/archive')
+        title = title.replace(f'the same seed-{seed} Output/archive', 'the same seed-0 Output/archive')
         cells[1] = cell('markdown', title)
         progress = ''.join(cells[4]['source']).replace("'CBP rate checks'", "'CBP reference (rate=1e-3)'")
         cells[4] = cell('code', progress)
@@ -223,12 +224,12 @@ Four arms: {', '.join(arms)}. Each arm runs both seeds: eight full jobs,
 100 tasks/job, with at most four CPU workers. CBP rate remains 1e-3;
 the four alternative rate checks remain in the seed-0 notebook.
 
-Run groups A/B/C in three separate CPU sessions. Attach the same repaired
-seed-0 Output/archive with regression.json to all three, plus any earlier
+Run groups A/B/C in three separate CPU sessions. Attach the same
+seed-0 Output/archive with real B5 preflight to all three, plus any earlier
 B5 Outputs/archives to resume. Each group only runs its own arms and seeds.
 Completed results are validated and skipped; unfinished checkpoints retain
 their original code commit. Missing jobs start fresh using the shared authority
-schedule/source without another preflight. RESUME_APPLIED confirms restoration.
+schedule under compatible repaired code without another preflight. RESUME_APPLIED confirms restoration.
 Pre-repair GradMax is restarted with the numerical repair. Save each group's
 Output/archive and attach it on the next session. Source ZIP and CIFAR are unnecessary.
 ''')

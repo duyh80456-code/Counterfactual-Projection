@@ -13,9 +13,11 @@ LEGACY_COMMITS = {
     'f571c6a7f39b6490f880b9ed4bd459741226dbcf',
     '3c41ecf87449b73ebff730c9be600f00818b1d24',
     '4d3008ad031663c93846d27003c9f7935b3f00a2',
+    'ac9ab65b45b792c0d03c8ff440126f5387ea5c0e',
 }
+CALIBRATION_CONSUMER = 'ac9ab65b45b792c0d03c8ff440126f5387ea5c0e'
 GRADMAX_FIXED = {'3c41ecf87449b73ebff730c9be600f00818b1d24',
-                '4d3008ad031663c93846d27003c9f7935b3f00a2'}
+                '4d3008ad031663c93846d27003c9f7935b3f00a2', CALIBRATION_CONSUMER}
 
 
 def select_sources(input_root, outputs, jobs, current_tag, current_commit, seed=0):
@@ -106,8 +108,12 @@ def select_sources(input_root, outputs, jobs, current_tag, current_commit, seed=
                 raise ValueError(f'{job}: invalid checkpoint step/count')
             if not done and commit != current_commit and job not in (f'b5_bp__s{seed}', f'b5_cbp__s{seed}') and '__rate' not in job:
                 schedule = identity.get('preflight')
-                if not schedule or schedule.get('code_commit') != commit or schedule.get('source_digest') is not None:
+                if not schedule or schedule.get('source_digest') is not None:
                     raise ValueError(f'{job}: checkpoint lacks its original authority schedule')
+                if schedule.get('code_commit') != commit:
+                    if commit != CALIBRATION_CONSUMER:
+                        raise ValueError(f'{job}: checkpoint/calibration commit mismatch')
+                    validate_b5_schedule(schedule, commit)
                 schedule_path = tag/'_schedules/regression.json'
                 if schedule_path.exists() and json.loads(schedule_path.read_text()) != schedule:
                     raise ValueError(f'{job}: conflicting original authority schedule')
@@ -160,7 +166,7 @@ def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
         if path.name in ('protocol.json', 'summary.json'):
             value = value.get('preflight') or value.get('identity', {}).get('preflight')
             if value is None: return None
-        return validate_b5_schedule(value, current_commit)
+        return validate_b5_schedule(value, CALIBRATION_CONSUMER)
     if destination.exists():
         schedule = read(destination)
     else:
@@ -187,8 +193,9 @@ def prepare_seed_schedule(input_root, outputs, run_tag, current_commit):
         path, schedule = same[0]
         write_json(destination, schedule)
         print(f'SHARED_SCHEDULE source={path}', flush=True)
-    print(f'SHARED_SCHEDULE K_base={schedule["K_base"]} commit={schedule["code_commit"]}; no new preflight', flush=True)
-    return current_commit
+    print(f'SHARED_SCHEDULE K_base={schedule["K_base"]} authority_commit={schedule["code_commit"]} '
+          f'consumer_commit={CALIBRATION_CONSUMER}; no new preflight', flush=True)
+    return CALIBRATION_CONSUMER
 
 
 def checkout_sources(repo, sources):
