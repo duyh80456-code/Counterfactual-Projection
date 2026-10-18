@@ -141,6 +141,8 @@ def lop_recipe(args):
         # Restore the complete upstream horizon; Stage B intentionally truncated it.
         cfg = json.loads((lop.UPSTREAM/source['cfg_source']).read_text())
         params.update(num_tasks=cfg['num_tasks'], num_features=10, num_hidden_layers=3)
+    if getattr(args, 'width', None) is not None:
+        params['num_features'] = args.width
     params.update(run_idx=0, use_gpu=int(args.device.startswith('cuda')))
     if args.preflight_only:
         if args.setting == 'regression': params['num_data_points'] = 2*int(params['flip_after'])
@@ -314,6 +316,7 @@ def parser():
     p.add_argument('--replacement-rate',type=float,choices=lop.RATES,default=1e-3)
     p.add_argument('--schedule'); p.add_argument('--preflight-only',action='store_true')
     p.add_argument('--schedule-output'); p.add_argument('--fake-data',action='store_true')
+    p.add_argument('--width',type=int,choices=(5,20,100))
     p.add_argument('--coefficient',type=float,default=1.)
     return p
 

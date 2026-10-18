@@ -98,14 +98,14 @@ def collect(inputs, run_tag):
             # Only the job's own files, never a nested rates/.../summary.json.
             if len(parts) != index+3: continue
             job, name = parts[index+1], parts[-1]
-            if name in {'summary.json','tasks.json','protocol.json','reproduction_gate.json','vna_log.csv','continual_eval.csv'}:
+            if name in {'summary.json','tasks.json','protocol.json','reproduction_gate.json','vna_log.csv','continual_eval.csv','diagnostics.json','status.json'}:
                 grouped.setdefault(job, {})[name] = data
         for job, payload in grouped.items():
             if 'summary.json' not in payload: continue
             record = {'job': job, 'source': str(source),
                       'summary': json.loads(payload['summary.json'])}
             if record['summary'].get('status') != 'COMPLETED': continue
-            for name in ('tasks.json','protocol.json','reproduction_gate.json'):
+            for name in ('tasks.json','protocol.json','reproduction_gate.json','diagnostics.json','status.json'):
                 if name in payload: record[name[:-5]] = json.loads(payload[name])
             if 'vna_log.csv' in payload:
                 record['vna'] = list(csv.DictReader(io.StringIO(payload['vna_log.csv'].decode())))
@@ -113,6 +113,9 @@ def collect(inputs, run_tag):
                 raise ValueError(f'{job}: missing protocol/tasks artifact')
             if 'continual_eval.csv' in payload:
                 record['continual_eval'] = list(csv.DictReader(io.StringIO(payload['continual_eval.csv'].decode())))
+            if record['protocol'].get('benchmark') == 'v4_competitor':
+                if len(record.get('diagnostics',[])) != 20 or len(record.get('continual_eval',[])) != 20 or record.get('status',{}).get('phase') != 'COMPLETED':
+                    raise ValueError(f'{job}: missing v4 diagnostics/evaluation/status artifacts')
             current, group, signature = validate_result(job, record['summary'],
                 record['protocol'], record['tasks'], commit)
             commit = current
@@ -126,7 +129,7 @@ def collect(inputs, run_tag):
             jobs[job] = record
     digests={r['protocol'].get('source_digest') for r in jobs.values()}
     if len(digests)>1: raise ValueError('mixed source_digest artifacts')
-    offline=[r['protocol'].get('dataset_fingerprint') for r in jobs.values() if r['protocol'].get('setting')=='icarl' or r['protocol'].get('benchmark')=='cil_competitor']
+    offline=[r['protocol'].get('dataset_fingerprint') for r in jobs.values() if r['protocol'].get('setting')=='icarl' or r['protocol'].get('benchmark') in ('cil_competitor','v4_competitor')]
     if offline and any(f != offline[0] for f in offline): raise ValueError('offline CIL dataset mismatch')
     validate_shared_schedules(jobs)
     return jobs
@@ -256,9 +259,33 @@ def vna_cost(record):
                 vna_over_train=f'{seconds/train:.4f}' if train else '')
 
 
+def report_v4(jobs):
+    groups = {}
+    records = [r for r in jobs.values() if r['protocol'].get('benchmark') == 'v4_competitor']
+    controls = {(r['protocol']['backbone'],r['protocol']['order'],r['protocol']['seed']):r for r in records if r['protocol']['arm'] == 'icarl'}
+    for record in records:
+        p = record['protocol']
+        groups.setdefault((p['arm'],p['backbone'],p['order']),[]).append(record)
+    rows = []
+    for (arm,backbone,order), group in sorted(groups.items()):
+        deltas = []
+        for r in group:
+            p = r['protocol']
+            control = controls.get((backbone,order,p['seed']))
+            if control:
+                deltas.append(r['tasks'][-1]['cnn_average_accuracy']-control['tasks'][-1]['cnn_average_accuracy'])
+        rows.append(dict(arm=arm,backbone=backbone,order=order,seeds=len(group),
+            average_accuracy=mean_sd([r['tasks'][-1]['cnn_average_accuracy'] for r in group]),
+            final_forgetting=mean_sd([r['tasks'][-1]['cnn_forgetting'] for r in group]),
+            learning_accuracy=mean_sd([statistics.mean(t['learning_accuracy'] for t in r['tasks']) for r in group]),
+            paired_delta=mean_sd(deltas),seeds_won=sum(d>0 for d in deltas)))
+    if rows: markdown('V4 matched competitors',rows,['arm','backbone','order','seeds','average_accuracy','final_forgetting','learning_accuracy','paired_delta','seeds_won'])
+
+
 def report(jobs):
+    report_v4(jobs)
     report_v3(jobs)
-    cil = [cil_row(r) for name,r in sorted(jobs.items()) if name.startswith('icarl') or r['protocol'].get('benchmark')=='cil_competitor']
+    cil = [cil_row(r) for name,r in sorted(jobs.items()) if name.startswith('icarl') or r['protocol'].get('benchmark') in ('cil_competitor','v4_competitor')]
     controls={(r['init_cls'],r['increment'],r['seed']):r for r in cil if r['arm']=='icarl'}
     for row in cil:
         control=controls.get((row['init_cls'],row['increment'],row['seed']))

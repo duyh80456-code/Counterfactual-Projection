@@ -27,6 +27,48 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
     identity = summary.get('identity', summary)
     if identity.get('code_commit', commit) != commit:
         raise ValueError(f'{job}: summary/protocol code_commit mismatch')
+    if protocol.get('benchmark') == 'v4_competitor':
+        import math
+        from experiments.v4_competitors import recipe, grid, ROUND2, ROUND3, SOURCES
+        from adapters.v4_competitors import PINS
+        from experiments.stage_b3 import UPSTREAM_PIN
+        method = protocol.get('arm')
+        backbone, order, seed = (protocol.get(k) for k in ('backbone','order','seed'))
+        expected_job = f'{method}__{backbone}__{order}__s{seed}'
+        if job != expected_job or method not in ('icarl',)+ROUND2+ROUND3:
+            raise ValueError(f'{job}: invalid v4 competitor label')
+        if backbone not in ('bn','nobn') or order not in ('superclass','random') or protocol.get('nobn_lr_scale',1.) not in (1.,.5):
+            raise ValueError(f'{job}: invalid v4 setup')
+        if protocol.get('fake_data') is not False or protocol.get('disabled') is not False:
+            raise ValueError(f'{job}: synthetic or disabled competitor')
+        cfg, source, overrides = recipe(method,backbone,seed,'cpu' if protocol.get('cfg',{}).get('device') == [-1] else 'cuda:0',
+            protocol.get('reproduction',False),protocol.get('nobn_lr_scale',1.))
+        if (identity != protocol or protocol.get('effective_method') != method or
+                protocol.get('cfg') != cfg or protocol.get('cfg_source') != source or
+                protocol.get('config_overrides') != overrides or protocol.get('upstream_commit') != UPSTREAM_PIN or
+                protocol.get('competitor_pins') != PINS):
+            raise ValueError(f'{job}: v4 recipe/provenance mismatch')
+        if method in ROUND2 and protocol.get('method_config') not in grid(method):
+            raise ValueError(f'{job}: unregistered competitor configuration')
+        expected_impl = SOURCES.get(method,dict(source=f'PyCIL/models/{method}.py',reimplemented=False))
+        if protocol.get('implementation') != expected_impl:
+            raise ValueError(f'{job}: implementation provenance mismatch')
+        if protocol.get('expected_tasks') != 20 or protocol.get('epochs') != ('200/170' if protocol.get('reproduction') else '100/50'):
+            raise ValueError(f'{job}: v4 epoch/task policy mismatch')
+        if summary.get('tasks') != tasks or len(tasks) != 20 or [r.get('task') for r in tasks] != list(range(1,21)):
+            raise ValueError(f'{job}: incomplete v4 competitor tasks')
+        for i,row in enumerate(tasks,1):
+            if len(row.get('cnn_per_class',[])) != 5*i or any(not math.isfinite(row.get(k,float('nan'))) for k in
+                    ('cnn_top1','cnn_new_accuracy','cnn_average_accuracy','cnn_forgetting','learning_accuracy')):
+                raise ValueError(f'{job}: incomplete/nonfinite v4 metrics')
+        fingerprint = protocol.get('dataset_fingerprint')
+        if (not isinstance(fingerprint,dict) or set(fingerprint) != {'train','test','meta'} or
+                any(not re.fullmatch('[0-9a-f]{64}',str(v)) for v in fingerprint.values())):
+            raise ValueError(f'{job}: missing v4 dataset provenance')
+        if summary.get('parameter_count',0) <= 0 or summary.get('gpu_hours',-1) < 0:
+            raise ValueError(f'{job}: missing v4 resource accounting')
+        return commit, ('v4_competitor',method,backbone,order), {
+            'dataset':fingerprint,'upstream':UPSTREAM_PIN,'pins':PINS,'config':protocol['method_config']}
     if protocol.get('benchmark') == 'cil_competitor':
         from experiments.competitors import cil_recipe, CIL_METHODS
         from experiments.stage_b3 import UPSTREAM_PIN

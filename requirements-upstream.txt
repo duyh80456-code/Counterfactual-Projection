@@ -6,3 +6,4 @@ tqdm
 tensorboard_logger
 six
 psutil
+quadprog
