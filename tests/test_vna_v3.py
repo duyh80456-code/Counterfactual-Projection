@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 import torch
 from torch import nn
-from methods.vna_losses import MSE, ICaRLPyCIL
+from methods.vna_losses import CE, MSE, ICaRLPyCIL
 from methods.vna_ggn import GGNProducts, GGNConfig
 from methods.vna_sites import HookSite
 from methods.vna_joint import joint_correction
@@ -205,3 +205,35 @@ def test_gradmax_is_euclidean_and_differs_from_generalized():
     euclid = generalized_rows(N@N.T, S, 1, euclidean=True)[0]
     generalized = generalized_rows(N@N.T, S, 1)[0]
     assert abs(float(euclid[0])) > .99 and abs(float(generalized[0])) < 1e-10
+
+
+def test_mnist_preflight_preserves_aliased_parameters_when_active_sites_shrink(monkeypatch):
+    from dataclasses import replace
+    from experiments.stage_b5 import upstream_imports
+    from adapters.lop_hooks import Prediction, sites_for
+    upstream_imports()
+    from lop.nets.deep_ffnn import DeepFFNN
+    model = Prediction(DeepFFNN(input_size=784, num_features=10, num_outputs=10,
+                               num_hidden_layers=3)).double().train()
+    sites = sites_for(model)
+    batch = torch.randn(4, 784, dtype=torch.float64), torch.arange(4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=.003)
+    before = dict(model.named_parameters(remove_duplicate=False))
+    values = {name: p.detach().clone() for name, p in before.items()}
+    rng = torch.random.get_rng_state().clone()
+    class ShortCG(V3Engine):
+        @property
+        def cfg(self): return replace(super().cfg, cg_iters=2)
+    engine = ShortCG('vna'); engine.begin_task(1)
+    # Empty virtual directions at a site must not remove its native parameters from J.
+    monkeypatch.setattr(engine, '_select', lambda *a, **kw: seed_proposals([sites[1]]))
+    report = engine.preflight(model, sites, batch, CE(), dict(targets=batch[1]), optimizer)
+    assert len(report['trials']) == 3 and report['trials'][0]['gradient_norm'] > 0
+    after = dict(model.named_parameters(remove_duplicate=False))
+    assert before.keys() == after.keys()
+    assert sum(p.numel() for p in model.parameters() if p.requires_grad) == 8180
+    for name, parameter in before.items():
+        assert after[name] is parameter and parameter.requires_grad
+        assert torch.equal(parameter, values[name]) and parameter.grad is None
+    assert torch.equal(rng, torch.random.get_rng_state())
+    assert not optimizer.state and not engine.warm and not engine.A and not engine.events

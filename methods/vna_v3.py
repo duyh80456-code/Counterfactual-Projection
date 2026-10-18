@@ -12,6 +12,7 @@ from methods.vna import dedicated_generator, _unflatten
 from methods.vna_ggn import GGNConfig, GGNProducts, relative_damping
 from methods.vna_sites import HookProducts
 from projection.cg import conjugate_gradient
+from projection.functional import _preserve_functional_state
 
 
 @contextmanager
@@ -41,7 +42,7 @@ def training_products(model, sites, proposals, inputs):
         proxy.virtual_features = features
         virtual_sites.append(proxy)
     try:
-        with _global_state(), torch.enable_grad(), torch.autocast(device_type=inputs.device.type, enabled=False):
+        with _global_state(), _preserve_functional_state(model), torch.enable_grad(), torch.autocast(device_type=inputs.device.type, enabled=False):
             model.train()
             names = tuple(n for n, p in model.named_parameters() if p.requires_grad)
             products = HookProducts(model, virtual_sites,
@@ -68,7 +69,7 @@ def statistics(model, site, batch, cotangents):
     buffers = {n: b.clone() for n, b in model.named_buffers()}
     modes = {m: m.training for m in model.modules()}
     try:
-        with _global_state(), torch.enable_grad(), ExitStack() as stack:
+        with _global_state(), _preserve_functional_state(model), torch.enable_grad(), ExitStack() as stack:
             model.train()
             h = first.register_forward_pre_hook(incoming); stack.callback(h.remove)
             h = second.register_forward_hook(outgoing); stack.callback(h.remove)
@@ -565,7 +566,7 @@ class V3Engine:
         try:
             buffers = {n: b.clone() for n, b in model.named_buffers()}
             modes = {m: m.training for m in model.modules()}
-            with _global_state(), torch.no_grad():
+            with _global_state(), _preserve_functional_state(model), torch.no_grad():
                 model.train()
                 functional_call(model, ({n: p for n, p in model.named_parameters()}, buffers), (batch[0],))
         finally:
@@ -644,7 +645,7 @@ class V3Engine:
         handle = site.first_layer.layer.register_forward_pre_hook(hook)
         modes = {m: m.training for m in model.modules()}
         try:
-            with _global_state(), torch.no_grad():
+            with _global_state(), _preserve_functional_state(model), torch.no_grad():
                 model.train()
                 functional_call(model, ({n: p for n, p in model.named_parameters()},
                     {n: b.clone() for n, b in model.named_buffers()}), (batch[0],))
