@@ -31,6 +31,14 @@ def recipe(seed=0, device='cuda:0', backbone='resnet32_nobn'):
     return params
 
 
+def training_settings(fake=False, reproduction=False, nobn_lr_scale=1.):
+    first, later = (200,170) if reproduction else (100,50)
+    return dict(init_epoch=1 if fake else first, epochs=1 if fake else later,
+                init_milestones=[round(v*first/200) for v in (60,120,170)],
+                milestones=[round(v*later/170) for v in (80,120)],
+                init_lr=.1*nobn_lr_scale, lrate=.1*nobn_lr_scale)
+
+
 @contextmanager
 def runtime(args, order):
     from models import icarl
@@ -45,15 +53,15 @@ def runtime(args, order):
         value.class_order = order
         return value
     def convnet(params, pretrained=False):
-        return resnet32_nobn() if params['convnet_type'] == 'resnet32_nobn' else original_convnet(params, pretrained)
+        net = resnet32_nobn() if params['convnet_type'] == 'resnet32_nobn' else original_convnet(params, pretrained)
+        if hasattr(net, 'fc'): del net.fc
+        return net
     try:
         replace(data_manager, '_get_idata', data)
         replace(inc_net, 'get_convnet', convnet)
-        for key, value in dict(init_epoch=1 if args.fake_data else 100,
-                epochs=1 if args.fake_data else 50, init_milestones=[30,60,85],
-                milestones=[round(80*50/170), round(120*50/170)], num_workers=args.workers,
-                init_lr=.1*args.nobn_lr_scale if args.backbone.endswith('nobn') else .1,
-                lrate=.1*args.nobn_lr_scale if args.backbone.endswith('nobn') else .1).items():
+        for key, value in dict(training_settings(args.fake_data or getattr(args, 'preflight_only', False), nobn_lr_scale=
+                args.nobn_lr_scale if args.backbone.endswith('nobn') else 1.),
+                num_workers=args.workers).items():
             replace(icarl, key, value)
         yield
     finally:
@@ -62,8 +70,10 @@ def runtime(args, order):
 
 class Intervention:
     """Geometric task schedule; interact with the engine only through its public API."""
-    def __init__(self, engine, K0):
+    def __init__(self, engine, K0, preflight=False):
         self.engine, self.K0 = engine, K0
+        self.preflight = preflight
+        self.counts = {}
         self.task, self.last_iteration, self.interval = None, None, K0
         self.iteration_times, self.events = [], []
 
@@ -79,17 +89,27 @@ class Intervention:
     def start_task(self, learner):
         self.task = learner._cur_task+1
         self.last_iteration, self.interval = None, self.K0
-        state = self.engine.state_dict()
-        state.update(task=self.task, last_iteration=None, K_next=1, applications=0,
-                     last_refresh=-10, warm={}, A={})
-        self.engine.load_state_dict(state)
+        self.engine.begin_task(self.task)
 
     def after_step(self, hook, learner, optimizer):
-        if self.last_iteration is not None and hook.steps-self.last_iteration < self.interval: return
+        if self.engine.coefficient == 0: return
+        if self.preflight and self.counts.get(self.task, 0) >= 3: return
+        if not self.preflight and self.last_iteration is not None and hook.steps-self.last_iteration < self.interval: return
+        if self.preflight and learner._device.type == 'cuda': torch.cuda.synchronize(learner._device)
+        iteration_seconds = max(time.monotonic()-hook.iteration_started, 1e-9) if self.preflight else None
         batch = tuple(t.to(learner._device) for t in hook.current_batch)
         spec, ctx = loss_context(learner, batch)
         ctx.update(classes=learner._total_classes, task=self.task)
         model = Prediction(learner._network)
+        if self.preflight:
+            epochs = training_settings()['init_epoch' if self.task == 1 else 'epochs']
+            self.engine.protocol.update(baseline_iteration_seconds=iteration_seconds,
+                iterations_per_epoch=len(learner.train_loader),
+                task_iterations=len(learner.train_loader)*epochs)
+            self.engine.preflight(model, sites_for(model), batch, spec, ctx, optimizer, hook.steps)
+            self.counts[self.task] = self.counts.get(self.task, 0)+1
+            if self.task == 2 and self.counts[self.task] == 3: raise PreflightComplete()
+            return
         event = self.engine.apply(model, sites_for(model), batch, spec, ctx, optimizer,
                                   hook.steps, force=True)
         if self.last_iteration is not None: self.interval *= 2
@@ -102,6 +122,7 @@ class Intervention:
 
 
 class Diverged(RuntimeError): pass
+class PreflightComplete(Exception): pass
 
 
 def accuracy_metrics(tasks, predictions, targets, known, label):
@@ -149,8 +170,43 @@ def feature_accuracy(learner, manager, boundary=lambda: None):
             for module, mode in modes.items(): module.training = mode
 
 
+@contextmanager
+def read_only(model):
+    modes = {m: m.training for m in model.modules()}
+    buffers = {n: b.clone() for n,b in model.named_buffers()}
+    with _global_state():
+        try:
+            model.eval()
+            yield
+        finally:
+            with torch.no_grad():
+                for n,b in model.named_buffers(): b.copy_(buffers[n])
+            for m,mode in modes.items(): m.training = mode
+
+
+def measure_task(learner, manager, history, boundary=lambda: None, probe_size=256):
+    row = dict(task=learner._cur_task+1, parameter_count=sum(p.numel() for p in learner._network.parameters()))
+    with read_only(learner._network):
+        boundary()
+        for label, predictions in (('cnn', learner._eval_cnn(learner.test_loader)),
+                ('nme', learner._eval_nme(learner.test_loader, learner._class_means))):
+            row.update(accuracy_metrics(history, *predictions, learner._known_classes, label))
+        dataset = learner.test_loader.dataset
+        indices = np.random.RandomState(0).permutation(len(dataset))[:probe_size]
+        samples = [dataset[int(i)] for i in indices]
+        batch = (torch.stack([s[1] for s in samples]).to(learner._device),
+                 torch.tensor([int(s[2]) for s in samples], device=learner._device))
+        model = Prediction(learner._network)
+        diagnostic = dict(task=row['task'], probe_seed=0, probe_indices=indices.tolist(),
+                              **vna_v3.diagnose(model, batch, sites=sites_for(model)))
+        if row['task'] in (5,10,15,20):
+            row['feature_accuracy'] = feature_accuracy(learner, manager, boundary)
+    return row, diagnostic
+
+
 class MainHook(ICaRLHook):
     def __init__(self, *a, manager, status, **kw):
+        self.fake = kw.get('fake', False)
         super().__init__(*a, **kw)
         self.manager, self.status = manager, status
 
@@ -164,22 +220,9 @@ class MainHook(ICaRLHook):
         if self.progress: self.progress.boundary(lambda: None)
 
     def record_task(self, learner, result):
-        row = dict(task=learner._cur_task+1, parameter_count=sum(p.numel() for p in learner._network.parameters()))
-        with _global_state():
-            self.measurement_boundary()
-            for label, predictions in (('cnn', learner._eval_cnn(learner.test_loader)),
-                    ('nme', learner._eval_nme(learner.test_loader, learner._class_means))):
-                row.update(accuracy_metrics(self.tasks, *predictions, learner._known_classes, label))
-            dataset = learner.test_loader.dataset
-            indices = np.random.RandomState(0).permutation(len(dataset))[:256]
-            samples = [dataset[int(i)] for i in indices]
-            batch = (torch.stack([s[1] for s in samples]).to(learner._device),
-                     torch.tensor([int(s[2]) for s in samples], device=learner._device))
-            model = Prediction(learner._network)
-            self.rows.append(dict(task=row['task'], probe_seed=0, probe_indices=indices.tolist(),
-                                  **vna_v3.diagnose(model, batch)))
-            if row['task'] in (5,10,15,20):
-                row['feature_accuracy'] = feature_accuracy(learner, self.manager, self.measurement_boundary)
+        if self.intervention is not None and self.intervention.preflight: return
+        row, diagnostic = measure_task(learner, self.manager, self.tasks, self.measurement_boundary, 4 if self.fake else 256)
+        self.rows.append(diagnostic)
         self.tasks.append(row)
         if self.persist: self.persist(self)
 
@@ -195,8 +238,15 @@ def run(args):
         raise ValueError('nobn_lr_scale applies only to noBN')
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None
-    if args.arm == 'icarl_full' and args.coefficient != 0 and not args.fake_data and not schedule:
+    if args.arm == 'icarl_full' and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
         raise ValueError('icarl_full requires the backbone authority --schedule (K0 preflight)')
+    if args.preflight_only and not args.schedule_output: raise ValueError('preflight requires --schedule-output')
+    if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
+    if schedule:
+        expected = dict(authoritative=True, code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
+                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale)
+        if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
+        if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
     K0 = int(schedule['K0']) if schedule else 1
     if K0 < 1: raise ValueError('K0 must be positive')
     params = recipe(args.seed, args.device, args.backbone)
@@ -212,7 +262,7 @@ def run(args):
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         data_dir=args.data_dir, class_order=order, class_order_kind=args.class_order,
         backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient,
-        r=16, live_candidates=4, compute_budget=1., schedule=schedule, K0=K0, cfg=copy.deepcopy(params),
+        r=16, live_candidates=4, compute_budget=1., preflight_only=args.preflight_only, schedule=schedule, K0=K0, cfg=copy.deepcopy(params),
         probe=dict(size=256, seed=0, source='seen test classes'),
         feature_probe=dict(tasks=[5,10,15,20], optimizer='LBFGS', max_iter=100,
                            initialization='zeros', data='all seen train, test transforms', regularization=0),
@@ -229,7 +279,7 @@ def run(args):
         if previous.get('identity') != protocol: raise ValueError('completed identity mismatch')
         if previous['status'] == 'COMPLETED': return previous
     status = Status(out, args.arm)
-    intervention = Intervention(V3Engine('vna_gir', seed=args.seed, coefficient=args.coefficient, K_base=K0), K0) if args.arm == 'icarl_full' else None
+    intervention = Intervention(V3Engine('vna_gir', seed=args.seed, coefficient=args.coefficient, K0=K0), K0, args.preflight_only) if args.arm == 'icarl_full' else None
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])
@@ -237,7 +287,7 @@ def run(args):
         write_json(out/'diagnostics.json', hook.rows)
         if intervention is not None: write_json(out/'interventions.json', intervention.events)
         write_json(out/'protocol.json', {**protocol, 'parameter_count': hook.tasks[-1]['parameter_count'] if hook.tasks else None,
-                   'mu0': intervention.engine.state_dict().get('mu0') if intervention else None})
+                   'mu0': intervention.engine.protocol.get('mu0') if intervention else None})
     original_manager, original_random = trainer.DataManager, trainer._set_random
     def initialize():
         import random
@@ -259,6 +309,15 @@ def run(args):
         # cil_runtime supplies upstream I/O; runtime applies only registered setup overrides.
         with working_directory(out), cil_runtime('icarl', fake=args.fake_data, data_dir=args.data_dir), runtime(args, order), hook.install():
             trainer.train(copy.deepcopy(params))
+    except PreflightComplete:
+        points = intervention.engine.protocol['preflight_points']
+        schedule = vna_v3.schedule_from_points(points, len(hook.learner.train_loader))
+        schedule.update(authoritative=True, setting='icarl', backbone=args.backbone,
+            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(),
+            source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
+            schedule_source=args.schedule_source, r=16)
+        write_json(Path(args.schedule_output), schedule)
+        run_status = 'PREFLIGHT'
     except Diverged as exc:
         run_status, reason = 'DIVERGED', str(exc)
     except SystemExit as exc:
@@ -297,6 +356,9 @@ def parser():
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,.5), default=1.)
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--schedule')
+    p.add_argument('--preflight-only', action='store_true')
+    p.add_argument('--schedule-output')
+    p.add_argument('--schedule-source', default='authority', choices=('authority','self'))
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--device', choices=('cpu','cuda:0'), default='cuda:0')
     p.add_argument('--data-dir', default=DATA_ROOT)

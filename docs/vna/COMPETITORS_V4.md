@@ -120,3 +120,12 @@ suite, notebook, GPU training, real hyperparameter sweep, full C-Flat reproducti
 B5 width training or Round 3 training was run. SWR/MRFA/FIRE and Forget-Forgetting
 remain source-blocked; the requested ablations remain unimplemented pending
 Phase 2/3 public-API integration. The two protected Phase 2 files have no diff.
+
+Integration correction (2026-10-19): duplicate setup and diagnostic modules
+listed in the historical phase report above are deleted. Competitors use
+`adapters/cil_setup.py`, `experiments/main_cil.py` training/measurement helpers,
+and the public `methods.vna_v3.diagnose`. Production probes use phase-3 seed 0
+and size 256; local fixtures use size 4 and 4×4 pooled features, memory 20.
+Metrics and the zero-initialized feature probe now follow phase 3 exactly.
+The collector has one v4 table path for main arms and competitors. `quadprog`
+was already listed in requirements; v4 notebook installation includes it.

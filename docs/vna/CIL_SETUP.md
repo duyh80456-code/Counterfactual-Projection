@@ -57,7 +57,13 @@ standard-deviation error bars on both axes. Helpers are also callable from
 notebooks as `experiments.main_cil_results.table(records)` and
 `stability_plasticity(records, path)`.
 
-Local checks: `tests/test_main_cil.py` uses embedded CIFAR labels, one float64
-noBN batch, a tiny linear-probe fixture and tiny two-task iCaRL training. Until
-Phase 2 merges, its smoke supplies a `diagnose` spy; this tests orchestration,
-not the diagnostic's mathematics. Phase 2 owns numerical T26–T28/diagnose tests.
+Local checks use embedded CIFAR labels, one float64 noBN batch, a tiny
+linear-probe fixture and tiny two-task iCaRL training. They call the real
+Phase-2 diagnostics and engine, check coefficient-zero bitwise identity and
+exact deadline replay, and build a six-measurement authority schedule.
+
+Authority preflight uses the same runner with `--arm icarl_full
+--preflight-only --schedule-output outputs/_schedules/icarl_noBN.json`.
+BN uses `--backbone resnet32` and its own schedule. Generated main notebooks
+perform this before their full jobs; M3 imports M1's schedule when available.
+Competitors share this module's training settings, measurements and table.

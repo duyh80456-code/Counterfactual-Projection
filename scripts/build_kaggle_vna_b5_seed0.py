@@ -3,7 +3,133 @@ import argparse
 import json
 from pathlib import Path
 
-from scripts.build_kaggle_vna_parallel import build, PRESETS
+from scripts.build_kaggle_vna_parallel import build, config
+
+LEGACY_RUNNER = r'''import re
+from concurrent.futures import ThreadPoolExecutor
+from scripts.collect_parallel import validate_result
+ROOT = STAGE_B / RUN_TAG
+ROOT.mkdir(parents=True, exist_ok=True)
+ENV.update(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
+
+def completed(job):
+    directory = ROOT/job
+    path = directory/'summary.json'
+    if not path.exists(): return False
+    summary = json.loads(path.read_text())
+    if summary.get('status') != 'COMPLETED': return False
+    protocol = json.loads((directory/'protocol.json').read_text())
+    tasks = json.loads((directory/'tasks.json').read_text())
+    validate_result(job, summary, protocol, tasks, REPO_COMMIT, SOURCE_DIGEST)
+    return True
+
+def setting_for(job):
+    if job.startswith('b5_'): return 'regression'
+    if job.startswith('pm_'): return 'mnist'
+    return 'icarl'
+
+def command(job):
+    if job in ('b5_l2','b5_snp','b5_redo'):
+        return [sys.executable,'-u','-m','experiments.competitors','b5','--arm',job[3:],'--out',str(ROOT/job),'--resume']
+    label = job.split('__')[0]
+    if label in ('finetune','joint','wa','podnet','bic','foster','der','memo','tagfex'):
+        setting = 'b50inc10' if '__b50inc10' in job else 'inc10'
+        return [sys.executable,'-u','-m','experiments.competitors','cil','--method',label,
+                '--setting',setting,'--seed','1993','--out',str(ROOT/job),
+                '--data-dir',str(DATA_ROOT),'--device','cuda:0','--resume']
+    seed = re.search(r'__s(\d+)$',job).group(1)
+    setting = setting_for(job)
+    cmd = [sys.executable,'-u','-m','experiments.pilot_v3','--setting',setting,
+           '--arm',label,'--seed',seed,'--out',str(ROOT/job),'--resume',
+           '--device','cpu' if setting in ('regression','mnist') else 'cuda:0',
+           '--workers','2']
+    data_root = globals().get('MNIST_ROOT') if setting == 'mnist' else DATA_ROOT
+    if data_root is not None: cmd += ['--data-dir',str(data_root)]
+    if label.startswith(('b5_cbp','pm_cbp')):
+        rate = re.search(r'__rate([^_]+)',job)
+        cmd += ['--replacement-rate',rate.group(1) if rate else '1e-3']
+    if label not in ('b5_bp','b5_cbp','pm_bp','pm_cbp','icarl','er','erace'):
+        schedule = ROOT/'_schedules'/f"{setting}.json"
+        if not schedule.exists():
+            print(f'SKIP {job}: family schedule {schedule.name} missing; attach the authority archive and rerun', flush=True)
+            return None
+        cmd += ['--schedule',str(schedule)]
+    return cmd
+
+def prepare_schedule(setting, gpu=None):
+    filename = setting+'.json'
+    destination = ROOT/'_schedules'/filename
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    if destination.exists(): return
+    attached = []
+    for path in Path('/kaggle/input').rglob(filename):
+        try: value=json.loads(path.read_text())
+        except (ValueError,OSError): continue
+        if value.get('code_commit') == REPO_COMMIT and value.get('source_digest') == SOURCE_DIGEST and value.get('setting') == setting:
+            attached.append((path,value))
+    if attached:
+        if any(value != attached[0][1] for _,value in attached): raise ValueError('conflicting authoritative schedules')
+        shutil.copy2(attached[0][0],destination); return
+    authority = {'icarl':'Q2'}
+    authority_preset=authority.get(setting,'')
+    if setting in authority and PRESET != authority_preset:
+        # Baselines need no schedule; scheduled arms are skipped until the archive is attached.
+        print(f'NOTE: attach {authority_preset} archive with {setting}.json to run scheduled {PRESET} arms', flush=True)
+        return
+    arm = dict(regression='b5_bp_vna_gir',mnist='pm_bp_vna',icarl='icarl_vna')[setting]
+    seed = '1993' if setting == 'icarl' else '0'
+    cmd = [sys.executable,'-u','-m','experiments.pilot_v3','--setting',setting,'--arm',arm,
+           '--seed',seed,'--out',str(ROOT/'_preflight'/setting),'--device','cpu' if gpu is None else 'cuda:0',
+           '--resume','--preflight-only','--schedule-output',str(destination)]
+    data_root = globals().get('MNIST_ROOT') if setting == 'mnist' else DATA_ROOT
+    if data_root is not None: cmd += ['--data-dir',str(data_root)]
+    if gpu is None:
+        from experiments.vna_resume import launch_logged
+        return launch_logged(cmd,cwd=REPO,env={**ENV,'CUDA_VISIBLE_DEVICES':''},log_path=RUN_ROOT/f'{RUN_TAG}_{setting}_preflight.log',
+            lane='CPU',job=setting+'_preflight',lanes=lane_state,paused=session_paused,deadline=VNA_DEADLINE)
+    return launch(cmd,gpu,setting+'_preflight',RUN_ROOT/f'{RUN_TAG}_{setting}_preflight.log')
+
+def run_gpu(gpu,jobs):
+    for job in jobs:
+        if pause_due(): break
+        if completed(job): continue
+        cmd = command(job)
+        if cmd is None: continue
+        if not launch(cmd,gpu,job,RUN_ROOT/f'{RUN_TAG}_{job}.log'): break
+        archive_outputs()
+
+def run_cpu(job):
+    if pause_due() or completed(job): return
+    cmd = command(job)
+    if cmd is None: return
+    from experiments.vna_resume import launch_logged
+    return launch_logged(cmd,cwd=REPO,env={**ENV,'CUDA_VISIBLE_DEVICES':''},
+        log_path=RUN_ROOT/f'{RUN_TAG}_{job}.log',lane=job,job=job,lanes=lane_state,
+        paused=session_paused,deadline=VNA_DEADLINE)
+
+try:
+    v3jobs = [j for j in JOBS_GPU0+JOBS_GPU1+JOBS_CPU if j not in ('b5_l2','b5_snp','b5_redo')
+              and j.split('__')[0].startswith(('b5_','pm_','icarl','er'))]
+    for setting in sorted({setting_for(j) for j in v3jobs}):
+        prepare_schedule(setting,0 if setting == 'icarl' else None)
+        if pause_due(): break
+    archive_outputs()
+    if not pause_due():
+        with ThreadPoolExecutor(max_workers=2) as gpu_pool, ThreadPoolExecutor(max_workers=4) as cpu_pool:
+            futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
+            futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
+            for future in futures: future.result()
+finally:
+    archive_stop.set(); archiver.join(timeout=10); archive_outputs()
+from scripts.collect_parallel import collect, report
+report(collect([ROOT.parent],RUN_TAG))
+if session_paused.is_set(): print('PAUSED: attach output archive and rerun to resume')
+if archive_errors: raise RuntimeError(archive_errors)
+'''
+
+B5_JOBS = [f'b5_{arm}__s{s}' for s in range(3) for arm in
+           ('bp','bp_kself','bp_vna','bp_vna_rand','bp_gir','bp_vna_gir',
+            'cbp','cbp_gir','cbp_gradmax','cbp_vna_gir')]+[f'b5_cbp__rate{r}__s0' for r in ('1e-6','1e-5','1e-4','1e-2')]
 from scripts.build_kaggle_vna_signal_curve_notebook import cell
 
 B5_GROUPS = {
@@ -90,12 +216,12 @@ def seed0_results():
 
 def build_seed0(commit, seed=0):
     if seed not in (0, 1, 2): raise ValueError('B5 seeds must be 0, 1 or 2')
-    notebook = build(commit, 'P-B5', f'vna_v3_b5_seed{seed}_resume')
+    notebook = build(commit, None, f'vna_v3_b5_seed{seed}_resume')
     cells = notebook['cells']
-    jobs = [job for job in PRESETS['P-B5'][2] if job.endswith(f'__s{seed}')]
-    config = ''.join(cells[0]['source'])
-    config = config.replace(f"JOBS_CPU = {PRESETS['P-B5'][2]!r}", f'JOBS_CPU = {jobs!r}')
-    cells[0] = cell('code', config)
+    cells.pop()
+    jobs = [job for job in B5_JOBS if job.endswith(f'__s{seed}')]
+    cells[0] = cell('code', config(commit, ([],[],jobs), f'vna_v3_b5_seed{seed}_resume', 'P-B5'))
+    cells[-1] = cell('code', LEGACY_RUNNER)
     cells[1] = cell('markdown', '''# B5 full seed-0 preview
 CPU only; four workers; 12 arms + four baseline CBP rate checks = 16 jobs.
 Every job runs the full 100-task horizon. Main CBP rate is fixed at 1e-3.
@@ -212,6 +338,7 @@ def build_group(commit, group):
     arms = B5_GROUPS[group]
     notebook = build_seed0(commit, 1)
     cells = notebook['cells']
+    cells.pop()
     jobs = [f'b5_{arm}__s{seed}' for seed in (1, 2) for arm in arms]
     config = ''.join(cells[0]['source'])
     lines = config.splitlines(keepends=True)

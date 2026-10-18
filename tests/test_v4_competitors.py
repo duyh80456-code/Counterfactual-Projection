@@ -8,8 +8,9 @@ import torch
 from torch import nn
 from adapters.v4_competitors import dormant_score, recycle, CompetitorHook, shrink_perturb
 from experiments import v4_competitors as v4
-from experiments.v4_competitor_setup import SUPERCLASSES, class_order, skipinit
-from diagnostics.v4_competitors import diagnose
+from adapters.cil_setup import COARSE_GROUPS as SUPERCLASSES, class_order, skipinit
+from methods.vna_v3 import diagnose
+from adapters.icarl_hooks import Prediction, sites_for
 
 
 def args(out, method='icarl', *extra):
@@ -86,7 +87,7 @@ def test_cbp_calls_original_and_preserves_ages(tmp_path):
     from types import SimpleNamespace
     from models import icarl
     from convs.cifar_resnet import ResNetBasicblock
-    from experiments.v4_competitor_setup import FixtureBackbone
+    from adapters.cil_setup import FixtureBackbone
     net = nn.Sequential(FixtureBackbone(ResNetBasicblock))
     learner = SimpleNamespace(_network=skipinit(net).double(),args=cfg)
     hook = CompetitorHook('icarl_cbp',dict(replacement_rate=1e-3))
@@ -108,7 +109,7 @@ def test_cbp_calls_original_and_preserves_ages(tmp_path):
 def test_diagnose_preserves_parameters_buffers_gradients_and_rng(tmp_path):
     v4.cil.upstream_imports()
     from convs.cifar_resnet import ResNetBasicblock
-    from experiments.v4_competitor_setup import FixtureBackbone
+    from adapters.cil_setup import FixtureBackbone
     class Model(nn.Module):
         def __init__(self):
             super().__init__()
@@ -120,7 +121,8 @@ def test_diagnose_preserves_parameters_buffers_gradients_and_rng(tmp_path):
     for p in net.parameters(): p.grad = torch.ones_like(p)
     before = copy.deepcopy(net.state_dict())
     rng = torch.get_rng_state().clone()
-    row = diagnose(net,batch)
+    model = Prediction(net)
+    row = diagnose(model,batch,sites=sites_for(model))
     assert all(torch.equal(v,net.state_dict()[k]) for k,v in before.items())
     assert torch.equal(rng,torch.get_rng_state())
     assert net.training and all(torch.equal(p.grad,torch.ones_like(p)) for p in net.parameters())
@@ -170,8 +172,8 @@ def test_v4_collector_validates_real_provenance_and_rejects_fixtures():
         config_overrides=overrides,upstream_commit=v4.cil.UPSTREAM_PIN,competitor_pins=v4.PINS,
         method_config={},implementation=dict(source='PyCIL/models/wa.py',reimplemented=False),
         fake_data=False,disabled=False,epochs='100/50',expected_tasks=20,dataset_fingerprint={n:'b'*64 for n in ('train','test','meta')})
-    tasks = [dict(task=i,cnn_per_class=[10.]*(5*i),cnn_top1=10.,cnn_new_accuracy=10.,
-                  cnn_average_accuracy=10.,cnn_forgetting=0.,learning_accuracy=10.) for i in range(1,21)]
+    tasks = [dict(task=i,cnn_per_class=[10.]*(5*i),cnn_top1=10.,cnn_new_top1=10.,
+                  cnn_average_accuracy=10.,cnn_forgetting=0.,cnn_learning_accuracy=10.) for i in range(1,21)]
     summary = dict(status='COMPLETED',identity=protocol,tasks=tasks,parameter_count=100,gpu_hours=1.)
     job = 'wa__bn__superclass__s0'
     assert validate_result(job,summary,protocol,tasks)[1] == ('v4_competitor','wa','bn','superclass')
@@ -217,7 +219,7 @@ def test_l2_init_keeps_old_classifier_initialization(tmp_path):
 
 def test_superclass_reads_and_verifies_official_pickle(tmp_path):
     import pickle
-    from experiments.v4_competitor_setup import COARSE_NAMES
+    from adapters.cil_setup import COARSE_NAMES
     directory = tmp_path/'cifar-100-python'; directory.mkdir()
     coarse = [next(i for i,g in enumerate(SUPERCLASSES) if fine in g) for fine in range(100)]
     (directory/'train').write_bytes(pickle.dumps(dict(fine_labels=list(range(100)),coarse_labels=coarse)))

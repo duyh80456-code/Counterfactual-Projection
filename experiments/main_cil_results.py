@@ -9,8 +9,14 @@ def mean_std(values):
 
 
 def table(records):
-    records = [r for r in records if r['protocol'].get('algorithm_version') == 'v4'
-               and r['protocol'].get('setting') == 'icarl']
+    records = [r for r in records if (r['protocol'].get('algorithm_version') == 'v4'
+               and r['protocol'].get('setting') == 'icarl') or
+               r['protocol'].get('benchmark') == 'v4_competitor']
+    records = [{**r, 'protocol': {**r['protocol'],
+                'backbone': {'bn':'resnet32','nobn':'resnet32_nobn'}.get(r['protocol']['backbone'],r['protocol']['backbone']),
+                'class_order_kind': r['protocol'].get('class_order_kind',r['protocol'].get('order'))+
+                    ('/reproduction' if r['protocol'].get('reproduction') else '')}}
+               for r in records]
     grouped = defaultdict(list)
     controls = {}
     for r in records:

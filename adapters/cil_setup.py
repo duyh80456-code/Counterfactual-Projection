@@ -58,13 +58,30 @@ class SkipScale(nn.Module):
     def forward(self, x): return self.alpha*x
 
 
-def resnet32_nobn():
-    from convs.cifar_resnet import resnet32, ResNetBasicblock
-    model = resnet32()
+def skipinit(model):
     for module in list(model.modules()):
         for name, child in list(module.named_children()):
-            if isinstance(child, nn.BatchNorm2d): setattr(module, name, nn.Identity())
+            if isinstance(child, nn.BatchNorm2d):
+                setattr(module, name, SkipScale().to(child.weight) if name == 'bn_b' else nn.Identity())
             elif isinstance(child, nn.Conv2d) and child.bias is None:
                 child.bias = nn.Parameter(child.weight.new_zeros(child.out_channels))
-        if isinstance(module, ResNetBasicblock): module.bn_b = SkipScale()
     return model
+
+
+def resnet32_nobn():
+    from convs.cifar_resnet import resnet32
+    return skipinit(resnet32())
+
+
+class FixtureBackbone(nn.Module):
+    """Two-channel residual fixture; the production backbone is never reduced."""
+    def __init__(self, block):
+        super().__init__()
+        self.conv = nn.Conv2d(3,2,3,padding=1,bias=False)
+        self.bn = nn.BatchNorm2d(2)
+        self.branch = block(2,2)
+        self.out_dim = 2
+    def forward(self,x):
+        x = nn.functional.adaptive_avg_pool2d(x, 4)
+        x = self.branch(torch.relu(self.bn(self.conv(x))))
+        return dict(features=x.mean((2,3)),fmaps=[x,x,x])

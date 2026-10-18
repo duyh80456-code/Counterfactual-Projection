@@ -1,4 +1,4 @@
-"""Tiny local checks for phase 3; the unmerged Phase 2 diagnose API is supplied by a spy."""
+"""Tiny local checks for the integrated main setup and real Phase 2 engine."""
 import copy
 import json
 import pickle
@@ -127,6 +127,12 @@ def test_collector_and_paired_table(tmp_path):
     assert len(collect([tmp_path],'outputs'))==4
     stability_plasticity(jobs.values(),tmp_path/'stability.svg')
     assert (tmp_path/'stability.svg').stat().st_size>0
+    protocol_file=tmp_path/'outputs'/'icarl_full__nobn__superclass__s0'/'protocol.json'
+    original=protocol_file.read_text()
+    altered=json.loads(original); altered['nobn_lr_scale']=.5
+    protocol_file.write_text(json.dumps(altered))
+    with pytest.raises(ValueError,match='mixed noBN learning-rate scales'): collect([tmp_path],'outputs')
+    protocol_file.write_text(original)
     victim=tmp_path/'outputs'/'icarl_full__nobn__superclass__s0'/'diagnostics.json'
     victim.unlink()
     with pytest.raises(ValueError,match='missing main CIL files'): collect([tmp_path],'outputs')
@@ -141,6 +147,8 @@ def test_schedule_skips_and_roundtrip():
         def __init__(self): self.state = {}; self.calls = []
         def state_dict(self): return copy.deepcopy(self.state)
         def load_state_dict(self, state): self.state = copy.deepcopy(state)
+        def begin_task(self, task): self.state.update(task=task, warm={}, A={})
+        coefficient = 1.
         def apply(self, *a, **kw):
             self.calls.append(a[6]); return dict(seconds=0., step=a[6])
     from types import SimpleNamespace
@@ -163,11 +171,6 @@ def test_schedule_skips_and_roundtrip():
 def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
     main.cil.upstream_imports()
     monkeypatch.setattr(main, 'resnet32_nobn', Tiny)
-    probes = []
-    def diagnose(model,batch):
-        probes.append(len(batch[0]))
-        return dict(reach=.5,unreach=.5,B=1.,sites={})
-    monkeypatch.setattr(main.vna_v3, 'diagnose', diagnose, raising=False)
     old_dtype = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
     try:
         results = []
@@ -190,7 +193,10 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
         assert results[0]['tasks'] == results[1]['tasks']
         assert all(torch.equal(baseline['rng'][k],off['rng'][k]) for k in ('torch',))
         assert json.loads((tmp_path/'full'/'interventions.json').read_text())
-        assert probes == [40,80]*3
+        for name in ('icarl','off','full'):
+            rows = json.loads((tmp_path/name/'diagnostics.json').read_text())
+            assert len(rows) == 2 and all(0 <= r['reach'] <= 1 for r in rows)
+            assert [len(r['probe_indices']) for r in rows] == [4,4]
         # Pause after a complete first task; native prefix replay must be exact.
         original_checkpoint = main.ICaRLHook.checkpoint
         def pause(hook, **kw):
@@ -227,3 +233,46 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
         assert all(torch.equal(a[k],actual['learner']['_network'].state_dict()[k]) for k in a)
         assert torch.equal(baseline['rng']['torch'],actual['rng']['torch'])
     finally: torch.set_default_dtype(old_dtype)
+
+
+def test_main_authority_preflight_real_engine(tmp_path, monkeypatch):
+    main.cil.upstream_imports()
+    from models import icarl
+    monkeypatch.setattr(main, 'resnet32_nobn', Tiny)
+    monkeypatch.setattr(icarl, 'batch_size', 8)
+    args = main.parser().parse_args(['--arm','icarl_full','--fake-data','--workers','0',
+        '--device','cpu','--preflight-only','--schedule-output',str(tmp_path/'schedule.json'),
+        '--out',str(tmp_path/'calibration')])
+    result = main.run(args)
+    schedule = json.loads((tmp_path/'schedule.json').read_text())
+    assert result['status'] == 'PREFLIGHT'
+    assert schedule['authoritative'] and schedule['K0'] >= 1
+    assert [p['task'] for p in schedule['calibration']] == [1]*3+[2]*3
+    assert schedule['seconds_per_application'] > 0
+    assert all(p['iteration_seconds'] > 0 for p in schedule['calibration'])
+
+
+def test_competitor_and_main_share_table_and_probe_setup():
+    from experiments.main_cil_results import table
+    from experiments.v4_competitors import recipe
+    base = main.recipe(0,'cpu','resnet32')
+    competitor,_,_ = recipe('icarl_redo','bn',0,'cpu')
+    for key in ('init_cls','increment','memory_size','fixed_memory','convnet_type'):
+        assert base[key] == competitor[key]
+    def record(arm, competitor=False):
+        summary = {f'{label}_{metric}': 50.+(arm!='icarl') for label in ('cnn','nme')
+                   for metric in ('average_accuracy','last_accuracy','learning_accuracy','forgetting')}
+        summary['gpu_hours'] = 1.+(arm!='icarl')
+        protocol = dict(arm=arm,seed=0,backbone='bn' if competitor else 'resnet32',
+                        order='superclass',class_order_kind='superclass',setting='icarl',algorithm_version='v4')
+        if competitor:
+            protocol.pop('setting'); protocol.pop('algorithm_version')
+            protocol['benchmark']='v4_competitor'
+        return dict(summary=summary,protocol=protocol)
+    rows = table([record('icarl'),record('icarl_redo',True)])
+    row = next(r for r in rows if r['arm']=='icarl_redo' and r['metric']=='cnn_average_accuracy')
+    assert row['backbone']=='resnet32' and row['paired_delta']['mean']==1. and row['seeds_won']==1
+    reproduction=record('icarl_cflat',True); reproduction['protocol']['reproduction']=True
+    rows=table([record('icarl'),reproduction])
+    row=next(r for r in rows if r['arm']=='icarl_cflat')
+    assert row['class_order']=='superclass/reproduction' and row['paired_seeds']==0

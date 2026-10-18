@@ -21,10 +21,10 @@ import torch
 from adapters.v4_competitors import CompetitorHook, PINS, ROOT, cflat_module, source_module
 from experiments.competitors import cil_runtime
 from experiments import stage_b3 as cil, stage_b5 as lop
-from experiments.v4_competitor_setup import class_order, skipinit, task_metrics, read_only, FixtureBackbone
+from adapters.cil_setup import class_order, skipinit, FixtureBackbone
+from experiments.main_cil import measure_task, training_settings, recipe as main_recipe
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pause_if_due
-from diagnostics.v4_competitors import diagnose
 
 ROUND2 = ('podnet', 'wa', 'gem', 'icarl_cbp', 'icarl_redo', 'icarl_snp', 'icarl_upgd', 'icarl_cflat')
 ROUND3 = ('icarl_l2init', 'icarl_forget_forgetting', 'icarl_fire', 'icarl_swr', 'icarl_mrfa',
@@ -69,6 +69,8 @@ def recipe(method, backbone, seed, device, reproduction=False, nobn_lr_scale=1.)
                  else f'third_party/PyCIL/exps/{source}.json')
     original = json.loads(path.read_text())
     cfg = copy.deepcopy(original)
+    common = main_recipe(seed, device, 'resnet32')
+    cfg.update({k: common[k] for k in ('init_cls','increment','memory_size','fixed_memory','dataset','seed','device')})
     cfg.update(init_cls=5, increment=5, memory_size=2000, fixed_memory=False,
                dataset='cifar100', shuffle=reproduction, seed=[seed],
                device=[-1] if device == 'cpu' else [device.split(':')[-1]])
@@ -151,37 +153,23 @@ def runtime(args, method, cfg, boundary, epoch_done):
 
 def set_epochs(module, learner, args, method):
     first = learner._cur_task < 0
-    total = (200 if first else 170) if args.reproduction else (100 if first else 50)
-    if args.fake_data: total = 1
-    defaults = {}
-    for node in ast.parse(Path(module.__file__).read_text()).body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0],ast.Name):
-            try: defaults[node.targets[0].id] = ast.literal_eval(node.value)
-            except (ValueError,TypeError): pass
-    for name in ('init_epoch','epochs'):
-        if hasattr(module,name): setattr(module,name,total)
+    scale = args.nobn_lr_scale if args.backbone == 'nobn' else 1.
+    settings = training_settings(args.fake_data, args.reproduction, scale)
+    total = settings['init_epoch' if first else 'epochs']
+    for name, value in settings.items():
+        if hasattr(module,name): setattr(module,name,value)
     if hasattr(module,'ft_epochs'):
         module.ft_epochs = 0 if args.fake_data else 20
         module.epochs = total if first else total-module.ft_epochs
-    for name, count in (('init_milestones','init_epoch'),('milestones','epochs')):
-        if name in defaults:
-            setattr(module,name,[round(v*total/defaults.get(count,200)) for v in defaults[name]])
-    scale = args.nobn_lr_scale if args.backbone == 'nobn' else 1.
-    for name in ('init_lr','lrate'):
-        if name in defaults: setattr(module,name,defaults[name]*scale)
     cfg = learner.args
     original = json.loads((ROOT/('third_party/C-Flat/exps/icarl.json' if method == 'icarl_cflat'
                                 else 'third_party/PyCIL/exps/'+cfg['model_name']+'.json')).read_text())
-    for name, count in (('init_milestones','init_epoch'),('milestones','epochs')):
-        if name in original:
-            cfg[name] = [round(v*total/original[count]) for v in original[name]]
-    for name in ('init_epoch','init_epochs','epochs'):
-        if name in cfg: cfg[name] = total
+    for name, value in settings.items():
+        if name in cfg: cfg[name] = value
+    if 'init_epochs' in cfg: cfg['init_epochs'] = settings['init_epoch']
     if 'boosting_epochs' in cfg:
         boost = round(total*original['boosting_epochs']/(original['boosting_epochs']+original['compression_epochs']))
         cfg['boosting_epochs'],cfg['compression_epochs'] = max(1,boost),max(1,total-boost)
-    for name in ('init_lr','lrate'):
-        if name in original: cfg[name] = original[name]*scale
 
 
 def run(args):
@@ -190,7 +178,7 @@ def run(args):
     if args.reproduction and (args.method != 'icarl_cflat' or args.backbone != 'bn' or args.order != 'random' or args.seed != 1993 or args.disabled):
         raise ValueError('C-Flat reproduction requires icarl_cflat, BN, random order, seed 1993, enabled')
     if not args.fake_data and not args.data_dir: raise ValueError('--data-dir is required')
-    config = json.loads(args.config) if args.config else grid(method)[0]
+    config = selected_config(args) if args.best_config else (json.loads(args.config) if args.config else grid(method)[0])
     if method == 'icarl': config = {}
     if method == 'icarl_l2init':
         if 'coefficient' not in config: raise ValueError('L2-Init requires --config with coefficient')
@@ -199,7 +187,7 @@ def run(args):
     cfg, source, overrides = recipe(method,args.backbone,args.seed,args.device,args.reproduction,args.nobn_lr_scale)
     if args.fake_data:
         torch.set_num_threads(1)
-        cfg.update(memory_size=40, memory_per_class=4)
+        cfg.update(memory_size=20, memory_per_class=2)
     from experiments.parallel_validity import dataset_fingerprint
     identity = dict(benchmark='v4_competitor', arm=args.method, effective_method=method, seed=args.seed,
         backbone=args.backbone, order=args.order, nobn_lr_scale=args.nobn_lr_scale, cfg_source=source,
@@ -209,10 +197,15 @@ def run(args):
         upstream_commit=cil.UPSTREAM_PIN, competitor_pins=PINS,
         implementation=SOURCES.get(method, dict(source=f'PyCIL/models/{method}.py', reimplemented=False)),
         expected_tasks=2 if args.fake_data else 20,
+        class_order=class_order(args.seed,args.order,None if args.fake_data else args.data_dir),
+        training=training_settings(args.fake_data,args.reproduction,args.nobn_lr_scale if args.backbone=='nobn' else 1.),
+        probe=dict(size=4 if args.fake_data else 256,seed=0,source='seen test classes'),
+        feature_probe=dict(tasks=[5,10,15,20],optimizer='LBFGS',max_iter=100,initialization='zeros',
+                           data='all seen train, test transforms',regularization=0),
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         initialization_seed=1 if args.reproduction else args.seed,
         epochs='1/1 fixture' if args.fake_data else ('200/170' if args.reproduction else '100/50'),
-        fixture='two-channel float64 residual backbone, 8 images/class, memory 40' if args.fake_data else None,
+        fixture='two-channel float64 residual backbone, 8 images/class, memory 20' if args.fake_data else None,
         resume='exact task-boundary restart, including method state and RNG')
     out = Path(args.out).resolve(); out.mkdir(parents=True,exist_ok=True)
     progress = Progress(out, identity)
@@ -318,14 +311,8 @@ def run(args):
                     result = dict(status='DIVERGED',identity=identity,task=task+1,nonfinite_params=True,tasks=tasks)
                     lop.write_json(out/'summary.json',result)
                     return result
-                row = task_metrics(learner,manager,tasks,task+1)
-                with read_only(learner._network):
-                    generator = torch.Generator().manual_seed(871)
-                    indices = torch.randperm(len(learner.test_loader.dataset),generator=generator)[:(4 if args.fake_data else 256)]
-                    records = [learner.test_loader.dataset[int(i)] for i in indices]
-                    probe = (torch.stack([r[1] for r in records]).to(learner._device),
-                             torch.tensor([r[2] for r in records],device=learner._device))
-                    diagnostics.append(dict(task=task+1,**diagnose(learner._network,probe)))
+                row, diagnostic = measure_task(learner,manager,tasks,boundary,4 if args.fake_data else 256)
+                diagnostics.append(diagnostic)
                 learner.after_task()
                 tasks.append(row); checkpoint()
             seconds = base_seconds+time.monotonic()-started
@@ -335,6 +322,10 @@ def run(args):
                 seconds=seconds,gpu_hours=seconds/3600 if args.device != 'cpu' else 0.,
                 average_incremental_accuracy=tasks[-1]['cnn_average_accuracy'],
                 last_accuracy=tasks[-1]['cnn_top1'],resume_supported=True)
+            for label in ('cnn','nme'):
+                result.update({label+'_'+name: tasks[-1][label+'_'+name] for name in
+                               ('average_accuracy','last_accuracy','forgetting')})
+                result[label+'_learning_accuracy'] = float(np.mean([t[label+'_learning_accuracy'] for t in tasks]))
             if args.reproduction:
                 difference = result['average_incremental_accuracy']-CFLAT_REFERENCE['value']
                 result['reproduction'] = dict(**CFLAT_REFERENCE,delta_cnn_pp=difference,
@@ -377,7 +368,7 @@ def sweep(args):
     return best
 
 
-def matched(args):
+def selected_config(args):
     if args.best_config:
         best = json.loads(Path(args.best_config).read_text())
         if best.get('synthetic') != args.fake_data or best.get('method') != args.method or best.get('code_commit') != code_commit() or best.get('source_digest') != os.environ.get('VNA_SOURCE_DIGEST'):
@@ -393,6 +384,11 @@ def matched(args):
         config = best['config']
     elif len(grid(args.method)) == 1: config = grid(args.method)[0]
     else: raise ValueError('--best-config is required for tuned methods')
+    return config
+
+
+def matched(args):
+    config = selected_config(args)
     results = []
     for backbone in ('nobn','bn'):
         for seed in range(args.seeds):

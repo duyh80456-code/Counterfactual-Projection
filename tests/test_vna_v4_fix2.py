@@ -335,3 +335,28 @@ def test_task_end_probe_every_arm_fixed_seeded_read_only(arm, benchmark, tmp_pat
     import json
     write_events(tmp_path, engine)
     assert json.loads((tmp_path/'diagnostics.json').read_text()) == engine.activities
+
+
+def test_7_9_bad_warm_start_resets_to_zero_bitwise():
+    from projection.cg import conjugate_gradient
+    matrix = torch.diag(torch.tensor([1.,2.,4.],dtype=torch.float64))
+    rhs = torch.tensor([1.,-2.,3.],dtype=torch.float64)
+    zero = conjugate_gradient(lambda x: matrix@x,rhs,max_iter=200,tolerance=1e-3)
+    warm = conjugate_gradient(lambda x: matrix@x,rhs,x0=100*rhs,max_iter=200,tolerance=1e-3)
+    assert warm.warm_reset and warm.converged
+    assert torch.equal(warm.solution,zero.solution)
+    assert warm.residual_history == zero.residual_history
+
+
+def test_authority_measurement_preserves_training_state():
+    model, site, batch, spec, ctx, optimizer = problem(True)
+    engine = V3Engine('vna_gir'); engine.begin_task(1)
+    for p in model.parameters(): p.grad = torch.ones_like(p)
+    before = deepcopy(model.state_dict()),deepcopy(optimizer.state_dict()),rng_state(),[p.grad.clone() for p in model.parameters()]
+    state = engine.state_dict()
+    report = engine.preflight(model,[site],batch,spec,ctx,optimizer)
+    _assert_bitwise(before,(model.state_dict(),optimizer.state_dict(),rng_state(),[p.grad for p in model.parameters()]))
+    after = engine.state_dict()
+    after['protocol'].pop('preflight_points')
+    _assert_bitwise(state,after)
+    assert report['trials'][0]['vna_seconds'] > 0

@@ -395,3 +395,73 @@ C-Flat reproduction retains trainer.py:_set_random's torch initialization
 seed 1 and DataManager's original shuffle=True / seed-1993 NumPy permutation;
 main matched runs seed initialization by the run seed. Both paths enable the
 native deterministic cuDNN settings. The initialization seed is recorded.
+
+## V4 integration and notebook registration (2026-10-19, before main results)
+
+1. **Algorithm and cleanup.** The main full arm calls the merged public V3Engine
+   T26–T28 implementation with fixed r=16 and four live candidates/site. Removed
+   duplicate phase-4 setup/diagnose implementations; see CLEANUP.md for these
+   and the earlier phase-1/2 deletions. The unused native backbone classifier is
+   omitted consistently for main and competitor arms after native initialization.
+2. **Main setup.** All arms share phase-3 class ordering, SkipInit conversion,
+   100/50 epochs, [30,60,85]/[24,35] milestones, dynamic memory 2000, seed-0
+   256-example seen-test probe, CE diagnostics, CNN/NME per-class metrics, and
+   zero-initialized LBFGS feature probes. PODNet keeps its native cosine head and
+   splits later-task training into 30 training + 20 classifier finetuning epochs.
+   Synthetic tests alone use a four-example probe and pooled tiny residual model.
+3. **Random control.** M3 uses noBN/random, paired seeds 0/1/2. Predict smaller
+   full-minus-baseline benefit than superclass order. Reuse M1's noBN schedule
+   when attached; otherwise calibrate on superclass data and record
+   `schedule_source=self`. Collectors reject different backbone authority timings
+   when combining results: rerun with one attached authority for pooled claims.
+4. **Round-1 questions.** Paired by seed: Q1 mean learning accuracy(full) > base;
+   Q2 final forgetting(full) <= base; Q3 average incremental accuracy(full) > base.
+   Tables use mean ± sample standard deviation, paired deltas, wins and GPU-hour
+   ratios separately for backbone/order and CNN/NME.
+5. **Trap checks, descriptive only.** For superclass/noBN iCaRL, final dead or
+   dormant >=10%; learning accuracy falls >=5 percentage points between sequence
+   halves; final forgetting >10 points; unreach increases across tasks. Record
+   outcomes without stopping a run.
+6. **Competitor selection.** C1 tunes seed 0, noBN, superclass by CNN average
+   incremental accuracy; ties retain grid order. CBP rates {1e-6,1e-5,1e-4,1e-3},
+   maturity 100; ReDo tau {0,.025,.1} × reset epochs {1,5}; S&P shrink {.4,.8}
+   × perturbation scale {1e-4,1e-2}; UPGD utility decay {.99,.999,.9999} × noise
+   {.01,.1,1}. C3/C4 require C1 selections with matching source/dataset/grid
+   provenance. PODNet/WA/GEM/C-Flat use native configurations without a sweep.
+7. **Compute schedule.** Budget 1.0× ordinary iCaRL training time. K0 is the
+   smallest measured feasible geometric gap; applications start at the first
+   task iteration, then gaps K0, 2K0, 4K0. M1/M2 use the actual main setup for
+   three read-only application measurements in each of tasks 1/2. Preflight
+   trains one first-task epoch, then stops after task-2 measurement three; its
+   projection uses the production 100/50-epoch task lengths. It runs neither an
+   exact solver audit nor a damping search. BN and noBN have separate schedules.
+8. **Damping initialization.** mu0 = .01 tr(F)/p (eight Hutchinson vectors) is
+   initialization only, never tuned; record it from the engine protocol.
+
+**Resolved theory/prompt discrepancies and earlier-phase clarifications:**
+T26(d/f) failure/rejection doubles mu and keeps nu=2, rather than doubling nu;
+T26(e) uses d^T F d, excluding damping, and infinity for zero denominator.
+GIR biases include zero and the five registered quantiles. Production CG has
+200 iterations, replacing the former 50. UPGD's registered three decay values
+are the union of its two original experiment grids (CIFAR alone has two).
+S&P uses the official fresh-native-initialization perturbation, rather than
+inventing Gaussian noise. C-Flat reproduction overrides its Inc10 JSON to the
+published B0 Inc5 column, retains torch initialization seed 1 and class-order
+seed 1993, and records both CNN/NME deltas to 59.13%; the reference image does
+not identify the head, so its gate remains UNVERIFIED_HEAD. Feature-probe
+optimizer/initialization and all-seen-class forgetting follow phase 3's
+registered definitions. No new algorithm formula changes were introduced.
+
+**GradMax:** SVD/eigh NaNs follow exploding model parameters; bias-inclusive row
+norms feed back into larger installed units. Keep its original formula, fall
+back to CBP initialization on invalid proposals, log `gir_fallback`, and log
+nonfinite intervention parameters/step with DIVERGED status (CLEANUP.md).
+
+Nine v4 notebooks M1/M2/M3/C1/C2/C3/C4/C5/B5w are generated with one
+`REPO_COMMIT=PLACEHOLDER` argument for supervisor repinning, one lane per T4,
+existing exact resume/deadline/exit-75/archive handling, unified result tables,
+flag rates and figures. B5 is regression: its figure explicitly labels native
+last-50 online error / negative task loss AUC as stability/plasticity proxies;
+class forgetting/learning accuracy are undefined there. Historical B5 resume
+notebooks retain their separate original-source restoration path. No notebook
+or real training was executed in this phase.

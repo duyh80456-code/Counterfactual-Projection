@@ -30,9 +30,10 @@ class Prediction(nn.Module):
 
 def sites_for(model):
     from convs.cifar_resnet import ResNetBasicblock
+    from convs.ucir_cifar_resnet import ResNetBasicblock as CosineBlock
     return [HookSite(model, f'{path}.conv_a', f'{path}.conv_b', 'conv',
                      between=(f'{path}.bn_a', 'virtual_relu'))
-            for path, block in model.named_modules() if isinstance(block, ResNetBasicblock)]
+            for path, block in model.named_modules() if isinstance(block, (ResNetBasicblock, CosineBlock))]
 
 
 def loss_context(learner, batch):

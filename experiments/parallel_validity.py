@@ -59,7 +59,7 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
             raise ValueError(f'{job}: incomplete v4 competitor tasks')
         for i,row in enumerate(tasks,1):
             if len(row.get('cnn_per_class',[])) != 5*i or any(not math.isfinite(row.get(k,float('nan'))) for k in
-                    ('cnn_top1','cnn_new_accuracy','cnn_average_accuracy','cnn_forgetting','learning_accuracy')):
+                    ('cnn_top1','cnn_new_top1','cnn_average_accuracy','cnn_forgetting','cnn_learning_accuracy')):
                 raise ValueError(f'{job}: incomplete/nonfinite v4 metrics')
         fingerprint = protocol.get('dataset_fingerprint')
         if (not isinstance(fingerprint,dict) or set(fingerprint) != {'train','test','meta'} or

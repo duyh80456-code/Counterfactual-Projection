@@ -138,7 +138,7 @@ def test_b5_validator_rejects_partial_rates_and_protocol_mismatch():
 
 
 
-def runner_functions(tmp_path, preset='Q2'):
+def runner_functions(tmp_path, preset='M1'):
     import re
     namespace=dict(re=re,sys=__import__('sys'),ROOT=tmp_path,DATA_ROOT=tmp_path,
                    RUN_ROOT=tmp_path,RUN_TAG='test',Path=Path,json=json,
@@ -152,38 +152,52 @@ def runner_functions(tmp_path, preset='Q2'):
 def test_authority_preflight_produces_shared_schedule_and_no_hold(tmp_path):
     namespace=runner_functions(tmp_path)
     launched=[]
-    namespace['launch']=lambda command,*args:launched.append(command) or True
-    namespace['prepare_schedule']('icarl',0)
+    namespace.update(archive_outputs=lambda: None, pause_due=lambda: False)
+    def launch(command,*args):
+        launched.append(command)
+        path = Path(command[command.index('--schedule-output')+1])
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('{}')
+        return True
+    namespace['launch']=launch
+    namespace['prepare_schedule']('nobn')
     cmd=launched[0]
-    assert '--preflight-only' in cmd and '--schedule-output' in cmd
-    assert cmd[cmd.index('--arm')+1]=='icarl_vna'
-    (tmp_path/'_schedules'/'icarl.json').write_text('{}')  # stands in for the preflight output
-    for job in ('icarl_kself__inc10__s1993','icarl_vna_b0__inc10__s1993'):
-        command=namespace['command'](job)
-        assert command[command.index('--schedule')+1]==str(tmp_path/'_schedules'/'icarl.json')
-    assert 'FULL RUN HELD' not in RUNNER and 'raise RuntimeError' not in RUNNER[:RUNNER.index('finally:')]
-    namespace['PRESET']='Q1'
-    (tmp_path/'_schedules'/'icarl.json').unlink(missing_ok=True)
-    launched.clear()
-    namespace['prepare_schedule']('icarl',0)
-    assert not launched  # non-authority notebooks never recalibrate
-    assert namespace['command']('icarl_kself__inc10__s1993') is None
-    assert namespace['command']('icarl__inc10__s1993') is not None
+    assert '--preflight-only' in cmd and cmd[cmd.index('--arm')+1]=='icarl_full'
+    assert 'experiments.main_cil' in cmd
+    assert cmd[cmd.index('--schedule-source')+1]=='authority'
+    cmd=namespace['command']('icarl_full__nobn__superclass__s0')
+    assert Path(cmd[cmd.index('--schedule')+1]).name=='icarl_noBN.json'
+    (tmp_path/'_schedules'/'icarl_noBN.json').unlink()
+    namespace['PRESET']='M3'
+    namespace['prepare_schedule']('nobn')
+    assert launched[-1][launched[-1].index('--schedule-source')+1]=='self'
 
 
-def test_registered_40_regression_jobs_and_rate_commands(tmp_path):
-    jobs=PRESETS['P-B5'][2]
-    assert len(jobs)==40 and len(set(jobs))==40
-    namespace=runner_functions(tmp_path)
-    (tmp_path/'_schedules').mkdir(); (tmp_path/'_schedules'/'regression.json').write_text('{}')
-    checks=[j for j in jobs if '__rate' in j]
-    assert len(checks)==4 and all(j.endswith('__s0') for j in checks)
-    for job in jobs:
-        cmd=namespace['command'](job)
-        if job.startswith('b5_cbp'):
-            rate=cmd[cmd.index('--replacement-rate')+1]
-            assert rate==(job.split('__rate')[1].split('__')[0] if '__rate' in job else '1e-3')
-    assert len(PRESETS['P-PM'][2])==24
+def test_v4_notebooks_build_and_expected_jobs():
+    counts={'M1':6,'M2':6,'M3':6,'C1':4,'C2':24,'C3':12,'C4':12,'C5':1,'B5w':36}
+    assert set(PRESETS)==set(counts)
+    for name, jobs in PRESETS.items():
+        assert sum(map(len,jobs))==counts[name]
+        value=json.loads(json.dumps(build('PLACEHOLDER',name)))
+        assert value['nbformat']==4 and isinstance(value['metadata'],dict)
+        assert all(c['cell_type'] in ('code','markdown') and isinstance(c['source'],list) for c in value['cells'])
+        config={}
+        exec(''.join(value['cells'][0]['source']),config)
+        assert config['REPO_COMMIT']=='PLACEHOLDER'
+        assert (config['JOBS_GPU0'],config['JOBS_GPU1'],config['JOBS_CPU'])==jobs
+        for item in value['cells']:
+            if item['cell_type']=='code': ast.parse(''.join(item['source']))
+        final=''.join(value['cells'][-1]['source'])
+        assert all(token in final for token in ('report(records)','stability_plasticity','gir_fallback','warm_reset','rejected','skip_reason'))
+    assert all('sweep' in job for lane in PRESETS['C1'] for job in lane)
+    assert {j.split('__')[1] for lane in PRESETS['C2'] for j in lane}=={'bn','nobn'}
+    namespace=runner_functions(Path('/tmp/v4-jobs'))
+    for name in ('M1','M2','M3','C1','C2','C5','B5w'):
+        namespace['PRESET']=name
+        for lane in PRESETS[name]:
+            for job in lane:
+                cmd=namespace['command'](job)
+                assert '--out' in cmd and '--device' in cmd
 
 
 def test_collector_shared_schedule_and_paired_decisions():

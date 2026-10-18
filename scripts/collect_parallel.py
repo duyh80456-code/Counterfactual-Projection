@@ -124,7 +124,7 @@ def validate_result(job, summary, protocol, tasks, expected_commit=None, source_
             common.pop(key)
     if setting in ('icarl','online') and (not isinstance(fingerprint,dict) or set(fingerprint)!={'train','test','meta'} or any(not re.fullmatch('[0-9a-f]{64}',str(v)) for v in fingerprint.values())):
         raise ValueError(f'{job}: missing dataset fingerprint')
-    return commit, (setting,json.dumps(protocol.get('model_config'),sort_keys=True),cfg.get('learner') if setting=='online' else None), dict(dataset=fingerprint, common=common,
+    return commit, (setting,json.dumps(protocol.get('model_config'),sort_keys=True),cfg.get('learner') if setting=='online' else cfg.get('num_features') if setting=='regression' else None), dict(dataset=fingerprint, common=common,
                                     source_digest=protocol.get('source_digest'))
 
 
@@ -176,6 +176,10 @@ def collect(inputs, run_tag):
     if len(digests)>1: raise ValueError('mixed source_digest artifacts')
     offline=[r['protocol'].get('dataset_fingerprint') for r in jobs.values() if r['protocol'].get('setting')=='icarl' or r['protocol'].get('benchmark') in ('cil_competitor','v4_competitor')]
     if offline and any(f != offline[0] for f in offline): raise ValueError('offline CIL dataset mismatch')
+    scales = {r['protocol'].get('nobn_lr_scale',1.) for r in jobs.values()
+              if (r['protocol'].get('algorithm_version') == 'v4' or r['protocol'].get('benchmark') == 'v4_competitor')
+              and r['protocol'].get('backbone') in ('nobn','resnet32_nobn')}
+    if len(scales)>1: raise ValueError('mixed noBN learning-rate scales')
     validate_shared_schedules(jobs)
     return jobs
 
@@ -187,8 +191,8 @@ def validate_shared_schedules(jobs):
         if not schedule: continue
         if not isinstance(schedule,dict): raise ValueError(f'{job}: schedule must contain authority artifact')
         setting=(protocol.get('setting'),json.dumps(protocol.get('model_config'),sort_keys=True))
-        if protocol.get('algorithm_version') == 'v4':
-            setting = (protocol.get('setting'), protocol.get('backbone'))
+        if 'K0' in schedule:
+            setting = (protocol.get('setting'), protocol.get('backbone'), protocol.get('cfg',{}).get('num_features'))
             signature = {key:schedule.get(key) for key in ('K0','seconds_per_application','code_commit','source_digest')}
             if not isinstance(signature['K0'],int) or signature['K0'] < 1: raise ValueError(f'{job}: missing shared K0')
         else:
@@ -309,29 +313,6 @@ def vna_cost(record):
                 vna_over_train=f'{seconds/train:.4f}' if train else '')
 
 
-def report_v4(jobs):
-    groups = {}
-    records = [r for r in jobs.values() if r['protocol'].get('benchmark') == 'v4_competitor']
-    controls = {(r['protocol']['backbone'],r['protocol']['order'],r['protocol']['seed']):r for r in records if r['protocol']['arm'] == 'icarl'}
-    for record in records:
-        p = record['protocol']
-        groups.setdefault((p['arm'],p['backbone'],p['order']),[]).append(record)
-    rows = []
-    for (arm,backbone,order), group in sorted(groups.items()):
-        deltas = []
-        for r in group:
-            p = r['protocol']
-            control = controls.get((backbone,order,p['seed']))
-            if control:
-                deltas.append(r['tasks'][-1]['cnn_average_accuracy']-control['tasks'][-1]['cnn_average_accuracy'])
-        rows.append(dict(arm=arm,backbone=backbone,order=order,seeds=len(group),
-            average_accuracy=mean_sd([r['tasks'][-1]['cnn_average_accuracy'] for r in group]),
-            final_forgetting=mean_sd([r['tasks'][-1]['cnn_forgetting'] for r in group]),
-            learning_accuracy=mean_sd([statistics.mean(t['learning_accuracy'] for t in r['tasks']) for r in group]),
-            paired_delta=mean_sd(deltas),seeds_won=sum(d>0 for d in deltas)))
-    if rows: markdown('V4 matched competitors',rows,['arm','backbone','order','seeds','average_accuracy','final_forgetting','learning_accuracy','paired_delta','seeds_won'])
-
-
 def report(jobs):
     from experiments.main_cil_results import table
     main_rows = table(jobs.values())
@@ -342,8 +323,7 @@ def report(jobs):
             row['delta'] = f"{delta['mean']:.2f} ± {delta['std']:.2f}" if delta else None
         markdown('Main CIL B0 Inc5', main_rows, ['arm','backbone','class_order','metric','seeds',
                  'estimate','delta','paired_seeds','seeds_won','ratio_vs_icarl'])
-    report_v4(jobs)
-    jobs = {k:r for k,r in jobs.items() if r['protocol'].get('algorithm_version') != 'v4'}
+    jobs = {k:r for k,r in jobs.items() if r['protocol'].get('algorithm_version') != 'v4' and r['protocol'].get('benchmark') != 'v4_competitor'}
     if not jobs: return
     report_v3(jobs)
     cil = [cil_row(r) for name,r in sorted(jobs.items()) if name.startswith('icarl') or r['protocol'].get('benchmark') in ('cil_competitor','v4_competitor')]
