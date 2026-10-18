@@ -349,3 +349,49 @@ solver counters only when every exact solve converges.
 - Phase 3 consumes the public Phase 2 API and does not implement T26–T28. Its
   local smoke substitutes a diagnose API spy until the Phase 2 branch is merged;
   no numerical diagnostic claim is made from that fixture.
+
+## V4 phase 4 (2026-10-19, before competitor results)
+
+Competitors use B0 Inc5, memory 2000, 100/50 epochs, seed-matched superclass
+order and BN/SkipInit variants. Tune on seed 0 / noBN by CNN average
+incremental accuracy; ties retain grid order. Fake fixtures never select a
+configuration for real runs. Disabled competitors dispatch directly to iCaRL.
+ReDo ports dopamine weight_recyclers.py (estimate_neuron_score,
+NeuronRecycler.recycle_dead_neurons/create_masks, weight_reinit_random/zero,
+reset_momentum), NHWC axes transposed to NCHW; only the first convolution of
+residual branches is recycled, as in the upstream ResNet rule. CBP calls
+ResGnT on those same unbranched conv_a -> conv_b pairs, supplying neutral
+bias/BN compatibility objects where the backbone lacks them.
+S&P ports warm_start/run.py:shrink_perturb: perturbations are a fresh native
+initialization, not Gaussian parameter noise; fresh initialization buffers
+are retained. UPGD calls FirstOrderGlobalUPGD from the official repository.
+DISCREPANCY: label_permuted_cifar10.py:19 has two utility decays, not three.
+The registered 3x3 grid uses the union with label_permuted_emnist.py:19:
+{0.99,0.999,0.9999} x sigma {0.01,0.1,1.0}; it does not invent a fourth value.
+C-Flat uses its original iCaRL training class and optimizer, rho=lamb=0.2;
+reproduction uses random order, BN, seed 1993, 200/170 epochs, B0 Inc5.
+Reference: 59.13% average accuracy, C-Flat/resources/cflat_results.png,
+Table 1, iCaRL w/ C-Flat, CIFAR-100 B0_Inc5 (README.md:20 embeds image).
+Its exps/icarl.json defaults to Inc10; reproduction overrides to Inc5 to
+match that published column. Task-boundary checkpoints replay an interrupted
+task from its initial model, method state and RNG, preserving optimizer
+updates exactly without serializing ephemeral hooks or closures.
+No real sweeps or long training runs are authorized by the local tiny-test rule.
+PyCIL's unused convnet.fc is omitted from all v4 arms (including the baseline)
+after initialization: its forward never uses it and GEM/UPGD assume every
+listed parameter has a gradient. This changes parameter counting, not logits,
+SGD updates or initialization RNG. PODNet retains its native cosine head;
+its 50 later-task epochs comprise 30 native training + 20 classifier finetuning
+(the one-epoch fixture disables the finetuning round). Feature probes use
+frozen features, all seen train data, and a 100-iteration LBFGS CE linear head;
+probe RNG, modes, buffers and training gradients are isolated.
+The C-Flat reference image labels only average accuracy, without identifying
+CNN or NME. The reproduction runner records both differences from 59.13%
+and UNVERIFIED_HEAD until the published classifier is established. It never
+chooses the closer head after observing results. B5 widths are 5/20/100 with
+width-specific schedules; the launcher rejects legacy engine state without
+persistent mu/nu and does not execute the old algorithm as a v4 fallback.
+C-Flat reproduction retains trainer.py:_set_random's torch initialization
+seed 1 and DataManager's original shuffle=True / seed-1993 NumPy permutation;
+main matched runs seed initialization by the run seed. Both paths enable the
+native deterministic cuDNN settings. The initialization seed is recorded.
