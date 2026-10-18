@@ -298,7 +298,7 @@ def build(commit, preset=None, run_tag='vna_v3_pilot', source_digest=None):
         for item in result['cells']:
             item['source'] = [line.replace('0'*40,commit) for line in item['source']]
     cells=result['cells']
-    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1/M2 own backbone schedules; C3/C4 require C1 selections. PLACEHOLDER must be repinned before publication.')
+    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1/M2 own backbone schedules; C3/C4 require C1 selections.')
     cells[1]=cell('code',config(commit,PRESETS[preset] if preset else ([],[],[]),run_tag,preset,source_digest))
     cells[2]=cell('code',''.join(cells[2]['source'])+OVERLAY)
     setup=''.join(cells[3]['source'])
