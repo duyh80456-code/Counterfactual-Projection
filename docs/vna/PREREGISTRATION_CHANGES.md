@@ -312,3 +312,39 @@ using K instead of K_E; only `vna_b0` and settings without old classes are
 unprotected. Exact checks use up to 2000 CG iterations and affect adaptive
 solver counters only when every exact solve converges.
 17. **Preflight-only exact checks (2026-10-18, before any v3 results).** Full-run arms load and keep the calibrated `cg_tol`, `tol`, and `power_iters` without running exact checks.
+
+## V4 phase 3 setup (2026-10-19, before any main results)
+
+- CIFAR-100 B0 Inc5: 20 superclass tasks, five fine labels per task; both superclass
+  order and within-superclass order permuted by seed. Random control retains PyCIL's
+  seeded permutation. Root `/kaggle/input/datasets/nlnk1607/cifar100`.
+- PyCIL iCaRL configuration, memory 2000 with `fixed_memory=False`, native SGD,
+  weight decay, augmentation and T=2. First/later epochs 100/50; milestones scaled
+  from 200/170 epochs to [30,60,85]/[24,35]. Initialization and data randomness use
+  the paired run seed. BN ResNet-32 and SkipInit noBN (biased convs, zero residual
+  scalar); parameter counts recorded after each task.
+- Arms `icarl` and `icarl_full`; r=16, live candidate budget 4/site, geometric
+  application gaps K0,2K0,4K0 within each task. Main full runs require the Phase 2
+  backbone authority schedule, budget 1.0x baseline train time. No tuning here.
+- `nobn_lr_scale` is 1 unless a task-1 NaN loss requires 0.5; the runner records
+  `nobn_lr_halving_required` and a DIVERGED status. The notebook/runner must restart
+  **all** noBN arms with the same recorded scale, in fresh output directories.
+- CNN/NME total, old, new and learning accuracies; forgetting averaged over all
+  seen fine classes using max strictly earlier accuracy minus current, including zero
+  forgetting for newly seen classes; average incremental and final accuracy.
+  Probe: deterministic seed-0 selection of 256 seen-class test samples (all samples
+  if the tiny fake fixture has fewer); read-only public Phase 2 `diagnose()`.
+- Feature accuracy at tasks 5/10/15/20: frozen features from all seen training
+  samples under test transforms, multinomial linear probe, zero initialization,
+  unregularized cross entropy, LBFGS with strong Wolfe and max_iter=100; eval on
+  all seen test samples. This fixes unspecified probe optimizer details in §5.
+- Paired seeds 0,1,2: preregister Q1 mean learning accuracy increases, Q2 final
+  forgetting does not increase, Q3 average incremental accuracy increases. Predict
+  a smaller full-versus-baseline benefit for random than superclass order. Report
+  mean±sample std, paired deltas and seeds won separately for CNN/NME and setup.
+- Trap checks (descriptive, never stop training): superclass/noBN iCaRL final dead
+  or dormant >=10%, learning accuracy drops >=5pp from first to second half,
+  final forgetting >10pp, and unreach increases over tasks.
+- Phase 3 consumes the public Phase 2 API and does not implement T26–T28. Its
+  local smoke substitutes a diagnose API spy until the Phase 2 branch is merged;
+  no numerical diagnostic claim is made from that fixture.

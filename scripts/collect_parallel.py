@@ -33,7 +33,7 @@ def files(source):
         raise ValueError(f'unsupported input: {source}')
 
 
-def validate_result(job, summary, protocol, tasks, expected_commit=None, source_digest=None):
+def validate_result(job, summary, protocol, tasks, expected_commit=None, source_digest=None, artifacts=None):
     if source_digest is not None and protocol.get('source_digest') != source_digest:
         raise ValueError(f'{job}: source_digest mismatch')
     if protocol.get('setting') not in ('regression','mnist','icarl','online') and not protocol.get('competitor'):
@@ -62,6 +62,49 @@ def validate_result(job, summary, protocol, tasks, expected_commit=None, source_
         raise ValueError(f'{job}: missing completed tasks')
     if summary.get('tasks') is not None and summary['tasks'] != tasks:
         raise ValueError(f'{job}: task artifacts disagree')
+    if protocol.get('algorithm_version') == 'v4' and protocol.get('setting') == 'icarl':
+        from experiments.main_cil import ARMS, RESULT_FILES
+        if protocol.get('arm') not in ARMS or protocol['arm'] != job.split('__')[0]:
+            raise ValueError(f'{job}: arm identity mismatch')
+        match = re.search(r'__s(\d+)$', job)
+        if match and protocol.get('seed') != int(match[1]): raise ValueError(f'{job}: seed identity mismatch')
+        if len(tasks) != 20 or protocol.get('expected_tasks') != 20:
+            raise ValueError(f'{job}: incomplete main CIL trajectory')
+        cfg = protocol.get('cfg',{})
+        if any(cfg.get(k) != v for k,v in dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False).items()):
+            raise ValueError(f'{job}: main CIL requires B0 Inc5 and dynamic memory 2000')
+        if protocol.get('backbone') not in ('resnet32','resnet32_nobn') or protocol.get('r') != 16:
+            raise ValueError(f'{job}: invalid main CIL backbone/rank')
+        training = protocol.get('training',{})
+        if any(training.get(k) != v for k,v in dict(first_epochs=100,later_epochs=50,
+                first_milestones=[30,60,85],later_milestones=[24,35]).items()):
+            raise ValueError(f'{job}: incorrect main CIL training schedule')
+        if protocol.get('class_order_kind') not in ('superclass','random') or sorted(protocol.get('class_order',[])) != list(range(100)):
+            raise ValueError(f'{job}: invalid class order')
+        for i, row in enumerate(tasks, 1):
+            if row.get('task') != i: raise ValueError(f'{job}: unordered tasks')
+            for label in ('cnn','nme'):
+                for metric in ('top1','new_top1','learning_accuracy','forgetting','average_accuracy','last_accuracy'):
+                    if not isinstance(row.get(label+'_'+metric),(int,float)) or not math.isfinite(row[label+'_'+metric]):
+                        raise ValueError(f'{job}: missing/nonfinite {label}_{metric}')
+                if i>1 and (not isinstance(row.get(label+'_old_top1'),(int,float)) or not math.isfinite(row[label+'_old_top1'])):
+                    raise ValueError(f'{job}: missing old-class accuracy')
+                if set(row.get(label+'_per_class',{})) != {str(c) for c in range(i*5)}:
+                    raise ValueError(f'{job}: missing per-class metrics')
+            if i in (5,10,15,20) and (not isinstance(row.get('feature_accuracy'), (int,float))
+                    or not math.isfinite(row['feature_accuracy'])):
+                raise ValueError(f'{job}: missing feature accuracy')
+        if artifacts is not None:
+            required = set(RESULT_FILES)
+            if protocol['arm'] == 'icarl_full': required.add('interventions.json')
+            if not required <= set(artifacts): raise ValueError(f'{job}: missing main CIL files')
+            if artifacts['status.json']['status'] != 'COMPLETED': raise ValueError(f'{job}: incomplete status')
+            diagnostics = artifacts['diagnostics.json']
+            if len(diagnostics) != 20 or [r.get('task') for r in diagnostics] != list(range(1,21)):
+                raise ValueError(f'{job}: incomplete diagnostics')
+            for row in diagnostics:
+                if row.get('probe_size',256) != 256 or any(not math.isfinite(row.get(k,float('nan'))) for k in ('B','reach','unreach')):
+                    raise ValueError(f'{job}: invalid diagnostics')
     cfg=protocol.get('cfg',{})
     setting=protocol.get('setting')
     expected = protocol.get('expected_tasks')
@@ -98,14 +141,14 @@ def collect(inputs, run_tag):
             # Only the job's own files, never a nested rates/.../summary.json.
             if len(parts) != index+3: continue
             job, name = parts[index+1], parts[-1]
-            if name in {'summary.json','tasks.json','protocol.json','reproduction_gate.json','vna_log.csv','continual_eval.csv'}:
+            if name in {'summary.json','tasks.json','protocol.json','reproduction_gate.json','vna_log.csv','continual_eval.csv','diagnostics.json','interventions.json','status.json'}:
                 grouped.setdefault(job, {})[name] = data
         for job, payload in grouped.items():
             if 'summary.json' not in payload: continue
             record = {'job': job, 'source': str(source),
                       'summary': json.loads(payload['summary.json'])}
             if record['summary'].get('status') != 'COMPLETED': continue
-            for name in ('tasks.json','protocol.json','reproduction_gate.json'):
+            for name in ('tasks.json','protocol.json','reproduction_gate.json','diagnostics.json','interventions.json','status.json'):
                 if name in payload: record[name[:-5]] = json.loads(payload[name])
             if 'vna_log.csv' in payload:
                 record['vna'] = list(csv.DictReader(io.StringIO(payload['vna_log.csv'].decode())))
@@ -114,14 +157,16 @@ def collect(inputs, run_tag):
             if 'continual_eval.csv' in payload:
                 record['continual_eval'] = list(csv.DictReader(io.StringIO(payload['continual_eval.csv'].decode())))
             current, group, signature = validate_result(job, record['summary'],
-                record['protocol'], record['tasks'], commit)
+                record['protocol'], record['tasks'], commit, artifacts={
+                    **{name:record.get(name[:-5]) for name in payload if name.endswith('.json')},
+                    **{name:payload[name] for name in payload if not name.endswith('.json')}})
             commit = current
             if group in protocols and protocols[group] != signature:
                 raise ValueError(f'{job}: inconsistent comparison protocol')
             protocols[group] = signature
             previous = jobs.get(job)
             if previous is not None and any(previous.get(k) != record.get(k)
-                    for k in ('summary','protocol','tasks','reproduction_gate','vna','continual_eval')):
+                    for k in ('summary','protocol','tasks','reproduction_gate','vna','continual_eval','diagnostics','interventions','status')):
                 raise ValueError(f'{job}: conflicting duplicate completed results')
             jobs[job] = record
     digests={r['protocol'].get('source_digest') for r in jobs.values()}
@@ -139,8 +184,13 @@ def validate_shared_schedules(jobs):
         if not schedule: continue
         if not isinstance(schedule,dict): raise ValueError(f'{job}: schedule must contain authority artifact')
         setting=(protocol.get('setting'),json.dumps(protocol.get('model_config'),sort_keys=True))
-        signature={key:schedule.get(key) for key in ('K_base','mu_rel','cg_tol','tol','power_iters','code_commit','source_digest')}
-        if signature['K_base'] is None: raise ValueError(f'{job}: missing shared K_base')
+        if protocol.get('algorithm_version') == 'v4':
+            setting = (protocol.get('setting'), protocol.get('backbone'))
+            signature = {key:schedule.get(key) for key in ('K0','seconds_per_application','code_commit','source_digest')}
+            if not isinstance(signature['K0'],int) or signature['K0'] < 1: raise ValueError(f'{job}: missing shared K0')
+        else:
+            signature={key:schedule.get(key) for key in ('K_base','mu_rel','cg_tol','tol','power_iters','code_commit','source_digest')}
+            if signature['K_base'] is None: raise ValueError(f'{job}: missing shared K_base')
         if setting in shared and signature != shared[setting]:
             raise ValueError(f'{job}: inconsistent shared authority schedule')
         shared[setting]=signature
@@ -257,6 +307,17 @@ def vna_cost(record):
 
 
 def report(jobs):
+    from experiments.main_cil_results import table
+    main_rows = table(jobs.values())
+    if main_rows:
+        for row in main_rows:
+            row['estimate'] = f"{row['mean']:.2f} ± {row['std']:.2f}"
+            delta = row['paired_delta']
+            row['delta'] = f"{delta['mean']:.2f} ± {delta['std']:.2f}" if delta else None
+        markdown('Main CIL B0 Inc5', main_rows, ['arm','backbone','class_order','metric','seeds',
+                 'estimate','delta','paired_seeds','seeds_won','ratio_vs_icarl'])
+    jobs = {k:r for k,r in jobs.items() if r['protocol'].get('algorithm_version') != 'v4'}
+    if not jobs: return
     report_v3(jobs)
     cil = [cil_row(r) for name,r in sorted(jobs.items()) if name.startswith('icarl') or r['protocol'].get('benchmark')=='cil_competitor']
     controls={(r['init_cls'],r['increment'],r['seed']):r for r in cil if r['arm']=='icarl'}
@@ -364,11 +425,15 @@ def main():
     parser.add_argument('archives', nargs='+')
     parser.add_argument('--run-tag', required=True)
     parser.add_argument('--json-out')
+    parser.add_argument('--stability-figure')
     args = parser.parse_args()
     jobs = collect(args.archives, args.run_tag)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(dict(jobs={k:v['summary'] for k,v in jobs.items()},decisions=decisions(jobs)), indent=2)+'\n')
     report(jobs)
+    if args.stability_figure:
+        from experiments.main_cil_results import stability_plasticity
+        stability_plasticity(jobs.values(), args.stability_figure)
 
 
 if __name__ == '__main__': main()

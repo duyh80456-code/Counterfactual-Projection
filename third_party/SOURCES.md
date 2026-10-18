@@ -5,6 +5,10 @@
 | loss-of-plasticity | https://github.com/shibhansh/loss-of-plasticity | a6b79580d85f3025bdb601566d3627c5f489f13b | MIT | Regression, online MNIST and continual ImageNet networks and original training entry points |
 | PyCIL | https://github.com/LAMDA-CL/PyCIL (moved from G-U-N/PyCIL) | f3509b8ca3f20660ce4aa13f19d5283de81b4b35 | MIT | models/icarl.py `_KD_loss`, iCaRL and original main.py |
 | RepDistiller | https://github.com/HobbitLong/RepDistiller | b84f547c5db6a35318d4671d7d5c4de74c822403 | BSD-2-Clause | distiller_zoo/KD.py `DistillKL`, CIFAR ResNet/WRN and train_student.py |
+| upgd | https://github.com/mohmdelsayed/upgd | b75e90ad4b09c28971ac9dbb902a8fd86709b28c | MIT | Original UPGD optimizers (v4 competitors) |
+| C-Flat | https://github.com/WanNaa/C-Flat | f57a557523136834bdc28a4902cde9842859b2a8 | No LICENSE file | Original PyCIL C-Flat (v4 competitors) |
+| warm_start | https://github.com/JordanAsh/warm_start | 896176b2cf89f259bcde8e241a8987e6019741d0 | No LICENSE file | Official Ash & Adams shrink-and-perturb (v4 competitors) |
+| dopamine | https://github.com/google/dopamine | 5873f5494ee0c2d7c016d0ab2ad530354fec59d0 | Apache-2.0 | dopamine/labs/redo (v4 competitors) |
 
 Run `bash scripts/fetch_third_party.sh`. Clones are ignored; upstream is never
 vendor-edited. Patches: **none** in Stage B core. Any future patches go under
