@@ -235,7 +235,8 @@ class ICaRLHook:
                     if hook.intervention is not None and hook.learner is not None and self is hook.learner.train_loader:
                         # Subtract correction time: the K rule uses ordinary training cost.
                         elapsed = time.monotonic()-iteration_started
-                        events = hook.intervention.engine.events
+                        events = getattr(hook.intervention, 'events', None)
+                        if events is None: events = hook.intervention.engine.events
                         correction = events[-1] if events else {}
                         if correction.get('kind')=='correction' and correction.get('step')==hook.steps:
                             elapsed -= correction['seconds']
