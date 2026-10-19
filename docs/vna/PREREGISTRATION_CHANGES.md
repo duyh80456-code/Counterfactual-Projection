@@ -562,7 +562,9 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   noBN, superclass order, seed 0, has a finite training loss for the first 3 tasks. Chosen once
   as the first step of notebook `vna4_M1` (four `--max-tasks 3` probes, two per GPU, status
   PROBE/DIVERGED, never results), written to `_schedules/nobn_lr.json` in M1's output (other
-  noBN notebooks attach M1's output), and passed as `--nobn-lr-scale` to every noBN run of
+  noBN notebooks attach M1's output; a noBN notebook started without it runs the same probe
+  itself, and the collector rejects results that mix noBN lr scales), and passed as
+  `--nobn-lr-scale` to every noBN run of
   every arm and competitor (including the M1 K0 preflight and the C1 sweeps). BN runs keep the
   original PyCIL lr.
 - **GIR cost (no formula change).** In the first M1 attempt one application took ~2000 s: with

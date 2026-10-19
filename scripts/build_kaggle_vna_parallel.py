@@ -142,7 +142,7 @@ def nobn_lr_scale():
     destination = ROOT/'_schedules'/'nobn_lr.json'
     attached_file('nobn_lr.json', destination, lambda v: v.get('code_commit') == REPO_COMMIT
                   and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
-    if not destination.exists(): raise FileNotFoundError('Attach the M1 output (nobn_lr.json) before any noBN run')
+    if not destination.exists(): raise FileNotFoundError('nobn_lr.json missing: the noBN lr probe did not finish')
     return json.loads(destination.read_text())['nobn_lr_scale']
 
 def select_nobn_lr():
@@ -232,11 +232,13 @@ def run_cpu(job):
     return result
 
 try:
-    if PRESET == 'M1' and not (ROOT/'_schedules'/'nobn_lr.json').exists():
+    # Any notebook with noBN jobs reuses an attached nobn_lr.json (normally M1's) or runs the probe itself.
+    needs_nobn = PRESET in ('M1','M3') or any('__nobn__' in j or j.endswith('__sweep') for j in JOBS_GPU0+JOBS_GPU1)
+    if needs_nobn and not (ROOT/'_schedules'/'nobn_lr.json').exists():
         attached_file('nobn_lr.json', ROOT/'_schedules'/'nobn_lr.json', lambda v: v.get('code_commit') == REPO_COMMIT
                       and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
-    if PRESET == 'M1' and not (ROOT/'_schedules'/'nobn_lr.json').exists():
-        # noBN lr probe first (two per GPU); its result is saved in M1's output for every noBN notebook.
+    if needs_nobn and not (ROOT/'_schedules'/'nobn_lr.json').exists():
+        # noBN lr probe first (two per GPU); the result is saved in this notebook's output.
         probes = [f'lrprobe__s{scale}' for scale in LR_SCALES]
         with ThreadPoolExecutor(max_workers=2) as probe_pool:
             for future in [probe_pool.submit(run_gpu,0,probes[::2]),probe_pool.submit(run_gpu,1,probes[1::2])]:
