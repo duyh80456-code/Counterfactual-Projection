@@ -25,9 +25,6 @@ COST = {'icarl_full': 2., 'icarl_cflat': 2.9, 'gem': 1.5, 'podnet': 1.3,
         'icarl_cbp__sweep': 4., 'icarl_redo__sweep': 6., 'icarl_snp__sweep': 4., 'icarl_upgd__sweep': 9.}
 
 
-def paired(gpu0, gpu1): return (gpu0, gpu1, [])
-
-
 def lanes(jobs):
     """Balance the two T4 lanes: longest job first onto the less loaded GPU."""
     load, gpus = [0., 0.], ([], [])
@@ -38,10 +35,11 @@ def lanes(jobs):
 
 
 PRESETS = {
-    # Main runs: same seed of icarl_full (GPU0) and icarl (GPU1) run side by side.
-    'M1': paired(cil_jobs(('icarl_full',)), cil_jobs(('icarl',))),
-    'M2': paired(cil_jobs(('icarl_full',), ('bn',)), cil_jobs(('icarl',), ('bn',))),
-    'M3': paired(cil_jobs(('icarl_full',), order='random'), cil_jobs(('icarl',), order='random')),
+    'M1': lanes(cil_jobs(('icarl','icarl_full'))),
+    'M2': lanes(cil_jobs(('icarl','icarl_full'), ('bn',))),
+    'M3': lanes(cil_jobs(('icarl','icarl_full'), order='random')),
+    # Seed 0 only: icarl_full (GPU0) next to icarl (GPU1), same setup and K0 authority as M1.
+    'M1s0': (['icarl_full__nobn__superclass__s0'], ['icarl__nobn__superclass__s0'], []),
     'C1': lanes([method+'__sweep' for method in TUNED]),
     'C2': lanes(cil_jobs(('podnet','wa','gem','icarl_cflat'), ('nobn','bn'))),
     'C3': lanes(cil_jobs(TUNED, ('nobn',))),
@@ -208,6 +206,7 @@ def run_cpu(job):
     return result
 
 try:
+    if PRESET in ('M1','M2','M3','M1s0') and not pause_due(): prepare_schedule('bn' if PRESET == 'M2' else 'nobn')
     if PRESET == 'B5w':
         for width in (5,20,100):
             destination = ROOT/'_schedules'/f'b5_width{width}.json'
@@ -230,11 +229,7 @@ try:
     archive_outputs()
     if not pause_due():
         with ThreadPoolExecutor(max_workers=2) as gpu_pool, ThreadPoolExecutor(max_workers=4) as cpu_pool:
-            def gpu0_lane():
-                # The K0 preflight runs on GPU0 before icarl_full; GPU1's baselines need no K0 and start at once.
-                if PRESET in ('M1','M2','M3'): prepare_schedule('bn' if PRESET == 'M2' else 'nobn')
-                if not pause_due(): run_gpu(0,JOBS_GPU0)
-            futures=[gpu_pool.submit(gpu0_lane),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
+            futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
             futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
             for future in futures: future.result()
 finally:
