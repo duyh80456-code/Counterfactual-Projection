@@ -17,7 +17,7 @@ from experiments.runners import pycil as cil
 from experiments.competitors import cil_recipe, cil_runtime
 from experiments.runners.lop import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
-from experiments.vna_resume import Progress, Status
+from experiments.vna_resume import Progress, Status, log
 
 DATA_ROOT = '/kaggle/input/datasets/nlnk1607/cifar100'
 # Engine arm per CIL arm; ablations (§4 round 3) differ from icarl_full in one component only.
@@ -213,6 +213,12 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
                               **vna_v3.diagnose(model, batch, sites=sites_for(model)))
         if row['task'] in (5,10,15,20):
             row['feature_accuracy'] = feature_accuracy(learner, manager, boundary)
+    fmt = lambda v: 'n/a' if v is None else f'{v:.2f}'
+    log(f"TASK {row['task']}: CNN top1 {fmt(row.get('cnn_top1'))} (old {fmt(row.get('cnn_old_top1'))}, "
+        f"new {fmt(row.get('cnn_new_top1'))}) avg {fmt(row.get('cnn_average_accuracy'))} "
+        f"forget {fmt(row.get('cnn_forgetting'))} learn {fmt(row.get('cnn_learning_accuracy'))} | "
+        f"NME top1 {fmt(row.get('nme_top1'))} avg {fmt(row.get('nme_average_accuracy'))} | "
+        f"reach {fmt(diagnostic.get('reach'))} feature_acc {fmt(row.get('feature_accuracy'))}")
     return row, diagnostic
 
 
