@@ -560,8 +560,9 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
 - **Rule (replaces the "halve lr on a task-1 NaN" rule of §3):** lr_noBN = 0.1 x scale with the
   largest scale in {1, 0.5, 0.2, 0.1} (lr 0.1, 0.05, 0.02, 0.01) such that baseline `icarl`,
   noBN, superclass order, seed 0, has a finite training loss for the first 3 tasks. Chosen once
-  by notebook `vna4_L1` (four `--max-tasks 3` probes, status PROBE/DIVERGED, never results),
-  written to `_schedules/nobn_lr.json`, and passed as `--nobn-lr-scale` to every noBN run of
+  as the first step of notebook `vna4_M1` (four `--max-tasks 3` probes, two per GPU, status
+  PROBE/DIVERGED, never results), written to `_schedules/nobn_lr.json` in M1's output (other
+  noBN notebooks attach M1's output), and passed as `--nobn-lr-scale` to every noBN run of
   every arm and competitor (including the M1 K0 preflight and the C1 sweeps). BN runs keep the
   original PyCIL lr.
 - **GIR cost (no formula change).** In the first M1 attempt one application took ~2000 s: with

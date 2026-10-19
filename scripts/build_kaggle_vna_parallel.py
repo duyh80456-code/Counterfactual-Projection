@@ -37,7 +37,6 @@ def lanes(jobs):
 LR_SCALES = (1., .5, .2, .1)
 
 PRESETS = {
-    'L1': lanes([f'lrprobe__s{scale}' for scale in LR_SCALES]),
     'M1': lanes(cil_jobs(('icarl','icarl_full'))),
     'M2': lanes(cil_jobs(('icarl','icarl_full'), ('bn',))),
     'M3': lanes(cil_jobs(('icarl','icarl_full'), order='random')),
@@ -139,11 +138,11 @@ def completed(job):
 def schedule_name(backbone): return 'icarl_BN.json' if backbone == 'bn' else 'icarl_noBN.json'
 
 def nobn_lr_scale():
-    # Registered noBN lr rule: chosen once by the L1 probe notebook, attached to every noBN run.
+    # Registered noBN lr rule: chosen once by the M1 lr probe, read from M1's output by every noBN run.
     destination = ROOT/'_schedules'/'nobn_lr.json'
     attached_file('nobn_lr.json', destination, lambda v: v.get('code_commit') == REPO_COMMIT
                   and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
-    if not destination.exists(): raise FileNotFoundError('Attach the L1 output (nobn_lr.json) before any noBN run')
+    if not destination.exists(): raise FileNotFoundError('Attach the M1 output (nobn_lr.json) before any noBN run')
     return json.loads(destination.read_text())['nobn_lr_scale']
 
 def select_nobn_lr():
@@ -233,7 +232,18 @@ def run_cpu(job):
     return result
 
 try:
-    if PRESET in ('M1','M2','M3'): prepare_schedule('bn' if PRESET == 'M2' else 'nobn')
+    if PRESET == 'M1' and not (ROOT/'_schedules'/'nobn_lr.json').exists():
+        attached_file('nobn_lr.json', ROOT/'_schedules'/'nobn_lr.json', lambda v: v.get('code_commit') == REPO_COMMIT
+                      and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
+    if PRESET == 'M1' and not (ROOT/'_schedules'/'nobn_lr.json').exists():
+        # noBN lr probe first (two per GPU); its result is saved in M1's output for every noBN notebook.
+        probes = [f'lrprobe__s{scale}' for scale in LR_SCALES]
+        with ThreadPoolExecutor(max_workers=2) as probe_pool:
+            for future in [probe_pool.submit(run_gpu,0,probes[::2]),probe_pool.submit(run_gpu,1,probes[1::2])]:
+                future.result()
+        if not pause_due(): select_nobn_lr()
+        archive_outputs()
+    if PRESET in ('M1','M2','M3') and not pause_due(): prepare_schedule('bn' if PRESET == 'M2' else 'nobn')
     if PRESET == 'B5w':
         for width in (5,20,100):
             destination = ROOT/'_schedules'/f'b5_width{width}.json'
@@ -259,7 +269,6 @@ try:
             futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
             futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
             for future in futures: future.result()
-        if PRESET == 'L1' and not pause_due(): select_nobn_lr()
 finally:
     archive_stop.set(); archiver.join(timeout=10); archive_outputs()
 '''
@@ -280,7 +289,7 @@ if PRESET == 'C1':
         job = method+'__nobn__superclass__s0'
         validate_result(job,record['summary'],record['protocol'],record['tasks'],REPO_COMMIT,SOURCE_DIGEST)
         records[job] = dict(record,job=job)
-if PRESET not in ('B5w','L1'): report(records)
+if PRESET != 'B5w': report(records)
 flags = []
 for record in records.values():
     events = record.get('interventions',record.get('vna',[]))
