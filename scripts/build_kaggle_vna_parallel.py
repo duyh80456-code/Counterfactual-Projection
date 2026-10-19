@@ -97,6 +97,7 @@ if SOURCE_DIGEST:
 '''
 
 RUNNER = r'''import re
+LR_SCALES = (1., .5, .2, .1)  # registered noBN lr probe scales (lr = 0.1 * scale)
 from concurrent.futures import ThreadPoolExecutor
 from scripts.collect_parallel import validate_result
 ROOT = STAGE_B / RUN_TAG
