@@ -551,3 +551,25 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
 - S_x, N and the site input are computed once per site per application (unchanged by B_v = 0
   swaps). `icarl_gir` applications are no longer logged as skipped.
 - GEM was run locally with quadprog (2 tasks x 1 epoch, enabled): completes.
+
+### noBN learning-rate rule and GIR cost fixes (2026-10-19, after the first M1 attempt, before any v4 result)
+
+- **Observed:** in the first M1 attempt every noBN run (all arms, including baseline `icarl`)
+  produced a non-finite loss in epoch 1–2 of task 2 at lr 0.1; the old rule only reacted to a
+  task-1 NaN. Those runs are discarded (no result was used).
+- **Rule (replaces the "halve lr on a task-1 NaN" rule of §3):** lr_noBN = 0.1 x scale with the
+  largest scale in {1, 0.5, 0.2, 0.1} (lr 0.1, 0.05, 0.02, 0.01) such that baseline `icarl`,
+  noBN, superclass order, seed 0, has a finite training loss for the first 3 tasks. Chosen once
+  by notebook `vna4_L1` (four `--max-tasks 3` probes, status PROBE/DIVERGED, never results),
+  written to `_schedules/nobn_lr.json`, and passed as `--nobn-lr-scale` to every noBN run of
+  every arm and competitor (including the M1 K0 preflight and the C1 sweeps). BN runs keep the
+  original PyCIL lr.
+- **GIR cost (no formula change).** In the first M1 attempt one application took ~2000 s: with
+  SkipInit alpha = 0 every unit of every block has f_u = 0, so all ~560 units were treated as
+  dead and the candidate set was rebuilt per unit, although s_v = J_v^T r = 0 and no swap can
+  happen. Now: (i) the candidate set (a_v, B_v = 0) is built once per site and rebuilt only
+  after an accepted swap (next direction S_x-orthogonal; at most the ~4 generalized directions
+  per site per application); (ii) a site with s_v = 0 for every candidate is skipped before any
+  slot work; (iii) dead slots swap on ell_beta > 0 without solving Gamma, since T28(b) gives
+  Gamma = gain >= ell_beta (logged as `gain_lower_bound`, `Gamma=None`); live slots keep the
+  exact-jump check and the top-2 Gamma solve.

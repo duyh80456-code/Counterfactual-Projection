@@ -614,6 +614,7 @@ class V3Engine:
         e_beta, H_beta = values['e_beta'], values['H_beta']
         rperp = values['rperp_beta']
         init = next((t[len('girinit-'):] for t in self.arm.split('_') if t.startswith('girinit-')), None)
+        residual = values['e'] if init in ('gradmax', 'tiny') else rperp
         top = int(self.protocol.get('gamma_candidates', 2))
         records = []
         def baseline_gain():
@@ -628,6 +629,14 @@ class V3Engine:
             units = units_by_site.get(site.module_name, [])
             if not units: continue
             used_directions, site_cache = [], {}
+            # The incoming proposal (a_v, B_v = 0) does not depend on the slot: build it once per
+            # site and again only after an accepted swap (next direction S_x-orthogonal).
+            def site_proposals():
+                return self.prepare_gir(model, site, batch, spec, ctx, optimizer, units, iteration,
+                    residual=residual, used_directions=used_directions, gradmax=init == 'gradmax',
+                    random_rows=init == 'random', H=H_beta, cache=site_cache)
+            proposals = site_proposals()
+            if not proposals: continue  # s_v = 0 for every candidate (e.g. SkipInit alpha = 0)
             width = site.second_layer.layer.weight.shape[1]
             contributions = {u: self._slot_contribution(model, site, batch, spec, ctx, u)
                              for u in range(width)}
@@ -636,52 +645,55 @@ class V3Engine:
             live = sorted((u for u in units if u not in dead), key=lambda u: norms[u])
             live = live[:int(self.protocol.get('live_candidates', 4))]
             for unit in dead + live:
-                # Exact jump first: a live slot whose removal raises L or L_KD is never swapped.
-                jump_L, jump_KD = (0., 0.) if unit in dead else self._slot_jump(
-                    model, site, batch, spec, ctx, unit)
-                if jump_L > 0 or (jump_KD is not None and jump_KD > 0): continue
-                proposals = self.prepare_gir(model, site, batch, spec, ctx, optimizer,
-                    [unit], iteration, residual=values['e'] if init in ('gradmax', 'tiny') else rperp,
-                    used_directions=used_directions, gradmax=init == 'gradmax',
-                    random_rows=init == 'random', H=H_beta, cache=site_cache)
                 if not proposals: break
-                if q0 is None: q0 = baseline_gain()
-                f_u = contributions[unit]
-                jump = -float(e_beta @ f_u) + .5*float(f_u @ H_beta(f_u))
-                best = None
-                # ell_beta orders proposals; the exact net gain is solved only for the best few.
-                for proposal in proposals[:top]:
-                    snapshot = self._training_state(model, optimizer)
-                    warm, ages = deepcopy(self.warm), deepcopy(self.install_ages)
-                    try:
-                        with torch.no_grad(): self.install_gir(model, site, [proposal], [unit], optimizer)
-                        with training_products(model, active, A, batch[0]) as pc:
-                            ep = e_beta - H_beta(f_u)
-                            rhs = pc.JT(ep).double()
-                            action = lambda v: pc.JT(H_beta(pc.Jv(v))) + mu*v
-                            cg = conjugate_gradient(action, rhs, max_iter=200,
-                                tolerance=self.tol, eps=1e-30)
-                            q_prime = -.5*float(rhs @ cg.solution)
-                        gamma = -jump + q0-q_prime
-                        candidate = dict(site=site.module_name, unit=int(unit),
-                            slot_kind='dead' if unit in dead else 'live',
-                            f_u_norm_Hb=norms[unit], j_L=jump_L, j_KD=jump_KD,
-                            Gamma=gamma, ell_beta=proposal['score'], bias_q=proposal.get('bias_q'),
-                            task=self.task, iteration=iteration,
-                            cg_iterations=cg.iterations, cg_relative_residual=cg.relative_residual)
-                        if gamma > 0 and (best is None or gamma > best[0]): best = (gamma, proposal, candidate)
-                    finally:
-                        self._restore_training_state(model, optimizer, snapshot)
-                        self.warm, self.install_ages = warm, ages
-                if best is not None:
-                    gamma, proposal, record = best
-                    self.install_gir(model, site, [proposal], [unit], optimizer)
-                    used_directions.append(proposal['direction'])
-                    record['contribution_norm'] = {1: None, 5: None, 10: None}
-                    self.install_ages[(site.module_name, int(unit))] = dict(
-                        site=site.module_name, unit=int(unit), task=self.task, iteration=iteration)
-                    records.append(record)
-                    q0 = None
+                if unit in dead:
+                    # T28(b): for a dead slot Gamma equals the Schur gain >= ell_beta > 0; no solve needed.
+                    proposal = proposals[0]
+                    record = dict(site=site.module_name, unit=int(unit), slot_kind='dead',
+                        f_u_norm_Hb=0., j_L=0., j_KD=0., Gamma=None, gain_lower_bound=proposal['score'],
+                        ell_beta=proposal['score'], bias_q=proposal.get('bias_q'),
+                        task=self.task, iteration=iteration)
+                else:
+                    # Exact jump first: a live slot whose removal raises L or L_KD is never swapped.
+                    jump_L, jump_KD = self._slot_jump(model, site, batch, spec, ctx, unit)
+                    if jump_L > 0 or (jump_KD is not None and jump_KD > 0): continue
+                    if q0 is None: q0 = baseline_gain()
+                    f_u = contributions[unit]
+                    jump = -float(e_beta @ f_u) + .5*float(f_u @ H_beta(f_u))
+                    best = None
+                    # ell_beta orders proposals; the exact net gain is solved only for the best few.
+                    for candidate_proposal in proposals[:top]:
+                        snapshot = self._training_state(model, optimizer)
+                        warm, ages = deepcopy(self.warm), deepcopy(self.install_ages)
+                        try:
+                            with torch.no_grad(): self.install_gir(model, site, [candidate_proposal], [unit], optimizer)
+                            with training_products(model, active, A, batch[0]) as pc:
+                                ep = e_beta - H_beta(f_u)
+                                rhs = pc.JT(ep).double()
+                                action = lambda v: pc.JT(H_beta(pc.Jv(v))) + mu*v
+                                cg = conjugate_gradient(action, rhs, max_iter=200,
+                                    tolerance=self.tol, eps=1e-30)
+                                q_prime = -.5*float(rhs @ cg.solution)
+                            gamma = -jump + q0-q_prime
+                            if gamma > 0 and (best is None or gamma > best[0]):
+                                best = (gamma, candidate_proposal, dict(site=site.module_name, unit=int(unit),
+                                    slot_kind='live', f_u_norm_Hb=norms[unit], j_L=jump_L, j_KD=jump_KD,
+                                    Gamma=gamma, ell_beta=candidate_proposal['score'],
+                                    bias_q=candidate_proposal.get('bias_q'), task=self.task, iteration=iteration,
+                                    cg_iterations=cg.iterations, cg_relative_residual=cg.relative_residual))
+                        finally:
+                            self._restore_training_state(model, optimizer, snapshot)
+                            self.warm, self.install_ages = warm, ages
+                    if best is None: continue
+                    _, proposal, record = best
+                self.install_gir(model, site, [proposal], [unit], optimizer)
+                used_directions.append(proposal['direction'])
+                record['contribution_norm'] = {1: None, 5: None, 10: None}
+                self.install_ages[(site.module_name, int(unit))] = dict(
+                    site=site.module_name, unit=int(unit), task=self.task, iteration=iteration)
+                records.append(record)
+                q0 = None
+                proposals = site_proposals()
         return records
 
     def budget_guard(self, row, iteration):
@@ -941,11 +953,13 @@ class V3Engine:
         first = site.first_layer.layer
         for row in rows:
             row = row.clone()
+            energy = float(row @ S @ row)
             for used in used_directions:
                 denominator = used @ S @ used
                 if denominator > 0:
                     row -= used * ((used @ S @ row)/denominator)
-            if float(row @ S @ row) <= 1e-20: continue
+            # A direction already assigned to a slot leaves only round-off after S_x-orthogonalization.
+            if float(row @ S @ row) <= max(1e-20, 1e-8*energy): continue
             base = rows_proposal(site, row[None])
             for sign in (1., -1.):
                 trial = {k: None if v is None else sign*v for k, v in base.items()}
@@ -967,7 +981,8 @@ class V3Engine:
                     with training_products(model, [site], {site.module_name: candidate}, batch[0]) as pv:
                         size = sum(v.numel() for _, v in pv.extension_refs)
                         s_v = pv.JET(residual).double()
-                        if not torch.isfinite(s_v).all(): continue
+                        # s_v = 0 (e.g. SkipInit alpha = 0 on this branch) gives ell = 0: no curvature needed.
+                        if not torch.isfinite(s_v).all() or not bool(s_v.any()): continue
                         curvature = power_lambda_max(lambda v: pv.JET(metric(pv.JEv(v))), size,
                             dedicated_generator(self.seed, f'v4-ell:{self.task}:{iteration}:{len(proposals)}', x.device),
                             iterations=10, device=x.device)

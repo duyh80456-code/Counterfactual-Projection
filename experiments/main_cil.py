@@ -27,6 +27,9 @@ ENGINE_ARMS = {
     'icarl_kernel_self': 'kernel_self_vna_gir', 'icarl_gir_random': 'vna_gir_girinit-random',
     'icarl_gir_gradmax': 'vna_gir_girinit-gradmax', 'icarl_gir_tiny': 'vna_gir_girinit-tiny'}
 ARMS = ('icarl',)+tuple(ENGINE_ARMS)
+# noBN lr rule: lr = 0.1 * scale with the largest scale whose baseline icarl (seed 0) has no
+# non-finite loss in the first three tasks; applied to every noBN arm (PREREGISTRATION_CHANGES).
+NOBN_LR_SCALES = (1., .5, .2, .1)
 RESULT_FILES = ('summary.json', 'tasks.json', 'continual_eval.csv', 'diagnostics.json',
                 'protocol.json', 'status.json')
 
@@ -130,6 +133,7 @@ class Intervention:
 
 
 class Diverged(RuntimeError): pass
+class ProbeComplete(Exception): pass
 class PreflightComplete(Exception): pass
 
 
@@ -215,6 +219,7 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
 class MainHook(ICaRLHook):
     def __init__(self, *a, manager, status, **kw):
         self.fake = kw.get('fake', False)
+        self.max_tasks = kw.pop('max_tasks', None)
         super().__init__(*a, **kw)
         self.manager, self.status = manager, status
 
@@ -233,6 +238,7 @@ class MainHook(ICaRLHook):
         self.rows.append(diagnostic)
         self.tasks.append(row)
         if self.persist: self.persist(self)
+        if self.max_tasks and len(self.tasks) >= self.max_tasks: raise ProbeComplete()
 
 
 def run(args):
@@ -266,7 +272,7 @@ def run(args):
     from experiments.parallel_validity import dataset_fingerprint
     protocol = dict(setting='icarl', algorithm_version='v4', arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-        upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=2 if args.fake_data else 20,
+        upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=2 if args.fake_data else 20, max_tasks=args.max_tasks,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         data_dir=args.data_dir, class_order=order, class_order_kind=args.class_order,
         backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient,
@@ -309,7 +315,7 @@ def run(args):
         hook.manager = value
         return value
     hook = MainHook(seed=args.seed, fake=args.fake_data, persist=persist, progress=progress,
-                    intervention=intervention, manager=None, status=status)
+                    intervention=intervention, manager=None, status=status, max_tasks=args.max_tasks)
     started = time.monotonic()
     run_status, reason = 'COMPLETED', None
     try:
@@ -327,6 +333,8 @@ def run(args):
             schedule_source=args.schedule_source, r=16)
         write_json(Path(args.schedule_output), schedule)
         run_status = 'PREFLIGHT'
+    except ProbeComplete:
+        run_status = 'PROBE'
     except Diverged as exc:
         run_status, reason = 'DIVERGED', str(exc)
     except SystemExit as exc:
@@ -362,7 +370,8 @@ def parser():
     p.add_argument('--arm', choices=ARMS, default='icarl')
     p.add_argument('--backbone', choices=('resnet32', 'resnet32_nobn'), default='resnet32_nobn')
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
-    p.add_argument('--nobn-lr-scale', type=float, choices=(1.,.5), default=1.)
+    p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
+    p.add_argument('--max-tasks', type=int, help='lr probe only: stop after this many tasks (status PROBE)')
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--schedule')
     p.add_argument('--preflight-only', action='store_true')

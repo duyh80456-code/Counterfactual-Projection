@@ -22,7 +22,7 @@ from adapters.v4_competitors import CompetitorHook, PINS, ROOT, cflat_module, so
 from experiments.competitors import cil_runtime
 from experiments.runners import pycil as cil, lop
 from adapters.cil_setup import class_order, skipinit, FixtureBackbone
-from experiments.main_cil import measure_task, training_settings, recipe as main_recipe
+from experiments.main_cil import measure_task, training_settings, recipe as main_recipe, NOBN_LR_SCALES
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pause_if_due
 
@@ -407,7 +407,7 @@ def parser():
     p.add_argument('--seeds',type=int,choices=(3,5),default=3)
     p.add_argument('--backbone',choices=('bn','nobn'),default='nobn')
     p.add_argument('--order',choices=('superclass','random'),default='superclass')
-    p.add_argument('--nobn-lr-scale',type=float,choices=(1.,.5),default=1.)
+    p.add_argument('--nobn-lr-scale',type=float,choices=NOBN_LR_SCALES,default=1.)
     p.add_argument('--device',default='cpu')
     p.add_argument('--data-dir',default='/kaggle/input/datasets/nlnk1607/cifar100')
     p.add_argument('--config'); p.add_argument('--best-config')

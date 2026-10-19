@@ -29,7 +29,7 @@ Env: `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTAT
 ## Current layout
 - Main runs: `experiments/{pilot_v3,main_cil,v4_competitors,v4_b5_width}.py`.
 - Native runners: `experiments/runners/{pycil,lop}.py`; atomic artifacts: `experiments/io_utils.py`.
-- Build/collect: `scripts/{build_kaggle_vna_parallel,collect_parallel}.py`; nine `notebooks/vna4_*.ipynb`.
+- Build/collect: `scripts/{build_kaggle_vna_parallel,collect_parallel}.py`; ten `notebooks/vna4_*.ipynb` (L1 noBN lr probe first).
 - Authority and history: theory PDF/source, main-run prompt, PREREGISTRATION_CHANGES.md,
   CLEANUP.md, V4_PRERUN_REPORT.md and pilot_v3_summary.md in `docs/vna/`.
 - Retired Stage A/B measurement and old B5 resume entrypoints are removed. In-flight Kaggle runs

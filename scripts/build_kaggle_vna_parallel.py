@@ -34,7 +34,10 @@ def lanes(jobs):
     return (gpus[0], gpus[1], [])
 
 
+LR_SCALES = (1., .5, .2, .1)
+
 PRESETS = {
+    'L1': lanes([f'lrprobe__s{scale}' for scale in LR_SCALES]),
     'M1': lanes(cil_jobs(('icarl','icarl_full'))),
     'M2': lanes(cil_jobs(('icarl','icarl_full'), ('bn',))),
     'M3': lanes(cil_jobs(('icarl','icarl_full'), order='random')),
@@ -126,6 +129,7 @@ def completed(job):
     path = directory/'summary.json'
     if not path.exists(): return False
     summary = json.loads(path.read_text())
+    if job.startswith('lrprobe__'): return summary.get('status') in ('PROBE','DIVERGED')
     if summary.get('status') != 'COMPLETED': return False
     protocol = json.loads((directory/'protocol.json').read_text())
     tasks = json.loads((directory/'tasks.json').read_text())
@@ -133,6 +137,28 @@ def completed(job):
     return True
 
 def schedule_name(backbone): return 'icarl_BN.json' if backbone == 'bn' else 'icarl_noBN.json'
+
+def nobn_lr_scale():
+    # Registered noBN lr rule: chosen once by the L1 probe notebook, attached to every noBN run.
+    destination = ROOT/'_schedules'/'nobn_lr.json'
+    attached_file('nobn_lr.json', destination, lambda v: v.get('code_commit') == REPO_COMMIT
+                  and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
+    if not destination.exists(): raise FileNotFoundError('Attach the L1 output (nobn_lr.json) before any noBN run')
+    return json.loads(destination.read_text())['nobn_lr_scale']
+
+def select_nobn_lr():
+    probes = []
+    for scale in LR_SCALES:
+        path = ROOT/f'lrprobe__s{scale}'/'summary.json'
+        summary = json.loads(path.read_text()) if path.exists() else {}
+        probes.append(dict(scale=scale, lr=.1*scale, status=summary.get('status'), tasks=summary.get('tasks_run')))
+    finite = [p['scale'] for p in probes if p['status'] == 'PROBE' and p['tasks'] == 3]
+    if not finite: raise RuntimeError(f'no noBN lr scale is finite for 3 tasks: {probes}')
+    value = dict(rule='largest finite 3-task baseline', nobn_lr_scale=max(finite), lr=.1*max(finite),
+                 probes=probes, code_commit=REPO_COMMIT, source_digest=SOURCE_DIGEST)
+    (ROOT/'_schedules').mkdir(parents=True, exist_ok=True)
+    (ROOT/'_schedules'/'nobn_lr.json').write_text(json.dumps(value, indent=2))
+    print('NOBN_LR', json.dumps(value), flush=True)
 
 def prepare_schedule(backbone):
     filename = schedule_name(backbone)
@@ -146,6 +172,7 @@ def prepare_schedule(backbone):
            '--class-order','superclass','--seed','0','--out',str(ROOT/'_preflight'/backbone),
            '--device','cuda:0','--data-dir',str(DATA_ROOT),'--preflight-only',
            '--schedule-output',str(destination),'--schedule-source','self' if PRESET == 'M3' else 'authority']
+    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
     launch(cmd,0,backbone+'_preflight',RUN_ROOT/f'{RUN_TAG}_{backbone}_preflight.log')
     archive_outputs()
     if not destination.exists() and not pause_due(): raise RuntimeError('preflight did not produce K0')
@@ -158,10 +185,14 @@ def command(job):
                '--out',str(ROOT/job),'--resume']
         if arm != 'bp': cmd += ['--schedule',str(ROOT/'_schedules'/f'b5_width{width}.json')]
         return cmd
+    if job.startswith('lrprobe__'):
+        return [sys.executable,'-u','-m','experiments.main_cil','--arm','icarl','--backbone','resnet32_nobn',
+                '--class-order','superclass','--seed','0','--nobn-lr-scale',job.split('__s')[1],
+                '--max-tasks','3','--out',str(ROOT/job),'--device','cuda:0','--data-dir',str(DATA_ROOT)]
     if job.endswith('__sweep'):
         return [sys.executable,'-u','-m','experiments.v4_competitors','--method',job.split('__')[0],
                 '--mode','sweep','--device','cuda:0','--data-dir',str(DATA_ROOT),
-                '--out',str(ROOT/job),'--resume']
+                '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(nobn_lr_scale())]
     arm,backbone,order,seed = job.split('__'); seed = seed[1:]
     if arm in ('icarl','icarl_full'):
         cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm',arm,
@@ -169,6 +200,7 @@ def command(job):
                '--class-order',order,'--seed',seed,'--out',str(ROOT/job),
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
+        if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
         return cmd
     cmd = [sys.executable,'-u','-m','experiments.v4_competitors','--method',arm,
            '--backbone',backbone,'--order',order,'--seed',seed,'--out',str(ROOT/job),
@@ -181,6 +213,7 @@ def command(job):
         if path is None: raise FileNotFoundError(f'Attach C1 best_config.json for {arm}')
         cmd += ['--best-config',str(path)]
     if PRESET == 'C5': cmd += ['--reproduction']
+    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
     return cmd
 
 def run_gpu(gpu,jobs):
@@ -226,6 +259,7 @@ try:
             futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
             futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
             for future in futures: future.result()
+        if PRESET == 'L1' and not pause_due(): select_nobn_lr()
 finally:
     archive_stop.set(); archiver.join(timeout=10); archive_outputs()
 '''
@@ -246,7 +280,7 @@ if PRESET == 'C1':
         job = method+'__nobn__superclass__s0'
         validate_result(job,record['summary'],record['protocol'],record['tasks'],REPO_COMMIT,SOURCE_DIGEST)
         records[job] = dict(record,job=job)
-if PRESET != 'B5w': report(records)
+if PRESET not in ('B5w','L1'): report(records)
 flags = []
 for record in records.values():
     events = record.get('interventions',record.get('vna',[]))
