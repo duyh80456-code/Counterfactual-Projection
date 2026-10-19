@@ -582,3 +582,7 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   real PyCIL resnet32 noBN (batch 16): alpha = 0 application 94.5 s with GIR 0 s (every site
   skipped, s_v = 0); the remaining time is the S1 x_GN CG solve. Production timing comes from
   the M1 preflight on T4.
+- **noBN lr fixed (2026-10-19):** the 3-task baseline probe selected scale 0.5, i.e. lr 0.05
+  for every noBN run (init_lr = lrate = 0.05; BN runs keep 0.1). The value is now a registered
+  constant (`NOBN_LR_SCALE = 0.5` in the notebook builder, passed as `--nobn-lr-scale 0.5` to every
+  noBN job, preflight and sweep); the in-notebook probe step and `--max-tasks` were removed.

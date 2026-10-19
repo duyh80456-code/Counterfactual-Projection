@@ -34,8 +34,6 @@ def lanes(jobs):
     return (gpus[0], gpus[1], [])
 
 
-LR_SCALES = (1., .5, .2, .1)
-
 PRESETS = {
     'M1': lanes(cil_jobs(('icarl','icarl_full'))),
     'M2': lanes(cil_jobs(('icarl','icarl_full'), ('bn',))),
@@ -97,7 +95,7 @@ if SOURCE_DIGEST:
 '''
 
 RUNNER = r'''import re
-LR_SCALES = (1., .5, .2, .1)  # registered noBN lr probe scales (lr = 0.1 * scale)
+NOBN_LR_SCALE = .5  # registered noBN lr = 0.05, chosen by the 3-task baseline probe (PREREGISTRATION_CHANGES)
 from concurrent.futures import ThreadPoolExecutor
 from scripts.collect_parallel import validate_result
 ROOT = STAGE_B / RUN_TAG
@@ -129,7 +127,6 @@ def completed(job):
     path = directory/'summary.json'
     if not path.exists(): return False
     summary = json.loads(path.read_text())
-    if job.startswith('lrprobe__'): return summary.get('status') in ('PROBE','DIVERGED')
     if summary.get('status') != 'COMPLETED': return False
     protocol = json.loads((directory/'protocol.json').read_text())
     tasks = json.loads((directory/'tasks.json').read_text())
@@ -137,28 +134,6 @@ def completed(job):
     return True
 
 def schedule_name(backbone): return 'icarl_BN.json' if backbone == 'bn' else 'icarl_noBN.json'
-
-def nobn_lr_scale():
-    # Registered noBN lr rule: chosen once by the M1 lr probe, read from M1's output by every noBN run.
-    destination = ROOT/'_schedules'/'nobn_lr.json'
-    attached_file('nobn_lr.json', destination, lambda v: v.get('code_commit') == REPO_COMMIT
-                  and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
-    if not destination.exists(): raise FileNotFoundError('nobn_lr.json missing: the noBN lr probe did not finish')
-    return json.loads(destination.read_text())['nobn_lr_scale']
-
-def select_nobn_lr():
-    probes = []
-    for scale in LR_SCALES:
-        path = ROOT/f'lrprobe__s{scale}'/'summary.json'
-        summary = json.loads(path.read_text()) if path.exists() else {}
-        probes.append(dict(scale=scale, lr=.1*scale, status=summary.get('status'), tasks=summary.get('tasks_run')))
-    finite = [p['scale'] for p in probes if p['status'] == 'PROBE' and p['tasks'] == 3]
-    if not finite: raise RuntimeError(f'no noBN lr scale is finite for 3 tasks: {probes}')
-    value = dict(rule='largest finite 3-task baseline', nobn_lr_scale=max(finite), lr=.1*max(finite),
-                 probes=probes, code_commit=REPO_COMMIT, source_digest=SOURCE_DIGEST)
-    (ROOT/'_schedules').mkdir(parents=True, exist_ok=True)
-    (ROOT/'_schedules'/'nobn_lr.json').write_text(json.dumps(value, indent=2))
-    print('NOBN_LR', json.dumps(value), flush=True)
 
 def prepare_schedule(backbone):
     filename = schedule_name(backbone)
@@ -172,7 +147,7 @@ def prepare_schedule(backbone):
            '--class-order','superclass','--seed','0','--out',str(ROOT/'_preflight'/backbone),
            '--device','cuda:0','--data-dir',str(DATA_ROOT),'--preflight-only',
            '--schedule-output',str(destination),'--schedule-source','self' if PRESET == 'M3' else 'authority']
-    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
+    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
     launch(cmd,0,backbone+'_preflight',RUN_ROOT/f'{RUN_TAG}_{backbone}_preflight.log')
     archive_outputs()
     if not destination.exists() and not pause_due(): raise RuntimeError('preflight did not produce K0')
@@ -185,14 +160,10 @@ def command(job):
                '--out',str(ROOT/job),'--resume']
         if arm != 'bp': cmd += ['--schedule',str(ROOT/'_schedules'/f'b5_width{width}.json')]
         return cmd
-    if job.startswith('lrprobe__'):
-        return [sys.executable,'-u','-m','experiments.main_cil','--arm','icarl','--backbone','resnet32_nobn',
-                '--class-order','superclass','--seed','0','--nobn-lr-scale',job.split('__s')[1],
-                '--max-tasks','3','--out',str(ROOT/job),'--device','cuda:0','--data-dir',str(DATA_ROOT)]
     if job.endswith('__sweep'):
         return [sys.executable,'-u','-m','experiments.v4_competitors','--method',job.split('__')[0],
                 '--mode','sweep','--device','cuda:0','--data-dir',str(DATA_ROOT),
-                '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(nobn_lr_scale())]
+                '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(NOBN_LR_SCALE)]
     arm,backbone,order,seed = job.split('__'); seed = seed[1:]
     if arm in ('icarl','icarl_full'):
         cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm',arm,
@@ -200,7 +171,7 @@ def command(job):
                '--class-order',order,'--seed',seed,'--out',str(ROOT/job),
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
-        if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
+        if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
         return cmd
     cmd = [sys.executable,'-u','-m','experiments.v4_competitors','--method',arm,
            '--backbone',backbone,'--order',order,'--seed',seed,'--out',str(ROOT/job),
@@ -213,7 +184,7 @@ def command(job):
         if path is None: raise FileNotFoundError(f'Attach C1 best_config.json for {arm}')
         cmd += ['--best-config',str(path)]
     if PRESET == 'C5': cmd += ['--reproduction']
-    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(nobn_lr_scale())]
+    if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
     return cmd
 
 def run_gpu(gpu,jobs):
@@ -233,19 +204,6 @@ def run_cpu(job):
     return result
 
 try:
-    # Any notebook with noBN jobs reuses an attached nobn_lr.json (normally M1's) or runs the probe itself.
-    needs_nobn = PRESET in ('M1','M3') or any('__nobn__' in j or j.endswith('__sweep') for j in JOBS_GPU0+JOBS_GPU1)
-    if needs_nobn and not (ROOT/'_schedules'/'nobn_lr.json').exists():
-        attached_file('nobn_lr.json', ROOT/'_schedules'/'nobn_lr.json', lambda v: v.get('code_commit') == REPO_COMMIT
-                      and v.get('source_digest') == SOURCE_DIGEST and v.get('rule') == 'largest finite 3-task baseline')
-    if needs_nobn and not (ROOT/'_schedules'/'nobn_lr.json').exists():
-        # noBN lr probe first (two per GPU); the result is saved in this notebook's output.
-        probes = [f'lrprobe__s{scale}' for scale in LR_SCALES]
-        with ThreadPoolExecutor(max_workers=2) as probe_pool:
-            for future in [probe_pool.submit(run_gpu,0,probes[::2]),probe_pool.submit(run_gpu,1,probes[1::2])]:
-                future.result()
-        if not pause_due(): select_nobn_lr()
-        archive_outputs()
     if PRESET in ('M1','M2','M3') and not pause_due(): prepare_schedule('bn' if PRESET == 'M2' else 'nobn')
     if PRESET == 'B5w':
         for width in (5,20,100):
