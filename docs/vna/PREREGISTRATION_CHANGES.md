@@ -573,3 +573,9 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   slot work; (iii) dead slots swap on ell_beta > 0 without solving Gamma, since T28(b) gives
   Gamma = gain >= ell_beta (logged as `gain_lower_bound`, `Gamma=None`); live slots keep the
   exact-jump check and the top-2 Gamma solve.
+- **Gamma CG warm start (no formula change):** the live-slot Gamma solve warm-starts from the
+  base q_hat*(J) solution of the same window (the temporarily installed system differs in one
+  slot); the CG warm-start guard restarts from zero if that start is worse. Local CPU timing on
+  real PyCIL resnet32 noBN (batch 16): alpha = 0 application 94.5 s with GIR 0 s (every site
+  skipped, s_v = 0); the remaining time is the S1 x_GN CG solve. Production timing comes from
+  the M1 preflight on T4.

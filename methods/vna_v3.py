@@ -623,8 +623,8 @@ class V3Engine:
                 rhs0 = p0.JT(e_beta).double()
                 current = conjugate_gradient(lambda v: p0.JT(H_beta(p0.Jv(v)))+mu*v,
                     rhs0, max_iter=200, tolerance=self.tol, eps=1e-30)
-                return -.5*float(rhs0 @ current.solution)
-        q0 = None
+                return -.5*float(rhs0 @ current.solution), current.solution
+        q0 = base_x = None
         for site in sites:
             units = units_by_site.get(site.module_name, [])
             if not units: continue
@@ -657,7 +657,7 @@ class V3Engine:
                     # Exact jump first: a live slot whose removal raises L or L_KD is never swapped.
                     jump_L, jump_KD = self._slot_jump(model, site, batch, spec, ctx, unit)
                     if jump_L > 0 or (jump_KD is not None and jump_KD > 0): continue
-                    if q0 is None: q0 = baseline_gain()
+                    if q0 is None: q0, base_x = baseline_gain()
                     f_u = contributions[unit]
                     jump = -float(e_beta @ f_u) + .5*float(f_u @ H_beta(f_u))
                     best = None
@@ -671,7 +671,8 @@ class V3Engine:
                                 ep = e_beta - H_beta(f_u)
                                 rhs = pc.JT(ep).double()
                                 action = lambda v: pc.JT(H_beta(pc.Jv(v))) + mu*v
-                                cg = conjugate_gradient(action, rhs, max_iter=200,
+                                # One slot differs from the base system: warm-start from its solution (CG resets if worse).
+                                cg = conjugate_gradient(action, rhs, x0=base_x, max_iter=200,
                                     tolerance=self.tol, eps=1e-30)
                                 q_prime = -.5*float(rhs @ cg.solution)
                             gamma = -jump + q0-q_prime
