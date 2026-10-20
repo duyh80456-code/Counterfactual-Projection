@@ -59,7 +59,7 @@ def reject(engine, model, site, batch, spec, ctx, optimizer, monkeypatch):
         patch.setattr(engine, '_evaluate_current', lambda *a: (2., None))
         row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, force=True)
     assert row['rejected'] and engine.nu == 2.
-    assert engine.mu == 2*row['mu']
+    assert engine.mu == pytest.approx(row['mu']/3)
 
 
 def test_7_1c_rejected_step_restores_parameters_bn(monkeypatch):
@@ -79,18 +79,19 @@ def protected():
 
 def test_7_2a_protected_residual_matches_dense():
     model, site, batch, spec, ctx, _ = protected()
-    engine = V3Engine(); engine.tol = 1e-12
+    engine = V3Engine()
     with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
         op = GGNProducts(p, batch[1], spec, ctx); J, H = dense(p, op)
         values = engine._direction(p, op, .2)
         # Exercise the actual protected residual branch even when BetaRule selects zero.
         beta = 3.
         delta = torch.zeros_like(op.logits)
-        delta[:, :2] = -p.Jv(values['xO']).reshape_as(delta)[:, :2]
+        delta[:, :2] = -(values['G']@values['yO']).reshape_as(delta)[:, :2]
         eb = op.g-beta*values['H_old'](delta.flatten())
         Hb = H+beta*torch.stack([values['H_old'](v) for v in torch.eye(len(op.g), dtype=torch.float64)], 1)
-        x = values['solve']('gir_residual', p.JT(eb).double(), beta)
-        actual = eb-Hb@p.Jv(x)
+        from methods.vna_exact import OutputSolve
+        factor = OutputSolve(values['G'], values['blocks']+beta*values['old_blocks'], .2)
+        actual = eb-Hb@(values['G']@factor.solve(eb))
         expected = .2*torch.linalg.solve(Hb@J@J.T+.2*torch.eye(len(eb), dtype=torch.float64), eb)
         torch.testing.assert_close(actual, expected, atol=1e-8, rtol=0)
 
@@ -126,7 +127,8 @@ def test_7_2c_beta_zero_residual_bitwise(monkeypatch):
         return result
     monkeypatch.setattr(engine, '_direction', direction)
     def gir(*args):
-        assert torch.equal(args[-2]['rperp_beta'], seen[-1])
+        values=args[-2]; factor=values['factor']
+        torch.testing.assert_close(values['e_beta']-factor.metric(factor.G@factor.solve(values['e_beta'])), seen[-1], rtol=0, atol=1e-12)
         return []
     monkeypatch.setattr(engine, '_run_gir', gir)
     engine.apply(model, [site], batch, spec, ctx, opt, 1)
@@ -158,18 +160,21 @@ def gir_problem():
     with torch.no_grad():
         model[0].weight[:2].zero_(); model[0].bias[:2].fill_(-1)
         model[3].weight[:, :2].zero_()
-    engine = V3Engine('vna_gir'); engine.begin_task(1); engine.mu=.2; engine.tol=1e-12
+    engine = V3Engine('vna_gir'); engine.begin_task(1); engine.mu=.2
     return engine, model, site, batch, spec, ctx, opt
 
 
 def run_gir(engine, model, site, batch, spec, ctx, opt, units=(0,1)):
-    A = seed_proposals([site])
-    with training_products(model,[site],A,batch[0]) as p:
-        op = GGNProducts(p,batch[1],spec,ctx)
-        J, H = dense(p, op)
-        x = torch.linalg.solve(J.T@H@J+engine.mu*torch.eye(op.size, dtype=torch.float64), op.gradient)
-        values = dict(e_beta=op.g,H_beta=op.H,rperp_beta=op.g-op.H(p.Jv(x)),gir_x=x)
-    return engine._run_gir(model,[site],[site],A,batch,spec,ctx,opt,{site.module_name:list(units)},2,values,engine.mu)
+    from methods.vna_sites import HookSite
+    from methods.vna_exact import gram, OutputSolve
+    frozen=deepcopy(model)
+    fixed=HookSite(frozen,site.first,site.second,site.kind,between=site.between)
+    with training_products(frozen,[fixed],seed_proposals([fixed]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],spec,ctx);G,_=gram(p)
+        factor=OutputSolve(G,spec.metric_blocks(op.logits,ctx),engine.mu)
+        values=dict(e=op.g,e_beta=op.g,factor=factor)
+    return engine._run_gir(model,[site],frozen,[fixed],batch,spec,ctx,opt,
+        {site.module_name:list(units)},2,values,engine.mu)
 
 
 def test_two_dead_slots_get_distinct_sx_orthogonal_rows(monkeypatch):
@@ -189,12 +194,12 @@ def test_two_dead_slots_get_distinct_sx_orthogonal_rows(monkeypatch):
     records = run_gir(engine, model, site, batch, spec, ctx, opt)
     after = deepcopy(model.state_dict())
     assert len(records) == 2
-    assert len(residuals) == 2 and torch.equal(*residuals)
+    assert len(residuals) == 3 and not torch.equal(residuals[0],residuals[1])
     rows = torch.cat((model[0].weight[:2],model[0].bias[:2,None]),1)
     assert not torch.equal(rows[0], rows[1])
     # Bias quantile shifts are separate from the S_x-orthogonal selected directions.
     assert engine.install_ages.keys() == {(site.module_name,0),(site.module_name,1)}
-    assert not engine.warm
+    assert not hasattr(engine, 'warm')
     # Check the real temporary-network CG gain against a dense dead-slot Schur gain.
     A = seed_proposals([site])
     model.load_state_dict(before)
@@ -217,24 +222,18 @@ def test_7_3c_rejected_swap_restores_all_state(monkeypatch):
         result = original(*a, **kw)
         return result[:1]
     monkeypatch.setattr(engine,'prepare_gir',proposals)
-    import methods.vna_v3 as module
-    original_cg = module.conjugate_gradient
-    def cg(*a, **kw):
-        result = original_cg(*a, **kw)
-        # Zero recovery predicts a loss relative to the current fitted model.
-        if any(engine.install_ages): result.solution.zero_()
-        return result
-    monkeypatch.setattr(module,'conjugate_gradient',cg)
-    before = deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state(),deepcopy(engine.warm),deepcopy(engine.install_ages)
+    from methods.vna_exact import WoodburySwap
+    monkeypatch.setattr(WoodburySwap, 'gamma', lambda *a: -1.)
+    before = deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state(),deepcopy(engine.install_ages)
     assert not run_gir(engine,model,site,batch,spec,ctx,opt)
-    _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state(),engine.warm,engine.install_ages))
+    _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state(),engine.install_ages))
 
 
 def test_7_4_t25_bound_and_dense_reach():
     model, site, batch, spec, ctx, opt = problem()
-    engine = V3Engine('vna'); engine.begin_task(1); engine.tol=1e-12
+    engine = V3Engine('vna'); engine.begin_task(1)
     row = engine.apply(model,[site],batch,spec,ctx,opt,1,apply=False)
-    assert row['V'] <= row['lambda_E_B']+1e-10
+    assert row['V'] <= row['lambda_E']*row['B']+1e-10
     blocks = spec.metric_blocks(model(batch[0]),ctx)
     e = spec.residual(model(batch[0]),ctx).flatten()
     expected = e@torch.linalg.pinv(torch.block_diag(*blocks),hermitian=True)@e
@@ -260,7 +259,7 @@ def test_7_8_diagnose_read_only_parameters_buffers_optimizer_rng():
     before = deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state(),[p.grad.clone() for p in model.parameters()]
     result = diagnose(model,batch,sites=[site],spec=spec,ctx=ctx)
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state(),[p.grad for p in model.parameters()]))
-    assert not model.training and 0 <= result['reach'] <= 1
+    assert not model.training and result['B'] >= 0 and result['mu_diag'] > 0
     assert set(result['sites'][site.module_name]) == {'dead','dormant'}
 
 
@@ -276,7 +275,7 @@ def test_mid_task_resume_after_rejection_and_swap_bitwise(monkeypatch):
         with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
             engine._direction(p,GGNProducts(p,batch[1],spec,ctx),engine.mu)
         torch.rand(4)
-        return deepcopy((model.state_dict(),opt.state_dict(),engine.mu,engine.nu,engine.install_ages,engine.warm,rng_state()))
+        return deepcopy((model.state_dict(),opt.state_dict(),engine.mu,engine.nu,engine.install_ages,rng_state()))
     expected = advance()
     model,site,_,_,_,opt = problem()
     engine = V3Engine()
@@ -327,7 +326,7 @@ def test_task_end_probe_every_arm_fixed_seeded_read_only(arm, benchmark, tmp_pat
         _assert_bitwise(probe,adapter.probe_batch)
     assert [r['task'] for r in engine.activities] == [1,2]
     assert len(adapter.probe_batch[0]) == 8
-    assert all({'B','reach','unreach','sites'} <= r.keys() for r in engine.activities)
+    assert all({'B','mu_diag','norm_w2','sites'} <= r.keys() for r in engine.activities)
     restored = LoPV3(V3Engine())
     restored.load_state_dict(adapter.state_dict())
     _assert_bitwise(adapter.probe_batch,restored.probe_batch)

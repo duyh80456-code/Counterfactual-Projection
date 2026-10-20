@@ -103,7 +103,7 @@ def validate_result(job, summary, protocol, tasks, expected_commit=None, source_
             if len(diagnostics) != 20 or [r.get('task') for r in diagnostics] != list(range(1,21)):
                 raise ValueError(f'{job}: incomplete diagnostics')
             for row in diagnostics:
-                if row.get('probe_size',256) != 256 or any(not math.isfinite(row.get(k,float('nan'))) for k in ('B','reach','unreach')):
+                if row.get('probe_size',256) != 256 or any(not isinstance(row.get(k), (int,float)) or not math.isfinite(row[k]) for k in ('B','mu_diag','norm_w2')):
                     raise ValueError(f'{job}: invalid diagnostics')
     cfg=protocol.get('cfg',{})
     setting=protocol.get('setting')

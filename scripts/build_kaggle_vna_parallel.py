@@ -96,7 +96,9 @@ if SOURCE_DIGEST:
     (RUN_ROOT/'source_manifest.json').write_text(json.dumps(dict(code_commit=REPO_COMMIT, source_digest=SOURCE_DIGEST)))
 '''
 
-RUNNER = r'''import re
+RUNNER = r'''if PRESET in ('M1','M1s0'):
+    raise RuntimeError('MAIN RUN HELD: review exact-solver T4 profiling and A–D NaN report before enabling M1')
+import re
 NOBN_LR_SCALE = .5  # registered noBN lr = 0.05, chosen by the 3-task baseline probe (PREREGISTRATION_CHANGES)
 from concurrent.futures import ThreadPoolExecutor
 from scripts.collect_parallel import validate_result
@@ -258,10 +260,8 @@ for record in records.values():
     events = record.get('interventions',record.get('vna',[]))
     counts = Counter()
     for event in events:
-        for flag in ('gir_fallback','warm_reset','rejected'):
+        for flag in ('gir_fallback','rejected','nonfinite_after_apply','chol_fail','leak_monotonicity_violation'):
             value = event.get(flag,False)
-            if flag == 'warm_reset':
-                value = value or any(r.get('warm_reset',False) for r in event.get('cg',[]) if isinstance(r,dict))
             counts[flag] += str(value).lower() in ('true','1')
         counts['skip_reason='+str(event.get('skip_reason') or 'none')] += 1
     flags.append(dict(job=record['job'],events=len(events),
@@ -337,6 +337,49 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
     return result
 
 
+def build_exact_diagnostics(commit, source_digest):
+    result = build(commit, 'M1s0', 'vna_v4_exact_diagnostics', source_digest)
+    result['cells'][0] = cell('code', config(commit, (['diagnostics'], [], []),
+        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # then 'nan'; each uses one T4\n")
+    setup = ''.join(result['cells'][3]['source'])
+    setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
+    result['cells'][3] = cell('code', setup)
+    inputs = 'Attach vna4_main.tar.gz and CIFAR-100.'
+    inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
+    result['cells'][1] = cell('markdown', '# T29–T31: one-T4 diagnostics\n'+inputs+' Run profile first; then A–D. M1 stays held for report review.')
+    result['cells'][-2] = cell('code', EXACT_DIAGNOSTICS)
+    result['cells'][-1] = cell('code', "for path in (STAGE_B/'exact_diagnostics').rglob('diagnostic.json'): print(path, path.read_text())\narchive_outputs()\n")
+    return result
+
+
+EXACT_DIAGNOSTICS = r'''from experiments.io_utils import atomic_json_save
+archives = sorted(Path('/kaggle/input').rglob('vna4_main.tar.gz'))
+if len(archives) != 1: raise FileNotFoundError('Attach exactly one old vna4_main.tar.gz containing full task-1 latest.pt')
+OLD_REPO = REPO.with_name('counterfactual-projection-d88abc4')
+if not OLD_REPO.exists():
+    subprocess.run(['git','clone','--shared',str(REPO),str(OLD_REPO)],check=True)
+    subprocess.run(['git','-C',str(OLD_REPO),'checkout','--detach','d88abc4'],check=True)
+    for upstream in (REPO/'third_party').iterdir():
+        destination = OLD_REPO/'third_party'/upstream.name
+        if upstream.is_dir() and not destination.exists(): destination.symlink_to(upstream, target_is_directory=True)
+script = REPO/'diagnostics/exact_solver.py'
+branches = ('B','D') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
+if not branches: raise ValueError('MODE must be profile or nan')
+try:
+    for branch in branches:
+        tree = OLD_REPO if branch in ('B','C') else REPO
+        directory = STAGE_B/'exact_diagnostics'/MODE/branch
+        directory.mkdir(parents=True,exist_ok=True)
+        command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch',branch,
+            '--archive',str(archives[0]),'--data-dir',str(DATA_ROOT),'--out',str(directory)]
+        if MODE == 'profile': command.append('--profile')
+        if not launch(command,0,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): break
+        archive_outputs()
+finally:
+    archive_outputs()
+print('M1 remains held: review the actual profiles and A–D diagnostic reports.')
+'''
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--commit',required=True)
@@ -348,6 +391,8 @@ def main():
     digest=source_bundle(args.source_bundle) if args.source_bundle else None
     output.write_text(json.dumps(build(args.commit,'M1',args.run_tag,digest),indent=1)+'\n')
     if args.variants:
+        output.with_name('vna4_exact_diagnostics.ipynb').write_text(json.dumps(
+            build_exact_diagnostics(args.commit, digest), indent=1)+'\n')
         for name in PRESETS:
             stem = output.stem[:-3] if output.stem.endswith('_M1') else output.stem
             path=output.with_name(stem+'_'+name+output.suffix)

@@ -65,8 +65,7 @@ def protocol(args, engine, params, upstream):
         window='FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples',
         step_rule='phase 2', K_units='iterations',
         K0=engine.K0, budget=engine.protocol.get('budget', 1.0),
-        solver=dict(method='parameter-space matrix-free CG', tol=engine.tol, max_iterations=200,
-                    warm_start=True),
+        solver=dict(method='T29 exact output Gram float64 Cholesky', lm_max_trials=40),
         preflight=read_schedule(args))
 
 
@@ -79,7 +78,7 @@ def finalize_calibration(args, engine, adapter, out):
     schedule = schedule_from_points(points, epoch_iters)
     schedule.update(setting=args.setting, authoritative=True, authority_arm=args.arm,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-        synthetic=args.fake_data, tol=engine.tol, calibration=points,
+        synthetic=args.fake_data, calibration=points,
         timing_basis='three measured applications in tasks 1 and 2 and measured baseline iterations',
         iteration_samples=len(adapter.iteration_times[:200]))
     path = Path(args.schedule_output) if args.schedule_output else out/'_schedules'/f'{args.setting}.json'

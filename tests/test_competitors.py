@@ -126,7 +126,7 @@ def test_diagnose_preserves_parameters_buffers_gradients_and_rng(tmp_path):
     assert all(torch.equal(v,net.state_dict()[k]) for k,v in before.items())
     assert torch.equal(rng,torch.get_rng_state())
     assert net.training and all(torch.equal(p.grad,torch.ones_like(p)) for p in net.parameters())
-    assert 0 <= row['reach'] <= 1.001
+    assert row['B'] >= 0 and row['mu_diag'] > 0
 
 
 def test_task_restart_exit75_is_bitwise_exact(tmp_path,monkeypatch):

@@ -125,10 +125,7 @@ class Intervention:
         if event is not None and event.get('budget_guard'): self.interval *= 2
         self.last_iteration = hook.steps
         if event is not None: self.events.append(event)
-        if not all(bool(torch.isfinite(p).all()) for p in learner._network.parameters()):
-            self.events.append(dict(kind='nonfinite_params', nonfinite_params=True,
-                                    task=self.task, step=hook.steps))
-            raise Diverged('nonfinite parameters after intervention')
+
 
 
 class Diverged(RuntimeError): pass
@@ -194,7 +191,7 @@ def read_only(model):
             for m,mode in modes.items(): m.training = mode
 
 
-def measure_task(learner, manager, history, boundary=lambda: None, probe_size=256):
+def measure_task(learner, manager, history, boundary=lambda: None, probe_size=256, mu=None):
     row = dict(task=learner._cur_task+1, parameter_count=sum(p.numel() for p in learner._network.parameters()))
     with read_only(learner._network):
         boundary()
@@ -208,7 +205,7 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
                  torch.tensor([int(s[2]) for s in samples], device=learner._device))
         model = Prediction(learner._network)
         diagnostic = dict(task=row['task'], probe_seed=0, probe_indices=indices.tolist(),
-                              **vna_v3.diagnose(model, batch, sites=sites_for(model)))
+                              **vna_v3.diagnose(model, batch, sites=sites_for(model), mu=mu))
         if row['task'] in (5,10,15,20):
             row['feature_accuracy'] = feature_accuracy(learner, manager, boundary)
     fmt = lambda v: 'n/a' if v is None else f'{v:.2f}'
@@ -216,7 +213,7 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
         f"new {fmt(row.get('cnn_new_top1'))}) avg {fmt(row.get('cnn_average_accuracy'))} "
         f"forget {fmt(row.get('cnn_forgetting'))} learn {fmt(row.get('cnn_learning_accuracy'))} | "
         f"NME top1 {fmt(row.get('nme_top1'))} avg {fmt(row.get('nme_average_accuracy'))} | "
-        f"reach {fmt(diagnostic.get('reach'))} feature_acc {fmt(row.get('feature_accuracy'))}")
+        f"B {fmt(diagnostic.get('B'))} mu_diag {diagnostic.get('mu_diag')} feature_acc {fmt(row.get('feature_accuracy'))}")
     return row, diagnostic
 
 
@@ -225,11 +222,26 @@ class MainHook(ICaRLHook):
         self.fake = kw.get('fake', False)
         super().__init__(*a, **kw)
         self.manager, self.status = manager, status
+        self.diverged = None
+
+    def before_training_epochs(self):
+        self.checkpoint()
+
+    def before_optimizer_step(self, frame):
+        loss = frame.f_locals.get('loss')
+        if isinstance(loss, torch.Tensor) and not bool(torch.isfinite(loss).all()):
+            self.diverged = dict(task=self.learner._cur_task+1, epoch=self.current_epoch+1,
+                                 step=self.steps, tensor='loss')
+            raise Diverged('nonfinite training loss')
 
     def after_epoch(self, learner, optimizer, frame):
+        if not np.isfinite(frame.f_locals['losses']):
+            self.diverged = dict(task=learner._cur_task+1, epoch=int(frame.f_locals['epoch'])+1,
+                                 step=self.steps, tensor='loss')
+            raise Diverged('nonfinite training loss')
         super().after_epoch(learner, optimizer, frame)
         self.status.update(task=learner._cur_task+1, epoch=self.current_epoch, step=self.steps, phase='training')
-        if not np.isfinite(self.epochs[-1]['train_loss']): raise Diverged('nonfinite training loss')
+        self.checkpoint()
 
     def measurement_boundary(self):
         # Reuse the last training checkpoint; a partially evaluated task is replayed.
@@ -237,7 +249,10 @@ class MainHook(ICaRLHook):
 
     def record_task(self, learner, result):
         if self.intervention is not None and self.intervention.preflight: return
-        row, diagnostic = measure_task(learner, self.manager, self.tasks, self.measurement_boundary, 4 if self.fake else 256)
+        engine = self.intervention.engine if self.intervention is not None else None
+        mu = engine.mu_star if engine is not None and engine.mu_star_task == learner._cur_task+1 else None
+        row, diagnostic = measure_task(learner, self.manager, self.tasks, self.measurement_boundary,
+                                       4 if self.fake else 256, mu=mu)
         self.rows.append(diagnostic)
         self.tasks.append(row)
         if self.persist: self.persist(self)
@@ -272,7 +287,7 @@ def run(args):
         params.update(memory_size=20, memory_per_class=2)
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
-    protocol = dict(setting='icarl', algorithm_version='v4', arm=args.arm, seed=args.seed,
+    protocol = dict(setting='icarl', algorithm_version='v4', solver='T29-exact', arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=2 if args.fake_data else 20,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
@@ -336,7 +351,8 @@ def run(args):
         write_json(Path(args.schedule_output), schedule)
         run_status = 'PREFLIGHT'
     except Diverged as exc:
-        run_status, reason = 'DIVERGED', str(exc)
+        run_status, reason = 'FAILED_DIVERGED', str(exc)
+        status.update(status=run_status, phase='diverged', diverged=hook.diverged)
     except SystemExit as exc:
         if exc.code == 75:
             status.update(status='PAUSED', phase='paused')
@@ -348,7 +364,8 @@ def run(args):
     seconds = hook.elapsed_base+time.monotonic()-started
     summary = dict(identity=protocol, setting='icarl', algorithm_version='v4', arm=args.arm, seed=args.seed,
         init_cls=5, increment=5,
-        status=run_status, reason=reason, tasks=hook.tasks, tasks_run=len(hook.tasks),
+        status=run_status, reason=reason, diverged=hook.diverged,
+        safe_checkpoint=str(progress.path) if progress.path.exists() else None, tasks=hook.tasks, tasks_run=len(hook.tasks),
         parameter_count=sum(p.numel() for p in hook.learner._network.parameters()),
         seconds=seconds, gpu_hours=seconds/3600 if args.device != 'cpu' else 0.,
         resume_supported=True)
@@ -359,6 +376,8 @@ def run(args):
                             label+'_forgetting': hook.tasks[-1][label+'_forgetting'],
                             label+'_learning_accuracy': float(np.mean([r[label+'_learning_accuracy'] for r in hook.tasks]))})
     write_json(out/'summary.json', summary)
+    if run_status == 'FAILED_DIVERGED':
+        log(f"FAILED_DIVERGED {hook.diverged}; safe checkpoint: {summary['safe_checkpoint']}")
     status.update(status=run_status, phase='finished', reason=reason)
     return summary
 

@@ -246,12 +246,15 @@ class ICaRLHook:
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 hook.optimizer, hook.scheduler = self.optimizer, self
-                if hook.intervention is not None:
+                if hook.intervention is not None or hasattr(hook, 'before_optimizer_step'):
                     original_step = self.optimizer.step
                     @wraps(original_step)
                     def step(*a, **kw):
+                        if hasattr(hook, 'before_optimizer_step'):
+                            hook.before_optimizer_step(inspect.currentframe().f_back)
                         result = original_step(*a, **kw)
-                        hook.intervention.after_step(hook, hook.learner, self.optimizer)
+                        if hook.intervention is not None:
+                            hook.intervention.after_step(hook, hook.learner, self.optimizer)
                         return result
                     step._wrapped_by_lr_sched = True
                     self.optimizer.step = step
@@ -259,6 +262,8 @@ class ICaRLHook:
                     self.optimizer.load_state_dict(hook.resume['optimizer'])
                     self.load_state_dict(hook.resume['scheduler'])
                     restore_rng(hook.resume['rng'])
+                elif hasattr(hook, 'before_training_epochs'):
+                    hook.before_training_epochs()
         class EpochProgress:
             def __init__(self, iterable):
                 start = hook.resume['epoch'] if hook.resume is not None and hook.resume['mid'] else 0

@@ -118,7 +118,7 @@ def test_collector_and_paired_table(tmp_path):
             folder=tmp_path/'outputs'/job; folder.mkdir(parents=True)
             for name in main.RESULT_FILES:
                 value=record.get(name[:-5],dict(status='COMPLETED'))
-                if name=='diagnostics.json': value=[dict(task=i,B=1.,reach=.5,unreach=.5) for i in range(1,21)]
+                if name=='diagnostics.json': value=[dict(task=i,B=1.,mu_diag=.1,norm_w2=2.) for i in range(1,21)]
                 (folder/name).write_text('task\n' if name.endswith('.csv') else json.dumps(value))
             if arm=='icarl_full': (folder/'interventions.json').write_text('[]')
     rows=table(jobs.values())
@@ -147,7 +147,7 @@ def test_schedule_skips_and_roundtrip():
         def __init__(self): self.state = {}; self.calls = []
         def state_dict(self): return copy.deepcopy(self.state)
         def load_state_dict(self, state): self.state = copy.deepcopy(state)
-        def begin_task(self, task): self.state.update(task=task, warm={}, A={})
+        def begin_task(self, task): self.state.update(task=task, A={})
         coefficient = 1.
         def apply(self, *a, **kw):
             self.calls.append(a[6]); return dict(seconds=0., step=a[6])
@@ -195,7 +195,7 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
         assert json.loads((tmp_path/'full'/'interventions.json').read_text())
         for name in ('icarl','off','full'):
             rows = json.loads((tmp_path/name/'diagnostics.json').read_text())
-            assert len(rows) == 2 and all(0 <= r['reach'] <= 1 for r in rows)
+            assert len(rows) == 2 and all(r['B'] >= 0 and r['mu_diag'] > 0 for r in rows)
             assert [len(r['probe_indices']) for r in rows] == [4,4]
         # Pause after a complete first task; native prefix replay must be exact.
         original_checkpoint = main.ICaRLHook.checkpoint
@@ -284,12 +284,13 @@ def test_rebuilt_notebooks_keep_checkpoint_runtime_and_placeholder_pin(tmp_path,
     monkeypatch.setattr('sys.argv', ['build_kaggle_vna_parallel', '--commit', 'PLACEHOLDER',
         '--variants', '--output', str(tmp_path/'vna4_M1.ipynb')])
     build_notebooks()
-    assert {p.name for p in tmp_path.glob('*.ipynb')} == {f'vna4_{name}.ipynb' for name in PRESETS}
+    assert {p.name for p in tmp_path.glob('*.ipynb')} == {f'vna4_{name}.ipynb' for name in PRESETS} | {'vna4_exact_diagnostics.ipynb'}
     for path in tmp_path.glob('*.ipynb'):
         notebook = json.loads(path.read_text())
         source = '\n'.join(''.join(cell['source']) for cell in notebook['cells'])
         assert "REPO_COMMIT = 'PLACEHOLDER'" in source
-        assert 'launch_logged' in source and 'validate_result' in source
+        assert 'launch_logged' in source
+        assert ('--branch' in source if path.stem == 'vna4_exact_diagnostics' else 'validate_result' in source)
         assert 'restore_stage_archives' in source and 'VNA_DEADLINE' in source
         assert 'One-Shot-TAS-CCIL' not in source and 'GROMO' not in source
         for cell in notebook['cells']:

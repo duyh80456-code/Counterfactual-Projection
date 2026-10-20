@@ -30,8 +30,14 @@ class GGNProducts:
         self.ctx = {'targets': targets, **(ctx or {})}
         self.logits = logits.double()
         self.g = loss_logit_grad(logits, targets, loss_spec, ctx)
-        self.gradient = products.JT(self.g).double()
-        self.size = self.gradient.numel()
+        self._gradient = None
+        self.size = sum(v.numel() for _, v in products.parameter_refs)
+
+    @property
+    def gradient(self):
+        if self._gradient is None:
+            self._gradient = self.p.JT(self.g).double()
+        return self._gradient
 
     def H(self, v):
         v = v.double().reshape_as(self.probs)
@@ -49,10 +55,10 @@ class GGNProducts:
     def trace(self, cfg):
         if cfg.hutchinson_probes < 1:
             raise ValueError('hutchinson_probes must be positive')
-        gen = dedicated_generator(cfg.seed, 'ggn-trace', self.gradient.device)
+        gen = dedicated_generator(cfg.seed, 'ggn-trace', self.g.device)
         total = 0.
         for _ in range(cfg.hutchinson_probes):
-            v = torch.empty_like(self.gradient).bernoulli_(.5, generator=gen).mul_(2).sub_(1)
+            v = torch.empty(self.size, dtype=torch.float64, device=self.g.device).bernoulli_(.5, generator=gen).mul_(2).sub_(1)
             total += float(v.dot(self.F(v)))
         return max(total / cfg.hutchinson_probes, 0.)
 

@@ -65,12 +65,13 @@ def test_push_through_production_saturation_and_no_range_requirement():
         # Dense parameter solves are independent of the output factorization.
         expected = H @ J @ torch.linalg.solve(A, J.T @ e)
         op.F = lambda v: J.T @ H @ J @ v
-        engine = V3Engine(); engine.tol = 1e-12
-        solve = engine._solve(op, mu, lambda v: torch.zeros_like(v), [], warm={})
-        z = H @ J @ solve('z', J.T @ e)
+        engine = V3Engine()
+        blocks = spec.metric_blocks(logits, ctx)
+        solve = engine._output_solver(J@J.T, blocks, torch.zeros_like(blocks), mu, [])
+        z = H @ (J@J.T) @ solve('z', e)
         torch.testing.assert_close(z, expected, rtol=1e-8, atol=1e-11)
         outside = e + torch.ones_like(e)
-        actual = H @ J @ solve('outside', J.T @ outside)
+        actual = H @ (J@J.T) @ solve('outside', outside)
         oracle = H @ J @ torch.linalg.solve(A, J.T @ outside)
         torch.testing.assert_close(actual, oracle, rtol=1e-8, atol=1e-11)
         assert torch.isfinite(actual).all()
@@ -78,7 +79,7 @@ def test_push_through_production_saturation_and_no_range_requirement():
         stacked = torch.cat((R @ J, mu**.5*torch.eye(13)))
         target = torch.cat((R @ JE @ w, torch.zeros(13)))
         expected_d = torch.linalg.lstsq(stacked, target, driver='gelsd').solution
-        torch.testing.assert_close(solve('d', J.T @ H @ JE @ w), expected_d, rtol=1e-8, atol=1e-10)
+        torch.testing.assert_close(J.T @ solve('d', H @ JE @ w), expected_d, rtol=1e-8, atol=1e-10)
         vals, Q = torch.linalg.eigh(H)
         keep = vals > vals.max()*1e-10
         pinv_R = (Q[:, keep]*vals[keep].rsqrt()) @ Q[:, keep].T

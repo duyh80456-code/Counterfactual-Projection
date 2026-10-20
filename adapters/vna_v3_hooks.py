@@ -138,7 +138,8 @@ class LoPV3(Calibration):
                                 swap.get('task') == insertion.get('task')):
                             swap.setdefault('contribution_norm', {})[age] = norm
         probe_ctx = {**ctx, 'targets': self.probe_batch[1]}
-        diagnostic = diagnose(model, self.probe_batch, sites=sites, spec=spec, ctx=probe_ctx)
+        diagnostic = diagnose(model, self.probe_batch, sites=sites, spec=spec, ctx=probe_ctx,
+            mu=self.engine.mu_star if self.engine.mu_star_task == self.engine.task else None)
         self.engine.activities.append(dict(task=self.engine.task, dead_fraction=dead, **diagnostic))
         start = hook.step-hook.task_steps
         losses = hook.results.losses[start:hook.step].double()

@@ -1,6 +1,5 @@
 """Certificates, native optimizer isolation and residual-network training products."""
 from copy import deepcopy
-from dataclasses import replace
 import pytest
 import torch
 from torch import nn
@@ -34,39 +33,34 @@ class AdversarialKernel(V3Engine):
     """Invert the extension kernel to exercise rejection of a genuine negative gain."""
     def _direction(self,*args,**kwargs):
         values=super()._direction(*args,**kwargs)
-        if 'd' in values:
-            for key in ('d','d_N','d_rep','uN'): values[key]=-values[key]
-            kernel=values['kernel']
-            values['kernel']=lambda vector:-kernel(vector)
+        if 'dy' in values:
+            for key in ('dy','d_N','d_rep','uN'): values[key]=-values[key]
         return values
 
 
 def test_negative_total_certificate_skips_without_parameter_or_buffer_mutation(monkeypatch):
     model,site,batch,optimizer=mlp(bn=True)
     before=deepcopy(model.state_dict())
-    engine=AdversarialKernel('vna');engine.begin_task(1);engine.tol=1e-12
+    engine=AdversarialKernel('vna');engine.begin_task(1)
     # Step sizing must only happen after the certificate has passed.
     def forbidden(*args,**kwargs): raise AssertionError('step size evaluated before certificate')
     monkeypatch.setattr('methods.vna_v3.trust_region_step',forbidden)
     row=engine.apply(model,[site],batch,MSE(),dict(targets=batch[1]),optimizer,1)
     assert row['g_dot_d'] < 0
     assert row['skipped'] and row['skip_reason']=='negative_certificate'
-    assert row['s']==0 and row['K_next']==engine.K0
+    assert row['s']==0 and row['K_next']==2*engine.K0
     for name,value in before.items(): assert torch.equal(value,model.state_dict()[name])
 
 
-def test_zero_old_residual_with_inexact_cg_does_not_false_skip():
+def test_zero_old_residual_with_exact_solver_does_not_false_skip():
     model,site,(x,_),optimizer=mlp(outputs=4)
     y=torch.tensor([0,1,2,3,0,2,3])
     with torch.no_grad(): teacher=model(x)[:,:2].clone()
-    class OneIteration(V3Engine):
-        @property
-        def cfg(self): return replace(super().cfg,cg_iters=1)
-    engine=OneIteration('vna');engine.begin_task(2)
+    engine=V3Engine('vna');engine.begin_task(2)
     row=engine.apply(model,[site],(x,y),ICaRLPyCIL(T=2,known_classes=2),
         dict(targets=y,known_classes=2,teacher_logits=teacher),optimizer,1)
     assert row['V_O']==0 and row['h_dot_d']==0
-    assert any(r['relative_residual']>1e-3 for r in row['cg'])
+    assert all(r['relative_residual']<1e-8 for r in row['solves'])
     assert 'tau_g' not in row and 'false_skip' not in row
 
 
@@ -107,7 +101,7 @@ class ResNet8(nn.Module):
     def forward(self,x): return self.fc(self.blocks(self.stem(x)).mean((2,3)))
 
 
-def test_resnet8_cg_cosine_and_later_site_spatial_statistics():
+def test_resnet8_exact_and_later_site_spatial_statistics():
     model=ResNet8().double().train()
     sites=[HookSite(model,f'blocks.{i}.conv1',f'blocks.{i}.conv2','conv',
                     between=(f'blocks.{i}.bn1',f'blocks.{i}.relu')) for i in range(3)]
@@ -117,9 +111,8 @@ def test_resnet8_cg_cosine_and_later_site_spatial_statistics():
         op=GGNProducts(products,batch[1],MSE(),dict(targets=batch[1]))
         approximate=engine._direction(products,op,.1)
         exact_engine = deepcopy(engine)
-        exact_engine.tol = 1e-8
-        exact=exact_engine._direction(products,op,.1,warm={})
-        assert nn.functional.cosine_similarity(approximate['d'],exact['d'],dim=0)>=.99
+        exact=exact_engine._direction(products,op,.1)
+        assert nn.functional.cosine_similarity(approximate['dy'],exact['dy'],dim=0)>=.99
         for record in approximate['records']: assert record['relative_residual']<=1e-3
     for site in sites:
         S,Ns=statistics(model,site,batch,[torch.randn(6,dtype=torch.float64)])
@@ -151,18 +144,19 @@ def test_gir_rechecks_actual_dead_slot_revived_by_upstream_correction(monkeypatc
     class UpstreamDirection(V3Engine):
         def _direction(self,p,*args,**kwargs):
             values=super()._direction(p,*args,**kwargs)
-            if 'd' in values:
-                d=torch.zeros_like(values['d']);offset=0
+            if 'dy' in values:
+                d=torch.zeros(sum(v.numel() for _,v in p.parameter_refs),dtype=torch.float64);offset=0
                 for name,parameter in p.parameter_refs:
                     if name=='0.bias': d[offset:offset+parameter.numel()]=-3
                     offset+=parameter.numel()
-                values['d']=values['d_N']=d;values['d_rep']=torch.zeros_like(d)
+                values['dy']=torch.linalg.lstsq(values['G'],p.Jv(d),driver='gelsd').solution
+                values['d_N']=values['dy'];values['d_rep']=torch.zeros_like(values['dy'])
             return values
     engine=UpstreamDirection('vna_gir');engine.begin_task(1)
     def forbidden(*args,**kwargs): raise AssertionError('revived slot must not be replaced')
-    monkeypatch.setattr(engine,'prepare_gir',forbidden)
+    monkeypatch.setattr(engine,'_slot_jump',lambda *a: (1.,None))
     assert engine.dead_slots(model,[site],batch)[site.module_name]==[0]
     row=engine.apply(model,[site],batch,MSE(),dict(targets=batch[1]),optimizer,1)
-    assert not row['skipped'] and row['dead_before_step5']==1
-    assert row['dead_after_step5']==0 and row['swaps']==0
+    assert not row['skipped']
+    assert row['swaps']==0
     assert engine.dead_slots(model,[site],batch)[site.module_name]==[]

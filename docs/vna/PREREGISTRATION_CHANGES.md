@@ -586,3 +586,19 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
   for every noBN run (init_lr = lrate = 0.05; BN runs keep 0.1). The value is now a registered
   constant (`NOBN_LR_SCALE = 0.5` in the notebook builder, passed as `--nobn-lr-scale 0.5` to every
   noBN job, preflight and sweep); the in-notebook probe step and `--max-tasks` were removed.
+
+
+## T29–T31 exact solver amendment (2026-10-20, before numerical tests)
+
+- Branch `vna-v4-exact`, base `d88abc4`. Replace truncated parameter CG in the engine and diagnose with the exact output Gram solver T29. This restores the stated mathematical model; it is not outcome tuning. Other users of `projection/cg.py` retain CG.
+- Replace between-application damping with the inner LM loop T30 (40 trials); one accepted mu_star is used throughout VNA, BetaRule, residual and GIR. Old M1 damping lagged the observed curvature by approximately 10^8.
+- Compute GIR Gamma in one frozen linear model with sequential Gram/residual updates and Woodbury removal/addition (T31); retain top-2 proposals and four live slots. Real loss/KD jumps still use the sequential real network.
+- Reject nonfinite rho; restore trial state and roll back nonfinite application outcomes. Stop divergent training with explicit FAILED_DIVERGED metadata and retain the previous safe epoch checkpoint.
+- Remove reach/unreach from current reports. B, V, lambda_E, V/(lambda_E B), norm_w2 and mu_diag remain diagnostic logs.
+- Old d88abc4 M1 seed-0 full results are diagnostic evidence, not comparison data. Baseline reuse requires epoch-by-epoch loss identity through the first two tasks; this has not yet been checked. No M1 rerun is authorized before review of the profiling/NaN report.
+- Keep noBN lr=0.05, B0 Inc5, 20 tasks, epoch/milestone/memory/superclass settings unchanged. No fallback, Gram jitter or PSD projection is introduced. A 12800-output Gram exceeding 600 seconds or CUDA memory stops profiling for user review.
+- Source discrepancy: the supplied PDF prints the new source section s9c_exact as section 11, whereas the prompt names section 9c; formulas T29–T31/R1 agree. LM trial loss necessarily needs J^T y at each trial, in addition to the eventual real parameter step; no parameter-space solve is used.
+- Local float64 tests follow prompt section 8 only. T4 profiling and A–D experiments must report actual GPU measurements, never local timing projections as T4 results.
+
+- Capacity discrepancy found in existing main code: the fixed diagnostic probe has 256 samples, so task-20 diagnosis has m=25600, not the engine window's m=12800. Keep the probe and its validation unchanged; apply the same 600-second resource stop to m>=12800, and report actual GPU memory/time before any main run. No unapproved probe reduction or alternative solver.
+- The supplied archive confirms task-2 mu=1.3814802088148892e-7 (the task-1 value was 6.907401044074446e-8); the prompt's approximate 6.9e-8 describes task 1. Preserve the checkpoint's carried mu when replaying D.

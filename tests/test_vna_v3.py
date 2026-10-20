@@ -33,27 +33,17 @@ def flat(delta): return torch.cat([v.flatten() for v in delta.values()])
 
 
 @pytest.mark.parametrize('bn', [False, True])
-def test_kernel_self_cg_and_warm_and_read_only_bn(bn):
-    model, site, batch, spec, ctx, optimizer = problem(bn)
+def test_kernel_self_exact_and_read_only_bn(bn):
+    model, site, batch, spec, ctx, _ = problem(bn)
     before = deepcopy(model.state_dict())
-    engine = V3Engine('kernel_self'); engine.begin_task(1); engine.tol = 1e-12
+    engine = V3Engine('kernel_self'); engine.begin_task(1)
     with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
         op = GGNProducts(p, batch[1], spec, ctx)
-        mu = .1
-        actual = engine._direction(p, op, mu)
-        eye = torch.eye(op.size, dtype=torch.float64)
-        F = torch.stack([op.F(v) for v in eye], 1)
-        G = torch.linalg.inv(F+mu*eye)
-        expected = F@G@F@G@op.gradient
-        torch.testing.assert_close(actual['d'], expected, rtol=1e-8, atol=1e-10)
-        again = engine._direction(p, op, mu)
-        assert again['records'][0]['iterations'] == 0
-        true_residual = float((op.gradient-(F+mu*eye)@again['x']).norm()/op.gradient.norm())
-        assert true_residual == pytest.approx(again['records'][0]['relative_residual'], abs=1e-10)
-        engine.tol = 1e-3; engine.warm.clear()
-        approximate = engine._direction(p, op, mu)
-        assert torch.nn.functional.cosine_similarity(expected, approximate['d'], dim=0) >= .99
-    for name, value in before.items(): assert torch.equal(value, model.state_dict()[name])
+        actual = engine._direction(p, op, .1)
+        F = torch.stack([op.F(v) for v in torch.eye(op.size, dtype=torch.float64)], 1)
+        inverse = torch.linalg.inv(F+.1*torch.eye(op.size, dtype=torch.float64))
+        torch.testing.assert_close(p.JT(actual['dy']), F@inverse@F@inverse@op.gradient, rtol=1e-8, atol=1e-10)
+    for n, value in before.items(): assert torch.equal(value, model.state_dict()[n])
 
 
 def test_kernel_self_protects_old_classes_but_keeps_unprotected_beta_zero_case():
@@ -69,14 +59,14 @@ def test_kernel_self_protects_old_classes_but_keeps_unprotected_beta_zero_case()
         assert values['beta_branch'] != 'unprotected'
 
     model, site, batch, _, _, _ = problem(outputs=1)
-    engine = V3Engine('kernel_self'); engine.begin_task(1); engine.tol = 1e-12
+    engine = V3Engine('kernel_self'); engine.begin_task(1)
     with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
         op = GGNProducts(p, batch[1], MSE(), dict(targets=batch[1]))
         values = engine._direction(p, op, .1)
         eye = torch.eye(op.size, dtype=torch.float64)
         F = torch.stack([op.F(v) for v in eye], 1)
         expected = F @ torch.linalg.inv(F+.1*eye) @ F @ torch.linalg.inv(F+.1*eye) @ op.gradient
-        torch.testing.assert_close(values['d'], expected, rtol=1e-8, atol=1e-10)
+        torch.testing.assert_close(p.JT(values['dy']), expected, rtol=1e-8, atol=1e-10)
 
 
 def test_beta_all_branches_verified_upper_and_monotone_leak():
@@ -105,7 +95,7 @@ def test_zero_lambda_is_bitwise_and_readonly_preflight_state():
     engine.coefficient = 1.
     state = engine.state_dict()
     row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, apply=False)
-    assert row and not engine.warm and engine.last_iteration is None and not engine.events
+    assert row and not hasattr(engine, 'warm') and engine.last_iteration is None and not engine.events
     assert engine.A == state['A']
     for n, v in before.items(): assert torch.equal(v, model.state_dict()[n])
 
@@ -208,14 +198,11 @@ def test_mnist_preflight_preserves_aliased_parameters_when_active_sites_shrink(m
     before = dict(model.named_parameters(remove_duplicate=False))
     values = {name: p.detach().clone() for name, p in before.items()}
     rng = torch.random.get_rng_state().clone()
-    class ShortCG(V3Engine):
-        @property
-        def cfg(self): return replace(super().cfg, cg_iters=2)
-    engine = ShortCG('vna'); engine.begin_task(1)
+    engine = V3Engine('vna'); engine.begin_task(1)
     # Empty virtual directions at a site must not remove its native parameters from J.
     monkeypatch.setattr(engine, '_select', lambda *a, **kw: seed_proposals([sites[1]]))
     report = engine.preflight(model, sites, batch, CE(), dict(targets=batch[1]), optimizer)
-    assert len(report['trials']) == 3 and report['trials'][0]['gradient_norm'] > 0
+    assert len(report['trials']) == 1 and report['trials'][0]['gradient_norm'] > 0
     after = dict(model.named_parameters(remove_duplicate=False))
     assert before.keys() == after.keys()
     assert sum(p.numel() for p in model.parameters() if p.requires_grad) == 8180
@@ -223,4 +210,4 @@ def test_mnist_preflight_preserves_aliased_parameters_when_active_sites_shrink(m
         assert after[name] is parameter and parameter.requires_grad
         assert torch.equal(parameter, values[name]) and parameter.grad is None
     assert torch.equal(rng, torch.random.get_rng_state())
-    assert not optimizer.state and not engine.warm and not engine.A and not engine.events
+    assert not optimizer.state and not hasattr(engine, 'warm') and not engine.A and not engine.events

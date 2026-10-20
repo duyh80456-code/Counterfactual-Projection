@@ -1,0 +1,156 @@
+\section{Giải chính xác và vòng tin cậy trong mỗi lần áp dụng}\label{sec:exact}
+
+\paragraph{Vì sao cần mục này.} Lần chạy M1 đầu tiên (noBN, seed 0, commit \texttt{d88abc4}) có ba lần áp dụng, và VNA không được dùng lần nào:
+\begin{itemize}
+\item Lần 1 bị bỏ qua vì CG cho $z$ không đạt $0.1$ sau 200 vòng.
+\item Lần 2 bị bỏ qua vì $\varrho=-23.9$.
+\item Lần 3 có $\varrho=\mathrm{NaN}$, lọt qua cổng kiểm vì phép so sánh $\varrho\le0$ trả về sai, rồi bị phép kiểm cửa sổ bác ($L$ từ $5.93$ lên $7.49$).
+\end{itemize}
+Nguyên nhân chung là $\mu\approx7\cdot10^{-8}$, trong khi $\lambda_E\approx30$. Bước GN gần như không có damping ($\norm{\xGN}=289$ đến $656$). Quy tắc của \Tref{T26}(d) đẩy $\mu$ lên quá chậm: mỗi lần chỉ nhân $2$ và chỉ có hiệu lực ở lần áp dụng sau, trong khi mỗi task chỉ có $2$ đến $3$ lần áp dụng.
+
+GIR vẫn chạy: 55 swap slot sống. Các $\Gamma$ được tính với $\mu$ đó và với CG còn residual $0.01$ đến $0.05$. GIR chiếm $85$ đến $98\%$ thời gian của mỗi lần áp dụng.
+
+Mục này sửa ba điểm bằng định lý chứ không bằng tinh chỉnh:
+\begin{itemize}
+\item mọi hệ được giải chính xác trong không gian output (T29);
+\item $\mu$ được chứng nhận \emph{trong} mỗi lần áp dụng, và VNA cùng GIR dùng chung $\mu$ đó (T30);
+\item mọi quyết định của GIR trong một lần áp dụng dùng \emph{một} mô hình (T31).
+\end{itemize}
+
+Ký hiệu: $J\in\R^{m\times P}$ là Jacobian của logit trên cửa sổ, với $m=N\cdot C$. $G_{\mathrm{out}}=JJ\T\in\R^{m\times m}$. $M\succeq0$ là metric trên output, khối $C\times C$ theo từng mẫu, với $M=H$ hoặc $M=H_\beta=H+\beta O\T WO$. $A=J\T MJ+\mu I$.
+
+\subsection{T29: mọi hệ của thuật toán được giải trong không gian output}
+
+\begin{namedthm}{T29}{giải chính xác bằng ma trận Gram của output}
+Cho $\mu>0$ và $M\succeq0$, viết $M=LL\T$.
+\begin{enumerate}[label=(\alph*)]
+\item \emph{Vế phải nằm trong ảnh của $J\T$.} Với $b=J\T c$, nghiệm duy nhất của $Ax=b$ là $x=J\T y$ với $y=(\mu I+MG_{\mathrm{out}})^{-1}c$. Ma trận $\mu I+MG_{\mathrm{out}}$ luôn khả nghịch.
+\item \emph{Dạng đối xứng.} $y=\tfrac1\mu\bigl[c-L(\mu I+L\T G_{\mathrm{out}}L)^{-1}L\T G_{\mathrm{out}}c\bigr]$. Hệ cần giải là đối xứng xác định dương, cỡ $m\times m$.
+\item \emph{Mọi đại lượng của S1 đến S6 tính được từ $y$ và $G_{\mathrm{out}}$:}
+\begin{itemize}
+\item $Jx=G_{\mathrm{out}}y$ và $z=MG_{\mathrm{out}}y$;
+\item $\norm x^2=y\T G_{\mathrm{out}}y$, nên $\Delta=\norm{\xGN}$ tính được;
+\item $x\T J\T MJx=y\T G_{\mathrm{out}}MG_{\mathrm{out}}y$;
+\item $B(K)=c\T G_{\mathrm{out}}y$;
+\item $\rperp^\beta=\mu(MG_{\mathrm{out}}+\mu)^{-1}e_\beta$, chính là công thức trong \Tref{T27}(b).
+\end{itemize}
+Không gian tham số chỉ xuất hiện khi dựng $G_{\mathrm{out}}$ và ở một VJP cuối, khi cần áp $x=J\T y$ vào mạng.
+\item \emph{Thêm hoặc bớt một khối cột.} Đặt $\hat J=L\T J$ và $K=\hat J\hat J\T$.
+\begin{itemize}
+\item Thêm các cột $J_v$, với $\hat J_v=L\T J_v$. Phần bù Schur là $S=\mu\bigl(I+\hat J_v\T(K+\mu I)^{-1}\hat J_v\bigr)$, trong đó $K$ là Gram \emph{không} chứa $J_v$.
+\item Bớt các cột $J_u$: $[A^{-1}]_{uu}=\tfrac1\mu\bigl(I-\hat J_u\T(K+\mu I)^{-1}\hat J_u\bigr)$, trong đó $K$ là Gram \emph{có} chứa $J_u$.
+\item Đổi $J_u$ lấy $J_v$: $G_{\mathrm{out}}'=G_{\mathrm{out}}-J_uJ_u\T+J_vJ_v\T$, một cập nhật hạng thấp.
+\end{itemize}
+\item \emph{Swap slot chết là cập nhật chính xác.} Giả sử $u$ chết trên cửa sổ (tiền kích hoạt $\le0$ ở mọi mẫu, với quy ước $\sigma'(0)=0$) và neuron mới được cài với $B_v=0$. Khi đó hàm của mạng và mọi cột Jacobian khác không đổi, $J_u=0$, cột theo trọng số vào của $v$ bằng $0$, và $G_{\mathrm{out}}'=G_{\mathrm{out}}+J_{B_v}J_{B_v}\T$ \emph{chính xác}, không phải xấp xỉ tuyến tính.
+\item \emph{Ổn định số.} Giả sử $G_{\mathrm{out}}$ được dựng có sai số $\delta G$ với $\norm{M}\norm{\delta G}<\mu$. Khi đó $y$ tính được là nghiệm chính xác của mô hình GN với Gram $G_{\mathrm{out}}+\delta G$. Phép đo $\varrho$ và phép kiểm cửa sổ của \Tref{T26}(f) dùng loss thật, nên chúng không phụ thuộc vào $\delta G$.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Thử $x=J\T y$: $Ax=J\T MG_{\mathrm{out}}y+\mu J\T y=J\T(MG_{\mathrm{out}}+\mu)y=J\T c$. Vì $A\succ0$ nên nghiệm là duy nhất, và đó chính là $x$. Các trị riêng khác $0$ của $MG_{\mathrm{out}}=LL\T G_{\mathrm{out}}$ trùng với các trị riêng của $L\T G_{\mathrm{out}}L\succeq0$, nên $MG_{\mathrm{out}}+\mu$ có mọi trị riêng $\ge\mu>0$.
+(b) Đẳng thức Woodbury: $(\mu I+LL\T G_{\mathrm{out}})^{-1}=\tfrac1\mu\bigl[I-L(\mu I+L\T G_{\mathrm{out}}L)^{-1}L\T G_{\mathrm{out}}\bigr]$. Nhân hai vế với $(\mu I+LL\T G_{\mathrm{out}})$ để kiểm.
+(c) Thay $x=J\T y$ vào từng biểu thức. Với $\rperp^\beta$, áp (a) cho $c=e_\beta$ và dùng $e_\beta-MJx=(I-MG_{\mathrm{out}}(\mu+MG_{\mathrm{out}})^{-1})e_\beta=\mu(\mu+MG_{\mathrm{out}})^{-1}e_\beta$.
+(d) Với $A_0=\hat J\T\hat J+\mu$, ta có $S=\hat J_v\T\hat J_v+\mu-\hat J_v\T\hat JA_0^{-1}\hat J\T\hat J_v$. Lại có $\hat JA_0^{-1}\hat J\T=K(K+\mu)^{-1}=I-\mu(K+\mu)^{-1}$, nên $S=\mu I+\mu\hat J_v\T(K+\mu)^{-1}\hat J_v$. Khối $[A^{-1}]_{uu}$ là khối con của Woodbury $A^{-1}=\tfrac1\mu[I-\hat J\T(K+\mu)^{-1}\hat J]$. Dòng cuối của (d) là định nghĩa của $G_{\mathrm{out}}$.
+(e) Neuron $u$ chết nên đầu ra của nó bằng $0$ trên cửa sổ. Do đó $\partial f/\partial B_u=0$, và $\partial f/\partial a_u=0$ vì $\sigma'=0$. Neuron $v$ có $B_v=0$ nên không đóng góp vào forward: hàm mạng, mọi kích hoạt và mọi đạo hàm theo tham số khác giữ nguyên. Đạo hàm theo $a_v$ đi qua $B_v=0$ nên bằng $0$. Cột duy nhất khác $0$ mới xuất hiện là $J_{B_v}$.
+(f) Áp (a) cho $G_{\mathrm{out}}+\delta G$. Điều kiện $\norm M\norm{\delta G}<\mu$ giữ cho ma trận hệ khả nghịch. Tính ổn định ngược của Cholesky hoặc LU cho hệ $m\times m$ là kết quả chuẩn \cite{higham2002}.
+\end{proof}
+\begin{hequa}
+\begin{itemize}
+\item Không còn tham số \texttt{cg\_tol}, \texttt{cg\_iters}, không còn warm start (một trạng thái ẩn giữa các lần áp dụng) và không còn lý do bỏ qua \texttt{cg\_z}. Các định lý T1 đến T28 nay đúng cho code theo nghĩa đen, vì chúng được phát biểu cho nghiệm chính xác.
+\item Mọi hệ của S1 đến S6 (gồm $g$, $g_O$, $d_{\mathrm{rep}}$, $d_N$ với mọi $\beta$, $\rperp^\beta$ và mọi $\Gamma$) dùng chung một $G_{\mathrm{out}}$. Mỗi $\beta$ cần một phân rã cỡ $m\times m$. Mỗi ứng viên của GIR chỉ cần các lát Jacobian $J_u$, $J_v$.
+\item Phép đồng nhất này chính là đồng nhất push-through mà \Tref{T25} và \Tref{T27} đã dùng: công thức trong định lý trở thành chính code.
+\item Chi phí dựng $G_{\mathrm{out}}$ là khoảng $m$ cặp VJP và JVP, gần như không cần bộ nhớ, và tăng tuyến tính theo số lớp đã thấy. Profiling quyết định có cần phương án dự phòng là PCG với preconditioner Nyström \cite{frangella2023} hay không. Phương án đó chỉ cho nghiệm gần đúng.
+\end{itemize}
+\end{hequa}
+\begin{kiem}
+\texttt{check\_t29\_31.py}, 200 bài, $H$ và $H_{\mathrm{old}}$ suy biến kiểu softmax, $\beta\in[0,5]$, $\mu\in[10^{-4},1]$:
+\begin{itemize}
+\item T29a ($x=J\T y$): 0 vi phạm;
+\item T29b (dạng đối xứng): 0 vi phạm;
+\item T29c ($\norm x^2=y\T G_{\mathrm{out}}y$): 0 vi phạm;
+\item T29d (Schur trong không gian output so với phần bù trực tiếp): 0 vi phạm.
+\end{itemize}
+\end{kiem}
+
+\subsection{T30: vòng tin cậy trong mỗi lần áp dụng, và một $\mu^*$ dùng chung}
+
+\begin{namedthm}{T30}{vòng Levenberg--Marquardt bên trong}
+Giả thiết: $L$ khả vi tại $\theta$ và $g\ne0$. Với mạng ReLU, điều này đúng hầu khắp nơi. Đặt $x(\mu)=(F+\mu)^{-1}g$, độ giảm dự báo $\mathrm{pred}(\mu)=g\T x-\tfrac12x\T Fx$ và $\varrho(\mu)=[L(\theta)-L(\theta-x(\mu))]/\mathrm{pred}(\mu)$. Nếu $L(\theta-x)$ không hữu hạn thì đặt $\varrho=-\infty$.
+\begin{enumerate}[label=(\alph*)]
+\item $\mathrm{pred}(\mu)\ge\tfrac12g\T x>0$ và $\varrho(\mu)\to1$ khi $\mu\to\infty$.
+\item \emph{Vòng lặp.} Từ $\mu_0>0$ bất kỳ (mang sang từ lần áp dụng trước), lặp: nếu $\varrho(\mu)>0$ thì dừng với $\mu^*=\mu$; ngược lại đặt $\mu\leftarrow\nu\mu$ và $\nu\leftarrow2\nu$. Vòng lặp dừng sau hữu hạn bước. Số lần thử là $O\bigl(\sqrt{\log(\bar\mu/\mu_0)}\bigr)$, với $\bar\mu$ là ngưỡng mà từ đó $\varrho>0$.
+\item \emph{Cổng kiểm.} Lần áp dụng bị bỏ qua khi và chỉ khi $g=0$ hoặc vòng lặp vượt ngân sách thử. Giá trị $\varrho$ không hữu hạn được tính là thất bại, không bao giờ là chấp nhận.
+\item \emph{Một mô hình được chứng nhận cho cả VNA và GIR.} Với $\mu^*$:
+\begin{itemize}
+\item VNA dùng $\Delta=\norm{x(\mu^*)}$ và $\beta$ của \textsc{BetaRule} ở $\mu^*$;
+\item GIR dùng $\ell_\beta$, $\rperp^\beta$ và $\Gamma$ ở cùng $\mu^*$.
+\end{itemize}
+Mỗi số hạng $\hat q^*$ trong $\Gamma$ (\Tref{T28}) là độ giảm của bước GN có damping $\mu^*$ trên một span. Với span hiện tại, bước đó chính là bước vừa được $\varrho>0$ chứng nhận.
+\item Sau khi dừng, quy tắc Nielsen $\mu\leftarrow\mu^*\max(\tfrac13,1-(2\varrho-1)^3)$ cho giá trị khởi đầu của lần sau. Kết quả (b) không phụ thuộc $\mu_0$, nên $\mu_0$ không còn là tham số cần chọn.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Ta có $g=(F+\mu)x$, nên $g\T x=x\T Fx+\mu\norm x^2\ge x\T Fx$. Suy ra $\mathrm{pred}\ge\tfrac12g\T x$, và $g\T x\ge\norm g^2/(\lambda_{\max}+\mu)>0$.
+Viết $L(\theta-x)=L(\theta)-g\T x+r(x)$ với $|r(x)|\le\epsilon(\norm x)\norm x$, trong đó $\epsilon(t)\to0$ khi $t\to0$ (khả vi). Khi đó
+\[\varrho-1=\frac{\tfrac12x\T Fx-r(x)}{\mathrm{pred}}.\]
+Vì $x\T Fx\le\lambda_{\max}\norm x^2$ và $g\T x\ge\mu\norm x^2$, số hạng đầu bị chặn bởi $\lambda_{\max}/\mu$. Vì $\norm x\le\norm g/\mu$ và $\mathrm{pred}\ge\tfrac12\norm g^2/(\lambda_{\max}+\mu)$, số hạng thứ hai bị chặn bởi $2\epsilon(\norm x)(1+\lambda_{\max}/\mu)/\norm g$. Khi $\mu\to\infty$ thì $\norm x\to0$, nên cả hai số hạng tiến về $0$. Khi $\mu$ đủ lớn, $\theta-x$ đủ gần $\theta$ để $L$ hữu hạn (liên tục), nên cách đặt $\varrho=-\infty$ không ảnh hưởng tới giới hạn.
+(b) Theo (a), tồn tại $\bar\mu$ sao cho $\varrho(\mu)>0$ với mọi $\mu\ge\bar\mu$. Sau $k$ lần thất bại, $\mu_k=\mu_0\,2^{k(k+1)/2}$, tăng nhanh hơn cấp số nhân. Do đó $k\le\lceil\sqrt{2\log_2(\bar\mu/\mu_0)}\,\rceil+1$.
+(c) Định nghĩa. Phép so sánh $\varrho>0$ trả về sai khi $\varrho=\mathrm{NaN}$, nên NaN không được chấp nhận.
+(d) Theo \Tref{T27}(a), $\hat q^*(\Jcal)=-\tfrac12b\T(\Jcal\T H_\beta\Jcal+\mu)^{-1}b$ là giá trị của mô hình tại bước GN có damping $\mu$ trên span $\Jcal$. Với $\Jcal=J$ và $\beta=0$, bước đó là $x(\mu)$.
+(e) \cite{madsen2004}. Nếu $\varrho$ đủ lớn thì thừa số nhỏ hơn $1$.
+\end{proof}
+\begin{hequa}
+\begin{itemize}
+\item \Tref{T26}(d) được thay: $\mu$ không còn trễ một lần áp dụng. Đây là vòng lặp chuẩn của Moré \cite{more1978}, và \Tref{T26}(a)--(f) giữ nguyên với $\mu=\mu^*$.
+\item Với T29, mỗi lần thử chỉ tốn một phân rã $m\times m$ và một forward. Ở $\beta=0$, một phân rã riêng của $L\T G_{\mathrm{out}}L$ dùng được cho mọi $\mu$.
+\item Kiểm trên MLP ReLU nhỏ (50 bài, $\mu_0=10^{-8}$): vòng lặp luôn dừng, sau đúng 7 lần thử, phù hợp với cận ở (b).
+\item \emph{Phần chưa được chứng nhận.} $\varrho$ chỉ chứng nhận mô hình dọc theo $x(\mu^*)$. Một swap của GIR đi theo hướng khác, nên hiệu ứng thật của nó vẫn được kiểm bằng các bước nhảy chính xác $j_L,j_{KD}$ (\Tref{T28}(c)). T30 bảo đảm $\Gamma$ được tính trong cùng mô hình và cùng damping mà bước GN đã được kiểm, không bảo đảm dấu của $\Gamma$ luôn đúng.
+\end{itemize}
+\end{hequa}
+
+\subsection{T31: GIR tuần tự trong một mô hình}
+
+\begin{namedthm}{T31}{một tuyến tính hóa cho mỗi lần áp dụng}
+Cố định $\theta$, $J$, $H_\beta$, $e_\beta$, $\mu^*$ tại đầu lần áp dụng.
+\begin{enumerate}[label=(\alph*)]
+\item Các swap được nhận lần lượt $(u_1,v_1),(u_2,v_2),\dots$ Trạng thái mô hình sau $k$ swap gồm:
+\begin{itemize}
+\item span $J^{(k)}$, thu được từ $J$ bằng cách thay các cột $J_{u_i}$ bằng $J_{v_i}$;
+\item độ dịch output $-\sum_{i\le k}f_{u_i}$;
+\item residual $e^{(k)}=e_\beta-H_\beta\sum_{i\le k}f_{u_i}$.
+\end{itemize}
+Đặt $\hat q_k=\hat Q(-\sum_{i\le k}f_{u_i})+\min_x[\dots]$ như trong \Tref{T28}(a), và $\Gamma_k=\hat q_{k-1}-\hat q_k$. Khi đó $\hat q_0>\hat q_1>\dots$, và tổng lợi của mô hình bằng $\sum_k\Gamma_k$.
+\item Swap slot chết không đổi hàm mạng và cập nhật $G_{\mathrm{out}}$ chính xác (\Tref{T29}(e)): mô hình sau swap là mô hình tuyến tính hóa đúng của mạng thật.
+\item Swap slot sống đổi hàm mạng thật. Mô hình giữ tuyến tính hóa tại $\theta$, còn hiệu ứng trên mạng thật được kiểm bằng $j_L,j_{KD}\le0$, đo tuần tự trên mạng đã sửa. Lần áp dụng sau tuyến tính hóa lại, giống mỗi bước của LM.
+\item Chi phí mỗi ứng viên: các lát Jacobian $J_u$ và $J_v$ (khoảng $|u|+|v|$ JVP; với slot chết thì $J_u=0$), cộng một cập nhật Woodbury hạng $|u|+|v|$ trên phân rã của $K+\mu^*$ (\Tref{T29}(d)). Không cần CG và không cần tuyến tính hóa lại mạng. Các giới hạn top-2 ứng viên và 4 slot sống mỗi site chỉ tồn tại vì chi phí. Profiling quyết định có bỏ được chúng không; chúng không phải một phần của định lý.
+\end{enumerate}
+\end{namedthm}
+\begin{proof}
+(a) Mỗi swap được nhận có $\Gamma_k>0$ theo quy tắc của \Tref{T28}(c). Áp \Tref{T28}(a) tại trạng thái $k-1$: gradient của $\hat Q$ tại độ dịch hiện tại là $e^{(k-1)}$, và phép thay cột là định nghĩa của $J^{(k)}$. Tổng là telescoping.
+(b) \Tref{T29}(e).
+(c) Định nghĩa. Bước nhảy được đo bằng forward trên mạng thật.
+(d) \Tref{T29}(d) áp hai lần, một lần bớt và một lần thêm.
+\end{proof}
+\begin{hequa}
+Code hiện tại tuyến tính hóa lại mạng thật cho \emph{từng} ứng viên. Đó là một mô hình khác với \Tref{T28}, đắt đỏ, và không nhất quán với $\ell_\beta$ (vốn tính tại $\theta$). T31 đưa code về đúng phát biểu của \Tref{T28}: trong một lần áp dụng, VNA và GIR dùng \emph{cùng} $J$, $H_\beta$, $e_\beta$, $\mu^*$.
+\end{hequa}
+\begin{kiem}
+T31a (dãy $\hat q_k$ giảm khi chỉ nhận $\Gamma>0$, ba swap ngẫu nhiên mỗi bài): 0/200 vi phạm.
+\end{kiem}
+
+\subsection{R1: chuẩn hóa của chỉ số reach bị hỏng, và cách thay}
+
+\begin{namedthm}{R1}{mẫu số $\norm w^2$ bị vài mẫu chi phối}
+Với CE, mẫu $i$ có $e_i=(p_i-\mathbf 1_{y_i})/n$ và $H_i=(\operatorname{diag}p_i-p_ip_i\T)/n$. Khi đó $e_i\T H_i^+e_i=(1/p_{i,y_i}-1)/n$.
+\end{namedthm}
+\begin{proof}
+$w=-\mathbf 1_{y_i}/p_{i,y_i}$ thỏa $H_iw=e_i$, vì $\operatorname{diag}(p)\mathbf 1_y-pp_y=\mathbf 1_yp_y-pp_y$. Mặt khác $e_i\perp\mathbf 1=\ker H_i$, nên $e_i\T H_i^+e_i=e_i\T w=(1-p_y)/(np_y)$.
+\end{proof}
+\begin{hequa}
+\begin{itemize}
+\item Một mẫu lớp cũ bị quên với $p_y\approx0$ đóng góp $1/p_y$ vào mẫu số. Trên baseline, $\norm w^2$ tăng từ $18$ lên $3\cdot10^{11}$ qua 20 task, nên reach $=B/\norm w^2$ tụt về $0$ chỉ vì vài mẫu, không phải vì mạng mất khả năng với tới. Thêm vào đó, CG của phép chẩn đoán có residual tới $1.9$.
+\item Thay thế, không thêm tham số: log $B$ và $V$ theo đơn vị loss (độ giảm dự báo của bước GN có damping $\mu^*$), cùng tỉ số kiểm của \Tref{T25}. Bỏ reach khỏi các chỉ số chính.
+\end{itemize}
+\end{hequa}
+\begin{kiem}
+R1 so với $H^+$ tính bằng giả nghịch đảo: 0/200 vi phạm.
+\end{kiem}
