@@ -167,8 +167,13 @@ def is_task1_checkpoint(state):
 
 def find_task1_checkpoint(source, target):
     """Select by checkpoint metadata; identical attached copies count as one source."""
+    import importlib
     import torch
     from diagnostics.vna_align import _global_state
+    # A reused notebook kernel can retain the submodule without its package attribute.
+    if not hasattr(torch, '_utils'):
+        torch._utils = importlib.import_module('torch._utils')
+        print('Restored torch._utils package binding before checkpoint discovery', flush=True)
     source, target = Path(source), Path(target)
     files, visited = [], set()
     if source.is_file(): files = [source]

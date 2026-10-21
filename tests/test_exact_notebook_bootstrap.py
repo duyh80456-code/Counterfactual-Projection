@@ -129,6 +129,24 @@ def test_checkpoint_discovery_rejects_different_valid_states(tmp_path):
     assert not target.exists()
 
 
+def test_checkpoint_discovery_restores_cached_torch_utils_binding(tmp_path, monkeypatch):
+    import io
+    import torch
+    from diagnostics.exact_solver import find_task1_checkpoint
+    from diagnostics.vna_align import _assert_bitwise
+    from experiments.vna_resume import rng_state
+    payload=checkpoint_bytes()
+    source=tmp_path/'latest.pt';source.write_bytes(payload)
+    utils=torch._utils
+    monkeypatch.delattr(torch, '_utils')
+    with pytest.raises(AttributeError,match='_utils'):
+        torch.load(io.BytesIO(payload),map_location='cpu',weights_only=False)
+    before=rng_state()
+    selected=find_task1_checkpoint(source,tmp_path/'task1_source.pt')
+    assert torch._utils is utils and selected.read_bytes()==payload
+    _assert_bitwise(before,rng_state())
+
+
 def test_checkpoint_discovery_explains_missing_compatible_source(tmp_path):
     from diagnostics.exact_solver import find_task1_checkpoint
     wrong=tmp_path/'other-seed.pt'

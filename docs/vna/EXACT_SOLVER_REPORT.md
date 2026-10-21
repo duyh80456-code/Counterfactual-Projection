@@ -266,3 +266,15 @@ The same-state exact curvature audit, capacity proxy, M1 exact setting and
 M1 hold are unchanged. Actual T4 timing/equivalence/capacity remain unmeasured
 locally. The notebook embeds the new dispatch and pins the already committed
 solver source; this scheduling change does not modify solver mathematics.
+
+
+## 2026-10-21: checkpoint deserialization in a reused notebook kernel
+
+Five discovered checkpoints can all be rejected before metadata inspection when
+`torch._utils` is cached as a submodule but missing from the torch package.
+Reproduced locally by removing only that package attribute: torch.load raises
+the reported AttributeError on a valid tensor checkpoint. Discovery now restores
+the binding to the real installed submodule via importlib before scanning.
+Checkpoint identity/epoch/commit requirements and byte deduplication are unchanged.
+The regression check verifies identical selected bytes and preserved RNG state.
+Actual Kaggle kernel recovery has not been exercised locally.
