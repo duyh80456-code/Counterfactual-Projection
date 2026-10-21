@@ -29,11 +29,11 @@ def private_clone(url, destination, branch):
     env.update(GITHUB_TOKEN_RUNTIME=token, GIT_ASKPASS=str(askpass),
                GIT_TERMINAL_PROMPT="0")
     try:
-        if branch == REPO_COMMIT:
+        if len(branch) == 40 and all(c in "0123456789abcdef" for c in branch):
             subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",
                             url, str(destination)], env=env, check=True)
-            subprocess.run(["git", "-C", str(destination), "fetch", "origin", REPO_COMMIT], env=env, check=True)
-            subprocess.run(["git", "-C", str(destination), "checkout", "--detach", REPO_COMMIT], check=True)
+            subprocess.run(["git", "-C", str(destination), "fetch", "origin", branch], env=env, check=True)
+            subprocess.run(["git", "-C", str(destination), "checkout", "--detach", branch], env=env, check=True)
         else:
             subprocess.run(["git", "clone", "--branch", branch, "--single-branch",
                             url, str(destination)], env=env, check=True)

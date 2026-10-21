@@ -24,16 +24,30 @@ def checkpoint_from_archive(archive, target):
     return target
 
 
+def verify_repository(repo, modules):
+    root = Path(repo).resolve()
+    paths = {module.__name__: str(Path(module.__file__).resolve()) for module in modules}
+    for name, path in paths.items():
+        if not Path(path).is_relative_to(root):
+            raise RuntimeError(f'Diagnostic import mismatch: {name} loaded from {path}; expected source inside {root}')
+    return paths
+
+
 def run(args):
     sys.path.insert(0, str(Path(args.repo).resolve()))
     import torch
     from experiments import main_cil as main
+    verify_repository(args.repo, (main,))
     main.cil.upstream_imports()
     from adapters.icarl_hooks import Prediction, sites_for, loss_context
     from methods import vna_v3 as vna
     from methods.vna_ggn import GGNProducts
     from experiments.vna_resume import Progress
     from experiments.io_utils import atomic_json_save
+    module_paths = verify_repository(args.repo, (main, vna, inspect.getmodule(Prediction),
+        inspect.getmodule(GGNProducts), inspect.getmodule(Progress)))
+    if args.branch in ('B','C') and not callable(getattr(vna, 'conjugate_gradient', None)):
+        raise RuntimeError('Historical d88abc4 solver is missing; rebuild the reference checkout before profiling B/C')
     if not torch.cuda.is_available() or 'T4' not in torch.cuda.get_device_name(0):
         raise RuntimeError('This diagnostic requires one real T4; no substitute timing')
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
@@ -60,7 +74,7 @@ def run(args):
     report = dict(identity=identity, status='RUNNING', diagnostic_only=True, branch=args.branch,
         code_commit=native_commit, source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         checkpoint=str(checkpoint), device=torch.cuda.get_device_name(0),
-        profiling=args.profile, first_nonfinite=None, threshold=40., lr=.05,
+        profiling=args.profile, module_paths=module_paths, first_nonfinite=None, threshold=40., lr=.05,
         timers=[], cg=[], jvp_vjp={}, applications=[])
     atomic_json_save(report,out/'diagnostic.json')
     active = dict(hook=None, model=None, applications=0, stage=[], last_lambda_step=None)

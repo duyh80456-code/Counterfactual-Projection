@@ -352,16 +352,25 @@ def build_exact_diagnostics(commit, source_digest):
     return result
 
 
-EXACT_DIAGNOSTICS = r'''from experiments.io_utils import atomic_json_save
-archives = sorted(Path('/kaggle/input').rglob('vna4_main.tar.gz'))
+EXACT_DIAGNOSTICS = r'''archives = sorted(Path('/kaggle/input').rglob('vna4_main.tar.gz'))
 if len(archives) != 1: raise FileNotFoundError('Attach exactly one old vna4_main.tar.gz containing full task-1 latest.pt')
 OLD_REPO = REPO.with_name('counterfactual-projection-d88abc4')
+OLD_COMMIT = 'd88abc496eb1fe21d1b6df66d90b47cf93d7ded1'
+if OLD_REPO.exists():
+    head = subprocess.run(['git','-C',str(OLD_REPO),'rev-parse','HEAD'],capture_output=True,text=True)
+    status = subprocess.run(['git','-C',str(OLD_REPO),'status','--porcelain','--untracked-files=no'],capture_output=True,text=True)
+    shared = (OLD_REPO/'.git/objects/info/alternates').exists()
+    if shared or head.returncode or head.stdout.strip() != OLD_COMMIT or status.returncode or status.stdout.strip():
+        print('Rebuilding incomplete or shared historical source checkout:', OLD_REPO)
+        shutil.rmtree(OLD_REPO)
 if not OLD_REPO.exists():
-    subprocess.run(['git','clone','--shared',str(REPO),str(OLD_REPO)],check=True)
-    subprocess.run(['git','-C',str(OLD_REPO),'checkout','--detach','d88abc4'],check=True)
-    for upstream in (REPO/'third_party').iterdir():
-        destination = OLD_REPO/'third_party'/upstream.name
-        if upstream.is_dir() and not destination.exists(): destination.symlink_to(upstream, target_is_directory=True)
+    private_clone(MAIN_URL, OLD_REPO, OLD_COMMIT)
+head = subprocess.check_output(['git','-C',str(OLD_REPO),'rev-parse','HEAD'],text=True).strip()
+status = subprocess.check_output(['git','-C',str(OLD_REPO),'status','--porcelain','--untracked-files=no'],text=True).strip()
+if head != OLD_COMMIT or status: raise RuntimeError('Historical source checkout is not a clean d88abc4 tree')
+for upstream in (REPO/'third_party').iterdir():
+    destination = OLD_REPO/'third_party'/upstream.name
+    if upstream.is_dir() and not destination.exists(): destination.symlink_to(upstream, target_is_directory=True)
 script = REPO/'diagnostics/exact_solver.py'
 branches = ('B','D') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')

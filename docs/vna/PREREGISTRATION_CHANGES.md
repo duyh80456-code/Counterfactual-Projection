@@ -602,3 +602,8 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
 
 - Capacity discrepancy found in existing main code: the fixed diagnostic probe has 256 samples, so task-20 diagnosis has m=25600, not the engine window's m=12800. Keep the probe and its validation unchanged; apply the same 600-second resource stop to m>=12800, and report actual GPU memory/time before any main run. No unapproved probe reduction or alternative solver.
 - The supplied archive confirms task-2 mu=1.3814802088148892e-7 (the task-1 value was 6.907401044074446e-8); the prompt's approximate 6.9e-8 describes task 1. Preserve the checkpoint's carried mu when replaying D.
+
+
+## 2026-10-21: historical checkout bootstrap repair
+
+The Kaggle profile-B setup used a shared clone of a filtered checkout, leaving missing d88abc4 blobs and falling back to current source imports. Fetch the historical SHA directly with authenticated lazy blob checkout in an independent clone; rebuild incomplete/shared source caches, verify a clean historical tree, and validate all core import origins before GPU work. Record module paths with the diagnostic report. This changes source preparation/validation only; T29–T31, checkpoint data, SGD, RNG, schedules, comparison rules and the M1 hold are unchanged.

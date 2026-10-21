@@ -75,3 +75,15 @@ The archive itself confirms the previously observed B-like event at step 2001: r
 - No remote Kaggle session was controlled from this local workspace. The new M1 notebooks are held; this does not establish that an already-running historical session has stopped.
 
 Skipped: full suite, notebook smoke runs, T4 profiling/A–D, full 20-task training and baseline reuse verification. Publication does not change these pending checks.
+
+
+## 2026-10-21: profile-B bootstrap failure repaired
+
+The supplied Kaggle log fails before any profile application: historical checkout reports missing SHA1 blobs, followed by an import of current `methods.vna_v3` without `conjugate_gradient`. Detached HEAD is expected for immutable pins; the missing objects and deleted tracked files are the failure. No usable new T4 profile or A–D outcome was produced by that attempt.
+
+- Replace the local shared clone with a direct authenticated checkout of the full historical SHA. The common clone helper now fetches the requested SHA (including a SHA different from REPO_COMMIT) and keeps authentication available during partial-clone checkout.
+- Automatically rebuild a historical source cache when it is shared, dirty, incomplete or at the wrong commit; preserve diagnostic outputs and the supplied task-1 archive. Reuse a clean independent historical checkout.
+- Check the source paths for main_cil, vna_v3, icarl_hooks, vna_ggn and vna_resume before CUDA work; abort clearly on mixed source imports. Store these paths in the resulting report.
+- `tests/test_exact_notebook_bootstrap.py`: **3 passed**, covering authenticated historical SHA checkout, repair/reuse of a disposable local shared checkout, and rejection of a current solver imported for the old checkout. No training or notebook smoke run.
+
+Use the updated diagnostic notebook and run from the first cell. It rebuilds the broken historical source directory itself; keep the same vna4_main.tar.gz and CIFAR-100 inputs. Actual T4 profiling remains pending.
