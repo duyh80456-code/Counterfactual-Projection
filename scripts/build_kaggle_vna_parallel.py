@@ -340,13 +340,13 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
 def build_exact_diagnostics(commit, source_digest):
     result = build(commit, 'M1s0', 'vna_v4_exact_diagnostics', source_digest)
     result['cells'][0] = cell('code', config(commit, (['diagnostics'], ['diagnostics'], []),
-        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # R vs D-power10 must pass before D-exact; M1 remains held\n")
+        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # GPU0: D-exact + capacity; GPU1: reference then D-power10; M1 remains held\n")
     setup = ''.join(result['cells'][3]['source'])
     setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
     result['cells'][3] = cell('code', setup)
     inputs = 'Attach CIFAR-100 and the old task-1 checkpoint or an output archive; checkpoint discovery scans all inputs automatically.'
     inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
-    result['cells'][1] = cell('markdown', '# T29–T31: diagnostics on up to two T4 GPUs\n'+inputs+' First compare reference D (R, GPU0) with D-power10 (GPU1), requiring rel tol 1e-5. Only on PASS run D-exact with same-state curvature/ranking audit and the 100-class capacity proxy. Audit time is reported separately. M1 stays held and uses exact curvature.')
+    result['cells'][1] = cell('markdown', '# T29–T31: diagnostics on up to two T4 GPUs\n'+inputs+' GPU0 runs current D-exact with --capacity-profile immediately. GPU1 runs reference D (b97d25c, power10), then current D-power10; compare strictly at rel tol 1e-5. Power10 failure or mismatch is advisory and does not gate D-exact. With one GPU, run D-exact first, then both power10 checks serially. D-exact includes the same-state curvature/ranking audit and 100-class capacity proxy. Audit time is reported separately. M1 stays held and uses exact curvature.')
     result['cells'][-2] = cell('code', EXACT_DIAGNOSTICS)
     result['cells'][-1] = cell('code', "for path in (STAGE_B/'exact_diagnostics').rglob('diagnostic.json'): print(path, path.read_text())\narchive_outputs()\n")
     return result
@@ -386,12 +386,13 @@ upstream_imports()
 checkpoint = find_task1_checkpoint(Path('/kaggle/input'), STAGE_B/'exact_diagnostics'/'task1_source.pt')
 from concurrent.futures import ThreadPoolExecutor, as_completed
 diagnostic_root = STAGE_B/'exact_diagnostics'/MODE/REPO_COMMIT[:12]
-branches = ('R','D-power10') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
+branches = ('D-exact','R','D-power10') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')
 gpu_count = min(2, torch.cuda.device_count())
 if gpu_count < 1: raise RuntimeError('Diagnostics require at least one T4 GPU')
 ENV['VNA_DIAGNOSTIC_LANES'] = str(gpu_count)
-queues = [branches[gpu::gpu_count] for gpu in range(gpu_count)]
+queues = [('D-exact',),('R','D-power10')] if MODE == 'profile' and gpu_count == 2 else [branches[gpu::gpu_count] for gpu in range(gpu_count)]
+outcomes = {}
 print('Diagnostic GPU queues:', {gpu: list(jobs) for gpu, jobs in enumerate(queues)}, flush=True)
 def run_diagnostic_lane(gpu, jobs):
     for branch in jobs:
@@ -403,29 +404,44 @@ def run_diagnostic_lane(gpu, jobs):
             '--curvature','power10' if branch in ('R','D-power10','B','C') else 'exact']
         if MODE == 'profile': command.append('--profile')
         if MODE == 'profile' and branch == 'D-exact': command.append('--capacity-profile')
-        if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): return False
+        try:
+            if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'):
+                outcomes[branch] = {'status':'PAUSED'}
+                return False
+            outcomes[branch] = {'status':'COMPLETED'}
+        except Exception as error:
+            outcomes[branch] = {'status':'FAILED','error':str(error)}
+            if MODE != 'profile' or branch == 'D-exact': raise
+            print(f'Advisory power10 check {branch} failed: {error}',flush=True)
         archive_outputs()
     return True
 try:
     with ThreadPoolExecutor(max_workers=gpu_count) as pool:
         pending = [pool.submit(run_diagnostic_lane, gpu, jobs) for gpu, jobs in enumerate(queues)]
-        completed = [future.result() for future in as_completed(pending)]
-    if MODE == 'profile' and all(completed):
+        failures = []
+        for future in as_completed(pending):
+            try: future.result()
+            except Exception as error: failures.append(error)
+    if MODE == 'profile':
         from diagnostics.exact_solver import compare_profiles
         from experiments.io_utils import atomic_json_save
-        reference = json.loads((diagnostic_root/'R'/'diagnostic.json').read_text())
-        power = json.loads((diagnostic_root/'D-power10'/'diagnostic.json').read_text())
+        def profile_result(branch):
+            outcome = outcomes.get(branch,{'status':'NOT_RUN'})
+            path = diagnostic_root/branch/'diagnostic.json'
+            if outcome['status'] != 'COMPLETED': return outcome
+            try: return json.loads(path.read_text())
+            except (OSError,ValueError) as error: return {'status':'MISSING_REPORT','error':str(error)}
+        reference, power, exact = (profile_result(branch) for branch in ('R','D-power10','D-exact'))
         stage1 = compare_profiles(reference,power,strict=True)
+        stage1.update(advisory=True,execution=outcomes)
         atomic_json_save(stage1,diagnostic_root/'stage1_power10_vs_b97d25c.json')
         print(json.dumps(stage1,indent=2),flush=True)
-        if stage1['status'] != 'PASS': raise RuntimeError('D-power10 differs from b97d25c; review stage1 report before D-exact')
-        ENV['VNA_DIAGNOSTIC_LANES'] = '1'
-        if run_diagnostic_lane(gpu_count-1,('D-exact',)):
-            exact = json.loads((diagnostic_root/'D-exact'/'diagnostic.json').read_text())
-            stage2 = compare_profiles(power,exact)
-            stage2['same_state_curvature_and_rankings'] = exact.get('curvature_differences')
-            atomic_json_save(stage2,diagnostic_root/'stage2_exact_vs_power10.json')
-            print(json.dumps(stage2,indent=2),flush=True)
+        stage2 = compare_profiles(power,exact)
+        stage2['same_state_curvature_and_rankings'] = exact.get('curvature_differences')
+        stage2['exact_status'] = exact.get('status')
+        atomic_json_save(stage2,diagnostic_root/'stage2_exact_vs_power10.json')
+        print(json.dumps(stage2,indent=2),flush=True)
+    if failures: raise failures[0]
 finally:
     archive_outputs()
 print('M1 remains held: review the actual profiles and A–D diagnostic reports.')

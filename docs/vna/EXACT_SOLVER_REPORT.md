@@ -249,3 +249,20 @@ additional lambda_*_plus_mu fields show the damped denominator at the same mu.
 This is the ranking lower bound, not the Schur matrix eigenvalue. GPU peaks
 from the D-exact application are explicitly labelled as including curvature
 audit; only the reported elapsed times subtract the separately measured audit.
+
+
+## 2026-10-21: independent exact and power10 profiling lanes
+
+Supersedes the strict stage-1 gate above. In MODE=profile, GPU0 immediately
+runs current D-exact with --capacity-profile. GPU1 runs clean b97d25c D
+(power10), then current D-power10, on the same discovered task-1 checkpoint.
+Keep the relative tolerance 1e-5 strict comparison and both comparison reports.
+Power10 FAIL, missing report or child-process failure is advisory: record it
+explicitly without gating exact or the M1 decision. Exact failures remain fatal
+after reports/output are archived. One GPU runs exact first, then both power10
+checks serially. Deadline/exit-75 pauses still stop remaining launches.
+
+The same-state exact curvature audit, capacity proxy, M1 exact setting and
+M1 hold are unchanged. Actual T4 timing/equivalence/capacity remain unmeasured
+locally. The notebook embeds the new dispatch and pins the already committed
+solver source; this scheduling change does not modify solver mathematics.

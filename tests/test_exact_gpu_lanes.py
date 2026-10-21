@@ -32,9 +32,9 @@ def write_report(command,mu=1.):
 
 
 @pytest.mark.parametrize('mode,gpus,expected',[
-    ('profile',2,{0:['R'],1:['D-power10','D-exact']}),
+    ('profile',2,{0:['D-exact'],1:['R','D-power10']}),
     ('nan',2,{0:['A','C'],1:['B','D']}),
-    ('profile',1,{0:['R','D-power10','D-exact']}),
+    ('profile',1,{0:['D-exact','R','D-power10']}),
     ('nan',1,{0:['A','B','C','D']}),
 ])
 def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expected):
@@ -59,7 +59,7 @@ def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expect
         return True
     scope=run_schedule(tmp_path,mode,gpus,launch,archives)
     assert dict(calls)==expected and peak[0]==gpus
-    assert scope['ENV']['VNA_DIAGNOSTIC_LANES']==str(1 if mode=='profile' else gpus)
+    assert scope['ENV']['VNA_DIAGNOSTIC_LANES']==str(gpus)
     assert len(archives)==sum(map(len,expected.values()))+1
 
 
@@ -72,26 +72,46 @@ def test_paused_lane_does_not_launch_its_remaining_jobs(tmp_path):
     assert calls==['A'] and len(archives)==1
 
 
-def test_child_failure_propagates_and_archives_outputs(tmp_path):
+def test_exact_failure_propagates_and_archives_outputs(tmp_path):
     archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
-        barrier.wait(timeout=5)
-        if name=='profile_D-power10':
+        if name in ('profile_D-exact','profile_R'): barrier.wait(timeout=5)
+        if name=='profile_D-exact':
             raise subprocess.CalledProcessError(1,command)
+        write_report(command)
         return True
     with pytest.raises(subprocess.CalledProcessError):
         run_schedule(tmp_path,'profile',2,launch,archives)
     assert archives
 
 
-def test_power10_mismatch_holds_exact_stage(tmp_path):
+def test_power10_mismatch_does_not_gate_exact(tmp_path):
     calls=[];archives=[]
     def launch(command,gpu,name,*a):
         calls.append(name)
         write_report(command,mu=2. if name.endswith('D-power10') else 1.)
         return True
-    with pytest.raises(RuntimeError,match='D-power10 differs'):
-        run_schedule(tmp_path,'profile',1,launch,archives)
-    assert calls==['profile_R','profile_D-power10']
-    path=tmp_path/'outputs/exact_diagnostics/profile/fixture/stage1_power10_vs_b97d25c.json'
-    assert json.loads(path.read_text())['status']=='FAIL'
+    run_schedule(tmp_path,'profile',1,launch,archives)
+    assert calls==['profile_D-exact','profile_R','profile_D-power10']
+    root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
+    report=json.loads((root/'stage1_power10_vs_b97d25c.json').read_text())
+    assert report['status']=='FAIL' and report['advisory']
+    assert json.loads((root/'stage2_exact_vs_power10.json').read_text())['exact_status']=='PROFILE_COMPLETED'
+
+
+@pytest.mark.parametrize('failed',['R','D-power10'])
+def test_power10_failure_keeps_exact_and_other_check(tmp_path,failed):
+    calls=defaultdict(list);archives=[];barrier=threading.Barrier(2)
+    def launch(command,gpu,name,*args):
+        branch=name.removeprefix('profile_')
+        calls[gpu].append(branch)
+        if len(calls[gpu])==1: barrier.wait(timeout=5)
+        if branch==failed: raise subprocess.CalledProcessError(1,command)
+        write_report(command)
+        return True
+    run_schedule(tmp_path,'profile',2,launch,archives)
+    assert dict(calls)=={0:['D-exact'],1:['R','D-power10']}
+    root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
+    report=json.loads((root/'stage1_power10_vs_b97d25c.json').read_text())
+    assert report['status']=='INCOMPLETE' and report['execution'][failed]['status']=='FAILED'
+    assert json.loads((root/'stage2_exact_vs_power10.json').read_text())['exact_status']=='PROFILE_COMPLETED'

@@ -722,3 +722,20 @@ wall time too. D-exact performs the existing separately labelled capacity
 proxy after the application. Main runs do not enable this audit. Keep top-2,
 four live slots, probe=256 and the M1 hold until real T4 report review. Local
 reference checks are not a substitute for the requested T4 runs.
+
+
+## 2026-10-21: independent exact and power10 profiling lanes
+
+Supersedes the strict stage-1 gate above. In MODE=profile, GPU0 immediately
+runs current D-exact with --capacity-profile. GPU1 runs clean b97d25c D
+(power10), then current D-power10, on the same discovered task-1 checkpoint.
+Keep the relative tolerance 1e-5 strict comparison and both comparison reports.
+Power10 FAIL, missing report or child-process failure is advisory: record it
+explicitly without gating exact or the M1 decision. Exact failures remain fatal
+after reports/output are archived. One GPU runs exact first, then both power10
+checks serially. Deadline/exit-75 pauses still stop remaining launches.
+
+The same-state exact curvature audit, capacity proxy, M1 exact setting and
+M1 hold are unchanged. Actual T4 timing/equivalence/capacity remain unmeasured
+locally. The notebook embeds the new dispatch and pins the already committed
+solver source; this scheduling change does not modify solver mathematics.
