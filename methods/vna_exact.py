@@ -60,7 +60,7 @@ class OutputSolve:
 
     def metric(self, v):
         shape = v.shape
-        return torch.einsum('nij,nj->ni', self.blocks, v.reshape(self.blocks.shape[:2])).reshape(shape)
+        return torch.einsum('nij,nj->ni', self.blocks, v.to(self.blocks).reshape(self.blocks.shape[:2])).reshape(shape)
 
     def A_solve(self, rhs):
         return self.inverse @ rhs if self.inverse is not None else torch.cholesky_solve(rhs, self.chol)

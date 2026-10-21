@@ -631,3 +631,12 @@ in Gram metadata. This bounds concurrent derivative vectors without changing
 the window, columns, precision, exact formulas, solver, or GPU lane mapping.
 Keep the existing resource stop rules; introduce no OOM retry or approximation.
 Actual T4 memory and timing after this change still require measurement.
+
+## 2026-10-21: native GIR product dtype repair
+
+The profile_D traceback reaches GIR curvature estimation after Gram construction,
+then fails because the native JEv output is float32 while OutputSolve.metric
+stores float64 blocks. Convert the input vector to the block dtype/device in
+the shared metric method before einsum. The metric result remains float64;
+JET already converts its input to native parameter dtype at the VJP boundary.
+No formulas, model precision, windows, RNG, counters or lane scheduling change.

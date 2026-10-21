@@ -62,6 +62,26 @@ def test_t29_dense(conv,bn):
             for actual,expected in quantities: torch.testing.assert_close(actual,expected,rtol=1e-8,atol=1e-10)
 
 
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
+def test_metric_accepts_native_gir_products(dtype):
+    from methods.vna_v3 import power_lambda_max
+    model,site,batch,spec,ctx,_=problem()
+    model.to(dtype=dtype); batch=(batch[0].to(dtype),batch[1])
+    with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],spec,ctx)
+        G,_=gram(p)
+        factor=OutputSolve(G,spec.metric_blocks(op.logits,ctx),.2)
+        size=sum(ref.numel() for _,ref in p.extension_refs)
+        image=p.JEv(torch.ones(size,dtype=torch.float64))
+        actual=factor.metric(image)
+        expected=torch.block_diag(*factor.blocks)@image.double()
+        assert image.dtype==dtype and actual.dtype==torch.float64
+        torch.testing.assert_close(actual,expected,rtol=1e-12,atol=1e-12)
+        curvature=power_lambda_max(lambda v:p.JET(factor.metric(p.JEv(v))),size,
+                                  torch.Generator().manual_seed(0),iterations=10)
+        assert torch.isfinite(torch.tensor(curvature)) and curvature>=0
+
+
 def test_dead_install_gram():
     model,site,batch,spec,ctx,opt=problem()
     with torch.no_grad(): model[0].weight[0]=0; model[0].bias[0]=-1
