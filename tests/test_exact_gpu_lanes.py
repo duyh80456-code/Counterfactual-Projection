@@ -32,9 +32,9 @@ def write_report(command,mu=1.):
 
 
 @pytest.mark.parametrize('mode,gpus,expected',[
-    ('profile',2,{0:['D-exact'],1:['R','D-power10']}),
+    ('profile',2,{0:['D-CG'],1:['R-Gram']}),
     ('nan',2,{0:['A','C'],1:['B','D']}),
-    ('profile',1,{0:['D-exact','R','D-power10']}),
+    ('profile',1,{0:['D-CG','R-Gram']}),
     ('nan',1,{0:['A','B','C','D']}),
 ])
 def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expected):
@@ -44,10 +44,10 @@ def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expect
         branch=name.split('_')[-1]
         assert command[command.index('--branch')+1]==('D' if mode=='profile' else branch)
         assert command[command.index('--checkpoint')+1]==str(tmp_path/'shared-task1.pt')
-        assert command[command.index('--repo')+1]==str(tmp_path/('old' if branch in ('B','C') else 'reference' if branch=='R' else 'new'))
+        assert command[command.index('--repo')+1]==str(tmp_path/('old' if branch in ('B','C') else 'reference' if branch=='R-Gram' else 'new'))
         assert ('--profile' in command)==(mode=='profile')
-        assert command[command.index('--curvature')+1]==('power10' if branch in ('R','D-power10','B','C') else 'exact')
-        assert ('--capacity-profile' in command)==(mode=='profile' and branch=='D-exact')
+        assert command[command.index('--curvature')+1]=='power10'
+        assert ('--capacity-profile' in command)==(mode=='profile' and branch=='D-CG')
         with lock:
             calls[gpu].append(branch);active[gpu]+=1
             assert active[gpu]==1
@@ -72,11 +72,11 @@ def test_paused_lane_does_not_launch_its_remaining_jobs(tmp_path):
     assert calls==['A'] and len(archives)==1
 
 
-def test_exact_failure_propagates_and_archives_outputs(tmp_path):
+def test_cg_failure_propagates_and_archives_outputs(tmp_path):
     archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
-        if name in ('profile_D-exact','profile_R'): barrier.wait(timeout=5)
-        if name=='profile_D-exact':
+        if name in ('profile_D-CG','profile_R-Gram'): barrier.wait(timeout=5)
+        if name=='profile_D-CG':
             raise subprocess.CalledProcessError(1,command)
         write_report(command)
         return True
@@ -85,22 +85,22 @@ def test_exact_failure_propagates_and_archives_outputs(tmp_path):
     assert archives
 
 
-def test_power10_mismatch_does_not_gate_exact(tmp_path):
+def test_gram_mismatch_does_not_gate_cg(tmp_path):
     calls=[];archives=[]
     def launch(command,gpu,name,*a):
         calls.append(name)
-        write_report(command,mu=2. if name.endswith('D-power10') else 1.)
+        write_report(command,mu=2. if name.endswith('R-Gram') else 1.)
         return True
     run_schedule(tmp_path,'profile',1,launch,archives)
-    assert calls==['profile_D-exact','profile_R','profile_D-power10']
+    assert calls==['profile_D-CG','profile_R-Gram']
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
-    report=json.loads((root/'stage1_power10_vs_b97d25c.json').read_text())
+    report=json.loads((root/'cg_vs_gram_8c56d02.json').read_text())
     assert report['status']=='FAIL' and report['advisory']
-    assert json.loads((root/'stage2_exact_vs_power10.json').read_text())['exact_status']=='PROFILE_COMPLETED'
+    assert json.loads((root/'D-CG/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
 
 
-@pytest.mark.parametrize('failed',['R','D-power10'])
-def test_power10_failure_keeps_exact_and_other_check(tmp_path,failed):
+@pytest.mark.parametrize('failed',['R-Gram'])
+def test_gram_failure_keeps_cg(tmp_path,failed):
     calls=defaultdict(list);archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
         branch=name.removeprefix('profile_')
@@ -110,8 +110,33 @@ def test_power10_failure_keeps_exact_and_other_check(tmp_path,failed):
         write_report(command)
         return True
     run_schedule(tmp_path,'profile',2,launch,archives)
-    assert dict(calls)=={0:['D-exact'],1:['R','D-power10']}
+    assert dict(calls)=={0:['D-CG'],1:['R-Gram']}
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
-    report=json.loads((root/'stage1_power10_vs_b97d25c.json').read_text())
+    report=json.loads((root/'cg_vs_gram_8c56d02.json').read_text())
     assert report['status']=='INCOMPLETE' and report['execution'][failed]['status']=='FAILED'
-    assert json.loads((root/'stage2_exact_vs_power10.json').read_text())['exact_status']=='PROFILE_COMPLETED'
+    assert json.loads((root/'D-CG/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
+
+
+@pytest.mark.parametrize('gpus',[1,2])
+def test_three_task_rehearsal_uses_fresh_schedule_and_full_epoch_recipe(tmp_path,gpus):
+    from scripts.build_kaggle_vna_parallel import CG_SMOKE3
+    calls=[];archives=[]
+    def launch(command,gpu,name,*args):
+        calls.append((gpu,name,command))
+        if '--preflight-only' in command:
+            Path(command[command.index('--schedule-output')+1]).write_text('{}')
+        return True
+    scope=dict(STAGE_B=tmp_path/'outputs',REPO_COMMIT='fixture',sys=sys,DATA_ROOT=tmp_path/'cifar',
+        RUN_ROOT=tmp_path,torch=SimpleNamespace(cuda=SimpleNamespace(device_count=lambda:gpus)),
+        launch=launch,archive_outputs=lambda:archives.append(True),pause_due=lambda:False)
+    exec(CG_SMOKE3,scope)
+    assert calls[0][1]=='smoke3_preflight'
+    jobs=calls[1:]
+    assert {name for _,name,_ in jobs}=={'smoke3_icarl','smoke3_icarl_full'}
+    for gpu,name,command in jobs:
+        assert command[command.index('--max-tasks')+1]=='3'
+        assert command[command.index('--curvature')+1]=='power10'
+        assert '--checkpoint' not in command and '--fake-data' not in command
+        assert ('--schedule' in command)==(name=='smoke3_icarl_full')
+        assert gpu==(1 if gpus==2 and name=='smoke3_icarl' else 0)
+    assert len(archives)==3

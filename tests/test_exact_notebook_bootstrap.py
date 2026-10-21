@@ -56,7 +56,7 @@ def test_historical_preparation_repairs_shared_partial_checkout(tmp_path,mode):
         git('clone','--no-local',str(repo),str(target),cwd=tmp_path)
         git('checkout','--detach',revision,cwd=target)
     source=EXACT_DIAGNOSTICS[:EXACT_DIAGNOSTICS.index("script = REPO/")]
-    source=source.replace('/kaggle/input',str(inputs)).replace('d88abc496eb1fe21d1b6df66d90b47cf93d7ded1',old).replace('b97d25c9aaee4949acbb50869912042b5a47c1f3',old)
+    source=source.replace('/kaggle/input',str(inputs)).replace('d88abc496eb1fe21d1b6df66d90b47cf93d7ded1',old).replace('8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2',old)
     scope=dict(MODE=mode,REPO=repo,Path=Path,subprocess=subprocess,shutil=shutil,private_clone=clone,MAIN_URL='fixture')
     exec(source,scope)
     assert (destination/'value.txt').read_text() == 'old solver'

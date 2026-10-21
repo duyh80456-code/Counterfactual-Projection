@@ -311,3 +311,16 @@ def test_round3_ablation_arms_run_with_engine_variant(tmp_path, monkeypatch, arm
         assert events and all(e.get('beta', 0.) == 0. for e in events if arm == 'icarl_full_beta0' and 'beta' in e)
     finally:
         torch.set_default_dtype(old_dtype)
+
+
+def test_task_prefix_is_part_of_identity_and_keeps_native_epoch_recipe(tmp_path,monkeypatch):
+    main.cil.upstream_imports()
+    monkeypatch.setattr(main,'resnet32_nobn',Tiny)
+    args=main.parser().parse_args(['--arm','icarl','--fake-data','--workers','0',
+        '--device','cpu','--max-tasks','1','--out',str(tmp_path)])
+    old_dtype=torch.get_default_dtype();torch.set_default_dtype(torch.float64)
+    try: result=main.run(args)
+    finally:torch.set_default_dtype(old_dtype)
+    assert result['tasks_run']==result['identity']['expected_tasks']==1
+    assert result['identity']['comparison_protocol']['max_tasks']==1
+    assert main.training_settings()['init_epoch']==100 and main.training_settings()['epochs']==50

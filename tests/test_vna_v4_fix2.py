@@ -86,12 +86,12 @@ def test_7_2a_protected_residual_matches_dense():
         # Exercise the actual protected residual branch even when BetaRule selects zero.
         beta = 3.
         delta = torch.zeros_like(op.logits)
-        delta[:, :2] = -(values['G']@values['yO']).reshape_as(delta)[:, :2]
+        delta[:, :2] = -values['G'].Jv(values['yO']).reshape_as(delta)[:, :2]
         eb = op.g-beta*values['H_old'](delta.flatten())
         Hb = H+beta*torch.stack([values['H_old'](v) for v in torch.eye(len(op.g), dtype=torch.float64)], 1)
         from methods.vna_exact import OutputSolve
-        factor = OutputSolve(values['G'], values['blocks']+beta*values['old_blocks'], .2)
-        actual = eb-Hb@(values['G']@factor.solve(eb))
+        factor = OutputSolve(J@J.T, values['blocks']+beta*values['old_blocks'], .2)
+        actual = eb-Hb@(J@J.T@factor.solve(eb))
         expected = .2*torch.linalg.solve(Hb@J@J.T+.2*torch.eye(len(eb), dtype=torch.float64), eb)
         torch.testing.assert_close(actual, expected, atol=1e-8, rtol=0)
 
@@ -128,7 +128,7 @@ def test_7_2c_beta_zero_residual_bitwise(monkeypatch):
     monkeypatch.setattr(engine, '_direction', direction)
     def gir(*args):
         values=args[-2]; factor=values['factor']
-        torch.testing.assert_close(values['e_beta']-factor.metric(factor.G@factor.solve(values['e_beta'])), seen[-1], rtol=0, atol=1e-12)
+        torch.testing.assert_close(values['e_beta']-factor.metric(factor.G.Jv(factor.solve(values['e_beta']))), seen[-1], rtol=0, atol=1e-12)
         return []
     monkeypatch.setattr(engine, '_run_gir', gir)
     engine.apply(model, [site], batch, spec, ctx, opt, 1)

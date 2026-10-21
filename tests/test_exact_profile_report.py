@@ -9,7 +9,7 @@ def test_curvature_configuration_defaults_and_checkpoint_state():
     import pytest
     from methods.vna_v3 import V3Engine
     from experiments.main_cil import parser
-    assert parser().parse_args(['--out','unused']).curvature=='exact'
+    assert parser().parse_args(['--out','unused']).curvature=='power10'
     assert parser().parse_args(['--out','unused','--curvature','power10']).curvature=='power10'
     restored=V3Engine();restored.load_state_dict(V3Engine(curvature='power10').state_dict())
     assert restored.curvature=='power10'
@@ -76,16 +76,13 @@ def test_capacity_proxy_isolates_model_rng_and_records_oom(monkeypatch):
     model=nn.Module();model.native=Native()
     before=deepcopy(model.state_dict()),rng_state()
     seen=[]
-    def fake_gram(_): return torch.ones(1),dict(gram_seconds=59.,m=seen[-1]*100)
     def diagnose(clone,batch,**kw):
         assert clone is not model and clone.native.fc.out_features==100
         assert clone.native.fc.weight.dtype==torch.float64
         seen.append(len(batch[0]))
-        vna_v3.gram(None)
         if len(batch[0])==256: raise torch.cuda.OutOfMemoryError('capacity fixture')
-        return dict(gram_seconds=59.,m=12800)
+        return dict(solver='cg',gram_bytes=0,m=12800,solves=[dict(converged=True)])
     monkeypatch.setattr(vna_v3,'diagnose',diagnose)
-    monkeypatch.setattr(vna_v3,'gram',fake_gram)
     monkeypatch.setattr('adapters.icarl_hooks.sites_for',lambda _:[])
     for name in ('synchronize','reset_peak_memory_stats','empty_cache'):
         monkeypatch.setattr(torch.cuda,name,lambda:None)
@@ -93,7 +90,6 @@ def test_capacity_proxy_isolates_model_rng_and_records_oom(monkeypatch):
         monkeypatch.setattr(torch.cuda,name,lambda:2048)
     result=profile_capacity(model,(torch.ones(128,2,dtype=torch.float64),torch.zeros(128,dtype=torch.long)))
     assert seen==[256,128] and [r['status'] for r in result['rows']]==['CUDA_OOM','COMPLETED']
-    assert vna_v3.gram is fake_gram
-    assert result['rows'][0]['gram_status']=='COMPLETED' and result['rows'][0]['gram_seconds']==59.
+    assert result['rows'][1]['solver']=='cg' and result['rows'][1]['gram_bytes']==0
     assert not result['actual_task20_measured'] and not result['probe_change_applied']
     _assert_bitwise(before,(model.state_dict(),rng_state()))

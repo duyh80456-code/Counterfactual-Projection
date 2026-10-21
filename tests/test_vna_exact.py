@@ -100,7 +100,7 @@ def test_dead_install_gram():
 
 @pytest.mark.parametrize('conv,bn,dtype',[(False,False,torch.float64),(False,True,torch.float64),
     (True,False,torch.float64),(True,True,torch.float64),(True,False,torch.float32)])
-def test_grouped_gir_candidates_match_serial_exact_scores_and_jacobians(monkeypatch,conv,bn,dtype):
+def test_grouped_gir_candidates_match_serial_power10_scores_and_jacobians(monkeypatch,conv,bn,dtype):
     from contextlib import contextmanager
     from methods import vna_v3 as vna
     model,site,batch,spec,ctx,opt=problem(conv,bn)
@@ -133,8 +133,9 @@ def test_grouped_gir_candidates_match_serial_exact_scores_and_jacobians(monkeypa
             ne=sum(ref.numel() for _,ref in p.extension_refs)
             J=columns(p.JEv,torch.arange(ne),ne,p.extension_refs[0][1],chunk=1)
             s=p.JET(residual).double()
-            small=J.T@torch.vmap(factor.metric)(J.T).T
-            lam=float(torch.linalg.eigvalsh((small+small.T)*.5)[-1])
+            lam=vna.power_lambda_max(lambda v:p.JET(factor.metric(p.JEv(v))),ne,
+                vna.dedicated_generator(engine.seed,f"v4-ell:{engine.task}:1:{proposal['power_seed_index']}",batch[0].device),
+                iterations=10,device=batch[0].device)
             assert proposal['curvature']==pytest.approx(lam,rel=tolerance,abs=tolerance*.01)
             assert proposal['score']==pytest.approx(.5*float(s@s)/(lam+engine.mu),rel=tolerance,abs=tolerance*.01)
             if '_Jv' in proposal: torch.testing.assert_close(proposal['_Jv'],J,rtol=tolerance,atol=tolerance*.01)
@@ -155,7 +156,7 @@ def test_woodbury_sequential_dense():
         torch.testing.assert_close(solver.solve(e),direct.solve(e),rtol=1e-8,atol=1e-10)
 
 
-def test_application_matches_serial_derivatives_with_exact_curvature(monkeypatch):
+def test_application_matches_serial_derivatives_with_power10_curvature(monkeypatch):
     from methods import vna_v3 as vna
     model=nn.Sequential(nn.Linear(3,4),nn.ReLU(),nn.Linear(4,1)).double()
     with torch.no_grad(): model[0].weight[:2]=0;model[0].bias[:2]=-1;model[2].weight[:,:2]=0
@@ -176,8 +177,8 @@ def test_application_matches_serial_derivatives_with_exact_curvature(monkeypatch
     for key in ('mu_star','rho_tr','L_after','s'):
         assert left[key]==pytest.approx(right[key],rel=1e-9,abs=1e-11)
     assert [(r['site'],r['unit']) for r in left['swap_records']]==[(r['site'],r['unit']) for r in right['swap_records']]
-    torch.testing.assert_close(torch.tensor([r['Gamma_woodbury'] for r in left['gir_trials']]),
-                               torch.tensor([r['Gamma_woodbury'] for r in right['gir_trials']]))
+    torch.testing.assert_close(torch.tensor([r['Gamma_cg'] for r in left['gir_trials']]),
+                               torch.tensor([r['Gamma_cg'] for r in right['gir_trials']]))
     for name,value in results[0][1].items(): torch.testing.assert_close(value,results[1][1][name],rtol=1e-9,atol=1e-11)
     _assert_bitwise(results[0][2],results[1][2])
 
@@ -365,22 +366,4 @@ def test_power10_matches_b97d25c_generators_iterations_and_scores(monkeypatch,dt
         assert a['bias_q']==b['bias_q']
         torch.testing.assert_close(a['A']['weight'],b['A']['weight'],rtol=1e-5,atol=0)
         assert a['score']==pytest.approx(b['score'],rel=1e-5,abs=0)
-    from contextlib import contextmanager
-    original_products=vna.training_products;counts=[]
-    @contextmanager
-    def counted(*a,**kw):
-        with original_products(*a,**kw) as p:
-            yield p
-            counts.append(tuple(getattr(p,k) for k in ('forward_calls','jvp_calls','vjp_calls','extension_jvp_calls','extension_vjp_calls')))
-    monkeypatch.setattr(vna,'training_products',counted)
-    engine.curvature='exact'
-    plain=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,**kwargs)
-    traces.clear();engine.protocol['audit_curvature']=True
-    audited=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,**kwargs)
-    assert counts[0]==counts[1]
-    assert [p['score'] for p in plain]==[p['score'] for p in audited]
-    assert [row[:3] for row in reference_trace]==[row[:3] for row in traces]
-    for a,b in zip(reference,sorted(audited,key=lambda p:p['score_power10'],reverse=True)):
-        assert a['score']==pytest.approx(b['score_power10'],rel=1e-5,abs=0)
-        assert b['audit_seconds']>0 and 'curvature_power10' in b
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))

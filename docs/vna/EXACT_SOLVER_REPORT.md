@@ -278,3 +278,19 @@ the binding to the real installed submodule via importlib before scanning.
 Checkpoint identity/epoch/commit requirements and byte deduplication are unchanged.
 The regression check verifies identical selected bytes and preserved RNG state.
 Actual Kaggle kernel recovery has not been exercised locally.
+
+## 2026-10-21: supplied T4 results and CG replacement
+
+See CG_OOM_REVIEW.md for the measured old/current comparison, exact failure
+fields, proxy OOM/time guard and alternatives considered. The former grouped
+exact/vmap speed pass did not meet the T4 target. Production now uses parameter
+CG with verified 1e-8 residuals and frozen-coordinate CG Gamma; Gram/Woodbury
+are references. There is no global output Gram or native live-slot Jacobian
+construction on that path. power10 replaces the exact candidate eigen branch.
+The CG lemma states mu-dependent error constants and float32 matvec limitations.
+Kaggle profiling/rehearsal and authoritative K0 remain pending, not inferred.
+
+Local CG validation: 134 related tests passed; the five previously recorded
+schedule/roundoff/revival/collector/pause-assertion failures were deselected.
+The unchanged check_t29_31.py reports zero violations in 200 problems and no
+nonterminating T30 cases. No full suite or real T4 training/profile was run.

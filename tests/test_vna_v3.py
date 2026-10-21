@@ -42,7 +42,7 @@ def test_kernel_self_exact_and_read_only_bn(bn):
         actual = engine._direction(p, op, .1)
         F = torch.stack([op.F(v) for v in torch.eye(op.size, dtype=torch.float64)], 1)
         inverse = torch.linalg.inv(F+.1*torch.eye(op.size, dtype=torch.float64))
-        torch.testing.assert_close(p.JT(actual['dy']), F@inverse@F@inverse@op.gradient, rtol=1e-8, atol=1e-10)
+        torch.testing.assert_close(actual['dy'], F@inverse@F@inverse@op.gradient, rtol=1e-8, atol=1e-10)
     for n, value in before.items(): assert torch.equal(value, model.state_dict()[n])
 
 
@@ -66,7 +66,7 @@ def test_kernel_self_protects_old_classes_but_keeps_unprotected_beta_zero_case()
         eye = torch.eye(op.size, dtype=torch.float64)
         F = torch.stack([op.F(v) for v in eye], 1)
         expected = F @ torch.linalg.inv(F+.1*eye) @ F @ torch.linalg.inv(F+.1*eye) @ op.gradient
-        torch.testing.assert_close(p.JT(values['dy']), expected, rtol=1e-8, atol=1e-10)
+        torch.testing.assert_close(values['dy'], expected, rtol=1e-8, atol=1e-10)
 
 
 def test_beta_all_branches_verified_upper_and_monotone_leak():

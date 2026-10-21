@@ -46,7 +46,7 @@ def compare_profiles(reference, current, strict=False):
             for x,y in zip(a['candidates'],b['candidates'])) for a,b in zip(oldr,newr)))
     oldg,newg=left.get('gir_trials',[]),right.get('gir_trials',[])
     checks['ordered_Gamma']=dict(matches=len(oldg)==len(newg) and all(
-        (a['site'],a['unit'])==(b['site'],b['unit']) and equal(a['Gamma_woodbury'],b['Gamma_woodbury'])
+        (a['site'],a['unit'])==(b['site'],b['unit']) and equal(a.get('Gamma_cg',a.get('Gamma_woodbury')),b.get('Gamma_cg',b.get('Gamma_woodbury')))
         for a,b in zip(oldg,newg)),reference_trials=len(oldg),current_trials=len(newg))
     old_swaps,new_swaps=reference.get('applied_swaps',[]),current.get('applied_swaps',[])
     def same_values(a,b):
@@ -69,14 +69,14 @@ def compare_profiles(reference, current, strict=False):
         checks['power10_mode']=dict(matches=reference.get('curvature')==current.get('curvature')=='power10')
     passed=complete and all(check['matches'] for check in checks.values())
     records=lambda event:[{k:r.get(k) for k in ('site','unit','Gamma','ell_beta','bias_q')} for r in event.get('swap_records',[])]
-    trials=lambda event:[{k:r.get(k) for k in ('site','unit','Gamma_woodbury')} for r in event.get('gir_trials',[])]
+    trials=lambda event:[dict(site=r.get('site'),unit=r.get('unit'),Gamma=r.get('Gamma_cg',r.get('Gamma_woodbury'))) for r in event.get('gir_trials',[])]
     return dict(status=('PASS' if passed else 'FAIL') if strict else 'COMPARED',checks=checks,relative_tolerance=1e-5,
         swaps=dict(reference=records(left),current=records(right)),
         installed_swaps=dict(reference=old_swaps,current=new_swaps),
         Gamma_trials=dict(reference=trials(left),current=trials(right)),
         application_seconds=dict(
         reference=reference['application_seconds'],current=current['application_seconds']),
-        interpretation='Exact eigenvalues may change ranking and swaps; ordered Gamma is comparable only when candidate rankings match.')
+        interpretation='Compare the same checkpoint and power10 candidates; failures remain explicit, including near-zero values at abs tol zero.')
 
 
 def curvature_differences(report):
@@ -105,7 +105,7 @@ def curvature_differences(report):
     return dict(context='Both estimates use the same candidates, residual and H_beta on the D-exact trajectory.',calls=result)
 
 
-def profile_capacity(model, batch, boundary=lambda: None):
+def profile_capacity(model, batch, boundary=lambda: None, mu=None):
     """Capacity proxy with a 100-class clone, never the live training model."""
     import gc
     import torch
@@ -124,29 +124,18 @@ def profile_capacity(model, batch, boundary=lambda: None):
             x=batch[0].repeat((repeats,)+(1,)*(batch[0].ndim-1))[:n]
             y=batch[1].repeat(repeats)[:n]
             torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
-            row=dict(probe_size=n,classes=100,m=n*100,gram_bytes=8*(n*100)**2,
+            row=dict(probe_size=n,classes=100,m=n*100,dense_gram_reference_bytes=8*(n*100)**2,
                 source='task-2 weights, extended 100-class head, repeated window; capacity proxy, not actual task-20 data')
-            original_gram=vna.gram
-            def measured_gram(*a,**kw):
-                gram_start=time.perf_counter()
-                try:
-                    G,timing=original_gram(*a,**kw)
-                    row.update(timing,gram_status='COMPLETED')
-                    return G,timing
-                finally:
-                    row.setdefault('gram_seconds',time.perf_counter()-gram_start)
-                    row.setdefault('gram_status','FAILED')
-            vna.gram=measured_gram
             start=time.perf_counter()
             try:
-                row.update(vna.diagnose(clone,(x,y),sites=sites_for(clone)),status='COMPLETED')
+                diagnostic=vna.diagnose(clone,(x,y),sites=sites_for(clone),mu=mu)
+                row.update(diagnostic,status='COMPLETED' if diagnostic.get('diagnostic_flag') is None else 'CG_NOT_CONVERGED')
             except torch.cuda.OutOfMemoryError as exc:
                 row.update(status='CUDA_OOM',error=str(exc))
             except RuntimeError as exc:
                 if not str(exc).startswith('GRAM_LIMIT:'): raise
                 row.update(status='GRAM_LIMIT',error=str(exc))
             finally:
-                vna.gram=original_gram
                 torch.cuda.synchronize()
                 row.update(seconds=time.perf_counter()-start,peak_cuda_bytes=torch.cuda.max_memory_allocated(),
                            peak_reserved_bytes=torch.cuda.max_memory_reserved())
@@ -154,7 +143,7 @@ def profile_capacity(model, batch, boundary=lambda: None):
             del x,y
             gc.collect();torch.cuda.empty_cache()
     return dict(rows=rows,actual_task20_measured=False,probe_change_applied=False,
-        recommendation='Consider preregistering 128 only after reviewing these proxy measurements and actual task-20 capacity.')
+        recommendation='Keep probe=256; review actual CG convergence, elapsed time and memory at both sizes before M1.')
 
 
 def is_task1_checkpoint(state):
@@ -278,7 +267,8 @@ def run(args):
         raise ValueError('B/C must import d88abc4 source')
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
         source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
-        capacity_profile=args.capacity_profile,curvature=args.curvature)
+        capacity_profile=args.capacity_profile,curvature=args.curvature,
+        solver_backend='cg' if hasattr(vna,'OutputCG') else 'gram' if not old else 'historical-cg')
     if (out/'diagnostic.json').exists():
         prior=json.loads((out/'diagnostic.json').read_text())
         if prior.get('identity') != identity: raise ValueError('diagnostic result identity mismatch')
@@ -307,7 +297,6 @@ def run(args):
                 if args.branch == 'A': hookstate.pop('intervention_state',None)
                 if args.branch == 'D':
                     engine=vna.V3Engine('vna_gir',seed=0,K0=1,**({'curvature':args.curvature} if supports_curvature else {}))
-                    if supports_curvature and args.profile and args.curvature=='exact': engine.protocol['audit_curvature']=True
                     oldengine = hookstate.get('intervention_state',{}).get('engine',{})
                     engine.mu = oldengine.get('mu')
                     engine.install_ages = deepcopy(oldengine.get('install_ages',{}))
@@ -406,6 +395,8 @@ def run(args):
         torch.cuda.reset_peak_memory_stats()
         audit_start=active['audit_seconds'];start=time.perf_counter()
         event=engine.apply(model,sites_for(model),batch,spec,ctx,optimizer,hook.steps,force=True)
+        if event.get('skipped') and not event.get('swap_records') and report['applied_swaps']:
+            report['rolled_back_swaps'],report['applied_swaps']=report['applied_swaps'],[]
         torch.cuda.synchronize();report['application_wall_seconds']=time.perf_counter()-start
         report['curvature_audit_seconds']=active['audit_seconds']-audit_start
         report['peak_cuda_includes_curvature_audit']=report['curvature_audit_seconds']>0
@@ -413,9 +404,11 @@ def run(args):
         event['raw_seconds']=event.get('seconds')
         for key in ('seconds','gir_seconds'):
             if event.get(key) is not None: event[key]-=report['curvature_audit_seconds']
-        report['peak_cuda_bytes']=torch.cuda.max_memory_allocated()
+        report['application_peak_cuda_bytes']=torch.cuda.max_memory_allocated()
+        report['peak_cuda_bytes']=report['application_peak_cuda_bytes']
         report['applications'].append(event);intervention.events.append(event)
-        if args.profile and args.curvature=='exact': report['curvature_differences']=curvature_differences(report)
+        if hasattr(vna,'OutputCG'):
+            report['cg']=[r for r in event.get('solves',[])+event.get('gir_solves',[]) if r.get('solver')=='cg']
         report['systems_solved']=len(report['cg']) if old else event.get('systems_solved',len(event.get('solves',[])))
         if args.profile and args.branch=='D' and not event.get('skipped'):
             report['final_L_KD']=list(engine._evaluate_current(model,batch,spec,ctx))
@@ -427,6 +420,7 @@ def run(args):
                 interpretation='Includes native slot columns once per slot; candidate Jacobians charged to prepare_gir when cached.')
             report['performance_targets']=dict(application_target_seconds=180,
                 application_under_180_seconds=report['application_seconds']<180,
+                application_under_400_seconds=report['application_seconds']<400,
                 gram_1280_seconds=event.get('gram_seconds'))
             samples=[json.loads(line)['iteration_seconds'] for line in (out/'sgd.jsonl').read_text().splitlines()]
             epochs=50
@@ -443,12 +437,10 @@ def run(args):
             report['budget_estimate_20_task_scenario']=projection
             write()
             if args.capacity_profile:
-                report['capacity_profile']=profile_capacity(model,batch,hook.measurement_boundary)
+                report['capacity_profile']=profile_capacity(model,batch,hook.measurement_boundary,mu=engine.mu_star)
                 capacity=next(r for r in report['capacity_profile']['rows'] if r['m']==12800)
-                report['performance_targets'].update(gram_12800_seconds=capacity.get('gram_seconds'),
-                    gram_12800_limit_seconds=600,gram_12800_ideal_seconds=60,
-                    gram_12800_under_600_seconds=capacity.get('gram_status')=='COMPLETED' and
-                                                capacity.get('gram_seconds',float('inf'))<600)
+                report['performance_targets'].update(capacity_12800_seconds=capacity.get('seconds'),
+                    capacity_12800_completed=capacity.get('status')=='COMPLETED')
         if not args.profile:
             bad=nonfinite(model,optimizer)
             if bad:
@@ -575,7 +567,7 @@ def run(args):
             report['above_2_over_lr_before_failure']=any(v>40. for v in lambdas)
             report['sgd_steps_recorded']=len(rows)
         if args.profile:
-            name='profile_d88abc4.json' if old else 'profile_exact.json'
+            name='profile_d88abc4.json' if old else 'profile_cg.json' if hasattr(vna,'OutputCG') else 'profile_gram.json'
             atomic_json_save(report,out/name)
         write()
 
@@ -588,7 +580,7 @@ def parser():
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
     p.add_argument('--capacity-profile',action='store_true')
-    p.add_argument('--curvature',choices=('power10','exact'),default='exact')
+    p.add_argument('--curvature',choices=('power10',),default='power10')
     return p
 
 

@@ -1,5 +1,14 @@
 \section{Giải chính xác và vòng tin cậy trong mỗi lần áp dụng}\label{sec:exact}
 
+\paragraph{Cập nhật cài đặt sau profiling T4 (21/10/2026).}
+T29 vẫn là đồng nhất đại số và bản Gram là tham chiếu cho bài nhỏ.
+Cài đặt sản xuất dùng CG trên hệ đối xứng $A=J\T MJ+\mu I$,
+không dựng $G_{\mathrm{out}}$, $L$ toàn cục hay phân rã output.
+T30, T31 dùng cùng tuyến tính hóa và $\mu^*$; nghiệm số được kiểm residual
+như bổ đề dưới đây. Đây là đổi bộ giải có sai số kiểm được, không phải
+khẳng định bitwise hay mọi quyết định rời rạc đều trùng bản Gram.
+
+
 \paragraph{Vì sao cần mục này.} Lần chạy M1 đầu tiên (noBN, seed 0, commit \texttt{d88abc4}) có ba lần áp dụng, và VNA không được dùng lần nào:
 \begin{itemize}
 \item Lần 1 bị bỏ qua vì CG cho $z$ không đạt $0.1$ sau 200 vòng.
@@ -55,10 +64,10 @@ Không gian tham số chỉ xuất hiện khi dựng $G_{\mathrm{out}}$ và ở 
 \end{proof}
 \begin{hequa}
 \begin{itemize}
-\item Không còn tham số \texttt{cg\_tol}, \texttt{cg\_iters}, không còn warm start (một trạng thái ẩn giữa các lần áp dụng) và không còn lý do bỏ qua \texttt{cg\_z}. Các định lý T1 đến T28 nay đúng cho code theo nghĩa đen, vì chúng được phát biểu cho nghiệm chính xác.
+\item Bản Gram không cần CG. Bản sản xuất dùng dung sai residual $10^{-8}$, tối đa 200 vòng cho mỗi hệ, không warm start giữa các lần giải. Không đạt dung sai là thất bại của lần thử LM (nếu đang ở LM), không phải nghiệm được chấp nhận. Các bước sau LM thất bại thì hủy và khôi phục toàn bộ lần áp dụng.
 \item Mọi hệ của S1 đến S6 (gồm $g$, $g_O$, $d_{\mathrm{rep}}$, $d_N$ với mọi $\beta$, $\rperp^\beta$ và mọi $\Gamma$) dùng chung một $G_{\mathrm{out}}$. Mỗi $\beta$ cần một phân rã cỡ $m\times m$. Mỗi ứng viên của GIR chỉ cần các lát Jacobian $J_u$, $J_v$.
 \item Phép đồng nhất này chính là đồng nhất push-through mà \Tref{T25} và \Tref{T27} đã dùng: công thức trong định lý trở thành chính code.
-\item Chi phí dựng $G_{\mathrm{out}}$ là khoảng $m$ cặp VJP và JVP, gần như không cần bộ nhớ, và tăng tuyến tính theo số lớp đã thấy. Profiling quyết định có cần phương án dự phòng là PCG với preconditioner Nyström \cite{frangella2023} hay không. Phương án đó chỉ cho nghiệm gần đúng.
+\item Chi phí dựng $G_{\mathrm{out}}$ là khoảng $m$ cặp VJP và JVP, nhưng bộ nhớ là $O(m^2)$; các thừa số và workspace còn tăng thêm bộ nhớ. Profiling quyết định có cần phương án dự phòng là PCG với preconditioner Nyström \cite{frangella2023} hay không. Phương án đó chỉ cho nghiệm gần đúng.
 \end{itemize}
 \end{hequa}
 \begin{kiem}
@@ -70,6 +79,53 @@ Không gian tham số chỉ xuất hiện khi dựng $G_{\mathrm{out}}$ và ở 
 \item T29d (Schur trong không gian output so với phần bù trực tiếp): 0 vi phạm.
 \end{itemize}
 \end{kiem}
+
+
+\subsection{Bổ đề sai số cho bộ giải CG}
+
+Đặt $A=J\T MJ+\mu I\succeq\mu I$, $b=J\T c$, $x^*=A^{-1}b$,
+và residual thật $r=b-A\widetilde x$. Nếu $\norm r\le\varepsilon\norm b$ thì
+\[
+ \norm{\widetilde x-x^*}\le\frac{\norm r}{\mu}
+ \le\frac{\varepsilon\norm b}{\mu}.
+\]
+Với đại lượng mà code dùng $\widetilde q=-\tfrac12 b\T\widetilde x$,
+\[
+ |\widetilde q-q^*|\le\frac{\norm b\,\norm r}{2\mu}
+ \le\frac{\varepsilon\norm b^2}{2\mu}.
+\]
+Do đó, nếu hai hệ trong $\Gamma$ có cùng $\mu^*$ và cùng dung sai,
+\[
+ |\widetilde\Gamma-\Gamma|
+ \le\frac{\varepsilon}{2\mu^*}(\norm{b_{\mathrm{trước}}}^2+
+                                    \norm{b_{\mathrm{sau}}}^2).
+\]
+Đây là $O(\varepsilon)$ khi dữ liệu và $\mu^*>0$ cố định; không phải cận
+đều theo $\mu$, và không bảo đảm dấu hay tập swap giữ nguyên khi lợi gần $0$.
+Nếu đánh giá hàm bậc hai đầy đủ tại $\widetilde x$ thì sai số giá trị là
+$\tfrac12r\T A^{-1}r\le\norm r^2/(2\mu)$; code dùng dạng bilinear ở trên.
+\begin{proof}
+$\widetilde x-x^*=-A^{-1}r$ và $\norm{A^{-1}}\le1/\mu$.
+Áp Cauchy--Schwarz cho hiệu bilinear, rồi cộng sai số hai $q$ trong $\Gamma$.
+\end{proof}
+
+\paragraph{Độ chính xác hữu hạn.}
+Matvec của mạng giữ dtype native (float32 trên T4), vector lặp và phép cộng
+vô hướng dùng float64. CG kiểm lại $b-A\widetilde x$ sau khi đổi về đơn vị
+vế phải ban đầu; residual đệ quy không đủ để chấp nhận. Tinh chỉnh chỉ trong
+cùng hệ, không tăng tổng quá 200 vòng, không nới dung sai $10^{-8}$.
+Nếu matvec là $A+E$, cận cho hệ lý tưởng phải có thêm
+$\norm{E\widetilde x}/\mu$: float32 không cho một chứng minh sai số tuyệt đối
+cho Jacobian thực. $\varrho$ và kiểm cửa sổ vẫn đánh giá loss thật;
+chúng không biến nghiệm CG thành nghiệm chính xác hay chứng minh mọi $\Gamma$.
+
+\paragraph{Swap dưới dạng matvec.}
+Giữ $J$ tại mạng đóng băng; che các tọa độ incoming/outgoing của slot bỏ đi,
+và đặt cột $J_v$ vào tọa độ outgoing của slot mới. Cột incoming mới bằng $0$
+vì $B_v=0$. Đặt toán tử này là $J'$; CG giải $J'\T H_\beta J'+\mu^*I$.
+Các tọa độ đã che có vế phải $0$ nên giữ hệ số $0$ dưới damping, tương đương
+bỏ hẳn chúng. Với các site kề nhau, lần thay sau ghi đè đúng cột đã thay trước;
+không trừ hai lần. Không dựng các cột native $J_u$ hay cập nhật Woodbury.
 
 \subsection{T30: vòng tin cậy trong mỗi lần áp dụng, và một $\mu^*$ dùng chung}
 

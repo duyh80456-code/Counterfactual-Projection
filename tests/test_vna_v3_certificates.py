@@ -149,7 +149,7 @@ def test_gir_rechecks_actual_dead_slot_revived_by_upstream_correction(monkeypatc
                 for name,parameter in p.parameter_refs:
                     if name=='0.bias': d[offset:offset+parameter.numel()]=-3
                     offset+=parameter.numel()
-                values['dy']=torch.linalg.lstsq(values['G'],p.Jv(d),driver='gelsd').solution
+                values['dy']=d
                 values['d_N']=values['dy'];values['d_rep']=torch.zeros_like(values['dy'])
             return values
     engine=UpstreamDirection('vna_gir');engine.begin_task(1)

@@ -267,6 +267,8 @@ def run(args):
         raise RuntimeError('Merge Phase 2 first: methods.vna_v3.diagnose(model, batch) is required')
     if args.backbone == 'resnet32' and args.nobn_lr_scale != 1.:
         raise ValueError('nobn_lr_scale applies only to noBN')
+    if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
+    tasks = min(args.max_tasks, 2 if args.fake_data else 20)
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None
     if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
@@ -287,9 +289,9 @@ def run(args):
         params.update(memory_size=20, memory_per_class=2)
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
-    protocol = dict(setting='icarl', algorithm_version='v4', solver='T29-exact', arm=args.arm, seed=args.seed,
+    protocol = dict(setting='icarl', algorithm_version='v4', solver='T29-cg', arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-        upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=2 if args.fake_data else 20,
+        upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=tasks,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         data_dir=args.data_dir, class_order=order, class_order_kind=args.class_order,
         backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient, curvature=args.curvature,
@@ -304,7 +306,7 @@ def run(args):
         comparison_protocol=dict(init_cls=5, increment=5, memory_size=params['memory_size'], fixed_memory=False,
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
-    if args.curvature!='exact': protocol['comparison_protocol']['curvature']=args.curvature
+    if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
     progress = Progress(out, protocol)
     if (out/'summary.json').exists():
         previous = json.loads((out/'summary.json').read_text())
@@ -330,7 +332,7 @@ def run(args):
         if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
     def manager(*a, **kw):
         value = DataManager(*a, **kw)
-        if args.fake_data: value._increments = value._increments[:2]
+        value._increments = value._increments[:tasks]
         hook.manager = value
         return value
     hook = MainHook(seed=args.seed, fake=args.fake_data, persist=persist, progress=progress,
@@ -391,7 +393,8 @@ def parser():
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
     p.add_argument('--coefficient', type=float, default=1.)
-    p.add_argument('--curvature', choices=('power10','exact'), default='exact')
+    p.add_argument('--curvature', choices=('power10',), default='power10')
+    p.add_argument('--max-tasks', type=int, default=20)
     p.add_argument('--schedule')
     p.add_argument('--preflight-only', action='store_true')
     p.add_argument('--schedule-output')

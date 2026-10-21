@@ -739,3 +739,39 @@ The same-state exact curvature audit, capacity proxy, M1 exact setting and
 M1 hold are unchanged. Actual T4 timing/equivalence/capacity remain unmeasured
 locally. The notebook embeds the new dispatch and pins the already committed
 solver source; this scheduling change does not modify solver mathematics.
+
+## 2026-10-21: residual-verified matrix-free CG after supplied T4 OOM
+
+Supersedes production Gram solves and the exact-curvature default in earlier
+entries. Supplied notebook `vna4-exact-diagnostics (4).ipynb` shows proxy
+m=25600 OOM and m=12800 GRAM_LIMIT=602.763 s; actual task 20 was not run.
+Current power10=1142.843 s/application; exact=3240.354 s after audit subtraction.
+Strict power10 comparison FAIL remains recorded; see CG_OOM_REVIEW.md.
+
+Engine and diagnose use the SPD parameter system J^T M J+mu I with native
+network products (float32 on T4), float64 iterates/reductions, residual tolerance
+1e-8 and a total 200-iteration budget per system. Verify true residual again in
+caller units. Refinement is internal to the same solve/iteration budget; no
+cross-solve warm state, hidden fallback, looser tolerance or dtype substitution.
+Nonconverged LM trials fail and advance the same mu/nu sequence; unsuccessful
+post-LM solves restore the entire application. Failed diagnostic solves log a
+null B/explicit flag. Dense Gram and signed Woodbury remain small references.
+
+Gamma now uses CG for frozen J' via coordinate masking/replacement. Native
+slot columns are no longer materialized on the CG path; prior replacements
+are updated correctly at shared/adjacent sites. Preserve mu*, BetaRule,
+trust-region/window checks and candidate/slot limits. power10 is the only engine
+ranking mode, with the same dedicated generator and ten power iterations.
+Estimated ell_beta is a ranking score, not a certified spectral lower bound.
+Numerical residual bounds do not promise bitwise equality or identical swaps.
+
+The exact-diagnostics notebook now compares current CG/power10 (GPU0) with
+8c56d02 Gram/power10 (GPU1), same task-1 source and first task-2 application.
+Capacity reports cover both 128/256 probes at 100-class shape, using mu*;
+application and capacity peaks are separately recorded. Keep probe=256.
+MODE=smoke3 is an explicit fresh three-task baseline/full seed-0 rehearsal,
+with fresh CG authority preflight, native 100/50/50 epochs and separate
+max_tasks=3 identity. This reinstates --max-tasks only for the requested
+rehearsal; default M1 remains 20 tasks. Deadline/exit-75 still governs launches.
+M1 remains held; compute-matched budget/competitor/BN/order experiments follow
+only after the requested real profile and rehearsal review.

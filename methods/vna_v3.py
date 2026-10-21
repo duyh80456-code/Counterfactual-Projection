@@ -1,4 +1,4 @@
-"""Training VNA–GIR v3: exact output solves, protected correction and frozen GIR."""
+"""Training VNA–GIR v3: matrix-free certified solves, protected correction and frozen GIR."""
 from contextlib import contextmanager, ExitStack
 from copy import copy, deepcopy
 import math
@@ -11,7 +11,7 @@ from methods.vna import dedicated_generator, _unflatten
 from methods.vna_ggn import GGNConfig, GGNProducts
 from methods.vna_losses import CE
 from methods.vna_sites import HookProducts, HookSite
-from methods.vna_exact import gram, columns, OutputSolve
+from methods.vna_exact import gram, columns, OutputSolve, FrozenGram, OutputCG, CGConvergenceError, solve_image, solve_norm2
 from experiments.vna_resume import rng_state, restore_rng
 from projection.functional import _preserve_functional_state
 
@@ -231,16 +231,22 @@ def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None):
             e = spec.residual(logits, ctx).reshape(-1).double()
             with training_products(model, sites or [], seed_proposals(sites or []), batch[0]) as products:
                 op = GGNProducts(products, batch[1], spec, ctx)
-                G, timing = gram(products)
+                G = FrozenGram(products)
+                timing = dict(solver='cg', m=e.numel(), gram_bytes=0)
                 if mu is None:
                     mu = max(1e-12, 1e-2*op.trace(GGNConfig())/max(op.size, 1))
                 blocks = spec.metric_blocks(logits, ctx)
+                factor = None
                 try:
-                    y = OutputSolve(G, blocks, mu).solve(e)
-                    B = max(float(e @ (G @ y)), 0.)
+                    factor = OutputCG(G, blocks, mu)
+                    y = factor.solve(e)
+                    B = max(float(e @ solve_image(G,y)), 0.)
                     flag = None
+                except CGConvergenceError:
+                    B, flag = None, 'cg_not_converged'
                 except torch.linalg.LinAlgError:
-                    B, flag = None, 'chol_fail'
+                    B, flag = None, 'factor_fail'
+                timing['solves'] = factor.records if factor is not None else []
             target = e.reshape_as(logits)
             norm_w = max(float(torch.einsum('ni,nij,nj->', target,
                 torch.linalg.pinv(blocks, hermitian=True), target)), 0.)
@@ -304,8 +310,8 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact'):
-        if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='power10'):
+        if curvature != 'power10': raise ValueError('engine curvature must be power10; exact is a historical reference only')
         self.curvature = curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
@@ -327,7 +333,9 @@ class V3Engine:
         return GGNConfig(damping_rel=0., hutchinson_probes=8, seed=self.seed, project_bn=False)
 
     def state_dict(self): return deepcopy(vars(self))
-    def load_state_dict(self, state): vars(self).update(deepcopy(state))
+    def load_state_dict(self, state):
+        if state.get('curvature','power10') != 'power10': raise ValueError('checkpoint curvature mismatch')
+        vars(self).update(deepcopy(state))
 
     @property
     def kernel_self(self): return self.arm.startswith('kernel_self')
@@ -407,12 +415,18 @@ class V3Engine:
             nonlocal cached_beta, factor
             start = time.perf_counter()
             if cached_beta != beta:
-                factor = OutputSolve(G, blocks+beta*old_blocks, mu)
+                factor = (OutputSolve if isinstance(G, torch.Tensor) else OutputCG)(G, blocks+beta*old_blocks, mu)
                 cached_beta = beta
-            y = factor.solve(rhs.double())
-            image = G@y
+            try:
+                y = factor.solve(rhs.double())
+            except CGConvergenceError as error:
+                records.append(dict(error.record, name=name, beta=beta))
+                raise
+            image = solve_image(G,y)
             record = dict(name=name, beta=beta, seconds=time.perf_counter()-start,
-                          relative_residual=float((factor.metric(image)+mu*y-rhs).norm()/rhs.norm().clamp_min(1e-300)))
+                          relative_residual=(factor.records[-1]['relative_residual'] if isinstance(factor,OutputCG) else
+                              float((factor.metric(image)+mu*y-rhs).norm()/rhs.norm().clamp_min(1e-300))))
+            if isinstance(factor, OutputCG): record.update(factor.records[-1])
             if name == 'd_N':
                 record['leak'] = max(float(image @ torch.einsum('nij,nj->ni', old_blocks,
                     image.reshape(old_blocks.shape[:2])).flatten()), 0.)
@@ -450,14 +464,14 @@ class V3Engine:
 
     def _direction(self, p, op, mu, *, G=None, split=None, split_only=False):
         records = []
-        if G is None: G, _ = gram(p)
+        if G is None: G = FrozenGram(p)
         blocks, old_blocks = op.loss_spec.metric_blocks(op.logits, op.ctx), self.old_blocks(op)
         eold, H_old, chi = self.old_parts(op)
         solve = self._output_solver(G, blocks, old_blocks, mu, records)
         if split is None:
             y = solve('z', op.g)
             yO = solve('z_O', eold) if bool(eold.any()) else torch.zeros_like(y)
-            z, zO = op.H(G@y), op.H(G@yO)
+            z, zO = op.H(solve_image(G,y)), op.H(solve_image(G,yO))
         else: y, yO, z, zO = split
         zN = z-zO
         base = dict(y=y, yO=yO, z=z, zO=zO, zN=zN, eold=eold, records=records,
@@ -466,8 +480,8 @@ class V3Engine:
         kernel = (lambda v: G@v) if self.kernel_self else p.KE
         u, uR, uN = kernel(z).double(), kernel(zO).double(), kernel(zN).double()
         V, VO = max(float(z@u), 0.), max(float(zO@uR), 0.)
-        # BetaRule's quadratic form uses J^T y, represented exactly by y and G.
-        B = lambda v: G@H_old(G@v)
+        # BetaRule uses the same parameter quadratic form in either representation.
+        B = lambda v: G.JT(H_old(G.Jv(v))) if isinstance(G,FrozenGram) else G@H_old(G@v)
         if not bool(eold.any()):
             dN = solve('d', op.H(u)); drep = torch.zeros_like(dN)
             beta = dict(beta=0., beta_branch='unprotected', leak=0., epsilon_star=None, beta_suf=None)
@@ -491,14 +505,19 @@ class V3Engine:
             solve = self._output_solver(G, spec.metric_blocks(op.logits, ctx), self.old_blocks(op), mu, records)
             try:
                 y = solve('lm', op.g)
+            except CGConvergenceError:
+                rhos.append(float('-inf'))
+                mu *= nu; nu *= 2
+                if not math.isfinite(mu): break
+                continue
             except torch.linalg.LinAlgError:
                 return dict(reason='chol_fail', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records)
-            image = G@y
+            image = solve_image(G,y)
             pred = float(op.g@image)-.5*float(image@op.H(image))
             if not torch.isfinite(y).all() or not math.isfinite(pred):
                 return dict(reason='nonfinite', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records)
-            # Trial evaluation needs a parameter pullback, although the solve stays in output space.
-            before, after = self._measure_ratio(model, batch, spec, ctx, p.parameter_refs, p.JT(y))
+            # Dense references return output cotangents; CG returns the parameter step directly.
+            before, after = self._measure_ratio(model, batch, spec, ctx, p.parameter_refs, y if isinstance(G,FrozenGram) else p.JT(y))
             rho = ((before[0]-after[0])/pred if pred > 0 and
                    all(math.isfinite(v) for v in (before[0], after[0])) else float('-inf'))
             rhos.append(rho)
@@ -620,6 +639,10 @@ class V3Engine:
             with _global_state():
                 try:
                     row = self._apply(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+                except CGConvergenceError as error:
+                    self._restore_training_state(model, optimizer, training)
+                    self.load_state_dict(saved)
+                    row = dict(skipped=True, skip_reason='cg_not_converged', solves=[error.record], swaps=0, swap_records=[])
                 except torch.linalg.LinAlgError:
                     self._restore_training_state(model, optimizer, training)
                     self.load_state_dict(saved)
@@ -703,7 +726,7 @@ class V3Engine:
             torch.random.set_rng_state(rng)
 
     @staticmethod
-    def _slot_columns(p, site, unit, replacements=None, dead=False):
+    def _slot_columns(p, site, unit, replacements=None, dead=False, materialize=True):
         selected, outgoing, offset = [], None, 0
         paths = {site.first+'.weight': unit, site.second+'.weight': (slice(None), unit)}
         if site.first_layer.layer.bias is not None: paths[site.first+'.bias'] = unit
@@ -723,6 +746,7 @@ class V3Engine:
                 if native is site.second_layer.layer.weight: outgoing = ids+offset
             offset += value.numel()
         ids = torch.cat(selected)
+        if not materialize: return None, ids, outgoing
         J = (torch.zeros((p._call({}).numel(), len(ids)), dtype=torch.float64, device=ref.device)
              if dead else columns(p.Jv, ids, size, ref))
         if replacements is not None:
@@ -751,9 +775,10 @@ class V3Engine:
             def proposals():
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
                 residual_start = time.perf_counter()
-                residual = ecur-factor.metric(factor.G@factor.solve(ecur))
+                residual = ecur-factor.metric(solve_image(factor.G,factor.solve(ecur)))
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
                 values['gir_solves'].append(dict(name='gir_residual', seconds=time.perf_counter()-residual_start))
+                if isinstance(factor, OutputCG): values['gir_solves'][-1].update(factor.records[-1])
                 if init in ('gradmax', 'tiny'): residual = values['e']
                 cache.pop('stats', None)
                 return self.prepare_gir(frozen, fixed, batch, spec, ctx, optimizer, units, iteration,
@@ -777,8 +802,9 @@ class V3Engine:
                 if not math.isfinite(jL) or jL > 0 or (jKD is not None and (not math.isfinite(jKD) or jKD > 0)): continue
                 columns_start = time.perf_counter()
                 with training_products(frozen, [], {}, batch[0]) as p:
-                    Ju, native_ids, outgoing_ids = self._slot_columns(p, fixed, unit, replacements, unit in dead)
-                    native_jvps = 0 if unit in dead else len(native_ids)
+                    Ju, native_ids, outgoing_ids = self._slot_columns(p, fixed, unit, replacements, unit in dead,
+                        materialize=not isinstance(factor, OutputCG))
+                    native_jvps = 0 if unit in dead or isinstance(factor, OutputCG) else len(native_ids)
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
                 native_columns_seconds = time.perf_counter()-columns_start
                 gain_start = time.perf_counter()
@@ -799,8 +825,11 @@ class V3Engine:
                             proposal['_activation'] = float(features.ne(0).double().mean())
                         proposal['_Jv'] = Jv
                     ne, activation = Jv.shape[1], proposal['_activation']
-                    swap = factor.swapped(Ju, Jv)
+                    swap = (factor.swapped(Ju,Jv,native_ids=native_ids,outgoing_ids=outgoing_ids)
+                            if isinstance(factor,OutputCG) else factor.swapped(Ju,Jv))
                     gamma = swap.gamma(ecur, contributions[unit])
+                    if isinstance(factor, OutputCG):
+                        values['gir_solves'].extend(dict(r, name='Gamma') for r in swap.factor.records)
                     seconds = time.perf_counter()-start
                     values['gir_trials'].append(dict(site=site.module_name, unit=int(unit),
                         Gamma_woodbury=gamma, gamma_seconds=seconds, n_jvp=native_jvps+ne,
@@ -808,6 +837,8 @@ class V3Engine:
                         gamma_total_seconds=seconds+(native_columns_seconds if trial_index==0 else 0.),
                         n_jvp_evaluated=(native_jvps if trial_index==0 else 0)+(0 if cached else ne),
                         candidate_jacobian_cached=cached, candidate_jvp_evaluated=0 if cached else ne))
+                    if isinstance(factor, OutputCG):
+                        values['gir_trials'][-1]['Gamma_cg'] = values['gir_trials'][-1].pop('Gamma_woodbury')
                     if math.isfinite(gamma) and gamma > 0 and (best is None or gamma > best[0]):
                         best = gamma, proposal, swap, seconds, activation, ne
                 if best is None: continue
@@ -815,7 +846,7 @@ class V3Engine:
                 self.install_gir(model, site, [proposal], [unit], optimizer)
                 if not self._finite(model, optimizer): return records
                 swap.commit()
-                if replacements is not None:
+                if replacements is not None and not isinstance(factor,OutputCG):
                     # Adjacent MLP sites share weights: later swaps remove the current columns once.
                     replacements.update((i, None) for i in native_ids.tolist())
                     replacements.update((i, column) for i, column in zip(outgoing_ids.tolist(), swap.add.T))
@@ -838,6 +869,7 @@ class V3Engine:
                     slot_jump_seconds=jump_seconds, slot_contribution_seconds=contribution_seconds,
                     output_shift_norm=float(shift.norm()), contribution_norm={1: None, 5: None, 10: None})
                 records.append(record)
+                if isinstance(factor, OutputCG): record['Gamma_cg'] = record.pop('Gamma_woodbury')
                 self.install_ages[(site.module_name, int(unit))] = dict(site=site.module_name,
                     unit=int(unit), task=self.task, iteration=iteration)
                 start = time.perf_counter(); choices = proposals()
@@ -865,10 +897,9 @@ class V3Engine:
             op = GGNProducts(p, batch[1], spec, ctx)
             if not bool(torch.isfinite(op.g).all()):
                 return dict(skipped=True, skip_reason='nonfinite', swaps=0)
-            G, timing = gram(p)
-            if not bool(torch.isfinite(G).all()):
-                return dict(**timing, skipped=True, skip_reason='nonfinite', swaps=0)
-            gradient_norm = math.sqrt(max(float(op.g@(G@op.g)), 0.))
+            G = FrozenGram(p)
+            timing = dict(solver='cg', m=op.g.numel(), gram_bytes=0)
+            gradient_norm = float(op.gradient.norm())
             if gradient_norm == 0: return dict(**timing, skipped=True, skip_reason='zero_gradient', swaps=0)
             if self.mu is None:
                 self.mu = max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
@@ -892,14 +923,14 @@ class V3Engine:
         start = time.perf_counter()
         with training_products(frozen, active, A, batch[0]) as p:
             if self.gir_only:
-                values = dict(**preliminary, dy=torch.zeros_like(op.g), beta=0.,
+                values = dict(**preliminary, dy=torch.zeros_like(preliminary['y']), beta=0.,
                     beta_branch='gir_only', leak=0., epsilon_star=None, V=0., V_O=0.,
                     beta_leaks=[], leak_monotonicity_violation=False)
             else:
                 values = self._direction(p, op, mu, G=G,
                     split=(preliminary['y'], preliminary['yO'], preliminary['z'], preliminary['zO']))
-            dy, image = values['dy'], G@values['dy']
-            Delta = math.sqrt(max(float(lm['y']@(G@lm['y'])), 0.))
+            dy, image = values['dy'], solve_image(G,values['dy'])
+            Delta = math.sqrt(max(solve_norm2(G,lm['y']),0.))
             gh, hh = float(op.g@image), float(values['eold']@image)
             reason = ('nonfinite' if not bool(torch.isfinite(dy).all()) or not math.isfinite(Delta) else
                       'invalid_beta' if values.get('invalid_beta') else
@@ -907,7 +938,7 @@ class V3Engine:
             if self.gir_only: reason = None
             if reason:
                 row.update(skipped=True, skip_reason=reason, g_dot_d=gh, h_dot_d=hh, s=0.); return row
-            normd = math.sqrt(max(float(dy@image), 0.))
+            normd = math.sqrt(max(solve_norm2(G,dy),0.))
             curvature = float(image@op.H(image))
             optimum = gh/curvature if curvature > 0 else float('inf')
             scale = min(optimum, Delta/normd) if normd and gh > 0 and not self.gir_only else 0.
@@ -915,16 +946,16 @@ class V3Engine:
             if beta:
                 delta_old = torch.zeros_like(op.logits)
                 known = int(ctx.get('known_classes', 0))
-                delta_old[:, :known] = -(G@values['yO']).reshape_as(op.logits)[:, :known]
+                delta_old[:, :known] = -solve_image(G,values['yO']).reshape_as(op.logits)[:, :known]
                 e_beta = op.g-beta*values['H_old'](delta_old.flatten())
             Hb_blocks = values['blocks']+beta*values['old_blocks']
-            factor = OutputSolve(G, Hb_blocks, mu)
+            factor = OutputCG(G, Hb_blocks, mu)
             values.update(e=op.g, e_beta=e_beta, H_beta=factor.metric, factor=factor)
             ne = sum(v.numel() for _, v in p.extension_refs)
             lam = power_lambda_max(lambda v: p.JET(op.H(p.JEv(v))), ne,
                 dedicated_generator(self.seed, f'v4-lambdaE:{self.task}:{self.applications}', batch[0].device),
                 device=batch[0].device)
-            B = max(float(op.g@(G@lm['y'])), 0.)
+            B = max(float(op.g@solve_image(G,lm['y'])),0.)
             e = op.g.reshape_as(op.logits)
             normw = float(torch.einsum('ni,nij,nj->', e, torch.linalg.pinv(values['blocks'], hermitian=True), e))
             row.update(V=values['V'], B=B, lambda_E=lam, norm_w2=normw,
@@ -934,7 +965,7 @@ class V3Engine:
                 beta_leaks=values['beta_leaks'], leak_monotonicity_violation=values['leak_monotonicity_violation'],
                 s=scale, s_F_star=optimum, gradient_norm=gradient_norm,
                 solves=lm['records']+preliminary['records']+([] if self.gir_only else values['records']))
-            delta = p.JT(dy) if scale > 0 else None
+            delta = (dy if isinstance(G,FrozenGram) else p.JT(dy)) if scale > 0 else None
         row['certificate_seconds'] = time.perf_counter()-start
         before = {n: v.detach().clone() for n, v in model.named_parameters()}
         rejected, after = False, lm['before']
@@ -1000,10 +1031,10 @@ class V3Engine:
                         known = int(op.ctx.get('known_classes', 0))
                         if known and beta:
                             delta_old = torch.zeros_like(op.logits)
-                            delta_old[:, :known] = -(G@values['yO']).reshape_as(op.logits)[:, :known]
+                            delta_old[:, :known] = -solve_image(G,values['yO']).reshape_as(op.logits)[:, :known]
                             e_beta = op.g-beta*values['H_old'](delta_old.flatten())
-                        factor = OutputSolve(G, values['blocks']+beta*values['old_blocks'], mu)
-                        residual = e_beta-factor.metric(G@factor.solve(e_beta))
+                        factor = OutputCG(G, values['blocks']+beta*values['old_blocks'], mu)
+                        residual = e_beta-factor.metric(solve_image(G,factor.solve(e_beta)))
                         if H is None: H = factor.metric
                 if H is None: H = op.H
         metric = H
@@ -1081,50 +1112,20 @@ class V3Engine:
                 return power_lambda_max(action, len(indices),
                     dedicated_generator(self.seed, f'v4-ell:{self.task}:{iteration}:{seed_index}', x.device),
                     iterations=10, device=x.device)
-            if self.curvature == 'power10':
-                for i in active:
-                    curvature = power_curvature(i, len(scored))
-                    if not math.isfinite(curvature): continue
-                    proposal, s_v = proposals[i], candidate_gradients[i]
-                    proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
-                        curvature=curvature, curvature_method='power10',
-                        power_seed_index=len(scored),
-                        _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
-                    scored.append(proposal)
-                scored.sort(key=lambda entry: entry['score'], reverse=True)
-                for proposal in scored[:int(self.protocol['gamma_candidates'])]:
-                    i = next(i for i in active if proposals[i] is proposal)
-                    proposal['_Jv'] = columns(pv.JEv, candidate_ids[i], size, ref)
-                return scored
-            for offset in range(0, len(active), 4):
-                group = active[offset:offset+4]
-                packed = columns(pv.JEv, candidate_ids[group].T.flatten(), size, ref)
-                Js = packed.reshape(len(residual), -1, len(group)).permute(2, 0, 1)
-                HJs = torch.vmap(torch.vmap(metric))(Js.transpose(1, 2)).transpose(1, 2)
-                small = Js.transpose(1, 2)@HJs
-                curvatures = torch.linalg.eigvalsh((small+small.transpose(1, 2))*.5)[:, -1].tolist()
-                for i, Jv, curvature in zip(group, Js, curvatures):
-                    if not math.isfinite(curvature): continue
-                    proposal, s_v = proposals[i], candidate_gradients[i]
-                    proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
-                        curvature=curvature, curvature_method='eigvalsh',
-                        _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
-                    if self.protocol.get('audit_curvature', False):
-                        start = time.perf_counter()
-                        counters={name:getattr(pv,name) for name in ('forward_calls','jvp_calls','vjp_calls','extension_jvp_calls','extension_vjp_calls')}
-                        try:
-                            with _global_state(): power = power_curvature(i, len(scored))
-                        finally:
-                            for name,value in counters.items(): setattr(pv,name,value)
-                        proposal.update(curvature_power10=power, power_seed_index=len(scored),
-                            score_power10=.5*float(s_v.square().sum())/(power+mu),
-                            audit_seconds=time.perf_counter()-start)
-                    scored.append(proposal)
-                    cached = sorted(scored, key=lambda entry: entry['score'], reverse=True)[:int(self.protocol['gamma_candidates'])]
-                    if any(entry is proposal for entry in cached): proposal['_Jv'] = Jv.clone()
-                    for entry in scored:
-                        if all(entry is not keep for keep in cached): entry.pop('_Jv', None)
-        return sorted(scored, key=lambda value: value['score'], reverse=True)
+            for i in active:
+                curvature = power_curvature(i, len(scored))
+                if not math.isfinite(curvature): continue
+                proposal, s_v = proposals[i], candidate_gradients[i]
+                proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
+                    curvature=curvature, curvature_method='power10',
+                    power_seed_index=len(scored),
+                    _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
+                scored.append(proposal)
+            scored.sort(key=lambda entry: entry['score'], reverse=True)
+            for proposal in scored[:int(self.protocol['gamma_candidates'])]:
+                i = next(i for i in active if proposals[i] is proposal)
+                proposal['_Jv'] = columns(pv.JEv, candidate_ids[i], size, ref)
+            return scored
 
     @staticmethod
     def _site_input(model, site, batch):

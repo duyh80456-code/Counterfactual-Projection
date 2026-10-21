@@ -54,6 +54,17 @@ Giả thiết A2, A3, $\beta\ge0$ do \textsc{BetaRule} trả về. Đặt $H_\be
 (c) Thay $\beta=0$; giới hạn $\beta\to\infty$ như \Tref{T2}(b) với ràng buộc $\Lambda(Oy-\delta_O)=0$.
 (d) Định nghĩa.
 \end{proof}
+
+\paragraph{Điểm xếp hạng trong cài đặt hiện tại.}
+Đồng nhất Schur ở (b) dùng trị riêng chính xác để có cận dưới.
+Trong code, $\widetilde\ell_\beta(v)=\norm{J_v\T\rperp^\beta}^2/
+[2(\widetilde\lambda_v+\mu^*)]$ chỉ dùng xếp hạng ứng viên;
+$\widetilde\lambda_v$ lấy bằng đúng 10 vòng power iteration, cùng generator
+đã đăng ký. Đây là ước lượng thường thấp của
+$\lambda_{\max}(J_v\T H_\beta J_v)$, nên không được gọi điểm này là cận dưới
+được chứng nhận. Chấp nhận dựa vào $\Gamma$ từ các hệ CG đã kiểm residual,
+và các bước nhảy loss thật. Không bật đường trị riêng chính xác trong engine.
+
 \begin{hequa}
 Bước S6 dùng $\rperp^\beta$ thay cho $\rperp(\eO)$ hay $\rperp(e)$. VNA và GIR nay giải \emph{cùng một} mô hình (metric $H_\beta$, ma trận $A_\beta$): VNA tìm hệ số trên span hiện tại cho vận tốc ảo, GIR mở rộng span; $\beta$ là một con số duy nhất cân giữa học mới và giữ cũ cho cả hai. \Tref{T25} đúng nguyên văn với $(H,e)\to(H_\beta,e_\beta)$.
 \end{hequa}
