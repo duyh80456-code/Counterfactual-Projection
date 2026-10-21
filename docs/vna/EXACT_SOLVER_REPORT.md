@@ -118,3 +118,70 @@ At task 2 the N=128, C=10 output Gram is 1280 squared float64 entries, 12.5 MiB.
 This is the memory-dependent chunk selection allowed by prompt section 4.1, not a new approximation or fallback. No automatic OOM retry, CPU offload or allocator setting is introduced. The m>=12800 timing/resource stop is retained. Detach the scalar SGD loss for logging to remove the unrelated requires-grad conversion warning without changing training.
 
 Focused local checks: all 14 tests in tests/test_vna_exact.py passed. The file now includes a public-vmap interception check that default batches never exceed four vectors, while Gram and Jacobian columns equal direct dense products. Existing T29–T31, NaN, rollback and resume checks remain in that file. Actual T4 peak VRAM and runtime with chunk=4 are still unmeasured; no successful T4 profile or feasible final-size Gram is claimed.
+
+
+## 2026-10-21: implementation speed pass and pending hardware validation
+
+The downloaded `vna4-exact-diagnostics (1).ipynb` contains an actual completed
+reference D profile at b97d25c: application 1200.531959723 s, Gram 81.306879636 s
+at m=1280, peak allocation 4,549,401,600 bytes. prepare_gir was called 40 times,
+528.798 s inclusive; 58 Gamma trials average 2.3204 s in the old timer (which
+excluded native slot column construction). mu_star=37.08382698082,
+rho=0.3600780480832733, L_after=3.1415638093526734,
+KD_after=1.3046092960619586, and 25 swaps. These are supplied reference results,
+not measurements of this speed pass. The old 433-JVP statistic counts logical
+columns; the prior helper already used vmap with width 4, not 433 Python calls.
+
+The implementation now groups site proposals, computes one combined VJP,
+uses exact small-matrix eigenvalues instead of ten power iterations, retains
+only the top-2 Jacobians for Gamma reuse, and widens native JVP chunks to 16.
+Gram uses a 64-vector stored block with VJP/JVP microbatches 16, pending T4 memory validation;
+the previously failing 64-wide VJP is not restored. Targets (<180 s/application,
+<600 s Gram at m=12800, ideally <60 s) remain to be measured on a real T4.
+Exact curvature may reorder candidates and alter swaps, as approved by the user.
+
+MODE=profile runs R (reference D at b97d25c) on GPU0 and optimized D on GPU1.
+On a single GPU they run in that order. MODE=nan still runs A/B/C/D. Each
+mode writes under outputs/exact_diagnostics/<mode>/<optimized-code-prefix>/.
+profile_comparison.json exposes numeric checks and ranking/swap differences;
+each D report includes final_L_KD, Gamma costs, K0 estimates and assumptions.
+The 20-task scenario holds task-2 costs constant, so it must not be used as
+calibration for full M1. A single first-iteration baseline sample is explicitly
+reported and excludes the driver's divergence inspection overhead.
+
+The optimized D lane additionally measures the entire diagnosis on a clone
+with a 100-class head at 256 and 128 samples, including Gram/factor memory.
+capacity_profile labels this as a task-20 shape proxy, reports allocated and
+reserved peaks and OOM/600-second stops, and never changes the training model,
+optimizer, RNG, probe protocol or solver. A failed 256-sample capacity test is
+recorded before measuring 128 independently. No full M1 training is enabled.
+No actual task-20 checkpoint or T4 execution access is available in this session.
+
+Three previously failing tests were also run on unmodified HEAD before the
+speed pass: the retired K_base schedule assertion, an SGD rounding tolerance
+(1.110223e-16 versus 1e-16), and an upstream-slot revival expectation. All three
+fail there too; this pass does not alter their behavior or relax their tests.
+
+
+Grouped Jacobians interleave up to four candidates per derivative block and
+use batched eigvalsh; this avoids retaining all 48 full Jacobians at final
+output size. Kept top-2 Jacobians are cloned so they do not retain an entire
+candidate-group backing allocation. Capacity Gram timing is persisted even
+if subsequent factorization OOMs. The native float64 timing probe releases
+its bound JVP/VJP method references before the application, avoiding a retained
+probe pullback graph. Capacity probes check the existing deadline boundary;
+exit 75 remains a pause, and skipped applications are PROFILE_SKIPPED rather
+than successful profiles. Main probe size and candidate limits remain pending.
+
+
+Final local validation: 83 selected checks passed, with the three confirmed
+pre-existing failures deselected; one additional end-to-end small regression
+application comparison passed afterward (84 distinct passing checks total).
+That comparison uses exact curvature on both sides and serial derivative
+columns versus optimized chunks, and matches mu_star, rho, L_after, scale,
+Gamma trials, installed slots, model parameters and optimizer state within
+stated tolerances. It does not claim finite-power-iteration ranking identity
+or T4 equivalence. Grouped candidate tests include float32/float64, 3x3 Conv,
+Linear, BN and RNG/optimizer/model immutability. GPU dispatch, pinned reference
+bootstrap, partial-report rejection, capacity OOM recording, Gram timing after
+later OOM, RNG restoration and notebook syntax are covered without T4 work.

@@ -98,6 +98,48 @@ def test_dead_install_gram():
     torch.testing.assert_close(new,G+Jv@Jv.T,atol=1e-10,rtol=0)
 
 
+@pytest.mark.parametrize('conv,bn,dtype',[(False,False,torch.float64),(False,True,torch.float64),
+    (True,False,torch.float64),(True,True,torch.float64),(True,False,torch.float32)])
+def test_grouped_gir_candidates_match_serial_exact_scores_and_jacobians(monkeypatch,conv,bn,dtype):
+    from contextlib import contextmanager
+    from methods import vna_v3 as vna
+    model,site,batch,spec,ctx,opt=problem(conv,bn)
+    if conv:
+        from collections import OrderedDict
+        model._modules=OrderedDict(('conv1' if name=='0' else name,module) for name,module in model._modules.items())
+        model[3]=nn.Conv2d(2,3,3,padding=1).double()
+        site=HookSite(model,'conv1','3','conv',between=('1','2'))
+    model.to(dtype=dtype);batch=(batch[0].to(dtype),batch[1]);opt=torch.optim.SGD(model.parameters(),lr=.01)
+    tolerance=1e-5 if dtype==torch.float32 else 1e-10
+    engine=V3Engine('vna_gir'); engine.begin_task(1); engine.mu=.2
+    with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],spec,ctx); G,_=gram(p)
+        factor=OutputSolve(G,spec.metric_blocks(op.logits,ctx),engine.mu)
+        residual=op.g-factor.metric(G@factor.solve(op.g))
+    before=deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state()
+    original=vna.training_products; counts=[]
+    @contextmanager
+    def counted(*a,**kw):
+        counts.append(1)
+        with original(*a,**kw) as products: yield products
+    monkeypatch.setattr(vna,'training_products',counted)
+    result=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,
+                              residual=residual,H=factor.metric,mu=engine.mu)
+    assert result and len(counts)==1
+    _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))
+    assert sum('_Jv' in entry for entry in result)==min(2,len(result))
+    for proposal in result:
+        with original(model,[site],{site.module_name:proposal['A']},batch[0]) as p:
+            ne=sum(ref.numel() for _,ref in p.extension_refs)
+            J=columns(p.JEv,torch.arange(ne),ne,p.extension_refs[0][1],chunk=1)
+            s=p.JET(residual).double()
+            small=J.T@torch.vmap(factor.metric)(J.T).T
+            lam=float(torch.linalg.eigvalsh((small+small.T)*.5)[-1])
+            assert proposal['curvature']==pytest.approx(lam,rel=tolerance,abs=tolerance*.01)
+            assert proposal['score']==pytest.approx(.5*float(s@s)/(lam+engine.mu),rel=tolerance,abs=tolerance*.01)
+            if '_Jv' in proposal: torch.testing.assert_close(proposal['_Jv'],J,rtol=tolerance,atol=tolerance*.01)
+
+
 def test_woodbury_sequential_dense():
     n,c,P=2,3,11; J=torch.randn(n*c,P,dtype=torch.float64)
     blocks=torch.eye(c,dtype=torch.float64).repeat(n,1,1)/n
@@ -111,6 +153,33 @@ def test_woodbury_sequential_dense():
         swap.commit(); e=e-H@fu; J=Jnew
         direct=OutputSolve(J@J.T,blocks,mu)
         torch.testing.assert_close(solver.solve(e),direct.solve(e),rtol=1e-8,atol=1e-10)
+
+
+def test_application_matches_serial_derivatives_with_exact_curvature(monkeypatch):
+    from methods import vna_v3 as vna
+    model=nn.Sequential(nn.Linear(3,4),nn.ReLU(),nn.Linear(4,1)).double()
+    with torch.no_grad(): model[0].weight[:2]=0;model[0].bias[:2]=-1;model[2].weight[:,:2]=0
+    initial=deepcopy(model);batch=torch.randn(6,3,dtype=torch.float64),torch.randn(6,1,dtype=torch.float64)
+    results=[]
+    for serial in (False,True):
+        clone=deepcopy(initial);site=HookSite(clone,'0','2','linear',between=('1',))
+        opt=torch.optim.SGD(clone.parameters(),lr=.01,momentum=.9)
+        engine=V3Engine('vna_gir');engine.begin_task(1);engine.mu=.2
+        with monkeypatch.context() as patch:
+            if serial:
+                patch.setattr(vna,'gram',lambda p:gram(p,chunk=1,vjp_chunk=1,jvp_chunk=1))
+                patch.setattr(vna,'columns',lambda action,ids,size,ref:columns(action,ids,size,ref,chunk=1))
+            row=engine.apply(clone,[site],batch,MSE(),dict(targets=batch[1]),opt,1,force=True)
+        assert not row['skipped'] and row['gir_trials'] and row['swaps']>0
+        results.append((row,deepcopy(clone.state_dict()),deepcopy(opt.state_dict())))
+    left,right=results[0][0],results[1][0]
+    for key in ('mu_star','rho_tr','L_after','s'):
+        assert left[key]==pytest.approx(right[key],rel=1e-9,abs=1e-11)
+    assert [(r['site'],r['unit']) for r in left['swap_records']]==[(r['site'],r['unit']) for r in right['swap_records']]
+    torch.testing.assert_close(torch.tensor([r['Gamma_woodbury'] for r in left['gir_trials']]),
+                               torch.tensor([r['Gamma_woodbury'] for r in right['gir_trials']]))
+    for name,value in results[0][1].items(): torch.testing.assert_close(value,results[1][1][name],rtol=1e-9,atol=1e-11)
+    _assert_bitwise(results[0][2],results[1][2])
 
 
 def test_lm_reject_nan_and_restore(monkeypatch):
@@ -239,23 +308,24 @@ def test_t31_adjacent_sites_remove_current_shared_columns():
 
 def test_derivative_chunks_bound_vmap_width_and_preserve_exact_products(monkeypatch):
     from types import SimpleNamespace
-    J=torch.randn(11,7,dtype=torch.float64)
+    J=torch.randn(71,19,dtype=torch.float64)
     widths=[]; original=torch.vmap
-    def tracked(action):
-        mapped=original(action)
+    def tracked(action, **kwargs):
+        mapped=original(action, **kwargs)
         def call(batch):
-            widths.append(len(batch))
+            widths.append(min(len(batch), kwargs.get('chunk_size') or len(batch)))
             return mapped(batch)
         return call
     monkeypatch.setattr(torch,'vmap',tracked)
     jv=lambda v:J@v
     jt=lambda v:J.T@v
-    p=SimpleNamespace(_call=lambda _:torch.zeros(11,dtype=J.dtype),
-                      parameter_refs=(('weights',torch.zeros(7,dtype=J.dtype)),),Jv=jv,JT=jt)
+    p=SimpleNamespace(_call=lambda _:torch.zeros(71,dtype=J.dtype),
+                      parameter_refs=(('weights',torch.zeros(19,dtype=J.dtype)),),Jv=jv,JT=jt)
     G,info=gram(p)
     torch.testing.assert_close(G,J@J.T,rtol=1e-12,atol=1e-12)
-    assert info['gram_chunk']==4 and max(widths)<=4
+    assert (info['gram_chunk'],info['gram_vjp_chunk'],info['gram_jvp_chunk'])==(64,16,16)
+    assert max(widths)<=16
     widths.clear()
-    result=columns(jv,torch.arange(7),7,p.parameter_refs[0][1])
+    result=columns(jv,torch.arange(19),19,p.parameter_refs[0][1])
     torch.testing.assert_close(result,J,rtol=1e-12,atol=1e-12)
-    assert max(widths)<=4
+    assert max(widths)<=16

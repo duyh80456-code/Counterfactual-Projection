@@ -17,6 +17,89 @@ import time
 import zipfile
 
 
+def compare_profiles(reference, current):
+    import math
+    if any(r.get('status')!='PROFILE_COMPLETED' or not r.get('applications') for r in (reference,current)):
+        return dict(status='INCOMPLETE',reference_status=reference.get('status'),current_status=current.get('status'))
+    def equal(a,b):
+        if isinstance(a,(int,float)) and isinstance(b,(int,float)):
+            return math.isclose(a,b,rel_tol=1e-5,abs_tol=1e-8)
+        return a==b
+    left,right=reference['applications'][0],current['applications'][0]
+    fields=('mu_star','rho_tr','L_before','L_after','KD_before','KD_after')
+    checks={name:dict(reference=left.get(name),current=right.get(name),
+                      matches=equal(left.get(name),right.get(name))) for name in fields}
+    slots=lambda row:[(r['site'],r['unit']) for r in row.get('swap_records',[])]
+    checks['swap_slots']=dict(reference=slots(left),current=slots(right),matches=slots(left)==slots(right))
+    old_loss,new_loss=reference.get('final_L_KD'),current.get('final_L_KD')
+    checks['final_L_KD']=dict(reference=old_loss,current=new_loss,
+        matches=old_loss is not None and new_loss is not None and len(old_loss)==len(new_loss) and
+                all(equal(a,b) for a,b in zip(old_loss,new_loss)))
+    oldr,newr=reference.get('candidate_rankings',[]),current.get('candidate_rankings',[])
+    checks['candidate_rankings']=dict(matches=len(oldr)==len(newr) and
+        all([p['id'] for p in a['candidates']]==[p['id'] for p in b['candidates']] for a,b in zip(oldr,newr)),
+        reference_calls=len(oldr),current_calls=len(newr))
+    oldg,newg=left.get('gir_trials',[]),right.get('gir_trials',[])
+    checks['ordered_Gamma']=dict(matches=len(oldg)==len(newg) and all(
+        (a['site'],a['unit'])==(b['site'],b['unit']) and equal(a['Gamma_woodbury'],b['Gamma_woodbury'])
+        for a,b in zip(oldg,newg)),reference_trials=len(oldg),current_trials=len(newg))
+    return dict(status='COMPARED',checks=checks,application_seconds=dict(
+        reference=reference['application_seconds'],current=current['application_seconds']),
+        interpretation='Exact eigenvalues may change ranking and swaps; ordered Gamma is comparable only when candidate rankings match.')
+
+
+def profile_capacity(model, batch, boundary=lambda: None):
+    """Capacity proxy with a 100-class clone, never the live training model."""
+    import gc
+    import torch
+    from diagnostics.vna_align import _global_state
+    from methods import vna_v3 as vna
+    from adapters.icarl_hooks import sites_for
+    rows=[]
+    with _global_state():
+        clone=deepcopy(model)
+        device,dtype=next(clone.parameters()).device,next(clone.parameters()).dtype
+        clone.native.update_fc(100)
+        clone.to(device=device,dtype=dtype)
+        for n in (256,128):
+            boundary()
+            repeats=(n+len(batch[0])-1)//len(batch[0])
+            x=batch[0].repeat((repeats,)+(1,)*(batch[0].ndim-1))[:n]
+            y=batch[1].repeat(repeats)[:n]
+            torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
+            row=dict(probe_size=n,classes=100,m=n*100,gram_bytes=8*(n*100)**2,
+                source='task-2 weights, extended 100-class head, repeated window; capacity proxy, not actual task-20 data')
+            original_gram=vna.gram
+            def measured_gram(*a,**kw):
+                gram_start=time.perf_counter()
+                try:
+                    G,timing=original_gram(*a,**kw)
+                    row.update(timing,gram_status='COMPLETED')
+                    return G,timing
+                finally:
+                    row.setdefault('gram_seconds',time.perf_counter()-gram_start)
+                    row.setdefault('gram_status','FAILED')
+            vna.gram=measured_gram
+            start=time.perf_counter()
+            try:
+                row.update(vna.diagnose(clone,(x,y),sites=sites_for(clone)),status='COMPLETED')
+            except torch.cuda.OutOfMemoryError as exc:
+                row.update(status='CUDA_OOM',error=str(exc))
+            except RuntimeError as exc:
+                if not str(exc).startswith('GRAM_LIMIT:'): raise
+                row.update(status='GRAM_LIMIT',error=str(exc))
+            finally:
+                vna.gram=original_gram
+                torch.cuda.synchronize()
+                row.update(seconds=time.perf_counter()-start,peak_cuda_bytes=torch.cuda.max_memory_allocated(),
+                           peak_reserved_bytes=torch.cuda.max_memory_reserved())
+            rows.append(row)
+            del x,y
+            gc.collect();torch.cuda.empty_cache()
+    return dict(rows=rows,actual_task20_measured=False,probe_change_applied=False,
+        recommendation='Consider preregistering 128 only after reviewing these proxy measurements and actual task-20 capacity.')
+
+
 def is_task1_checkpoint(state):
     if not isinstance(state, dict) or not isinstance(state.get('identity'), dict): return False
     expected = dict(arm='icarl_full', seed=0, backbone='resnet32_nobn', class_order_kind='superclass',
@@ -128,7 +211,8 @@ def run(args):
     if old and not native_commit.startswith('d88abc4'):
         raise ValueError('B/C must import d88abc4 source')
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
-        source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest())
+        source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        capacity_profile=args.capacity_profile)
     if (out/'diagnostic.json').exists():
         prior=json.loads((out/'diagnostic.json').read_text())
         if prior.get('identity') != identity: raise ValueError('diagnostic result identity mismatch')
@@ -140,7 +224,7 @@ def run(args):
         profiling=args.profile, module_paths=module_paths,
         execution=dict(parallel_lanes=int(os.environ.get('VNA_DIAGNOSTIC_LANES','1')),
                        cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES')), first_nonfinite=None, threshold=40., lr=.05,
-        timers=[], cg=[], jvp_vjp={}, applications=[])
+        timers=[], cg=[], jvp_vjp={}, applications=[],candidate_rankings=[])
     atomic_json_save(report,out/'diagnostic.json')
     active = dict(hook=None, model=None, applications=0, stage=[], last_lambda_step=None)
     class Stop(Exception): pass
@@ -191,6 +275,8 @@ def run(args):
     def step(optimizer,*a,**kw):
         hook=active['hook'];learner=hook.learner
         if learner._cur_task != 1: return original_step(optimizer,*a,**kw)
+        torch.cuda.synchronize()
+        training_seconds=max(time.monotonic()-hook.iteration_started,0.)
         frame=inspect.currentframe().f_back
         while frame is not None and 'loss' not in frame.f_locals: frame=frame.f_back
         loss=float(frame.f_locals['loss'].detach()) if frame else float('nan')
@@ -201,9 +287,10 @@ def run(args):
         if bad:
             report.update(status='FAILED_DIVERGED',first_nonfinite=dict(task=2,epoch=epoch,step=hook.steps,tensor=bad))
             write();raise Stop()
+        torch.cuda.synchronize();sgd_start=time.monotonic()
         result=original_step(optimizer,*a,**kw)
         torch.cuda.synchronize()
-        iteration_seconds=max(time.monotonic()-hook.iteration_started,1e-9)
+        iteration_seconds=max(training_seconds+time.monotonic()-sgd_start,1e-9)
         norms={s.module_name:sum(float(dict(model.named_parameters())[n].detach().double().square().sum()) for n in s.parameter_names)**.5 for s in sites}
         row=dict(task=2,epoch=epoch,step=hook.steps,loss=loss,
             iteration_seconds=iteration_seconds,
@@ -246,7 +333,7 @@ def run(args):
                         torch.cuda.synchronize();start=time.perf_counter();fn(arg);torch.cuda.synchronize()
                         timings[name+'_seconds']=time.perf_counter()-start
                     report['jvp_vjp'][str(dtype)]=dict(**timings,parameter_dtype=str(p.parameter_refs[0][1].dtype),vector_dtype=str(vp.dtype))
-            del p, clone, vp, vo
+            del p, clone, vp, vo, fn, arg, inputs
         engine=intervention.engine
         torch.cuda.reset_peak_memory_stats()
         start=time.perf_counter()
@@ -255,6 +342,38 @@ def run(args):
         report['peak_cuda_bytes']=torch.cuda.max_memory_allocated()
         report['applications'].append(event);intervention.events.append(event)
         report['systems_solved']=len(report['cg']) if old else event.get('systems_solved',len(event.get('solves',[])))
+        if args.profile and args.branch=='D' and not event.get('skipped'):
+            report['final_L_KD']=list(engine._evaluate_current(model,batch,spec,ctx))
+            trials=event.get('gir_trials',[])
+            costs=[r.get('gamma_total_seconds',r['gamma_seconds']) for r in trials]
+            report['gamma_cost']=dict(trials=len(trials),total_seconds=sum(costs),
+                mean_seconds=sum(costs)/len(costs) if costs else None,
+                max_seconds=max(costs,default=None),
+                interpretation='Includes native slot columns once per slot; candidate Jacobians charged to prepare_gir when cached.')
+            report['performance_targets']=dict(application_target_seconds=180,
+                application_under_180_seconds=report['application_seconds']<180,
+                gram_1280_seconds=event.get('gram_seconds'))
+            samples=[json.loads(line)['iteration_seconds'] for line in (out/'sgd.jsonl').read_text().splitlines()]
+            epochs=50
+            point=dict(task=2,vna_seconds=report['application_seconds'],iteration_seconds=sum(samples)/len(samples),
+                       task_iterations=len(learner.train_loader)*epochs)
+            report['budget_estimate']=vna.schedule_from_points([point],len(learner.train_loader))
+            report['budget_estimate'].update(authoritative=False,baseline_samples=len(samples),
+                scope='task 2 only; final-task application cost and task-1 calibration remain unmeasured')
+            points=[dict(point,task=t,task_iterations=(100*((2500+learner.train_loader.batch_size-1)//learner.train_loader.batch_size)
+                        if t==1 else point['task_iterations'])) for t in range(1,21)]
+            projection=vna.schedule_from_points(points,len(learner.train_loader))
+            projection.update(authoritative=False,assumption='constant task-2 application and SGD costs for all 20 tasks; not a final-size cost model',
+                applications_per_task={t:round(seconds/report['application_seconds']) for t,seconds in projection['projected_vna_seconds'].items()})
+            report['budget_estimate_20_task_scenario']=projection
+            write()
+            if args.capacity_profile:
+                report['capacity_profile']=profile_capacity(model,batch,hook.measurement_boundary)
+                capacity=next(r for r in report['capacity_profile']['rows'] if r['m']==12800)
+                report['performance_targets'].update(gram_12800_seconds=capacity.get('gram_seconds'),
+                    gram_12800_limit_seconds=600,gram_12800_ideal_seconds=60,
+                    gram_12800_under_600_seconds=capacity.get('gram_status')=='COMPLETED' and
+                                                capacity.get('gram_seconds',float('inf'))<600)
         if not args.profile:
             bad=nonfinite(model,optimizer)
             if bad:
@@ -264,7 +383,9 @@ def run(args):
                 report['lambda_after_application']=vna.power_lambda_max(op.F,op.size,
                     vna.dedicated_generator(0,'nan-ggn',learner._device),iterations=10,device=learner._device)
         write()
-        if args.profile: report['status']='PROFILE_COMPLETED';raise Stop()
+        if args.profile:
+            report['status']='PROFILE_SKIPPED' if event.get('skipped') else 'PROFILE_COMPLETED'
+            raise Stop()
     main.Intervention.after_step=after
     if args.branch == 'C':
         original_install=vna.V3Engine.install_gir
@@ -279,7 +400,18 @@ def run(args):
             def wrap(original=original,name=method):
                 def timed(*a,**kw):
                     torch.cuda.synchronize();start=time.perf_counter();active['stage'].append(name)
-                    try:return original(*a,**kw)
+                    try:
+                        result=original(*a,**kw)
+                        if name=='prepare_gir':
+                            candidates=[]
+                            for proposal in result:
+                                h=hashlib.sha256()
+                                for key,value in sorted(proposal['A'].items()):
+                                    h.update(key.encode())
+                                    if value is not None: h.update(value.detach().cpu().contiguous().numpy().tobytes())
+                                candidates.append(dict(id=h.hexdigest(),score=proposal['score'],curvature=proposal.get('curvature')))
+                            report['candidate_rankings'].append(dict(site=a[2].module_name,candidates=candidates))
+                        return result
                     finally:
                         torch.cuda.synchronize();report['timers'].append(dict(name=name,seconds=time.perf_counter()-start));active['stage'].pop()
                 return timed
@@ -315,7 +447,8 @@ def run(args):
     except Exception as exc:
         report.update(status='FAILED_DIAGNOSTIC',error=repr(exc));write();raise
     finally:
-        report['peak_cuda_bytes']=torch.cuda.max_memory_allocated()
+        report['peak_cuda_bytes']=max(report.get('peak_cuda_bytes',0),torch.cuda.max_memory_allocated(),
+            max((r['peak_cuda_bytes'] for r in report.get('capacity_profile',{}).get('rows',[])),default=0))
         history=out/'sgd.jsonl'
         if history.exists():
             rows=[json.loads(line) for line in history.read_text().splitlines() if line.strip()]
@@ -337,6 +470,7 @@ def parser():
     p.add_argument('--archive');p.add_argument('--checkpoint');p.add_argument('--input-root',default='/kaggle/input')
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
+    p.add_argument('--capacity-profile',action='store_true')
     return p
 
 

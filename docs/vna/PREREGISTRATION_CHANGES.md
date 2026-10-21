@@ -640,3 +640,43 @@ stores float64 blocks. Convert the input vector to the block dtype/device in
 the shared metric method before einsum. The metric result remains float64;
 JET already converts its input to native parameter dtype at the VJP boundary.
 No formulas, model precision, windows, RNG, counters or lane scheduling change.
+
+## 2026-10-21: exact-solver implementation speed pass, before M1
+
+The user approved replacing GIR's ten power iterations with the exact largest
+symmetric eigenvalue of J_v^T H_beta J_v, and explicitly accepts reporting
+ranking/swap changes. This is not promised to reproduce finite-iteration
+power estimates. The T27 score formula, shared mu_star, frozen theta and H_beta,
+sequential G/residual updates, actual L/KD gates, top-2 proposals and four live
+slots remain unchanged. No candidate limits are lifted.
+
+Candidate features are concatenated as independent virtual channels with zero
+outgoing weights in one training_products context per site preparation. One VJP obtains
+all candidate gradients; vmap JVP chunks interleave groups of four candidates, then
+float64 eigvalsh gives its exact curvature. Only the top-2 candidate Jacobians
+are retained and reused for Gamma. Native slot Jacobians use vmap chunks of
+16, with explicit native-column and Gamma timing/call accounting.
+
+Gram vector blocks increase from 4 to 64. Because the actual 64-vector VJP
+already OOMed on T4, backward and forward microbatches are limited to 16, pending T4 memory
+validation. These three sizes are logged separately; 64 simultaneous VJPs are not
+reintroduced. All products/columns and float64 G are retained. No OOM retry or
+approximate solver is added to training. The m>=12800 / 600-second stop stays.
+
+The TASK log already omitted reach before this pass; a regression check now
+covers it. Scalar loss logging detaches tensors without changing the loss.
+
+The profile notebook now compares reference D at b97d25c with optimized D on
+the same task-1 checkpoint, on two isolated GPU lanes with serial fallback.
+Reports are namespaced by the optimized code pin, retaining strict checkpoint
+and source identities and prior outputs. Reports compare mu_star, rho, L/KD,
+rankings, ordered Gamma and swap slots, and record final actual L/KD after GIR.
+A 1.0x K0 estimate includes sample count and a labelled constant-task-2-cost
+20-task scenario; it is not an authoritative schedule or final-size cost model.
+
+A separate read-only capacity measurement extends a cloned head to 100 classes
+and repeats the window for probes 256/128. It records actual allocation and
+reserved peaks, Gram times at m=25600/12800, OOM/resource stops and proxy
+provenance. This is not actual task-20 data. The main diagnostic probe remains
+256 until hardware results justify a preregistered reduction to 128. M1 stays
+held. No T4 speed/VRAM target or numerical equivalence on T4 is claimed locally.

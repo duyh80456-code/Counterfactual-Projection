@@ -27,7 +27,8 @@ def test_private_clone_authenticates_historical_checkout(tmp_path):
     assert not askpass.exists()
 
 
-def test_historical_preparation_repairs_shared_partial_checkout(tmp_path):
+@pytest.mark.parametrize('mode',['nan','profile'])
+def test_historical_preparation_repairs_shared_partial_checkout(tmp_path,mode):
     repo = tmp_path/'current'
     repo.mkdir()
     def git(*args, cwd=repo):
@@ -55,14 +56,18 @@ def test_historical_preparation_repairs_shared_partial_checkout(tmp_path):
         git('clone','--no-local',str(repo),str(target),cwd=tmp_path)
         git('checkout','--detach',revision,cwd=target)
     source=EXACT_DIAGNOSTICS[:EXACT_DIAGNOSTICS.index("script = REPO/")]
-    source=source.replace('/kaggle/input',str(inputs)).replace('d88abc496eb1fe21d1b6df66d90b47cf93d7ded1',old)
-    scope=dict(REPO=repo,Path=Path,subprocess=subprocess,shutil=shutil,private_clone=clone,MAIN_URL='fixture')
+    source=source.replace('/kaggle/input',str(inputs)).replace('d88abc496eb1fe21d1b6df66d90b47cf93d7ded1',old).replace('b97d25c9aaee4949acbb50869912042b5a47c1f3',old)
+    scope=dict(MODE=mode,REPO=repo,Path=Path,subprocess=subprocess,shutil=shutil,private_clone=clone,MAIN_URL='fixture')
     exec(source,scope)
     assert (destination/'value.txt').read_text() == 'old solver'
     assert not (destination/'.git/objects/info/alternates').exists()
     assert (destination/'third_party/PyCIL').resolve() == repo/'third_party/PyCIL'
     exec(source,scope)
-    assert clones == [old]
+    assert clones == [old]*(2 if mode=='profile' else 1)
+    if mode=='profile':
+        reference=repo.with_name('counterfactual-projection-profile-reference')
+        assert (reference/'value.txt').read_text()=='old solver'
+        assert (reference/'third_party/PyCIL').resolve()==repo/'third_party/PyCIL'
 
 
 def test_import_origins_reject_current_solver_for_old_checkout(tmp_path):

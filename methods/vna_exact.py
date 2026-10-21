@@ -3,7 +3,7 @@ import time
 import torch
 
 
-def gram(products, chunk=4):
+def gram(products, chunk=64, vjp_chunk=16, jvp_chunk=16):
     start = time.perf_counter()
     m = products._call({}).numel()
     ref = products.parameter_refs[0][1]
@@ -11,7 +11,10 @@ def gram(products, chunk=4):
     for lo in range(0, m, chunk):
         ids = torch.arange(lo, min(lo+chunk, m), device=ref.device)
         E = torch.nn.functional.one_hot(ids, m).to(ref)
-        G[:, lo:lo+len(ids)] = torch.vmap(products.Jv)(torch.vmap(products.JT)(E)).double().T
+        # Bound backward activation memory separately from the stored vector block.
+        tangents = torch.vmap(products.JT, chunk_size=vjp_chunk)(E)
+        G[:, lo:lo+len(ids)] = torch.vmap(products.Jv, chunk_size=jvp_chunk)(tangents).double().T
+        del tangents
         if m >= 12800 and G.is_cuda: torch.cuda.synchronize(G.device)
         if m >= 12800 and time.perf_counter()-start > 600:
             raise RuntimeError(f'GRAM_LIMIT: m={m} gram_seconds={time.perf_counter()-start}; review required')
@@ -21,10 +24,11 @@ def gram(products, chunk=4):
     if m >= 12800 and elapsed > 600:
         raise RuntimeError(f'GRAM_LIMIT: m={m} gram_seconds={elapsed}; review required')
     return G, dict(gram_seconds=time.perf_counter()-start, m=m, gram_dtype=str(G.dtype),
-                   parameter_dtype=str(ref.dtype), product_vector_dtype=str(ref.dtype), gram_chunk=chunk)
+                   parameter_dtype=str(ref.dtype), product_vector_dtype=str(ref.dtype), gram_chunk=chunk,
+                   gram_vjp_chunk=vjp_chunk, gram_jvp_chunk=jvp_chunk)
 
 
-def columns(action, indices, size, ref, chunk=4):
+def columns(action, indices, size, ref, chunk=16):
     result = []
     for lo in range(0, len(indices), chunk):
         ids = indices[lo:lo+chunk]

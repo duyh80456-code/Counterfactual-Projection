@@ -348,8 +348,8 @@ class V3Engine:
     @staticmethod
     def _loss_parts(model, batch, spec, ctx):
         logits = model(batch[0]).reshape(len(batch[0]), -1).double()
-        total = float(spec.loss(logits, ctx))
-        ce = float(torch.nn.functional.cross_entropy(logits, ctx['targets']))
+        total = float(spec.loss(logits, ctx).detach())
+        ce = float(torch.nn.functional.cross_entropy(logits, ctx['targets']).detach())
         return total, total-ce if ctx.get('known_classes', 0) else None
 
     @_global_state()
@@ -771,28 +771,39 @@ class V3Engine:
                 jL, jKD = self._slot_jump(model, site, batch, spec, ctx, unit)
                 jump_seconds = time.perf_counter()-start
                 if not math.isfinite(jL) or jL > 0 or (jKD is not None and (not math.isfinite(jKD) or jKD > 0)): continue
+                columns_start = time.perf_counter()
                 with training_products(frozen, [], {}, batch[0]) as p:
                     Ju, native_ids, outgoing_ids = self._slot_columns(p, fixed, unit, replacements, unit in dead)
                     native_jvps = 0 if unit in dead else len(native_ids)
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
+                native_columns_seconds = time.perf_counter()-columns_start
                 gain_start = time.perf_counter()
                 factor.q(ecur)
                 values['gir_solves'].append(dict(name='baseline_gain', seconds=time.perf_counter()-gain_start))
                 best = None
-                for proposal in choices[:int(self.protocol['gamma_candidates'])]:
+                for trial_index, proposal in enumerate(choices[:int(self.protocol['gamma_candidates'])]):
                     start = time.perf_counter()
-                    with training_products(frozen, [fixed], {fixed.module_name: proposal['A']}, batch[0]) as pv:
-                        ne = sum(v.numel() for _, v in pv.extension_refs)
-                        ref = pv.extension_refs[0][1]
-                        Jv = columns(pv.JEv, torch.arange(ne, device=ref.device), ne, ref)
-                        proxy, incoming, _, _ = pv.virtual[0]
-                        features = proxy.virtual_features(cache['x'], incoming)
-                        activation = float(features.ne(0).double().mean())
+                    Jv = proposal.get('_Jv')
+                    cached = Jv is not None
+                    if not cached:
+                        with training_products(frozen, [fixed], {fixed.module_name: proposal['A']}, batch[0]) as pv:
+                            ne = sum(v.numel() for _, v in pv.extension_refs)
+                            ref = pv.extension_refs[0][1]
+                            Jv = columns(pv.JEv, torch.arange(ne, device=ref.device), ne, ref)
+                            proxy, incoming, _, _ = pv.virtual[0]
+                            features = proxy.virtual_features(cache['x'], incoming)
+                            proposal['_activation'] = float(features.ne(0).double().mean())
+                        proposal['_Jv'] = Jv
+                    ne, activation = Jv.shape[1], proposal['_activation']
                     swap = factor.swapped(Ju, Jv)
                     gamma = swap.gamma(ecur, contributions[unit])
                     seconds = time.perf_counter()-start
                     values['gir_trials'].append(dict(site=site.module_name, unit=int(unit),
-                        Gamma_woodbury=gamma, gamma_seconds=seconds, n_jvp=native_jvps+ne))
+                        Gamma_woodbury=gamma, gamma_seconds=seconds, n_jvp=native_jvps+ne,
+                        native_columns_seconds=native_columns_seconds if trial_index==0 else 0.,
+                        gamma_total_seconds=seconds+(native_columns_seconds if trial_index==0 else 0.),
+                        n_jvp_evaluated=(native_jvps if trial_index==0 else 0)+(0 if cached else ne),
+                        candidate_jacobian_cached=cached, candidate_jvp_evaluated=0 if cached else ne))
                     if math.isfinite(gamma) and gamma > 0 and (best is None or gamma > best[0]):
                         best = gamma, proposal, swap, seconds, activation, ne
                 if best is None: continue
@@ -971,25 +982,27 @@ class V3Engine:
     def prepare_gir(self, model, site, batch, spec, ctx, optimizer, units, iteration, gradmax=False, residual=None, used_directions=(), random_rows=False, H=None, cache=None, mu=None):
         self.gir_fallback = False
         if not len(units) or not self.valid_slot(site): return []
-        with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
-            op = GGNProducts(p, batch[1], spec, ctx)
-            mu = mu if mu is not None else self.mu
-            if mu is None: mu = max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
-            if residual is None:
-                if gradmax: residual = op.g
-                else:
-                    values = self._direction(p, op, mu)
-                    G, beta = values['G'], values['beta']
-                    e_beta = op.g
-                    known = int(op.ctx.get('known_classes', 0))
-                    if known and beta:
-                        delta_old = torch.zeros_like(op.logits)
-                        delta_old[:, :known] = -(G@values['yO']).reshape_as(op.logits)[:, :known]
-                        e_beta = op.g-beta*values['H_old'](delta_old.flatten())
-                    factor = OutputSolve(G, values['blocks']+beta*values['old_blocks'], mu)
-                    residual = e_beta-factor.metric(G@factor.solve(e_beta))
-                    if H is None: H = factor.metric
-        metric = op.H if H is None else H
+        mu = mu if mu is not None else self.mu
+        if residual is None or H is None or mu is None:
+            with training_products(model, [site], seed_proposals([site]), batch[0]) as p:
+                op = GGNProducts(p, batch[1], spec, ctx)
+                if mu is None: mu = max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
+                if residual is None:
+                    if gradmax: residual = op.g
+                    else:
+                        values = self._direction(p, op, mu)
+                        G, beta = values['G'], values['beta']
+                        e_beta = op.g
+                        known = int(op.ctx.get('known_classes', 0))
+                        if known and beta:
+                            delta_old = torch.zeros_like(op.logits)
+                            delta_old[:, :known] = -(G@values['yO']).reshape_as(op.logits)[:, :known]
+                            e_beta = op.g-beta*values['H_old'](delta_old.flatten())
+                        factor = OutputSolve(G, values['blocks']+beta*values['old_blocks'], mu)
+                        residual = e_beta-factor.metric(G@factor.solve(e_beta))
+                        if H is None: H = factor.metric
+                if H is None: H = op.H
+        metric = H
         # S_x, N and the site input do not change across units of one site (B_v = 0 swaps).
         cache = {} if cache is None else cache
         if 'stats' not in cache: cache['stats'] = statistics(model, site, batch, [residual])
@@ -1040,19 +1053,41 @@ class V3Engine:
                     elif first.bias is not None: candidate['bias'] = trial['bias']+shift
                     elif shift != 0: continue
                     if not bool((projected+shift).ne(0).any()): continue
-                    # T27 ell_beta = .5 |J_v^T r|^2 / (lambda_max(J_v^T H_beta J_v) + mu), matrix-free.
-                    with training_products(model, [site], {site.module_name: candidate}, batch[0]) as pv:
-                        size = sum(v.numel() for _, v in pv.extension_refs)
-                        s_v = pv.JET(residual).double()
-                        # s_v = 0 (e.g. SkipInit alpha = 0 on this branch) gives ell = 0: no curvature needed.
-                        if not torch.isfinite(s_v).all() or not bool(s_v.any()): continue
-                        curvature = power_lambda_max(lambda v: pv.JET(metric(pv.JEv(v))), size,
-                            dedicated_generator(self.seed, f'v4-ell:{self.task}:{iteration}:{len(proposals)}', x.device),
-                            iterations=10, device=x.device)
-                    if not math.isfinite(curvature) or not bool(s_v.any()): continue
-                    score = .5*float(s_v.square().sum())/(curvature+mu)
-                    proposals.append(dict(A=candidate, score=score, bias_q=bias_q, direction=row.detach().clone()))
-        return sorted(proposals, key=lambda value: value['score'], reverse=True)
+                    proposals.append(dict(A=candidate, bias_q=bias_q, direction=row.detach().clone()))
+        if not proposals: return []
+        combined = {key: (None if proposals[0]['A'][key] is None else
+                         torch.cat([entry['A'][key] for entry in proposals])) for key in proposals[0]['A']}
+        scored = []
+        with training_products(model, [site], {site.module_name: combined}, batch[0]) as pv:
+            proxy, incoming, outgoing, _ = pv.virtual[0]
+            ref = pv.extension_refs[0][1]
+            size = ref.numel()
+            ids = torch.arange(size, device=ref.device).reshape_as(outgoing.weight)
+            gradients = pv.JET(residual).double()
+            with torch.no_grad(): features = proxy.virtual_features(x, incoming)
+            width = outgoing.weight.shape[1]//len(proposals)
+            candidate_ids = torch.stack([ids[:, i*width:(i+1)*width].flatten() for i in range(len(proposals))])
+            candidate_gradients = gradients[candidate_ids]
+            active = torch.where(torch.isfinite(candidate_gradients).all(1) & candidate_gradients.ne(0).any(1))[0].tolist()
+            for offset in range(0, len(active), 4):
+                group = active[offset:offset+4]
+                packed = columns(pv.JEv, candidate_ids[group].T.flatten(), size, ref)
+                Js = packed.reshape(len(residual), -1, len(group)).permute(2, 0, 1)
+                HJs = torch.vmap(torch.vmap(metric))(Js.transpose(1, 2)).transpose(1, 2)
+                small = Js.transpose(1, 2)@HJs
+                curvatures = torch.linalg.eigvalsh((small+small.transpose(1, 2))*.5)[:, -1].tolist()
+                for i, Jv, curvature in zip(group, Js, curvatures):
+                    if not math.isfinite(curvature): continue
+                    proposal, s_v = proposals[i], candidate_gradients[i]
+                    proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
+                        curvature=curvature, curvature_method='eigvalsh',
+                        _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
+                    scored.append(proposal)
+                    cached = sorted(scored, key=lambda entry: entry['score'], reverse=True)[:int(self.protocol['gamma_candidates'])]
+                    if any(entry is proposal for entry in cached): proposal['_Jv'] = Jv.clone()
+                    for entry in scored:
+                        if all(entry is not keep for keep in cached): entry.pop('_Jv', None)
+        return sorted(scored, key=lambda value: value['score'], reverse=True)
 
     @staticmethod
     def _site_input(model, site, batch):
