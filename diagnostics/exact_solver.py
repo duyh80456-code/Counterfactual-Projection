@@ -17,13 +17,14 @@ import time
 import zipfile
 
 
-def compare_profiles(reference, current):
+def compare_profiles(reference, current, strict=False):
     import math
     if any(r.get('status')!='PROFILE_COMPLETED' or not r.get('applications') for r in (reference,current)):
         return dict(status='INCOMPLETE',reference_status=reference.get('status'),current_status=current.get('status'))
     def equal(a,b):
+        if isinstance(a,int) and isinstance(b,int): return a==b
         if isinstance(a,(int,float)) and isinstance(b,(int,float)):
-            return math.isclose(a,b,rel_tol=1e-5,abs_tol=1e-8)
+            return math.isfinite(a) and math.isfinite(b) and math.isclose(a,b,rel_tol=1e-5,abs_tol=0.)
         return a==b
     left,right=reference['applications'][0],current['applications'][0]
     fields=('mu_star','rho_tr','L_before','L_after','KD_before','KD_after')
@@ -37,15 +38,71 @@ def compare_profiles(reference, current):
                 all(equal(a,b) for a,b in zip(old_loss,new_loss)))
     oldr,newr=reference.get('candidate_rankings',[]),current.get('candidate_rankings',[])
     checks['candidate_rankings']=dict(matches=len(oldr)==len(newr) and
-        all([p['id'] for p in a['candidates']]==[p['id'] for p in b['candidates']] for a,b in zip(oldr,newr)),
+        all(a.get('site')==b.get('site') and [p['id'] for p in a['candidates']]==[p['id'] for p in b['candidates']] for a,b in zip(oldr,newr)),
         reference_calls=len(oldr),current_calls=len(newr))
+    checks['candidate_values']=dict(matches=len(oldr)==len(newr) and all(
+        len(a['candidates'])==len(b['candidates']) and all(
+            x['id']==y['id'] and all(equal(x.get(k),y.get(k)) for k in ('score','curvature','power_generator_seed','power_iterations'))
+            for x,y in zip(a['candidates'],b['candidates'])) for a,b in zip(oldr,newr)))
     oldg,newg=left.get('gir_trials',[]),right.get('gir_trials',[])
     checks['ordered_Gamma']=dict(matches=len(oldg)==len(newg) and all(
         (a['site'],a['unit'])==(b['site'],b['unit']) and equal(a['Gamma_woodbury'],b['Gamma_woodbury'])
         for a,b in zip(oldg,newg)),reference_trials=len(oldg),current_trials=len(newg))
-    return dict(status='COMPARED',checks=checks,application_seconds=dict(
+    old_swaps,new_swaps=reference.get('applied_swaps',[]),current.get('applied_swaps',[])
+    def same_values(a,b):
+        if isinstance(a,list) and isinstance(b,list): return len(a)==len(b) and all(same_values(x,y) for x,y in zip(a,b))
+        return equal(a,b)
+    checks['installed_candidates']=dict(matches=len(old_swaps)==len(new_swaps) and all(
+        (a['site'],a['unit'],a['candidate_id'])==(b['site'],b['unit'],b['candidate_id']) and
+        a['A'].keys()==b['A'].keys() and all(same_values(a['A'][k],b['A'][k]) for k in a['A'])
+        for a,b in zip(old_swaps,new_swaps)))
+    complete=bool(oldr and newr) and all(
+        isinstance(left.get(k),(int,float)) and isinstance(right.get(k),(int,float)) for k in fields)
+    complete=complete and bool(oldg and newg) and len(old_swaps)==len(left.get('swap_records',[])) and len(new_swaps)==len(right.get('swap_records',[]))
+    complete=complete and all(isinstance(p.get('power_generator_seed'),int) and p.get('power_iterations')==10
+        and all(isinstance(p.get(k),(int,float)) and math.isfinite(p[k]) for k in ('score','curvature'))
+        for calls in (oldr,newr) for call in calls for p in call['candidates'])
+    checks['data_complete']=dict(matches=complete)
+    if strict:
+        sha=reference.get('identity',{}).get('checkpoint_sha256')
+        checks['same_checkpoint']=dict(matches=bool(sha) and sha==current.get('identity',{}).get('checkpoint_sha256'))
+        checks['power10_mode']=dict(matches=reference.get('curvature')==current.get('curvature')=='power10')
+    passed=complete and all(check['matches'] for check in checks.values())
+    records=lambda event:[{k:r.get(k) for k in ('site','unit','Gamma','ell_beta','bias_q')} for r in event.get('swap_records',[])]
+    trials=lambda event:[{k:r.get(k) for k in ('site','unit','Gamma_woodbury')} for r in event.get('gir_trials',[])]
+    return dict(status=('PASS' if passed else 'FAIL') if strict else 'COMPARED',checks=checks,relative_tolerance=1e-5,
+        swaps=dict(reference=records(left),current=records(right)),
+        installed_swaps=dict(reference=old_swaps,current=new_swaps),
+        Gamma_trials=dict(reference=trials(left),current=trials(right)),
+        application_seconds=dict(
         reference=reference['application_seconds'],current=current['application_seconds']),
         interpretation='Exact eigenvalues may change ranking and swaps; ordered Gamma is comparable only when candidate rankings match.')
+
+
+def curvature_differences(report):
+    import math
+    from scipy.stats import kendalltau
+    result=[]
+    for call in report.get('candidate_rankings',[]):
+        candidates=call['candidates']
+        valid=[p for p in candidates if all(isinstance(p.get(k),(int,float)) and math.isfinite(p[k])
+               for k in ('curvature','curvature_power10','score','score_power10'))]
+        exact=sorted(valid,key=lambda p:p['score'],reverse=True)
+        power=sorted(valid,key=lambda p:p['score_power10'],reverse=True)
+        tau=float(kendalltau([p['score'] for p in valid],[p['score_power10'] for p in valid],variant='b').statistic) if len(valid)>1 else float('nan')
+        result.append(dict(site=call['site'],iteration=call.get('iteration'),used_directions=call.get('used_directions'),
+            mu=call.get('mu'),candidate_count=len(candidates),valid_count=len(valid),
+            kendall_tau_b=tau if math.isfinite(tau) else None,
+            top_k_overlap={str(k):dict(k=min(k,len(valid)),common=len({p['id'] for p in exact[:k]} & {p['id'] for p in power[:k]}),
+                fraction=len({p['id'] for p in exact[:k]} & {p['id'] for p in power[:k]})/min(k,len(valid)) if valid else None)
+                           for k in (1,2,4,8)},
+            candidates=[dict(id=p['id'],lambda_exact=p['curvature'],lambda_power10=p['curvature_power10'],
+                lambda_exact_plus_mu=p['curvature']+call['mu'] if call.get('mu') is not None else None,
+                lambda_power10_plus_mu=p['curvature_power10']+call['mu'] if call.get('mu') is not None else None,
+                delta=p['curvature']-p['curvature_power10'],
+                relative_error=abs(p['curvature']-p['curvature_power10'])/abs(p['curvature']) if p['curvature'] else None,
+                ell_exact=p['score'],ell_power10=p['score_power10']) for p in valid]))
+    return dict(context='Both estimates use the same candidates, residual and H_beta on the D-exact trajectory.',calls=result)
 
 
 def profile_capacity(model, batch, boundary=lambda: None):
@@ -208,11 +265,15 @@ def run(args):
         raise ValueError('Need d88abc4 full/noBN/superclass/s0 checkpoint at completed task 1, epoch 100')
     native_commit = main.code_commit()
     old = args.branch in ('B','C')
+    if old: args.curvature='power10'
+    supports_curvature='curvature' in inspect.signature(vna.V3Engine).parameters
+    if args.branch=='D' and not supports_curvature and args.curvature!='power10':
+        raise ValueError('Historical D supports power10 only')
     if old and not native_commit.startswith('d88abc4'):
         raise ValueError('B/C must import d88abc4 source')
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
         source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
-        capacity_profile=args.capacity_profile)
+        capacity_profile=args.capacity_profile,curvature=args.curvature)
     if (out/'diagnostic.json').exists():
         prior=json.loads((out/'diagnostic.json').read_text())
         if prior.get('identity') != identity: raise ValueError('diagnostic result identity mismatch')
@@ -224,9 +285,10 @@ def run(args):
         profiling=args.profile, module_paths=module_paths,
         execution=dict(parallel_lanes=int(os.environ.get('VNA_DIAGNOSTIC_LANES','1')),
                        cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES')), first_nonfinite=None, threshold=40., lr=.05,
-        timers=[], cg=[], jvp_vjp={}, applications=[],candidate_rankings=[])
+        curvature=args.curvature,timers=[], cg=[], jvp_vjp={}, applications=[],candidate_rankings=[],applied_swaps=[])
     atomic_json_save(report,out/'diagnostic.json')
-    active = dict(hook=None, model=None, applications=0, stage=[], last_lambda_step=None)
+    active = dict(hook=None, model=None, applications=0, stage=[], last_lambda_step=None,
+                  audit_seconds=0.,proposal_rows=None,power_values=None)
     class Stop(Exception): pass
     class ReplayProgress(Progress):
         def __init__(self, directory, protocol, name='latest.pt'):
@@ -239,7 +301,8 @@ def run(args):
                 hookstate['rows'], hookstate['tasks'] = [], []
                 if args.branch == 'A': hookstate.pop('intervention_state',None)
                 if args.branch == 'D':
-                    engine=vna.V3Engine('vna_gir',seed=0,K0=1)
+                    engine=vna.V3Engine('vna_gir',seed=0,K0=1,**({'curvature':args.curvature} if supports_curvature else {}))
+                    if supports_curvature and args.profile and args.curvature=='exact': engine.protocol['audit_curvature']=True
                     oldengine = hookstate.get('intervention_state',{}).get('engine',{})
                     engine.mu = oldengine.get('mu')
                     engine.install_ages = deepcopy(oldengine.get('install_ages',{}))
@@ -336,11 +399,18 @@ def run(args):
             del p, clone, vp, vo, fn, arg, inputs
         engine=intervention.engine
         torch.cuda.reset_peak_memory_stats()
-        start=time.perf_counter()
+        audit_start=active['audit_seconds'];start=time.perf_counter()
         event=engine.apply(model,sites_for(model),batch,spec,ctx,optimizer,hook.steps,force=True)
-        torch.cuda.synchronize();report['application_seconds']=time.perf_counter()-start
+        torch.cuda.synchronize();report['application_wall_seconds']=time.perf_counter()-start
+        report['curvature_audit_seconds']=active['audit_seconds']-audit_start
+        report['peak_cuda_includes_curvature_audit']=report['curvature_audit_seconds']>0
+        report['application_seconds']=report['application_wall_seconds']-report['curvature_audit_seconds']
+        event['raw_seconds']=event.get('seconds')
+        for key in ('seconds','gir_seconds'):
+            if event.get(key) is not None: event[key]-=report['curvature_audit_seconds']
         report['peak_cuda_bytes']=torch.cuda.max_memory_allocated()
         report['applications'].append(event);intervention.events.append(event)
+        if args.profile and args.curvature=='exact': report['curvature_differences']=curvature_differences(report)
         report['systems_solved']=len(report['cg']) if old else event.get('systems_solved',len(event.get('solves',[])))
         if args.profile and args.branch=='D' and not event.get('skipped'):
             report['final_L_KD']=list(engine._evaluate_current(model,batch,spec,ctx))
@@ -395,25 +465,65 @@ def run(args):
             finally:optimizer.load_state_dict(saved)
         vna.V3Engine.install_gir=install
     if args.profile:
+        original_rows=vna.rows_proposal
+        def rows(site,values):
+            result=original_rows(site,values)
+            if active['proposal_rows'] is not None:
+                active['proposal_rows'].append((values[0].detach().clone(),result))
+            return result
+        vna.rows_proposal=rows
+        original_power=vna.power_lambda_max
+        def power(action,size,generator,*a,**kw):
+            value=original_power(action,size,generator,*a,**kw)
+            if active['power_values'] is not None:
+                local=inspect.currentframe().f_back.f_locals
+                key=('seed',local['seed_index']) if 'seed_index' in local else ('A',id(local.get('candidate')))
+                active['power_values'][key]=dict(curvature=value,power_generator_seed=generator.initial_seed(),
+                    power_iterations=kw.get('iterations',20))
+            return value
+        vna.power_lambda_max=power
+        profile_original_install=vna.V3Engine.install_gir
+        def profiled_install(engine,model,site,proposals,units,optimizer):
+            used=profile_original_install(engine,model,site,proposals,units,optimizer)
+            for proposal,unit in zip(proposals[:used],units[:used]):
+                report['applied_swaps'].append(dict(site=site.module_name,unit=int(unit),
+                    candidate_id=proposal.get('_profile_id'),A={key:None if value is None else value.detach().cpu().tolist()
+                    for key,value in proposal['A'].items()}))
+            return used
+        vna.V3Engine.install_gir=profiled_install
         for method in ('_direction','_select','_slot_jump','_slot_contribution','prepare_gir','_run_gir'):
             original=getattr(vna.V3Engine,method)
             def wrap(original=original,name=method):
                 def timed(*a,**kw):
                     torch.cuda.synchronize();start=time.perf_counter();active['stage'].append(name)
+                    audit_start=active['audit_seconds']
+                    if name=='prepare_gir': active['proposal_rows'],active['power_values']=[],{}
                     try:
                         result=original(*a,**kw)
                         if name=='prepare_gir':
                             candidates=[]
                             for proposal in result:
-                                h=hashlib.sha256()
-                                for key,value in sorted(proposal['A'].items()):
-                                    h.update(key.encode())
-                                    if value is not None: h.update(value.detach().cpu().contiguous().numpy().tobytes())
-                                candidates.append(dict(id=h.hexdigest(),score=proposal['score'],curvature=proposal.get('curvature')))
-                            report['candidate_rankings'].append(dict(site=a[2].module_name,candidates=candidates))
+                                row_index=next(i for i,(direction,_) in enumerate(active['proposal_rows'])
+                                               if torch.equal(direction,proposal['direction']))
+                                base=active['proposal_rows'][row_index][1]
+                                key='weight' if bool(base['weight'].ne(0).any()) else 'bias'
+                                sign=1 if torch.equal(base[key],proposal['A'][key]) else -1
+                                proposal['_profile_id']=f"{row_index}:{sign}:{proposal.get('bias_q')}"
+                                measured=active['power_values'].get(('A',id(proposal['A'])),
+                                    active['power_values'].get(('seed',proposal.get('power_seed_index')),{}))
+                                candidates.append(dict(id=proposal['_profile_id'],score=proposal['score'],
+                                    curvature=proposal.get('curvature',measured.get('curvature')),
+                                    curvature_power10=proposal.get('curvature_power10'),score_power10=proposal.get('score_power10'),
+                                    power_generator_seed=measured.get('power_generator_seed'),power_iterations=measured.get('power_iterations')))
+                            active['audit_seconds']+=sum(p.get('audit_seconds',0.) for p in result)
+                            report['candidate_rankings'].append(dict(site=a[2].module_name,iteration=a[8],
+                                used_directions=len(kw.get('used_directions',())),mu=kw.get('mu'),candidates=candidates))
                         return result
                     finally:
-                        torch.cuda.synchronize();report['timers'].append(dict(name=name,seconds=time.perf_counter()-start));active['stage'].pop()
+                        if name=='prepare_gir': active['proposal_rows'],active['power_values']=None,None
+                        torch.cuda.synchronize();raw=time.perf_counter()-start
+                        audit=active['audit_seconds']-audit_start
+                        report['timers'].append(dict(name=name,seconds=raw-audit,wall_seconds=raw,audit_seconds=audit));active['stage'].pop()
                 return timed
             setattr(vna.V3Engine,method,wrap())
         if old:
@@ -431,11 +541,13 @@ def run(args):
     # Record only the requested five task-2 epochs, retaining the registered training recipe.
     main.measure_task=lambda *a,**kw: ({}, {})
     schedule=dict(authoritative=True,code_commit=main.code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-                  backbone='resnet32_nobn',nobn_lr_scale=.5,synthetic=False,K0=1)
+                  backbone='resnet32_nobn',nobn_lr_scale=.5,synthetic=False,K0=1,curvature=args.curvature)
     (out/'schedule.json').write_text(json.dumps(schedule))
-    runargs=main.parser().parse_args(['--arm','icarl' if args.branch=='A' else 'icarl_full',
+    main_parser=main.parser()
+    runargs=main_parser.parse_args(['--arm','icarl' if args.branch=='A' else 'icarl_full',
         '--nobn-lr-scale','.5','--seed','0','--device','cuda:0','--data-dir',args.data_dir,
-        '--out',str(out/'run'),'--schedule',str(out/'schedule.json')])
+        '--out',str(out/'run'),'--schedule',str(out/'schedule.json')]+
+        (['--curvature',args.curvature] if '--curvature' in main_parser._option_string_actions else []))
     try:
         outcome=main.run(runargs)
         if outcome.get('status') in ('FAILED_DIVERGED','DIVERGED'):
@@ -471,6 +583,7 @@ def parser():
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
     p.add_argument('--capacity-profile',action='store_true')
+    p.add_argument('--curvature',choices=('power10','exact'),default='exact')
     return p
 
 

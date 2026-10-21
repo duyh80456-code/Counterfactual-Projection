@@ -1,18 +1,39 @@
 """Profile comparison must expose numerical differences and missing results."""
 from copy import deepcopy
 import inspect
-from diagnostics.exact_solver import compare_profiles
+from diagnostics.exact_solver import compare_profiles,curvature_differences
 from experiments.main_cil import measure_task
 
 
+def test_curvature_configuration_defaults_and_checkpoint_state():
+    import pytest
+    from methods.vna_v3 import V3Engine
+    from experiments.main_cil import parser
+    assert parser().parse_args(['--out','unused']).curvature=='exact'
+    assert parser().parse_args(['--out','unused','--curvature','power10']).curvature=='power10'
+    restored=V3Engine();restored.load_state_dict(V3Engine(curvature='power10').state_dict())
+    assert restored.curvature=='power10'
+    with pytest.raises(ValueError,match='curvature'):
+        restored.configure_schedule(dict(K0=1,curvature='exact'))
+    with pytest.raises(ValueError,match='curvature'): V3Engine(curvature='invalid')
+
+
 def test_profile_comparison_reports_curvature_selection_changes():
-    report=dict(status='PROFILE_COMPLETED',application_seconds=1230.,final_L_KD=[2.,1.],
-        candidate_rankings=[dict(candidates=[dict(id='a'),dict(id='b')])],
+    report=dict(status='PROFILE_COMPLETED',application_seconds=1230.,final_L_KD=[2.,1.],curvature='power10',
+        identity=dict(checkpoint_sha256='fixture'),
+        applied_swaps=[dict(site='s',unit=0,candidate_id='a',A=dict(weight=[1.]))],
+        candidate_rankings=[dict(candidates=[dict(id='a',score=1.,curvature=1.,power_generator_seed=2**60,power_iterations=10),
+            dict(id='b',score=.5,curvature=2.,power_generator_seed=12,power_iterations=10)])],
         applications=[dict(mu_star=1e-7,rho_tr=.5,L_before=3.,L_after=2.,KD_before=2.,KD_after=1.,
             swap_records=[dict(site='s',unit=0)],
             gir_trials=[dict(site='s',unit=0,Gamma_woodbury=.1)])])
     same=compare_profiles(report,deepcopy(report))
     assert same['status']=='COMPARED' and all(row['matches'] for row in same['checks'].values())
+    assert compare_profiles(report,deepcopy(report),strict=True)['status']=='PASS'
+    wrong_seed=deepcopy(report);wrong_seed['candidate_rankings'][0]['candidates'][0]['power_generator_seed']+=1
+    assert compare_profiles(report,wrong_seed,strict=True)['status']=='FAIL'
+    nonfinite=deepcopy(report);nonfinite['applications'][0]['gir_trials'][0]['Gamma_woodbury']=float('inf')
+    assert compare_profiles(nonfinite,deepcopy(nonfinite),strict=True)['status']=='FAIL'
     current=deepcopy(report);current['application_seconds']=120.
     current['candidate_rankings'][0]['candidates'].reverse()
     current['applications'][0]['gir_trials'][0]['Gamma_woodbury']=.2
@@ -22,7 +43,19 @@ def test_profile_comparison_reports_curvature_selection_changes():
     assert not result['checks']['candidate_rankings']['matches']
     assert not result['checks']['ordered_Gamma']['matches']
     assert not result['checks']['final_L_KD']['matches']
+    assert compare_profiles(report,current,strict=True)['status']=='FAIL'
     assert compare_profiles(report,dict(status='CUDA_OOM'))['status']=='INCOMPLETE'
+
+
+def test_curvature_audit_reports_errors_top_k_and_kendall_tau_b():
+    candidates=[dict(id=str(i),curvature=float(i),curvature_power10=float(4-i),
+        score=1/i,score_power10=1/(4-i)) for i in (1,2,3)]
+    result=curvature_differences(dict(candidate_rankings=[dict(site='s',candidates=candidates)]))['calls'][0]
+    assert result['kendall_tau_b']==-1.
+    assert result['top_k_overlap']['1']==dict(k=1,common=0,fraction=0.)
+    assert result['top_k_overlap']['2']==dict(k=2,common=1,fraction=.5)
+    assert result['candidates'][0]['delta']==-2.
+    assert result['candidates'][0]['relative_error']==2.
 
 
 def test_main_task_log_has_no_retired_reach():

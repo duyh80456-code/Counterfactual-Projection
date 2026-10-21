@@ -304,7 +304,9 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100):
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact'):
+        if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
+        self.curvature = curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
         self.K0 = self.K_next = K0
@@ -334,6 +336,8 @@ class V3Engine:
     def gir_only(self): return self.arm == 'gir'
 
     def configure_schedule(self, schedule):
+        if schedule.get('curvature',self.curvature)!=self.curvature:
+            raise ValueError('schedule curvature mismatch')
         self.K0 = self.K_next = int(schedule['K0'])
         if schedule.get('iteration_seconds'):
             self.protocol['baseline_iteration_seconds'] = float(schedule['iteration_seconds'])
@@ -1069,6 +1073,29 @@ class V3Engine:
             candidate_ids = torch.stack([ids[:, i*width:(i+1)*width].flatten() for i in range(len(proposals))])
             candidate_gradients = gradients[candidate_ids]
             active = torch.where(torch.isfinite(candidate_gradients).all(1) & candidate_gradients.ne(0).any(1))[0].tolist()
+            def power_curvature(i, seed_index):
+                indices = candidate_ids[i]
+                def action(v):
+                    tangent = torch.zeros(size, device=ref.device, dtype=ref.dtype).scatter(0, indices, v.to(ref))
+                    return pv.JET(metric(pv.JEv(tangent)))[indices]
+                return power_lambda_max(action, len(indices),
+                    dedicated_generator(self.seed, f'v4-ell:{self.task}:{iteration}:{seed_index}', x.device),
+                    iterations=10, device=x.device)
+            if self.curvature == 'power10':
+                for i in active:
+                    curvature = power_curvature(i, len(scored))
+                    if not math.isfinite(curvature): continue
+                    proposal, s_v = proposals[i], candidate_gradients[i]
+                    proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
+                        curvature=curvature, curvature_method='power10',
+                        power_seed_index=len(scored),
+                        _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
+                    scored.append(proposal)
+                scored.sort(key=lambda entry: entry['score'], reverse=True)
+                for proposal in scored[:int(self.protocol['gamma_candidates'])]:
+                    i = next(i for i in active if proposals[i] is proposal)
+                    proposal['_Jv'] = columns(pv.JEv, candidate_ids[i], size, ref)
+                return scored
             for offset in range(0, len(active), 4):
                 group = active[offset:offset+4]
                 packed = columns(pv.JEv, candidate_ids[group].T.flatten(), size, ref)
@@ -1082,6 +1109,16 @@ class V3Engine:
                     proposal.update(score=.5*float(s_v.square().sum())/(curvature+mu),
                         curvature=curvature, curvature_method='eigvalsh',
                         _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
+                    if self.protocol.get('audit_curvature', False):
+                        start = time.perf_counter()
+                        counters={name:getattr(pv,name) for name in ('forward_calls','jvp_calls','vjp_calls','extension_jvp_calls','extension_vjp_calls')}
+                        try:
+                            with _global_state(): power = power_curvature(i, len(scored))
+                        finally:
+                            for name,value in counters.items(): setattr(pv,name,value)
+                        proposal.update(curvature_power10=power, power_seed_index=len(scored),
+                            score_power10=.5*float(s_v.square().sum())/(power+mu),
+                            audit_seconds=time.perf_counter()-start)
                     scored.append(proposal)
                     cached = sorted(scored, key=lambda entry: entry['score'], reverse=True)[:int(self.protocol['gamma_candidates'])]
                     if any(entry is proposal for entry in cached): proposal['_Jv'] = Jv.clone()

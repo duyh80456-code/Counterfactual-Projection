@@ -149,7 +149,7 @@ def prepare_schedule(backbone):
     cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm','icarl_full',
            '--backbone','resnet32' if backbone == 'bn' else 'resnet32_nobn',
            '--class-order','superclass','--seed','0','--out',str(ROOT/'_preflight'/backbone),
-           '--device','cuda:0','--data-dir',str(DATA_ROOT),'--preflight-only',
+           '--device','cuda:0','--data-dir',str(DATA_ROOT),'--curvature','exact','--preflight-only',
            '--schedule-output',str(destination),'--schedule-source','self' if PRESET == 'M3' else 'authority']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
     launch(cmd,0,backbone+'_preflight',RUN_ROOT/f'{RUN_TAG}_{backbone}_preflight.log')
@@ -172,7 +172,7 @@ def command(job):
     if arm in ('icarl','icarl_full'):
         cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm',arm,
                '--backbone','resnet32' if backbone == 'bn' else 'resnet32_nobn',
-               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),
+               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),'--curvature','exact',
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
         if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
@@ -340,13 +340,13 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
 def build_exact_diagnostics(commit, source_digest):
     result = build(commit, 'M1s0', 'vna_v4_exact_diagnostics', source_digest)
     result['cells'][0] = cell('code', config(commit, (['diagnostics'], ['diagnostics'], []),
-        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # reference D vs optimized D, then 'nan'; M1 remains held\n")
+        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # R vs D-power10 must pass before D-exact; M1 remains held\n")
     setup = ''.join(result['cells'][3]['source'])
     setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
     result['cells'][3] = cell('code', setup)
     inputs = 'Attach CIFAR-100 and the old task-1 checkpoint or an output archive; checkpoint discovery scans all inputs automatically.'
     inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
-    result['cells'][1] = cell('markdown', '# T29–T31: diagnostics on up to two T4 GPUs\n'+inputs+' Profile compares reference D (R, GPU0) with optimized D (GPU1), then measures a 100-class capacity proxy at 256/128 samples. This is not an actual task-20 checkpoint. Run A–D afterward. M1 stays held for report review.')
+    result['cells'][1] = cell('markdown', '# T29–T31: diagnostics on up to two T4 GPUs\n'+inputs+' First compare reference D (R, GPU0) with D-power10 (GPU1), requiring rel tol 1e-5. Only on PASS run D-exact with same-state curvature/ranking audit and the 100-class capacity proxy. Audit time is reported separately. M1 stays held and uses exact curvature.')
     result['cells'][-2] = cell('code', EXACT_DIAGNOSTICS)
     result['cells'][-1] = cell('code', "for path in (STAGE_B/'exact_diagnostics').rglob('diagnostic.json'): print(path, path.read_text())\narchive_outputs()\n")
     return result
@@ -386,7 +386,7 @@ upstream_imports()
 checkpoint = find_task1_checkpoint(Path('/kaggle/input'), STAGE_B/'exact_diagnostics'/'task1_source.pt')
 from concurrent.futures import ThreadPoolExecutor, as_completed
 diagnostic_root = STAGE_B/'exact_diagnostics'/MODE/REPO_COMMIT[:12]
-branches = ('R','D') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
+branches = ('R','D-power10') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')
 gpu_count = min(2, torch.cuda.device_count())
 if gpu_count < 1: raise RuntimeError('Diagnostics require at least one T4 GPU')
@@ -398,25 +398,35 @@ def run_diagnostic_lane(gpu, jobs):
         tree = OLD_REPO if branch in ('B','C') else REFERENCE_REPO if branch=='R' else REPO
         directory = diagnostic_root/branch
         directory.mkdir(parents=True,exist_ok=True)
-        command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch','D' if branch=='R' else branch,
-            '--checkpoint',str(checkpoint),'--data-dir',str(DATA_ROOT),'--out',str(directory)]
+        command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch','D' if branch=='R' or branch.startswith('D-') else branch,
+            '--checkpoint',str(checkpoint),'--data-dir',str(DATA_ROOT),'--out',str(directory),
+            '--curvature','power10' if branch in ('R','D-power10','B','C') else 'exact']
         if MODE == 'profile': command.append('--profile')
-        if MODE == 'profile' and branch == 'D': command.append('--capacity-profile')
-        if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): return
+        if MODE == 'profile' and branch == 'D-exact': command.append('--capacity-profile')
+        if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): return False
         archive_outputs()
+    return True
 try:
     with ThreadPoolExecutor(max_workers=gpu_count) as pool:
         pending = [pool.submit(run_diagnostic_lane, gpu, jobs) for gpu, jobs in enumerate(queues)]
-        for future in as_completed(pending): future.result()
-finally:
-    reference = diagnostic_root/'R'/'diagnostic.json'
-    current = diagnostic_root/'D'/'diagnostic.json'
-    if MODE == 'profile' and reference.exists() and current.exists():
+        completed = [future.result() for future in as_completed(pending)]
+    if MODE == 'profile' and all(completed):
         from diagnostics.exact_solver import compare_profiles
         from experiments.io_utils import atomic_json_save
-        comparison = compare_profiles(json.loads(reference.read_text()),json.loads(current.read_text()))
-        atomic_json_save(comparison,diagnostic_root/'profile_comparison.json')
-        print(json.dumps(comparison,indent=2),flush=True)
+        reference = json.loads((diagnostic_root/'R'/'diagnostic.json').read_text())
+        power = json.loads((diagnostic_root/'D-power10'/'diagnostic.json').read_text())
+        stage1 = compare_profiles(reference,power,strict=True)
+        atomic_json_save(stage1,diagnostic_root/'stage1_power10_vs_b97d25c.json')
+        print(json.dumps(stage1,indent=2),flush=True)
+        if stage1['status'] != 'PASS': raise RuntimeError('D-power10 differs from b97d25c; review stage1 report before D-exact')
+        ENV['VNA_DIAGNOSTIC_LANES'] = '1'
+        if run_diagnostic_lane(gpu_count-1,('D-exact',)):
+            exact = json.loads((diagnostic_root/'D-exact'/'diagnostic.json').read_text())
+            stage2 = compare_profiles(power,exact)
+            stage2['same_state_curvature_and_rankings'] = exact.get('curvature_differences')
+            atomic_json_save(stage2,diagnostic_root/'stage2_exact_vs_power10.json')
+            print(json.dumps(stage2,indent=2),flush=True)
+finally:
     archive_outputs()
 print('M1 remains held: review the actual profiles and A–D diagnostic reports.')
 '''

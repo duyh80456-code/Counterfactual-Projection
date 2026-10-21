@@ -185,3 +185,67 @@ or T4 equivalence. Grouped candidate tests include float32/float64, 3x3 Conv,
 Linear, BN and RNG/optimizer/model immutability. GPU dispatch, pinned reference
 bootstrap, partial-report rejection, capacity OOM recording, Gram timing after
 later OOM, RNG restoration and notebook syntax are covered without T4 work.
+
+
+## 2026-10-21: two-stage curvature comparison replaces the combined profile
+
+The prior R-versus-D-exact profile could not isolate implementation speed
+changes from exact-curvature ranking changes. The new notebook first runs
+R (b97d25c) and D-power10, validates all requested observables at relative
+1e-5 with zero absolute tolerance, then runs D-exact only if stage 1 passes.
+Output directories are R/, D-power10/, D-exact/ under the pinned profile root.
+The two reports are stage1_power10_vs_b97d25c.json and
+stage2_exact_vs_power10.json. If either first-stage child pauses, no exact
+stage starts; process failures and validation failures archive outputs and
+leave M1 held. Phase 2 records one active GPU lane, not two concurrent jobs.
+
+The main CLI and diagnostic CLI accept --curvature power10|exact, default
+exact. M1 and its preflight explicitly pass exact. Checkpoint/protocol/schedule
+identities record curvature. The original generator purpose, accepted-candidate
+index, native parameter dtype boundaries and iterations=10 are preserved in
+power10; its original zero/nonfinite-norm early exits are preserved too.
+
+Stage-1 candidate identifiers use row ordinal/sign/bias quantile and log
+actual power-generator seeds and iteration settings. Actual installed A
+parameters are recorded, so matching unit indices alone cannot pass the gate
+when different neurons were installed. Gamma trial values and swap records
+are included in both reports. Missing/incomplete profiles do not pass.
+
+Because exact and power10 can diverge after a swap, comparing only candidate
+IDs across trajectories is insufficient for per-candidate lambda error.
+D-exact therefore audits native power10 at the same frozen candidate state,
+residual and H_beta. Its report gives lambda_exact, lambda_power10, signed
+and relative error, ell values, top-k overlap counts/fractions and Kendall
+tau-b for each prepare call. This audit affects reported wall time but not
+selection or training state; corrected application/prepare/GIR timing excludes
+the measured audit, while application_wall_seconds and audit_seconds retain
+the actual execution cost. Main exact training has no audit overhead.
+
+No T4 connection or Kaggle credentials are available locally. Real stage-1
+PASS and stage-2 numeric differences remain unmeasured; no T4 equivalence,
+speed threshold, final-size feasibility or authoritative K0 is claimed.
+
+
+Local validation for the curvature split: 103 related checks passed, with five
+confirmed pre-existing failing checks deselected. The two newly encountered
+main_cil failures were reproduced on unmodified 1edfbb0: collector fixtures
+omit interventions.json for non-icarl_full engine arms, and the old measurement
+pause assertion expects task-1 cur_task=0 although the safe task-2 initial
+checkpoint already has cur_task=1. Their tests and implementation are not
+relaxed by this change. Three older schedule/rounding/revival failures are
+recorded in the previous section. No full repository suite was run.
+
+Focused power10 tests compile prepare_gir directly from b97d25c and compare
+float32/float64 candidate order, scores, vector dimension, initial generator
+seed and iterations=10 against the optimized implementation. Exact-run audit
+is additionally checked to preserve the exact scores, native-product counters,
+model/optimizer state and all RNG state. Schedule/CLI/checkpoint mode identity,
+Kendall tau-b and top-k arithmetic, strict mismatch gating, two-GPU dispatch,
+one-GPU fallback, archive/error propagation and notebook generation are covered.
+Final T4 numerical equivalence is still pending the actual first-stage report.
+
+Reported lambda values are the unshifted lambda_max(J_v^T H_beta J_v);
+additional lambda_*_plus_mu fields show the damped denominator at the same mu.
+This is the ranking lower bound, not the Schur matrix eigenvalue. GPU peaks
+from the D-exact application are explicitly labelled as including curvature
+audit; only the reported elapsed times subtract the separately measured audit.

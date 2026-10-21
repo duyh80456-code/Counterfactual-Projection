@@ -329,3 +329,58 @@ def test_derivative_chunks_bound_vmap_width_and_preserve_exact_products(monkeypa
     result=columns(jv,torch.arange(19),19,p.parameter_refs[0][1])
     torch.testing.assert_close(result,J,rtol=1e-12,atol=1e-12)
     assert max(widths)<=16
+
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
+def test_power10_matches_b97d25c_generators_iterations_and_scores(monkeypatch,dtype):
+    import ast
+    import subprocess
+    from methods import vna_v3 as vna
+    source=subprocess.check_output(['git','show','b97d25c:methods/vna_v3.py'],text=True)
+    cls=next(n for n in ast.parse(source).body if isinstance(n,ast.ClassDef) and n.name=='V3Engine')
+    node=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='prepare_gir')
+    traces=[];original=vna.power_lambda_max
+    def tracked(action,size,generator,**kw):
+        value=original(action,size,generator,**kw)
+        traces.append((size,generator.initial_seed(),kw['iterations'],value))
+        return value
+    monkeypatch.setattr(vna,'power_lambda_max',tracked)
+    namespace=dict(vars(vna));exec(compile(ast.Module(body=[node],type_ignores=[]),'b97d25c/prepare_gir','exec'),namespace)
+    model,site,batch,spec,ctx,opt=problem()
+    model.to(dtype=dtype);batch=(batch[0].to(dtype),batch[1])
+    engine=V3Engine('vna_gir',curvature='power10');engine.begin_task(2);engine.mu=.2
+    with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],spec,ctx);G,_=gram(p)
+        factor=OutputSolve(G,spec.metric_blocks(op.logits,ctx),.2)
+        residual=op.g-factor.metric(G@factor.solve(op.g))
+    before=deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state()
+    kwargs=dict(residual=residual,H=factor.metric,mu=.2)
+    reference=namespace['prepare_gir'](engine,model,site,batch,spec,ctx,opt,[0],1,**kwargs)
+    reference_trace=traces.copy();traces.clear()
+    current=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,**kwargs)
+    assert reference and len(reference)==len(current)
+    assert [row[:3] for row in reference_trace]==[row[:3] for row in traces]
+    assert all(row[2]==10 for row in traces)
+    for a,b in zip(reference,current):
+        assert a['bias_q']==b['bias_q']
+        torch.testing.assert_close(a['A']['weight'],b['A']['weight'],rtol=1e-5,atol=0)
+        assert a['score']==pytest.approx(b['score'],rel=1e-5,abs=0)
+    from contextlib import contextmanager
+    original_products=vna.training_products;counts=[]
+    @contextmanager
+    def counted(*a,**kw):
+        with original_products(*a,**kw) as p:
+            yield p
+            counts.append(tuple(getattr(p,k) for k in ('forward_calls','jvp_calls','vjp_calls','extension_jvp_calls','extension_vjp_calls')))
+    monkeypatch.setattr(vna,'training_products',counted)
+    engine.curvature='exact'
+    plain=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,**kwargs)
+    traces.clear();engine.protocol['audit_curvature']=True
+    audited=engine.prepare_gir(model,site,batch,spec,ctx,opt,[0],1,**kwargs)
+    assert counts[0]==counts[1]
+    assert [p['score'] for p in plain]==[p['score'] for p in audited]
+    assert [row[:3] for row in reference_trace]==[row[:3] for row in traces]
+    for a,b in zip(reference,sorted(audited,key=lambda p:p['score_power10'],reverse=True)):
+        assert a['score']==pytest.approx(b['score_power10'],rel=1e-5,abs=0)
+        assert b['audit_seconds']>0 and 'curvature_power10' in b
+    _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))

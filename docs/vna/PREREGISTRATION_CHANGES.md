@@ -680,3 +680,45 @@ reserved peaks, Gram times at m=25600/12800, OOM/resource stops and proxy
 provenance. This is not actual task-20 data. The main diagnostic probe remains
 256 until hardware results justify a preregistered reduction to 128. M1 stays
 held. No T4 speed/VRAM target or numerical equivalence on T4 is claimed locally.
+
+## 2026-10-21: separate speed-only power10 validation from exact curvature
+
+Add --curvature {power10,exact} to main_cil and exact diagnostics; default exact.
+M1 commands and authority preflights explicitly select exact. Curvature is
+recorded in the main protocol, schedule identity and engine checkpoint state;
+mode-mismatched schedules/resume identities cannot be reused. A nondefault
+power10 main experiment has distinct comparison metadata, while default exact
+retains compatibility with the registered competitor comparison protocol.
+
+power10 uses the original native JEv -> H_beta -> JET action, invokes
+power_lambda_max with iterations=10 and the same dedicated generator purpose
+v4-ell:{task}:{iteration}:{accepted_proposal_count} as b97d25c. Preserve that
+implementation's early exit for zero/nonfinite action norms and its accepted
+proposal counter after skips; do not replace the native action with a dense
+small-matrix power approximation. Only top-2 candidate Jacobians are built
+for reuse by Gamma in this mode. The exact mode retains grouped Jacobians
+and exact eigvalsh for the existing T27 lower-bound ranking formula.
+
+MODE=profile is now a two-stage validation on the identical task-1 checkpoint:
+1. R (unchanged b97d25c D, GPU0) versus optimized D-power10 (GPU1), or serial
+   on one GPU. Require relative tolerance 1e-5, absolute tolerance zero for
+   numerical mu_star, rho, L/KD, candidate scores/curvatures and Gamma; compare
+   generator seeds/iterations exactly, full candidate ordering, installed
+   candidate parameters, swap slots and final L/KD. Candidate IDs identify
+   incoming direction ordinal, sign and bias quantile, not floating byte hashes.
+   Write stage1_power10_vs_b97d25c.json and stop on FAIL/incomplete results.
+2. Only after PASS, run D-exact from the same original checkpoint and write
+   stage2_exact_vs_power10.json, including actual trajectory/swap/Gamma/final
+   L/KD changes. Audit native power10 on every accepted D-exact candidate at
+   that exact frozen state. Report each lambda error (signed and relative),
+   top-{1,2,4,8} overlap and Kendall tau-b of ell rankings on that same set.
+   Report undefined tau as null (ties/singleton), not an invented numeric value.
+
+The extra exact-run audit is diagnostic-only and does not select candidates,
+mutate model/optimizer/global RNG or provide cached Jacobians. Record its
+wall time separately and subtract it from application/prepare/GIR timings
+used for speed comparisons and provisional K0 estimates. Report the unadjusted
+wall time too. D-exact performs the existing separately labelled capacity
+proxy after the application. Main runs do not enable this audit. Keep top-2,
+four live slots, probe=256 and the M1 hold until real T4 report review. Local
+reference checks are not a substitute for the requested T4 runs.

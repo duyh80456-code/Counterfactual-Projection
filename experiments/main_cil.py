@@ -275,7 +275,7 @@ def run(args):
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
     if schedule:
         expected = dict(authoritative=True, code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale)
+                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature)
         if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
         if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
     K0 = int(schedule['K0']) if schedule else 1
@@ -292,7 +292,7 @@ def run(args):
         upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=2 if args.fake_data else 20,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         data_dir=args.data_dir, class_order=order, class_order_kind=args.class_order,
-        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient,
+        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient, curvature=args.curvature,
         r=16, live_candidates=4, compute_budget=1., preflight_only=args.preflight_only, schedule=schedule, K0=K0, cfg=copy.deepcopy(params),
         probe=dict(size=256, seed=0, source='seen test classes'),
         feature_probe=dict(tasks=[5,10,15,20], optimizer='LBFGS', max_iter=100,
@@ -304,13 +304,15 @@ def run(args):
         comparison_protocol=dict(init_cls=5, increment=5, memory_size=params['memory_size'], fixed_memory=False,
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
+    if args.curvature!='exact': protocol['comparison_protocol']['curvature']=args.curvature
     progress = Progress(out, protocol)
     if (out/'summary.json').exists():
         previous = json.loads((out/'summary.json').read_text())
         if previous.get('identity') != protocol: raise ValueError('completed identity mismatch')
         if previous['status'] == 'COMPLETED': return previous
     status = Status(out, args.arm)
-    intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+    intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
+        curvature=args.curvature), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
@@ -345,7 +347,7 @@ def run(args):
         points = intervention.engine.protocol['preflight_points']
         schedule = vna_v3.schedule_from_points(points, len(hook.learner.train_loader))
         schedule.update(authoritative=True, setting='icarl', backbone=args.backbone,
-            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(),
+            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,
             source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
             schedule_source=args.schedule_source, r=16)
         write_json(Path(args.schedule_output), schedule)
@@ -389,6 +391,7 @@ def parser():
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
     p.add_argument('--coefficient', type=float, default=1.)
+    p.add_argument('--curvature', choices=('power10','exact'), default='exact')
     p.add_argument('--schedule')
     p.add_argument('--preflight-only', action='store_true')
     p.add_argument('--schedule-output')
