@@ -339,14 +339,14 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
 
 def build_exact_diagnostics(commit, source_digest):
     result = build(commit, 'M1s0', 'vna_v4_exact_diagnostics', source_digest)
-    result['cells'][0] = cell('code', config(commit, (['diagnostics'], [], []),
-        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # then 'nan'; each uses one T4\n")
+    result['cells'][0] = cell('code', config(commit, (['diagnostics'], ['diagnostics'], []),
+        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # then 'nan'; two GPUs in parallel, one GPU sequentially\n")
     setup = ''.join(result['cells'][3]['source'])
     setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
     result['cells'][3] = cell('code', setup)
     inputs = 'Attach CIFAR-100 and the old task-1 checkpoint or an output archive; checkpoint discovery scans all inputs automatically.'
     inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
-    result['cells'][1] = cell('markdown', '# T29–T31: one-T4 diagnostics\n'+inputs+' Run profile first; then A–D. M1 stays held for report review.')
+    result['cells'][1] = cell('markdown', '# T29–T31: diagnostics on up to two T4 GPUs\n'+inputs+' Run profile first; then A–D. M1 stays held for report review.')
     result['cells'][-2] = cell('code', EXACT_DIAGNOSTICS)
     result['cells'][-1] = cell('code', "for path in (STAGE_B/'exact_diagnostics').rglob('diagnostic.json'): print(path, path.read_text())\narchive_outputs()\n")
     return result
@@ -374,18 +374,28 @@ from experiments.runners.pycil import upstream_imports
 from diagnostics.exact_solver import find_task1_checkpoint
 upstream_imports()
 checkpoint = find_task1_checkpoint(Path('/kaggle/input'), STAGE_B/'exact_diagnostics'/'task1_source.pt')
+from concurrent.futures import ThreadPoolExecutor, as_completed
 branches = ('B','D') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')
-try:
-    for branch in branches:
+gpu_count = min(2, torch.cuda.device_count())
+if gpu_count < 1: raise RuntimeError('Diagnostics require at least one T4 GPU')
+ENV['VNA_DIAGNOSTIC_LANES'] = str(gpu_count)
+queues = [branches[gpu::gpu_count] for gpu in range(gpu_count)]
+print('Diagnostic GPU queues:', {gpu: list(jobs) for gpu, jobs in enumerate(queues)}, flush=True)
+def run_diagnostic_lane(gpu, jobs):
+    for branch in jobs:
         tree = OLD_REPO if branch in ('B','C') else REPO
         directory = STAGE_B/'exact_diagnostics'/MODE/branch
         directory.mkdir(parents=True,exist_ok=True)
         command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch',branch,
             '--checkpoint',str(checkpoint),'--data-dir',str(DATA_ROOT),'--out',str(directory)]
         if MODE == 'profile': command.append('--profile')
-        if not launch(command,0,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): break
+        if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): return
         archive_outputs()
+try:
+    with ThreadPoolExecutor(max_workers=gpu_count) as pool:
+        pending = [pool.submit(run_diagnostic_lane, gpu, jobs) for gpu, jobs in enumerate(queues)]
+        for future in as_completed(pending): future.result()
 finally:
     archive_outputs()
 print('M1 remains held: review the actual profiles and A–D diagnostic reports.')

@@ -612,3 +612,8 @@ The Kaggle profile-B setup used a shared clone of a filtered checkout, leaving m
 ## 2026-10-21: discover the diagnostic checkpoint by metadata
 
 Remove the exact-filename/single-archive requirement. Scan attached input directories (following mounted symlink directories without cycles), loose .pt/.pth files and TAR/ZIP members. Select only the registered d88abc4 full/noBN/superclass/seed-0 checkpoint with completed=1, mid=False, epoch=100. Deduplicate identical checkpoint bytes by SHA256; reject distinct compatible states instead of choosing arbitrarily. All A–D branches consume the same selected raw checkpoint bytes. No training, RNG, solver or schedule change.
+
+
+## 2026-10-21: two-GPU diagnostic execution requested by the user
+
+The user explicitly requests two-GPU diagnostic execution, replacing the initial serial scheduling requirement. Use independent subprocess lanes with physical GPU isolation via the existing CUDA_VISIBLE_DEVICES helper. With two GPUs, profile B/D concurrently; for NaN experiments assign A,C to GPU0 and B,D to GPU1. With one GPU retain serial B,D or A,B,C,D. Prepare the historical checkout and select the shared checkpoint once before launching either lane. Preserve per-branch output directories, validation, RNG isolation, safe resume, exit-75/deadline handling and the M1 hold. Log concurrency and visible GPU identity in each report so timing context is explicit. No solver, training recipe or K0 change.

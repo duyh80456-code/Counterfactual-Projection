@@ -1,4 +1,4 @@
-"""One-T4 old/new profiling and task-2 A–D replay from the archived task-1 checkpoint.
+"""Old/new profiling and task-2 A–D replay, with one T4 per subprocess.
 
 Run this file by absolute path; --repo selects either an exported d88abc4 tree or
 current source. No diagnostic result is accepted as a main comparison result.
@@ -137,7 +137,9 @@ def run(args):
     report = dict(identity=identity, status='RUNNING', diagnostic_only=True, branch=args.branch,
         code_commit=native_commit, source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         checkpoint=str(checkpoint), device=torch.cuda.get_device_name(0),
-        profiling=args.profile, module_paths=module_paths, first_nonfinite=None, threshold=40., lr=.05,
+        profiling=args.profile, module_paths=module_paths,
+        execution=dict(parallel_lanes=int(os.environ.get('VNA_DIAGNOSTIC_LANES','1')),
+                       cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES')), first_nonfinite=None, threshold=40., lr=.05,
         timers=[], cg=[], jvp_vjp={}, applications=[])
     atomic_json_save(report,out/'diagnostic.json')
     active = dict(hook=None, model=None, applications=0, stage=[], last_lambda_step=None)

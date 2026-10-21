@@ -18,7 +18,7 @@ Status: local implementation and section-8 numerical checks complete. T4 measure
 | `methods/vna_ggn.py` | Make native gradient pullback lazy. Exact output computations avoid an unnecessary parameter gradient; legacy callers still obtain the same gradient on access and the same dedicated trace probes. |
 | `adapters/icarl_hooks.py`, `experiments/main_cil.py` | Guard loss before SGD; record FAILED_DIVERGED with task/epoch/step; retain safe initial/epoch checkpoint; pass current-task mu_star to diagnosis. Print explicit failure and checkpoint path. Training recipe is unchanged. |
 | `adapters/vna_v3_hooks.py`, `experiments/pilot_v3.py` | Pass mu_diag; remove obsolete CG/warm configuration from pilot protocol/schedule output. |
-| `diagnostics/exact_solver.py` | One-T4 old/new profiling and five-epoch task-2 A–D replay. Select/validate the archived checkpoint; keep B/C at d88abc4, carry checkpoint mu into D, suppress optimizer resets only for C. Per-step SGD JSONL, GGN power-10 every 10 steps and after intervention, first nonfinite tensor, explicit diagnostic identity, safe epoch resume and exit-75 propagation. |
+| `diagnostics/exact_solver.py` | Independent one-T4 subprocesses for old/new profiling and five-epoch task-2 A–D replay. Select/validate the archived checkpoint; keep B/C at d88abc4, carry checkpoint mu into D, suppress optimizer resets only for C. Per-step SGD JSONL, GGN power-10 every 10 steps and after intervention, first nonfinite tensor, explicit diagnostic identity, safe epoch resume and exit-75 propagation. |
 | `scripts/build_kaggle_vna_parallel.py`, `notebooks/vna4_*.ipynb` | New diagnostic notebook; shared immutable implementation commit pin (source ZIP only for uncommitted overlays); one GPU used. M1/M1s0 stop before preflight/training pending review. Other existing presets and archive/runtime wiring remain. |
 | `scripts/collect_parallel.py` | Validate current B/mu_diag/norm_w2 instead of reach/unreach. |
 | `tests/test_vna_exact.py` | Section-8 float64 checks plus focused state/rollback/divergence/resume checks. Updated affected older test callers to the output-space representation; did not run historical smoke tests. |
@@ -51,7 +51,7 @@ Run `notebooks/vna4_exact_diagnostics.ipynb` with:
 
 Published notebooks load the implementation from their immutable Git commit and set `SOURCE_DIGEST=None`; no source ZIP is required. A ZIP is only needed for notebooks explicitly built with an uncommitted source overlay.
 
-Use `MODE='profile'` first. It runs B at d88abc4 and D at the pinned implementation commit, on GPU0, sequentially. Reports are under `outputs/exact_diagnostics/profile/{B,D}/`; they include CG iteration/residual/cost, native parameter and vector dtypes, float32/64 JVP/VJP timings, Gram metadata, LM trajectories, per-candidate Gamma costs and CUDA peak allocation. Then use `MODE='nan'` for A/B/C/D, each for five epochs of task 2 from the same checkpoint. Exit 75 and epoch checkpoint resume remain available; no result is a main comparison score.
+Use `MODE='profile'` first. With two GPUs it runs B at d88abc4 on GPU0 and D at the pinned implementation commit on GPU1 concurrently. With one GPU it runs B then D on GPU0. Reports are under `outputs/exact_diagnostics/profile/{B,D}/`; they include CG iteration/residual/cost, native parameter and vector dtypes, float32/64 JVP/VJP timings, Gram metadata, LM trajectories, per-candidate Gamma costs and CUDA peak allocation. Then use `MODE='nan'` for A/B/C/D, each for five epochs of task 2 from the same checkpoint. Exit 75 and epoch checkpoint resume remain available; no result is a main comparison score.
 
 | Branch | Task-2 experiment | First nonfinite tensor/step | GGN >40 before failure | Outcome |
 |---|---|---|---|---|
@@ -96,3 +96,14 @@ The previous notebook searched only the literal filename vna4_main.tar.gz and re
 - `tests/test_exact_notebook_bootstrap.py`: **6 passed**, including renamed archives, loose checkpoints, ZIP copies, mounted directory symlinks/cycles, duplicate input copies, incompatible metadata and distinct compatible sources. RNG state is unchanged by discovery.
 - Ran discovery on the actual supplied Downloads/vna4_main.tar.gz: **5 checkpoint members scanned, 1 unique compatible task-1-end checkpoint selected**. SHA256: `76c9a041b71c994483ef1ab942c476f84dd9d75de7b0a03bc15fbb0584af2058`.
 - T4 profiling/training was not run for this input-discovery fix. M1 remains held.
+
+
+## 2026-10-21: diagnostic work split across two GPUs
+
+At the user's request, the notebook now detects available GPUs and uses up to two subprocess lanes. Profile mode maps B to GPU0 and D to GPU1 concurrently; NaN mode runs A then C on GPU0 and B then D on GPU1. One-GPU sessions retain the original serial order. Each child sees one physical GPU as logical cuda:0 through the existing gpu_env/launch_logged helpers. The historical checkout and task-1 checkpoint selection finish before either lane starts.
+
+Output/checkpoint/report paths remain separate per branch. Future exceptions propagate; archives are saved in finally. A false launch result (including exit 75) stops the remaining jobs on its lane, while the existing shared pause/deadline machinery gates new launches. Completed branch reuse and exact resume validation remain in the child driver. Existing running sessions keep their original notebook code; the new scheduling applies when using this updated notebook.
+
+Reports now include execution.parallel_lanes and execution.cuda_visible_devices. Concurrent measurements share host CPU and I/O, so interpret them in this recorded timing context rather than labeling them as isolated serial measurements. No authoritative K0 has been recalibrated. M1 remains held.
+
+Focused local checks: tests/test_exact_gpu_lanes.py covers two-GPU overlap in profile/NaN modes, one-GPU serial fallback, paused-lane stopping and exception/archive propagation using subprocess stand-ins. No T4 training/profiling or notebook smoke run was performed.
