@@ -107,3 +107,14 @@ Output/checkpoint/report paths remain separate per branch. Future exceptions pro
 Reports now include execution.parallel_lanes and execution.cuda_visible_devices. Concurrent measurements share host CPU and I/O, so interpret them in this recorded timing context rather than labeling them as isolated serial measurements. No authoritative K0 has been recalibrated. M1 remains held.
 
 Focused local checks: tests/test_exact_gpu_lanes.py covers two-GPU overlap in profile/NaN modes, one-GPU serial fallback, paused-lane stopping and exception/archive propagation using subprocess stand-ins. No T4 training/profiling or notebook smoke run was performed.
+
+
+## 2026-10-21: memory bound for derivative chunks after actual T4 OOM
+
+The supplied full traceback confirms that profile_D fails in methods/vna_exact.py:gram at vmap(products.JT)(E), during the first 64-vector VJP block. The allocation request is 512 MiB; PyTorch allocated 12.77 GiB, reserved-but-unallocated 1.56 GiB, and total process usage is 14.47 GiB on a 14.56-GiB T4. Both lanes started independently (B on physical GPU0, D on physical GPU1); D's local error says GPU0 because each child sees its assigned physical GPU as logical cuda:0. The trace does not show an allocation failure for the final Gram or a Cholesky factor.
+
+At task 2 the N=128, C=10 output Gram is 1280 squared float64 entries, 12.5 MiB. The large intermediate batch of VJP activations is the identified failure point. Change the existing chunk-size default from 64 to 4 for both the Gram and GIR Jacobian-column helpers. This limits simultaneous derivative vectors by a factor of 16; it does not claim total VRAM use falls by exactly 16. Record gram_chunk in completed Gram metadata. Keep N, every output/Jacobian column, float64 Gram/factors, exact formulas, solver selection and the two-GPU lane separation unchanged.
+
+This is the memory-dependent chunk selection allowed by prompt section 4.1, not a new approximation or fallback. No automatic OOM retry, CPU offload or allocator setting is introduced. The m>=12800 timing/resource stop is retained. Detach the scalar SGD loss for logging to remove the unrelated requires-grad conversion warning without changing training.
+
+Focused local checks: all 14 tests in tests/test_vna_exact.py passed. The file now includes a public-vmap interception check that default batches never exceed four vectors, while Gram and Jacobian columns equal direct dense products. Existing T29–T31, NaN, rollback and resume checks remain in that file. Actual T4 peak VRAM and runtime with chunk=4 are still unmeasured; no successful T4 profile or feasible final-size Gram is claimed.

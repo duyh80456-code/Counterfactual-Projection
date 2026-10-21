@@ -3,7 +3,7 @@ import time
 import torch
 
 
-def gram(products, chunk=64):
+def gram(products, chunk=4):
     start = time.perf_counter()
     m = products._call({}).numel()
     ref = products.parameter_refs[0][1]
@@ -21,10 +21,10 @@ def gram(products, chunk=64):
     if m >= 12800 and elapsed > 600:
         raise RuntimeError(f'GRAM_LIMIT: m={m} gram_seconds={elapsed}; review required')
     return G, dict(gram_seconds=time.perf_counter()-start, m=m, gram_dtype=str(G.dtype),
-                   parameter_dtype=str(ref.dtype), product_vector_dtype=str(ref.dtype))
+                   parameter_dtype=str(ref.dtype), product_vector_dtype=str(ref.dtype), gram_chunk=chunk)
 
 
-def columns(action, indices, size, ref, chunk=64):
+def columns(action, indices, size, ref, chunk=4):
     result = []
     for lo in range(0, len(indices), chunk):
         ids = indices[lo:lo+chunk]

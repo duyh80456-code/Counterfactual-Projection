@@ -215,3 +215,27 @@ def test_t31_adjacent_sites_remove_current_shared_columns():
             if i in current:native[:,j]=0. if current[i] is None else current[i]
         assert set(ids2.tolist()) & set(outgoing.tolist())
         torch.testing.assert_close(Ju,native,atol=1e-12,rtol=0)
+
+
+def test_derivative_chunks_bound_vmap_width_and_preserve_exact_products(monkeypatch):
+    from types import SimpleNamespace
+    J=torch.randn(11,7,dtype=torch.float64)
+    widths=[]; original=torch.vmap
+    def tracked(action):
+        mapped=original(action)
+        def call(batch):
+            widths.append(len(batch))
+            return mapped(batch)
+        return call
+    monkeypatch.setattr(torch,'vmap',tracked)
+    jv=lambda v:J@v
+    jt=lambda v:J.T@v
+    p=SimpleNamespace(_call=lambda _:torch.zeros(11,dtype=J.dtype),
+                      parameter_refs=(('weights',torch.zeros(7,dtype=J.dtype)),),Jv=jv,JT=jt)
+    G,info=gram(p)
+    torch.testing.assert_close(G,J@J.T,rtol=1e-12,atol=1e-12)
+    assert info['gram_chunk']==4 and max(widths)<=4
+    widths.clear()
+    result=columns(jv,torch.arange(7),7,p.parameter_refs[0][1])
+    torch.testing.assert_close(result,J,rtol=1e-12,atol=1e-12)
+    assert max(widths)<=4

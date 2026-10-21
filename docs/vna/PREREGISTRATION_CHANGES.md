@@ -617,3 +617,17 @@ Remove the exact-filename/single-archive requirement. Scan attached input direct
 ## 2026-10-21: two-GPU diagnostic execution requested by the user
 
 The user explicitly requests two-GPU diagnostic execution, replacing the initial serial scheduling requirement. Use independent subprocess lanes with physical GPU isolation via the existing CUDA_VISIBLE_DEVICES helper. With two GPUs, profile B/D concurrently; for NaN experiments assign A,C to GPU0 and B,D to GPU1. With one GPU retain serial B,D or A,B,C,D. Prepare the historical checkout and select the shared checkpoint once before launching either lane. Preserve per-branch output directories, validation, RNG isolation, safe resume, exit-75/deadline handling and the M1 hold. Log concurrency and visible GPU identity in each report so timing context is explicit. No solver, training recipe or K0 change.
+
+## 2026-10-21: bound derivative batch memory after the T4 OOM
+
+The actual profile_D traceback fails in the first 64-vector batched VJP used
+to build the Gram: 12.77 GiB allocated and 14.47 GiB total process usage on a
+14.56-GiB T4. At task 2, N=128 and C=10 give a 12.5-MiB float64 Gram; the
+failure occurs in derivative intermediates rather than final matrix storage.
+
+Select chunk=4 instead of 64 in the shared Gram and GIR Jacobian-column
+helpers, as allowed by exact-solver prompt section 4.1. Record gram_chunk
+in Gram metadata. This bounds concurrent derivative vectors without changing
+the window, columns, precision, exact formulas, solver, or GPU lane mapping.
+Keep the existing resource stop rules; introduce no OOM retry or approximation.
+Actual T4 memory and timing after this change still require measurement.

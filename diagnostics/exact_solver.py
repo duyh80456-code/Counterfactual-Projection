@@ -193,7 +193,7 @@ def run(args):
         if learner._cur_task != 1: return original_step(optimizer,*a,**kw)
         frame=inspect.currentframe().f_back
         while frame is not None and 'loss' not in frame.f_locals: frame=frame.f_back
-        loss=float(frame.f_locals['loss']) if frame else float('nan')
+        loss=float(frame.f_locals['loss'].detach()) if frame else float('nan')
         epoch=int(frame.f_locals.get('epoch',hook.current_epoch))+1 if frame else hook.current_epoch+1
         model=Prediction(learner._network);sites=sites_for(model)
         bad=nonfinite(model,optimizer)
