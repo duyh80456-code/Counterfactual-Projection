@@ -46,7 +46,7 @@ Local host is an Intel Mac without a T4. No `profile_d88abc4.json` or `profile_e
 
 Run `notebooks/vna4_exact_diagnostics.ipynb` with:
 
-1. The existing `vna4_main.tar.gz` containing the task-1 checkpoint.
+1. The existing task-1 checkpoint, loose or inside a TAR/ZIP output archive; its filename need not be `vna4_main.tar.gz`.
 2. Official CIFAR-100 input and the existing GitHub secret used by notebook bootstrap.
 
 Published notebooks load the implementation from their immutable Git commit and set `SOURCE_DIGEST=None`; no source ZIP is required. A ZIP is only needed for notebooks explicitly built with an uncommitted source overlay.
@@ -87,3 +87,12 @@ The supplied Kaggle log fails before any profile application: historical checkou
 - `tests/test_exact_notebook_bootstrap.py`: **3 passed**, covering authenticated historical SHA checkout, repair/reuse of a disposable local shared checkout, and rejection of a current solver imported for the old checkout. No training or notebook smoke run.
 
 Use the updated diagnostic notebook and run from the first cell. It rebuilds the broken historical source directory itself; keep the same vna4_main.tar.gz and CIFAR-100 inputs. Actual T4 profiling remains pending.
+
+
+## 2026-10-21: automatic input checkpoint discovery
+
+The previous notebook searched only the literal filename vna4_main.tar.gz and required exactly one hit; its error did not distinguish no hits from duplicate attachments. The notebook now scans `/kaggle/input` for loose checkpoints and TAR/ZIP members, follows mounted symlinks with cycle detection, validates the original checkpoint metadata, deduplicates identical bytes and prints the chosen source plus SHA256. Different valid checkpoint states cause an explicit ambiguity error; no match reports the scanned inventory/rejection reasons. The selected raw bytes are cached once under `outputs/exact_diagnostics/task1_source.pt` and passed explicitly to every branch.
+
+- `tests/test_exact_notebook_bootstrap.py`: **6 passed**, including renamed archives, loose checkpoints, ZIP copies, mounted directory symlinks/cycles, duplicate input copies, incompatible metadata and distinct compatible sources. RNG state is unchanged by discovery.
+- Ran discovery on the actual supplied Downloads/vna4_main.tar.gz: **5 checkpoint members scanned, 1 unique compatible task-1-end checkpoint selected**. SHA256: `76c9a041b71c994483ef1ab942c476f84dd9d75de7b0a03bc15fbb0584af2058`.
+- T4 profiling/training was not run for this input-discovery fix. M1 remains held.

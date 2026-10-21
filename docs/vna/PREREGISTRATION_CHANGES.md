@@ -607,3 +607,8 @@ The revised §1 supersedes Cleanup 2: old B5 resume code/notebooks are deleted h
 ## 2026-10-21: historical checkout bootstrap repair
 
 The Kaggle profile-B setup used a shared clone of a filtered checkout, leaving missing d88abc4 blobs and falling back to current source imports. Fetch the historical SHA directly with authenticated lazy blob checkout in an independent clone; rebuild incomplete/shared source caches, verify a clean historical tree, and validate all core import origins before GPU work. Record module paths with the diagnostic report. This changes source preparation/validation only; T29–T31, checkpoint data, SGD, RNG, schedules, comparison rules and the M1 hold are unchanged.
+
+
+## 2026-10-21: discover the diagnostic checkpoint by metadata
+
+Remove the exact-filename/single-archive requirement. Scan attached input directories (following mounted symlink directories without cycles), loose .pt/.pth files and TAR/ZIP members. Select only the registered d88abc4 full/noBN/superclass/seed-0 checkpoint with completed=1, mid=False, epoch=100. Deduplicate identical checkpoint bytes by SHA256; reject distinct compatible states instead of choosing arbitrarily. All A–D branches consume the same selected raw checkpoint bytes. No training, RNG, solver or schedule change.

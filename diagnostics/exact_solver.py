@@ -6,6 +6,7 @@ current source. No diagnostic result is accepted as a main comparison result.
 import argparse
 from copy import deepcopy
 import inspect
+import io
 import hashlib
 import json
 import os
@@ -13,14 +14,80 @@ from pathlib import Path
 import sys
 import tarfile
 import time
+import zipfile
 
 
-def checkpoint_from_archive(archive, target):
-    with tarfile.open(archive) as source:
-        matches = [m for m in source if m.isfile() and
-                   m.name.endswith('/icarl_full__nobn__superclass__s0/latest.pt')]
-        if len(matches) != 1: raise ValueError('Need exactly one archived full-arm latest.pt')
-        target.write_bytes(source.extractfile(matches[0]).read())
+def is_task1_checkpoint(state):
+    if not isinstance(state, dict) or not isinstance(state.get('identity'), dict): return False
+    expected = dict(arm='icarl_full', seed=0, backbone='resnet32_nobn', class_order_kind='superclass',
+                    nobn_lr_scale=.5, code_commit='d88abc496eb1fe21d1b6df66d90b47cf93d7ded1')
+    return (all(state['identity'].get(k) == v for k,v in expected.items()) and
+            (state.get('completed'), state.get('mid'), state.get('epoch')) == (1, False, 100))
+
+
+def find_task1_checkpoint(source, target):
+    """Select by checkpoint metadata; identical attached copies count as one source."""
+    import torch
+    from diagnostics.vna_align import _global_state
+    source, target = Path(source), Path(target)
+    files, visited = [], set()
+    if source.is_file(): files = [source]
+    else:
+        for directory, dirs, names in os.walk(source, followlinks=True):
+            real = Path(directory).resolve()
+            if real in visited:
+                dirs[:] = []
+                continue
+            visited.add(real)
+            files.extend(Path(directory)/name for name in sorted(names))
+    matches, rejected, scanned = {}, [], 0
+    def inspect_checkpoint(label, data):
+        nonlocal scanned
+        scanned += 1
+        try:
+            with _global_state():
+                state = torch.load(io.BytesIO(data), map_location='cpu', weights_only=False)
+            if not is_task1_checkpoint(state):
+                rejected.append(f'{label}: metadata does not match full/noBN/superclass/s0 task-1 end')
+                return
+        except Exception as exc:
+            rejected.append(f'{label}: {type(exc).__name__}: {exc}')
+            return
+        digest = hashlib.sha256(data).hexdigest()
+        if digest not in matches: matches[digest] = (label, data)
+        print(f'Compatible task-1 checkpoint: {label} [sha256 {digest}]', flush=True)
+    archive_count = 0
+    for path in sorted(files):
+        name = path.name.lower()
+        try:
+            if path.suffix.lower() in ('.pt', '.pth'):
+                inspect_checkpoint(str(path), path.read_bytes())
+            elif name.endswith(('.tar.gz','.tgz','.tar','.tar.bz2','.tbz2','.tar.xz','.txz')):
+                archive_count += 1
+                with tarfile.open(path) as archive:
+                    for member in archive:
+                        if member.isfile() and Path(member.name).suffix.lower() in ('.pt','.pth'):
+                            inspect_checkpoint(f'{path}::{member.name}', archive.extractfile(member).read())
+            elif name.endswith('.zip'):
+                archive_count += 1
+                with zipfile.ZipFile(path) as archive:
+                    for member in archive.infolist():
+                        if not member.is_dir() and Path(member.filename).suffix.lower() in ('.pt','.pth'):
+                            inspect_checkpoint(f'{path}::{member.filename}', archive.read(member))
+        except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+            rejected.append(f'{path}: {type(exc).__name__}: {exc}')
+    print(f'Checkpoint search: {source}; archives={archive_count}, checkpoints={scanned}, unique matches={len(matches)}', flush=True)
+    if not matches:
+        inventory = '\n'.join(rejected[:20]) or '\n'.join(str(p) for p in sorted(files)[:20]) or '(input is empty or unavailable)'
+        raise FileNotFoundError(f'No compatible d88abc4 full/noBN/superclass/s0 checkpoint at completed task 1, epoch 100 in {source}.\n{inventory}')
+    if len(matches) > 1:
+        raise ValueError('Different compatible task-1 checkpoints found; keep one source or use --checkpoint explicitly:\n'+
+                         '\n'.join(label for label, _ in matches.values()))
+    label, data = next(iter(matches.values()))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name+'.tmp')
+    temporary.write_bytes(data); temporary.replace(target)
+    print(f'Selected task-1 checkpoint: {label} -> {target}', flush=True)
     return target
 
 
@@ -51,15 +118,11 @@ def run(args):
     if not torch.cuda.is_available() or 'T4' not in torch.cuda.get_device_name(0):
         raise RuntimeError('This diagnostic requires one real T4; no substitute timing')
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
-    checkpoint = Path(args.checkpoint) if args.checkpoint else checkpoint_from_archive(
-        args.archive, out/'task1_source.pt')
+    checkpoint = Path(args.checkpoint) if args.checkpoint else find_task1_checkpoint(
+        args.archive or args.input_root, out/'task1_source.pt')
     state = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    source_identity = state.get('identity',{})
-    expected = dict(arm='icarl_full', seed=0, backbone='resnet32_nobn', class_order_kind='superclass', nobn_lr_scale=.5)
-    if any(source_identity.get(k) != v for k,v in expected.items()) or not source_identity.get('code_commit','').startswith('d88abc4'):
-        raise ValueError('Need the registered d88abc4 full/noBN/superclass/seed-0 checkpoint')
-    if (state.get('completed'), state.get('mid'), state.get('epoch')) != (1, False, 100):
-        raise ValueError('Expected completed task 1, epoch 100 checkpoint')
+    if not is_task1_checkpoint(state):
+        raise ValueError('Need d88abc4 full/noBN/superclass/s0 checkpoint at completed task 1, epoch 100')
     native_commit = main.code_commit()
     old = args.branch in ('B','C')
     if old and not native_commit.startswith('d88abc4'):
@@ -269,7 +332,8 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--repo',required=True);p.add_argument('--out',required=True)
     p.add_argument('--branch',choices=list('ABCD'),required=True)
-    p.add_argument('--archive');p.add_argument('--checkpoint');p.add_argument('--data-dir',required=True)
+    p.add_argument('--archive');p.add_argument('--checkpoint');p.add_argument('--input-root',default='/kaggle/input')
+    p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
     return p
 

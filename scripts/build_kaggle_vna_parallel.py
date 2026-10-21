@@ -344,7 +344,7 @@ def build_exact_diagnostics(commit, source_digest):
     setup = ''.join(result['cells'][3]['source'])
     setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
     result['cells'][3] = cell('code', setup)
-    inputs = 'Attach vna4_main.tar.gz and CIFAR-100.'
+    inputs = 'Attach CIFAR-100 and the old task-1 checkpoint or an output archive; checkpoint discovery scans all inputs automatically.'
     inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
     result['cells'][1] = cell('markdown', '# T29–T31: one-T4 diagnostics\n'+inputs+' Run profile first; then A–D. M1 stays held for report review.')
     result['cells'][-2] = cell('code', EXACT_DIAGNOSTICS)
@@ -352,9 +352,7 @@ def build_exact_diagnostics(commit, source_digest):
     return result
 
 
-EXACT_DIAGNOSTICS = r'''archives = sorted(Path('/kaggle/input').rglob('vna4_main.tar.gz'))
-if len(archives) != 1: raise FileNotFoundError('Attach exactly one old vna4_main.tar.gz containing full task-1 latest.pt')
-OLD_REPO = REPO.with_name('counterfactual-projection-d88abc4')
+EXACT_DIAGNOSTICS = r'''OLD_REPO = REPO.with_name('counterfactual-projection-d88abc4')
 OLD_COMMIT = 'd88abc496eb1fe21d1b6df66d90b47cf93d7ded1'
 if OLD_REPO.exists():
     head = subprocess.run(['git','-C',str(OLD_REPO),'rev-parse','HEAD'],capture_output=True,text=True)
@@ -372,6 +370,10 @@ for upstream in (REPO/'third_party').iterdir():
     destination = OLD_REPO/'third_party'/upstream.name
     if upstream.is_dir() and not destination.exists(): destination.symlink_to(upstream, target_is_directory=True)
 script = REPO/'diagnostics/exact_solver.py'
+from experiments.runners.pycil import upstream_imports
+from diagnostics.exact_solver import find_task1_checkpoint
+upstream_imports()
+checkpoint = find_task1_checkpoint(Path('/kaggle/input'), STAGE_B/'exact_diagnostics'/'task1_source.pt')
 branches = ('B','D') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')
 try:
@@ -380,7 +382,7 @@ try:
         directory = STAGE_B/'exact_diagnostics'/MODE/branch
         directory.mkdir(parents=True,exist_ok=True)
         command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch',branch,
-            '--archive',str(archives[0]),'--data-dir',str(DATA_ROOT),'--out',str(directory)]
+            '--checkpoint',str(checkpoint),'--data-dir',str(DATA_ROOT),'--out',str(directory)]
         if MODE == 'profile': command.append('--profile')
         if not launch(command,0,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'): break
         archive_outputs()

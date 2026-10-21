@@ -73,3 +73,60 @@ def test_import_origins_reject_current_solver_for_old_checkout(tmp_path):
         verify_repository(old,(main,solver))
     solver.__file__=str(old/'methods/vna_v3.py')
     assert set(verify_repository(old,(main,solver))) == {'experiments.main_cil','methods.vna_v3'}
+
+
+def checkpoint_bytes(**updates):
+    import io
+    import torch
+    state=dict(identity=dict(arm='icarl_full',seed=0,backbone='resnet32_nobn',
+        class_order_kind='superclass',nobn_lr_scale=.5,
+        code_commit='d88abc496eb1fe21d1b6df66d90b47cf93d7ded1'),
+        completed=1,mid=False,epoch=100,probe=torch.tensor([1.]))
+    state.update(updates)
+    data=io.BytesIO();torch.save(state,data)
+    return data.getvalue()
+
+
+def test_checkpoint_discovery_follows_inputs_and_deduplicates_formats(tmp_path):
+    import io
+    import tarfile
+    import zipfile
+    from diagnostics.exact_solver import find_task1_checkpoint
+    from diagnostics.vna_align import _assert_bitwise
+    from experiments.vna_resume import rng_state
+    inputs=tmp_path/'input';inputs.mkdir()
+    dataset=tmp_path/'mounted-dataset';dataset.mkdir()
+    (inputs/'dataset').symlink_to(dataset,target_is_directory=True)
+    (dataset/'loop').symlink_to(inputs,target_is_directory=True)
+    payload=checkpoint_bytes()
+    (dataset/'renamed-checkpoint.pth').write_bytes(payload)
+    with tarfile.open(dataset/'unrelated-name.TGZ','w:gz') as archive:
+        for name,data in [('snapshot/task1.pth',payload),('full/latest.previous.pt',checkpoint_bytes(mid=True))]:
+            info=tarfile.TarInfo(name);info.size=len(data)
+            archive.addfile(info,io.BytesIO(data))
+    with zipfile.ZipFile(dataset/'another-output.zip','w') as archive:
+        archive.writestr('custom-name/checkpoint.pt',payload)
+    before=rng_state()
+    selected=find_task1_checkpoint(inputs,tmp_path/'working/task1_source.pt')
+    assert selected.read_bytes()==payload
+    _assert_bitwise(before,rng_state())
+
+
+def test_checkpoint_discovery_rejects_different_valid_states(tmp_path):
+    import torch
+    from diagnostics.exact_solver import find_task1_checkpoint
+    inputs=tmp_path/'input';inputs.mkdir()
+    (inputs/'one.pt').write_bytes(checkpoint_bytes())
+    (inputs/'two.pt').write_bytes(checkpoint_bytes(probe=torch.tensor([2.])))
+    target=tmp_path/'selected.pt'
+    with pytest.raises(ValueError,match='Different compatible task-1 checkpoints'):
+        find_task1_checkpoint(inputs,target)
+    assert not target.exists()
+
+
+def test_checkpoint_discovery_explains_missing_compatible_source(tmp_path):
+    from diagnostics.exact_solver import find_task1_checkpoint
+    wrong=tmp_path/'other-seed.pt'
+    wrong.write_bytes(checkpoint_bytes(identity=dict(seed=1)))
+    with pytest.raises(FileNotFoundError,match='other-seed.pt: metadata does not match'):
+        find_task1_checkpoint(tmp_path,tmp_path/'target.pt')
