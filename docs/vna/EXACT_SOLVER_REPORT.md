@@ -294,3 +294,27 @@ Local CG validation: 134 related tests passed; the five previously recorded
 schedule/roundoff/revival/collector/pause-assertion failures were deselected.
 The unchanged check_t29_31.py reports zero violations in 200 problems and no
 nonterminating T30 cases. No full suite or real T4 training/profile was run.
+
+## 2026-10-22 follow-up: CG-IR and shared downstream
+
+The current implementation supersedes native-only residual verification with
+actual double-network residuals, adds application-local warm starts, and uses
+shared sample-separable D_site/exact small curvature by default for noBN.
+BN/coupled models retain full products and power10. See
+[IR_DOWNSTREAM_REVIEW.md](IR_DOWNSTREAM_REVIEW.md) for derivation, memory counts,
+local reference example and revised two-GPU profile protocol. Existing T4
+measurements above predate these changes; they do not establish new runtime,
+mu*/Gamma equivalence, task-20 capacity or K0. M1 has not been launched.
+
+## Same-commit selectable solvers and authorized Gram M1s0 notebook
+
+See GRAM_M1_IR_NOTEBOOK.md. --solver gram restores the 8c56d02 output Gram and
+signed Woodbury flow, with its power10 grouped candidate columns. --solver
+cg_ir retains true-double refinement and streamed D_site/exact noBN curvature.
+The 600-second Gram construction stop is removed. Dead/dormant remain on 256
+samples; task-end B is CG-IR on 128 and labelled separately. Gram K0 uses Gram.
+The new notebook overlaps two lanes, gates Gram full on strict 8c56d02
+compatibility, then profiles CG-IR without authorizing cheap M1. Baseline reuse
+requires an exact fresh 150-epoch loss replay; reference provenance is retained.
+Local tiny-model Gram comparisons match 8c56d02 bitwise at float32 and float64.
+This is not a claim that the pending real T4 checkpoint comparison has passed.

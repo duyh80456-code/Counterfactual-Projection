@@ -775,3 +775,124 @@ max_tasks=3 identity. This reinstates --max-tasks only for the requested
 rehearsal; default M1 remains 20 tasks. Deadline/exit-75 still governs launches.
 M1 remains held; compute-matched budget/competitor/BN/order experiments follow
 only after the requested real profile and rehearsal review.
+
+## 2026-10-22: true-double CG-IR, shared downstream and local warm starts
+
+Supersedes the previous native-residual/power10-only/no-cross-solve-warm policy.
+The selected frozen problem is A64=J64^T M J64+mu I, b64=J64^T c: current native
+weights are promoted into one actual double snapshot. Frozen M/c are unchanged;
+replacement columns are recomputed in double. Outer relative residual 1e-10,
+inner float32 CG correction target 1e-4, at most 200 total CG iterations and
+8 corrections, with explicit stagnation/failure handling. Double-native problems
+use the outer target directly. Nonconverged LM trials remain failures; post-LM
+failure rolls back the application. Never loosen tolerance to accept a result.
+
+Warm starts/caches exist only within one application: adjacent mu/beta,
+LM -> z, baseline -> Gamma and accepted swaps -> next residual. Version/RHS
+identity invalidates cached solves. No warm state enters engine checkpoints or
+crosses application boundaries. Native SGD, RNG isolation, exact resume,
+coefficient-zero identity, deadlines/exit-75 and real-loss guards remain required.
+
+For sample-separable noBN models, construct one float64 downstream D_site at a
+time. Reuse it for candidate gradients and Jacobian columns, and compute the
+exact small lambda_max(J_v^T H_beta J_v) by eigvalsh. Default curvature=exact;
+BN/stochastic/cross-sample-coupled models fall back to full products/power10.
+A VJP coupling check supplements the BN/dropout exclusion. Power10 remains an
+explicit reference mode with its existing generator and ten iterations; noBN
+may reuse D only for its double Gamma columns without changing power10 ranking.
+Exact ranking can change swaps. Candidate grid, top-2/four-live limits and probe
+256 remain unchanged. No output Gram/native J_u columns/Woodbury in production.
+
+Reports include true-double residual histories, correction iterations/timing,
+warm resets/cache hits, per-mu numerical vs model failures, double D bytes/time
+and suffix VJP counts. Gamma's bilinear solve-error bound is diagnostic-only;
+there is no extra acceptance gate and no universal margin versus near-zero Gamma.
+At N128/C100/stage1, double D alone is 1,677,721,600 bytes. Neither constant
+runtime across tasks nor the proposed 300–350 s/application has been measured.
+
+Profile lanes: GPU0 current IR/exact + capacity; GPU1 clean 8c56d02 Gram/power10,
+then current IR/power10. Preserve strict 1e-5 comparison in
+ir_power10_vs_gram.json and separate curvature comparison in
+ir_exact_vs_power10.json. Retain failures and per-mu reference-rho audit;
+positive-reference numeric rejections and unknown trials prevent an unsupported
+claim that mu* is unaffected. Capacity adds first-stage double D alongside
+native/double frozen VJP graphs at N128/C100, in addition to diagnose at
+m12800/m25600. This is still a proxy, not actual task-20 training or a full
+application memory proof. Reference failures are advisory, primary IR failure
+fatal after archiving. Three-task rehearsal and M1 hold remain unchanged.
+
+Theory and limits: IR_DOWNSTREAM_REVIEW.md, theory/s9b_closure.tex and
+theory/s9c_exact.tex. A sufficient contraction assumption is
+(delta+eta*kappa)/(1-delta)<1, not kappa*u32<1 alone. No arbitrary small-mu
+cutoff and no claim of bitwise equality across different warm starts.
+
+## 2026-10-22: stream downstream by sample blocks
+
+Supersedes retaining a whole site's D and constructing candidate J_v while
+ranking. Downstream now uses fixed blocks of eight samples. Within each block,
+reuse D^T r and accumulate s_v and K_v=J_v^T H_beta J_v for all candidates in
+float64, then release D and block Jacobians before constructing the next block.
+Metric blocks retain the original full-window loss normalization. Dense full-
+window J_v is allocated only when that candidate actually reaches a Gamma trial,
+by streaming another pass. The power10 fallback likewise defers dense candidate
+columns until Gamma; its score/generator/ten iterations are unchanged.
+
+The frozen Downstream object retains model/inputs and small validation state,
+not D. One full-window random-seed suffix VJP checks block separability; it does
+not construct full D and its graph is freed before block processing. Batch-
+coupled models retain the existing full-products fallback. This is a numerical
+reduction-order change, not a promise of bitwise identity to the full-D sum.
+
+Log bytes as peak D block bytes, block_samples, block count, total suffix VJPs
+and retains_full_D=false. Capacity profiling streams the same blocks alongside
+native/double frozen VJP graphs. At N128/C100/stage1 (O16,32x32), D allocation
+is bounded by 104,857,600 bytes (100 MiB) instead of 1,677,721,600 bytes; this
+is a D-only bound, not total process VRAM. Recomputing blocks for scoring/Gamma
+may change runtime; measure on T4. No change to candidate limits, mu/IR policy,
+loss/window checks, warm scope, resume, K0 authority or M1 hold.
+
+## 2026-10-22: same-commit Gram M1s0 and CG-IR profile
+
+Explicitly authorizes the new vna4_gram_m1s0_ir notebook's Gram-only M1s0 lane;
+other M1 notebooks and CG-IR M1 remain held. Both active lanes pin one source
+commit containing --solver gram|cg_ir. Solver identity is included in protocol,
+preflight authority and engine state; cross-backend schedules/resume are refused.
+
+Gram uses the 8c56d02 output Gram/OutputSolve/signed Woodbury math, its power10
+score/generator and grouped top-2 derivative construction. No IR or D_site is
+used in its engine. Remove the 600 s Gram-construction stop, retain all real-
+loss/window checks, finite checks, native checkpoints and deadline/exit-75.
+Preflight derives K0 from actual Gram full-application costs at budget 1.0x.
+The new lane runs icarl_full, noBN, lr scale .5, superclass, seed0, 20 tasks,
+registered 100/50 epochs. Native resume is automatic (no separate resume flag).
+
+Task-end dead/dormant still use the seeded 256-sample test probe. B/norm_w use
+CG-IR on the first 128 samples of that same probe, with that 128-sample loss
+normalization. Protocol and diagnostic records label b_size=128,
+b_solver=cg_ir, activity_probe_size=256. This changes diagnostic B values, not
+SGD, engine loss/window or active intervention batch. Historical reused baseline
+B values retain their old provenance and are not relabelled as this diagnostic.
+
+GPU1 first profiles clean 8c56d02 Gram/power10 and current Gram/power10 from the
+same d88abc4 task-1 checkpoint (first task-2 application). Strict 1e-5 relative,
+zero absolute comparison must PASS before GPU0 begins full training. Gram K0
+preflight may overlap this check. GPU1 then profiles current CG-IR/exact with
+capacity at m12800/m25600, streamed D capacity, gamma_precision, solve/timer logs
+and lm_numeric_audit, against that same-commit Gram result. This strict second
+comparison permits the intentional curvature-mode difference but keeps all
+numerical/ranking/swap checks; it can legitimately FAIL. Exact vs power10 is
+not misrepresented as solver-only equivalence. GPU1 stops after this profile;
+its failure does not cancel the validated Gram lane. Archive each stage and
+every 15 minutes, with separate per-lane/job logs.
+
+After full completes, GPU0 starts a fresh native baseline replay. Reuse the
+completed d88abc4 seed0 baseline only if all 100+50 epoch losses match exactly
+(full-precision checkpoint values, no rounded log comparison). Validate data
+fingerprint, order/recipe/upstream/seed and old 20-task artifacts. Record every
+mismatch and hashes in baseline_loss_check.json/reused_baseline.json. PASS stops
+the replay and references the historical 20-task result without changing its
+commit identity; the 2-task verification is never labelled a final baseline.
+FAIL continues the fresh run to 20 tasks. Missing/invalid reference runs a fresh
+full baseline. Resume identity includes reference digest; references cannot be
+silently substituted in a resumed run. Current epochs.json is saved atomically
+alongside native checkpoints; it is evidence, not a replacement resume format.

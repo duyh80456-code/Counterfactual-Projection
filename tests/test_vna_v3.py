@@ -127,13 +127,13 @@ def test_adaptive_schedule_iterations_skips_and_budget_exceeded():
     points = [dict(task=1, classes=10, vna_seconds=100., iteration_seconds=.01),
               dict(task=2, classes=20, vna_seconds=200., iteration_seconds=.01)]
     schedule = schedule_from_points(points, 55)
-    assert schedule['K_base'] == 800 and schedule['budget_exceeded']
-    assert schedule['projected_vna_seconds'] == 1000.
+    assert schedule['K0']==550 and schedule['budget_exceeded']
+    assert schedule['projected_vna_seconds']=={1:150.,2:150.}
     model, site, batch, spec, ctx, optimizer = problem()
-    engine = V3Engine('vna', K_base=10); engine.begin_task(1)
+    engine = V3Engine('vna', K0=10); engine.begin_task(1)
+    engine.protocol['baseline_iteration_seconds']=1e-12
     row = engine.apply(model, [site], batch, spec, ctx, optimizer, 1, remaining=100)
-    assert row is not None
-    assert row['K_next'] == max(1, int(10*min(4., max(.25, .3/row['rho']))+.5))
+    assert row is not None and row['budget_guard'] and row['K_next']==40
     assert engine.apply(model, [site], batch, spec, ctx, optimizer, 2) is None
     assert engine.apply(model, [site], batch, spec, ctx, optimizer, 1+row['K_next']) is not None
     engine.begin_task(2)

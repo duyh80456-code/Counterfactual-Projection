@@ -12,8 +12,9 @@ from tests.test_vna_exact import problem, isolated
 
 
 def operator(J):
-    return FrozenGram(SimpleNamespace(parameter_refs=(('weights',torch.zeros(J.shape[1],dtype=J.dtype)),),
-        Jv=lambda v:J@v.to(J), JT=lambda v:J.T@v.to(J)))
+    p=SimpleNamespace(parameter_refs=(('weights',torch.zeros(J.shape[1],dtype=J.dtype)),),
+        Jv=lambda v:J@v.to(J),JT=lambda v:J.T@v.to(J))
+    return FrozenGram(p,high=operator(J.double()) if J.dtype!=torch.float64 else None)
 
 
 @pytest.mark.parametrize('conv,bn',[(False,False),(False,True),(True,False),(True,True)])
@@ -62,10 +63,10 @@ def test_lm_nonconverged_trial_increases_mu_and_restores_training_state(monkeypa
     engine=V3Engine();engine.begin_task(1)
     before=deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state()
     original=OutputCG.solve;attempts=[]
-    def fail_first(self,rhs):
+    def fail_first(self,rhs,**kw):
         attempts.append(self.mu)
         if len(attempts)==1:raise CGConvergenceError(dict(converged=False,relative_residual=1.,solver='cg'))
-        return original(self,rhs)
+        return original(self,rhs,**kw)
     monkeypatch.setattr(OutputCG,'solve',fail_first)
     with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
         op=GGNProducts(p,batch[1],spec,ctx)
@@ -75,9 +76,9 @@ def test_lm_nonconverged_trial_increases_mu_and_restores_training_state(monkeypa
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))
 
 
-def test_default_power10_and_no_exact_engine():
-    assert V3Engine().curvature=='power10'
-    with pytest.raises(ValueError,match='historical reference'):V3Engine(curvature='exact')
+def test_default_exact_and_power10_reference_mode():
+    assert V3Engine().curvature=='exact'
+    assert V3Engine(curvature='power10').curvature=='power10'
 
 
 def test_frozen_operator_matches_overlapping_column_replacements():

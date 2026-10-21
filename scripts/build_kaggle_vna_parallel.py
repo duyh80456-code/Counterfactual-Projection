@@ -149,7 +149,7 @@ def prepare_schedule(backbone):
     cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm','icarl_full',
            '--backbone','resnet32' if backbone == 'bn' else 'resnet32_nobn',
            '--class-order','superclass','--seed','0','--out',str(ROOT/'_preflight'/backbone),
-           '--device','cuda:0','--data-dir',str(DATA_ROOT),'--curvature','power10','--preflight-only',
+           '--device','cuda:0','--data-dir',str(DATA_ROOT),'--curvature','exact','--preflight-only',
            '--schedule-output',str(destination),'--schedule-source','self' if PRESET == 'M3' else 'authority']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
     launch(cmd,0,backbone+'_preflight',RUN_ROOT/f'{RUN_TAG}_{backbone}_preflight.log')
@@ -172,7 +172,7 @@ def command(job):
     if arm in ('icarl','icarl_full'):
         cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm',arm,
                '--backbone','resnet32' if backbone == 'bn' else 'resnet32_nobn',
-               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),'--curvature','power10',
+               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),'--curvature','exact',
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
         if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
@@ -340,13 +340,13 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
 def build_exact_diagnostics(commit, source_digest):
     result = build(commit, 'M1s0', 'vna_v4_exact_diagnostics', source_digest)
     result['cells'][0] = cell('code', config(commit, (['diagnostics'], ['diagnostics'], []),
-        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # GPU0: D-CG + capacity; GPU1: R-Gram (8c56d02); M1 remains held\n")
+        'vna_v4_exact_diagnostics', 'EXACT_DIAGNOSTICS', source_digest)+"\nMODE = 'profile'  # GPU0: D-IR exact + capacity; GPU1: Gram reference then IR power10; M1 remains held\n")
     setup = ''.join(result['cells'][3]['source'])
     setup = setup.replace('torch.cuda.device_count() != 2', 'torch.cuda.device_count() < 1').replace('Select T4 x2', 'Select at least one T4')
     result['cells'][3] = cell('code', setup)
     inputs = 'Attach CIFAR-100 and the old task-1 checkpoint or an output archive; checkpoint discovery scans all inputs automatically.'
     inputs += ' Attach the matching source ZIP.' if source_digest else ' Code loads directly from the pinned Git commit; no source ZIP is needed.'
-    result['cells'][1] = cell('markdown', '# T29–T31: CG versus frozen Gram reference\n'+inputs+' GPU0 runs current D-CG (power10) with --capacity-profile at m=12800 and m=25600. GPU1 runs reference D (8c56d02, power10, Gram). Both start from the same task-1 checkpoint and profile the first task-2 application. Compare strictly at rel tol 1e-5; failures remain explicit. With one GPU run CG first. M1 stays held. After reviewing profile results, MODE=smoke3 runs baseline/full seed 0 for three full training tasks, with a fresh CG authority preflight. It does not run M1.')
+    result['cells'][1] = cell('markdown', '# T29–T31: CG versus frozen Gram reference\n'+inputs+' GPU0 runs current D-IR (shared D_site, exact noBN curvature, CG-IR) with --capacity-profile at m=12800 and m=25600. GPU1 runs reference D (8c56d02, power10, Gram), then current D-IR-power10 to isolate the solver change from curvature changes. Both start from the same task-1 checkpoint and profile the first task-2 application. Compare strictly at rel tol 1e-5; failures remain explicit. With one GPU run CG first. M1 stays held. After reviewing profile results, MODE=smoke3 runs baseline/full seed 0 for three full training tasks, with a fresh CG authority preflight. It does not run M1.')
     import textwrap
     result['cells'][-2] = cell('code', "if MODE == 'smoke3':\n"+textwrap.indent(CG_SMOKE3,'    ')+"\nelse:\n"+textwrap.indent(EXACT_DIAGNOSTICS,'    '))
     result['cells'][-1] = cell('code', r'''summary_root = STAGE_B/'exact_diagnostics'/MODE/REPO_COMMIT[:12]
@@ -355,8 +355,8 @@ for path in sorted(summary_root.rglob('diagnostic.json')):
     event = (report.get('applications') or [{}])[0]
     print(path)
     print(json.dumps({**{k:report.get(k) for k in ('status','code_commit','application_seconds',
-        'application_peak_cuda_bytes','final_L_KD','capacity_profile')},
-        **{k:event.get(k) for k in ('mu_star','rho_tr','swaps','skip_reason')},
+        'application_peak_cuda_bytes','final_L_KD','capacity_profile','ir_summary','gamma_precision')},
+        **{k:event.get(k) for k in ('mu_star','rho_tr','swaps','skip_reason','downstream')},
         'cg_systems':len(report.get('cg',[]))},indent=2))
 for path in sorted(summary_root.glob('*/summary.json')):
     report = json.loads(path.read_text())
@@ -373,7 +373,7 @@ root.mkdir(parents=True,exist_ok=True)
 schedule = root/'schedule.json'
 common = [sys.executable,'-u','-m','experiments.main_cil','--backbone','resnet32_nobn',
     '--class-order','superclass','--nobn-lr-scale','.5','--seed','0','--device','cuda:0',
-    '--data-dir',str(DATA_ROOT),'--curvature','power10']
+    '--data-dir',str(DATA_ROOT),'--curvature','exact']
 try:
     if not schedule.exists():
         launch(common+['--arm','icarl_full','--preflight-only','--schedule-output',str(schedule),
@@ -434,12 +434,12 @@ upstream_imports()
 checkpoint = find_task1_checkpoint(Path('/kaggle/input'), STAGE_B/'exact_diagnostics'/'task1_source.pt')
 from concurrent.futures import ThreadPoolExecutor, as_completed
 diagnostic_root = STAGE_B/'exact_diagnostics'/MODE/REPO_COMMIT[:12]
-branches = ('D-CG','R-Gram') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
+branches = ('D-IR','R-Gram','D-IR-power10') if MODE == 'profile' else ('A','B','C','D') if MODE == 'nan' else ()
 if not branches: raise ValueError('MODE must be profile or nan')
 gpu_count = min(2, torch.cuda.device_count())
 if gpu_count < 1: raise RuntimeError('Diagnostics require at least one T4 GPU')
 ENV['VNA_DIAGNOSTIC_LANES'] = str(gpu_count)
-queues = [('D-CG',),('R-Gram',)] if MODE == 'profile' and gpu_count == 2 else [branches[gpu::gpu_count] for gpu in range(gpu_count)]
+queues = [('D-IR',),('R-Gram','D-IR-power10')] if MODE == 'profile' and gpu_count == 2 else [branches[gpu::gpu_count] for gpu in range(gpu_count)]
 outcomes = {}
 print('Diagnostic GPU queues:', {gpu: list(jobs) for gpu, jobs in enumerate(queues)}, flush=True)
 def run_diagnostic_lane(gpu, jobs):
@@ -449,9 +449,9 @@ def run_diagnostic_lane(gpu, jobs):
         directory.mkdir(parents=True,exist_ok=True)
         command = [sys.executable,'-u',str(script),'--repo',str(tree),'--branch','D' if branch=='R-Gram' or branch.startswith('D-') else branch,
             '--checkpoint',str(checkpoint),'--data-dir',str(DATA_ROOT),'--out',str(directory),
-            '--curvature','power10']
+            '--curvature','power10' if branch in ('R-Gram','D-IR-power10','B','C') else 'exact']
         if MODE == 'profile': command.append('--profile')
-        if MODE == 'profile' and branch == 'D-CG': command.append('--capacity-profile')
+        if MODE == 'profile' and branch == 'D-IR': command.append('--capacity-profile')
         try:
             if not launch(command,gpu,f'{MODE}_{branch}',RUN_ROOT/f'{MODE}_{branch}.log'):
                 outcomes[branch] = {'status':'PAUSED'}
@@ -459,7 +459,7 @@ def run_diagnostic_lane(gpu, jobs):
             outcomes[branch] = {'status':'COMPLETED'}
         except Exception as error:
             outcomes[branch] = {'status':'FAILED','error':str(error)}
-            if MODE != 'profile' or branch == 'D-CG': raise
+            if MODE != 'profile' or branch == 'D-IR': raise
             print(f'Advisory Gram reference check {branch} failed: {error}',flush=True)
         archive_outputs()
     return True
@@ -479,15 +479,173 @@ try:
             if outcome['status'] != 'COMPLETED': return outcome
             try: return json.loads(path.read_text())
             except (OSError,ValueError) as error: return {'status':'MISSING_REPORT','error':str(error)}
-        reference, current = (profile_result(branch) for branch in ('R-Gram','D-CG'))
-        comparison = compare_profiles(reference,current,strict=True)
-        comparison.update(advisory=True,execution=outcomes)
-        atomic_json_save(comparison,diagnostic_root/'cg_vs_gram_8c56d02.json')
-        print(json.dumps({k:comparison[k] for k in ('status','checks','application_seconds') if k in comparison},indent=2),flush=True)
+        reference,power,current = (profile_result(branch) for branch in ('R-Gram','D-IR-power10','D-IR'))
+        for name,left,right,strict in (('ir_power10_vs_gram',reference,power,True),
+                                      ('ir_exact_vs_power10',power,current,False)):
+            comparison=compare_profiles(left,right,strict=strict)
+            comparison.update(advisory=True,execution=outcomes)
+            atomic_json_save(comparison,diagnostic_root/(name+'.json'))
+            print(json.dumps({k:comparison[k] for k in ('status','checks','application_seconds','lm_numeric_audit') if k in comparison},indent=2),flush=True)
     if failures: raise failures[0]
 finally:
     archive_outputs()
 print('M1 remains held: review the actual profiles and A–D diagnostic reports.')
+'''
+
+
+def build_gram_m1_ir(commit):
+    result=build(commit,'M1s0','vna_v4_gram_m1s0_ir')
+    result['cells'][0]=cell('code',config(commit,(['icarl_full Gram seed0'],['Gram verification; CG-IR profile'],[]),
+        'vna_v4_gram_m1s0_ir','GRAM_M1S0_IR_PROFILE'))
+    result['cells'][1]=cell('markdown', '''# Gram M1s0 + CG-IR profile — T4 × 2
+Attach CIFAR-100, the d88abc4 full task-1 checkpoint, and old baseline/output archives.
+Both active lanes use the same immutable source commit. The 8c56d02 checkout is
+used only as the requested historical Gram regression reference.
+
+GPU0 calibrates Gram/power10 K0 while GPU1 checks old/current Gram on the shared
+checkpoint. Full Gram M1s0 starts only after that strict check passes. GPU1 then
+profiles CG-IR/exact with capacity measurements and stops; it never trains M1.
+After full completes, GPU0 checks the old baseline against a fresh 150-epoch
+baseline prefix; exact loss equality permits historical result reuse, otherwise
+training continues to task 20. Missing old baseline runs a fresh full baseline.
+Outputs/checkpoints resume from attached archives; archives update every 15 min.
+Dead/dormant probe=256; B uses CG-IR on the first 128 of those samples.
+''')
+    bootstrap=''.join(result['cells'][2]['source']).replace('/kaggle/working/vna4_main','/kaggle/working/vna4_gram_m1s0_ir')
+    result['cells'][2]=cell('code',bootstrap)
+    runtime=''.join(result['cells'][4]['source']).replace('archive_stop.wait(3600)','archive_stop.wait(900)')
+    result['cells'][4]=cell('code',runtime)
+    result['cells'][-2]=cell('code',GRAM_M1_IR_SETUP+GRAM_M1_IR_RUNNER)
+    result['cells'][-1]=cell('code',r'''for name in ('gram_compatibility.json','cg_ir_vs_gram.json'):
+    path=ROOT/'profiles'/name
+    if path.exists():print(name,path.read_text())
+for name in ('icarl_full','icarl'):
+    path=ROOT/name/'summary.json'
+    if path.exists():
+        value=json.loads(path.read_text())
+        if value.get('status')=='REUSED_BASELINE':
+            reused=json.loads((path.parent/'reused_baseline.json').read_text())
+            value=reused['reference']['summary']
+            print('Historical baseline reused after exact 150-epoch loss verification:',reused['verification'])
+        print(name,{k:value.get(k) for k in ('status','tasks_run','seconds','cnn_average_accuracy','nme_average_accuracy')})
+path=ROOT/'profiles'/'cg_ir'/'diagnostic.json'
+if path.exists():
+    value=json.loads(path.read_text());event=(value.get('applications') or [{}])[0]
+    print(json.dumps({**{k:value.get(k) for k in ('status','application_seconds','application_peak_cuda_bytes',
+        'capacity_profile','gamma_precision','ir_summary','timers','final_L_KD')},
+        'downstream':event.get('downstream'),'solves':value.get('cg')},indent=2))
+archive_outputs()
+print('GPU1 has no further jobs. CG-IR M1 remains unapproved and was not launched.')
+''')
+    return result
+
+
+GRAM_M1_IR_SETUP=r'''from concurrent.futures import ThreadPoolExecutor, as_completed
+from experiments.io_utils import atomic_json_save
+from diagnostics.exact_solver import find_task1_checkpoint, compare_profiles
+from experiments.main_cil_baseline import prepare_reference
+from experiments.runners.pycil import upstream_imports
+ROOT=STAGE_B/RUN_TAG/REPO_COMMIT[:12]
+ROOT.mkdir(parents=True,exist_ok=True)
+if torch.cuda.device_count()!=2 or any('T4' not in torch.cuda.get_device_name(i) for i in range(2)):
+    raise RuntimeError('This notebook requires T4 x2')
+ENV['VNA_DIAGNOSTIC_LANES']='2'
+REFERENCE_COMMIT='8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2'
+REFERENCE_REPO=REPO.with_name('counterfactual-projection-gram-8c56d02')
+if REFERENCE_REPO.exists():
+    head=subprocess.check_output(['git','-C',str(REFERENCE_REPO),'rev-parse','HEAD'],text=True).strip()
+    dirty=subprocess.check_output(['git','-C',str(REFERENCE_REPO),'status','--porcelain','--untracked-files=no'],text=True).strip()
+    if head!=REFERENCE_COMMIT or dirty:shutil.rmtree(REFERENCE_REPO)
+if not REFERENCE_REPO.exists():private_clone(MAIN_URL,REFERENCE_REPO,REFERENCE_COMMIT)
+for upstream in (REPO/'third_party').iterdir():
+    destination=REFERENCE_REPO/'third_party'/upstream.name
+    if upstream.is_dir() and not destination.exists():destination.symlink_to(upstream,target_is_directory=True)
+upstream_imports()
+checkpoint=find_task1_checkpoint(Path('/kaggle/input'),ROOT/'profiles'/'task1_source.pt')
+script=REPO/'diagnostics/exact_solver.py'
+'''
+
+GRAM_M1_IR_RUNNER=r'''gate=threading.Event()
+gram_check={}
+main_common=[sys.executable,'-u','-m','experiments.main_cil','--solver','gram','--curvature','power10',
+    '--seed','0','--backbone','resnet32_nobn','--class-order','superclass','--nobn-lr-scale','.5',
+    '--device','cuda:0','--max-tasks','20','--data-dir',str(DATA_ROOT)]
+
+def profile(name,tree,solver,curvature,capacity=False):
+    out=ROOT/'profiles'/name;out.mkdir(parents=True,exist_ok=True)
+    cmd=[sys.executable,'-u',str(script),'--repo',str(tree),'--branch','D','--profile',
+        '--solver',solver,'--curvature',curvature,'--checkpoint',str(checkpoint),
+        '--data-dir',str(DATA_ROOT),'--out',str(out)]
+    if capacity:cmd+=['--capacity-profile']
+    if not launch(cmd,1,name,RUN_ROOT/(name+'.log')):return None
+    archive_outputs()
+    return json.loads((out/'diagnostic.json').read_text())
+
+def run_gpu1():
+    try:
+        old=profile('gram_8c56d02',REFERENCE_REPO,'gram','power10')
+        if old is None:return
+        current=profile('gram_current',REPO,'gram','power10')
+        if current is None:return
+        result=compare_profiles(old,current,strict=True)
+        atomic_json_save(result,ROOT/'profiles'/'gram_compatibility.json')
+        gram_check.update(result)
+        if result['status']!='PASS':raise RuntimeError('Gram compatibility must PASS before full training')
+    finally:
+        gate.set()
+        archive_outputs()
+    try:
+        cheap=profile('cg_ir',REPO,'cg_ir','exact',capacity=True)
+        if cheap is None:return
+    except Exception as error:
+        path=ROOT/'profiles'/'cg_ir'/'diagnostic.json'
+        cheap=json.loads(path.read_text()) if path.exists() else dict(status='FAILED_DIAGNOSTIC',error=str(error))
+        print('CG-IR profile failed; the approved Gram training lane continues:',error,flush=True)
+    result=compare_profiles(current,cheap,strict=True,allow_curvature_change=True)
+    if result['status']=='INCOMPLETE':
+        result.update(status='FAIL',comparison_status='INCOMPLETE',reason='Profile did not complete')
+    result.setdefault('lm_numeric_audit',dict(status='UNAVAILABLE',reason='Profile incomplete'))
+    atomic_json_save(result,ROOT/'profiles'/'cg_ir_vs_gram.json')
+    print('CG-IR versus same-commit Gram:',json.dumps(result,indent=2),flush=True)
+    lane_state[1]={'job':'idle','last':'CG-IR profile finished; no cheap M1 authorized'}
+    archive_outputs()
+
+def run_gpu0():
+    schedule=ROOT/'_schedules'/'gram_power10.json'
+    if not schedule.exists():
+        cmd=main_common+['--arm','icarl_full','--preflight-only','--schedule-output',str(schedule),
+            '--out',str(ROOT/'_preflight'/'gram')]
+        if not launch(cmd,0,'gram_preflight',RUN_ROOT/'gram_preflight.log'):return
+        archive_outputs()
+    while not gate.wait(1):
+        if pause_due():return
+    if pause_due():return
+    if gram_check.get('status')!='PASS':raise RuntimeError('Gram reference check failed; full training held')
+    cmd=main_common+['--arm','icarl_full','--schedule',str(schedule),'--out',str(ROOT/'icarl_full')]
+    if not launch(cmd,0,'gram_full_s0',RUN_ROOT/'gram_full_s0.log'):return
+    archive_outputs()
+    full=json.loads((ROOT/'icarl_full'/'summary.json').read_text())
+    if full.get('status')!='COMPLETED':raise RuntimeError('Gram full did not finish; baseline remains queued')
+    baseline=ROOT/'icarl';reference=ROOT/'baseline_reference.json'
+    if reference.exists() or not (baseline/'latest.pt').exists():
+        try:prepare_reference((STAGE_B,Path('/kaggle/input')),reference)
+        except ValueError as error:print('Old baseline cannot be reused; run fresh:',error,flush=True)
+    cmd=main_common+['--arm','icarl','--out',str(baseline)]
+    if reference.exists():cmd+=['--baseline-reference',str(reference)]
+    if not pause_due():launch(cmd,0,'gram_baseline_s0',RUN_ROOT/'gram_baseline_s0.log')
+    archive_outputs()
+
+failures=[]
+try:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[pool.submit(run_gpu0),pool.submit(run_gpu1)]
+        for future in as_completed(futures):
+            try:future.result()
+            except Exception as error:failures.append(error)
+finally:
+    archive_stop.set();archiver.join(timeout=10);archive_outputs()
+if failures:raise failures[0]
+if archive_errors:raise RuntimeError(archive_errors)
 '''
 
 def main():

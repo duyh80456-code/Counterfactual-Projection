@@ -56,14 +56,43 @@ Giả thiết A2, A3, $\beta\ge0$ do \textsc{BetaRule} trả về. Đặt $H_\be
 \end{proof}
 
 \paragraph{Điểm xếp hạng trong cài đặt hiện tại.}
-Đồng nhất Schur ở (b) dùng trị riêng chính xác để có cận dưới.
-Trong code, $\widetilde\ell_\beta(v)=\norm{J_v\T\rperp^\beta}^2/
-[2(\widetilde\lambda_v+\mu^*)]$ chỉ dùng xếp hạng ứng viên;
-$\widetilde\lambda_v$ lấy bằng đúng 10 vòng power iteration, cùng generator
-đã đăng ký. Đây là ước lượng thường thấp của
-$\lambda_{\max}(J_v\T H_\beta J_v)$, nên không được gọi điểm này là cận dưới
-được chứng nhận. Chấp nhận dựa vào $\Gamma$ từ các hệ CG đã kiểm residual,
-và các bước nhảy loss thật. Không bật đường trị riêng chính xác trong engine.
+Trên noBN và downstream tách theo mẫu, dùng đẳng thức $D_{\mathrm{site}}$
+ở dưới để tính $\lambda_{\max}(J_v\T H_\beta J_v)$ bằng eigvalsh của ma trận
+nhỏ. Điểm $\ell_\beta(v)=\norm{J_v\T\rperp^\beta}^2/
+[2(\lambda_{\max}+\mu^*)]$ trở về công thức của T27(b).
+BN hoặc downstream ghép mẫu dùng đường đầy đủ cũ với power iteration 10 vòng;
+trong nhánh đó, điểm ước lượng chỉ là điểm xếp hạng, không phải cận dưới phổ
+được chứng nhận. Chuyển từ power10 sang trị riêng chính xác có thể đổi thứ hạng.
+
+\paragraph{Đẳng thức downstream dùng chung khi $B_v=0$.}
+Gọi $t_n$ là output của conv\_b ở mẫu $n$, $f_n$ là logit và
+$D_n=\partial f_n/\partial t_n$. Nếu các mẫu độc lập trong mạng,
+$\partial f_n/\partial t_{n'}=0$ khi $n\ne n'$.
+Với kích hoạt neuron mới $h_{v,n}$ và trọng số outgoing $w_v$,
+đặt $\Phi_{v,n}w_v=\operatorname{conv}(h_{v,n},w_v)$ tại output conv\_b.
+Do $B_v=0$, forward và $D_n$ không đổi theo ứng viên; quy tắc dây chuyền cho
+\[
+ J_{v,n}=D_n\Phi_{v,n},\quad
+ s_v=\sum_n\Phi_{v,n}\T D_n\T r_n,\quad
+ J_v\T H_\beta J_v=\sum_n J_{v,n}\T H_{\beta,n}J_{v,n}.
+\]
+Cài đặt duyệt từng khối tám mẫu: mỗi khối dựng $D$, tính $D_n\T r_n$
+một lần, rồi cộng vào $s_v$ và $K_v=J_v\T H_\beta J_v$ cho mọi ứng viên.
+Sau đó giải phóng $D$ của khối trước khi dựng khối kế tiếp; không lưu toàn bộ
+$D_{\mathrm{site}}$ hay $J_v$ của cửa sổ khi chấm điểm. Các khối $H_{\beta,n}$
+giữ nguyên chuẩn hóa theo cửa sổ đầy đủ. Với Linear, $\Phi$ là nhân kích hoạt.
+Mỗi khối cần $C$ VJP; một VJP seed độc lập trên cửa sổ đầy đủ kiểm tra đạo hàm
+của từng khối để phát hiện ghép mẫu, không dựng $D$ đầy đủ. Chỉ ứng viên thực
+sự vào phép thử $\Gamma$ mới dựng $J_v$ dense double bằng một lượt khối nữa.
+Không có BN chưa đủ nếu forward có phép trộn mẫu khác.
+
+Với slot sống trong cấu trúc conv\_a--ReLU--conv\_b chuẩn (mọi đường từ slot
+đi qua conv\_b), các cột outgoing cũng là $D\Phi_u$; cột incoming là
+$D\operatorname{conv}_{W_{b,u}}\operatorname{diag}(\sigma'_u)X$,
+với $X$ là toán tử patch đầu vào (kèm bias nếu có).
+Cài đặt CG hiện tại che các tọa độ native nên không cần dựng các cột $J_u$ này.
+Với BN train, đạo hàm ghép mẫu và dạng block theo mẫu không hợp lệ; giữ matvec
+đầy đủ. Chỉ giữ một khối $D$ tại một thời điểm; không dựng Gram output $m\times m$.
 
 \begin{hequa}
 Bước S6 dùng $\rperp^\beta$ thay cho $\rperp(\eO)$ hay $\rperp(e)$. VNA và GIR nay giải \emph{cùng một} mô hình (metric $H_\beta$, ma trận $A_\beta$): VNA tìm hệ số trên span hiện tại cho vận tốc ảo, GIR mở rộng span; $\beta$ là một con số duy nhất cân giữa học mới và giữ cũ cho cả hai. \Tref{T25} đúng nguyên văn với $(H,e)\to(H_\beta,e_\beta)$.

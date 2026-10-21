@@ -17,7 +17,7 @@ import time
 import zipfile
 
 
-def compare_profiles(reference, current, strict=False):
+def compare_profiles(reference, current, strict=False, allow_curvature_change=False):
     import math
     if any(r.get('status')!='PROFILE_COMPLETED' or not r.get('applications') for r in (reference,current)):
         return dict(status='INCOMPLETE',reference_status=reference.get('status'),current_status=current.get('status'))
@@ -42,7 +42,7 @@ def compare_profiles(reference, current, strict=False):
         reference_calls=len(oldr),current_calls=len(newr))
     checks['candidate_values']=dict(matches=len(oldr)==len(newr) and all(
         len(a['candidates'])==len(b['candidates']) and all(
-            x['id']==y['id'] and all(equal(x.get(k),y.get(k)) for k in ('score','curvature','power_generator_seed','power_iterations'))
+            x['id']==y['id'] and all(equal(x.get(k),y.get(k)) for k in (('score','curvature') if allow_curvature_change else ('score','curvature','power_generator_seed','power_iterations')))
             for x,y in zip(a['candidates'],b['candidates'])) for a,b in zip(oldr,newr)))
     oldg,newg=left.get('gir_trials',[]),right.get('gir_trials',[])
     checks['ordered_Gamma']=dict(matches=len(oldg)==len(newg) and all(
@@ -59,24 +59,49 @@ def compare_profiles(reference, current, strict=False):
     complete=bool(oldr and newr) and all(
         isinstance(left.get(k),(int,float)) and isinstance(right.get(k),(int,float)) for k in fields)
     complete=complete and bool(oldg and newg) and len(old_swaps)==len(left.get('swap_records',[])) and len(new_swaps)==len(right.get('swap_records',[]))
-    complete=complete and all(isinstance(p.get('power_generator_seed'),int) and p.get('power_iterations')==10
-        and all(isinstance(p.get(k),(int,float)) and math.isfinite(p[k]) for k in ('score','curvature'))
+    complete=complete and all((p.get('curvature_method')=='eigvalsh_downstream' or
+        isinstance(p.get('power_generator_seed'),int) and p.get('power_iterations')==10) and all(isinstance(p.get(k),(int,float)) and math.isfinite(p[k]) for k in ('score','curvature'))
         for calls in (oldr,newr) for call in calls for p in call['candidates'])
     checks['data_complete']=dict(matches=complete)
     if strict:
         sha=reference.get('identity',{}).get('checkpoint_sha256')
         checks['same_checkpoint']=dict(matches=bool(sha) and sha==current.get('identity',{}).get('checkpoint_sha256'))
-        checks['power10_mode']=dict(matches=reference.get('curvature')==current.get('curvature')=='power10')
+        if not allow_curvature_change:
+            checks['same_curvature_mode']=dict(matches=reference.get('curvature')==current.get('curvature') and
+                reference.get('curvature') in ('power10','exact'))
+    ref_rhos=dict(zip(left.get('mu_trajectory',[]),left.get('rho_trajectory',[])))
+    numeric=[dict(mu=t['mu'],reference_rho=ref_rhos.get(t['mu']),failure_reason=t.get('failure_reason'))
+             for t in right.get('lm_trials',[]) if t.get('outcome')=='numeric_failure']
+    lm_audit=dict(numeric_failures=numeric,
+        positive_reference_rejections=[t for t in numeric if t['reference_rho'] is not None and t['reference_rho']>0],
+        unknown_reference_trials=[t['mu'] for t in numeric if t['reference_rho'] is None],
+        scope='Only this checkpoint/application; reference Gram arithmetic is not an exact float64 solve.')
+    ranking_changes = None
+    if reference.get('curvature')=='power10' and current.get('curvature')=='exact':
+        calls=[]
+        for a,b in zip(oldr,newr):
+            if (a.get('site'),a.get('used_directions'))!=(b.get('site'),b.get('used_directions')): continue
+            old={p['id']:p for p in a['candidates']}
+            candidates=[dict(p,curvature_power10=old[p['id']]['curvature'],score_power10=old[p['id']]['score'])
+                        for p in b['candidates'] if p['id'] in old]
+            calls.append(dict(b,candidates=candidates))
+        ranking_changes=curvature_differences(dict(candidate_rankings=calls))
+        ranking_changes['context']='Matched candidate IDs on independent trajectories; residuals/directions may differ after the first selection. Not a same-state curvature audit.'
     passed=complete and all(check['matches'] for check in checks.values())
     records=lambda event:[{k:r.get(k) for k in ('site','unit','Gamma','ell_beta','bias_q')} for r in event.get('swap_records',[])]
     trials=lambda event:[dict(site=r.get('site'),unit=r.get('unit'),Gamma=r.get('Gamma_cg',r.get('Gamma_woodbury'))) for r in event.get('gir_trials',[])]
     return dict(status=('PASS' if passed else 'FAIL') if strict else 'COMPARED',checks=checks,relative_tolerance=1e-5,
+        lm_numeric_audit=lm_audit,ranking_changes=ranking_changes,
+        curvature_modes=dict(reference=reference.get('curvature'),current=current.get('curvature'),
+            intentional_change=allow_curvature_change),
         swaps=dict(reference=records(left),current=records(right)),
         installed_swaps=dict(reference=old_swaps,current=new_swaps),
         Gamma_trials=dict(reference=trials(left),current=trials(right)),
         application_seconds=dict(
         reference=reference['application_seconds'],current=current['application_seconds']),
-        interpretation='Compare the same checkpoint and power10 candidates; failures remain explicit, including near-zero values at abs tol zero.')
+        interpretation=('Strict numeric comparison on the same checkpoint with an intentional curvature change; ranking/swaps may differ.'
+            if allow_curvature_change else
+            'Compare the same checkpoint and curvature mode; failures remain explicit, including near-zero values at abs tol zero.'))
 
 
 def curvature_differences(report):
@@ -130,6 +155,26 @@ def profile_capacity(model, batch, boundary=lambda: None, mu=None):
             try:
                 diagnostic=vna.diagnose(clone,(x,y),sites=sites_for(clone),mu=mu)
                 row.update(diagnostic,status='COMPLETED' if diagnostic.get('diagnostic_flag') is None else 'CG_NOT_CONVERGED')
+                sites=sites_for(clone)
+                if n==128 and sites and hasattr(vna,'Downstream') and vna.separable(clone):
+                    ds=None
+                    try:
+                        with vna.training_products(clone,[],{},x) as products:
+                            G=vna.FrozenGram(products)
+                            seed=torch.ones(n*100,device=device,dtype=torch.float64)
+                            G.JT(seed);G.high.JT(seed)
+                            ds=vna.Downstream(G.high.products.model,sites[0],x.double())
+                            ds.measure()
+                            row['downstream_capacity']=dict(status='MEASURED',bytes=ds.bytes,
+                                seconds=ds.seconds,vjp_calls=ds.vjp_calls,dtype=str(ds.dtype),
+                                block_samples=ds.block_samples,blocks=ds.blocks,retains_full_D=False,
+                                scope='One streamed stage-1 D block plus frozen native/double VJP graphs; not a full application.')
+                    except torch.cuda.OutOfMemoryError as exc:
+                        row['downstream_capacity']=dict(status='CUDA_OOM',error=str(exc))
+                    except ValueError as exc:
+                        row['downstream_capacity']=dict(status='UNSUPPORTED',error=str(exc))
+                    finally:
+                        del ds
             except torch.cuda.OutOfMemoryError as exc:
                 row.update(status='CUDA_OOM',error=str(exc))
             except RuntimeError as exc:
@@ -261,6 +306,10 @@ def run(args):
     old = args.branch in ('B','C')
     if old: args.curvature='power10'
     supports_curvature='curvature' in inspect.signature(vna.V3Engine).parameters
+    supports_solver='solver' in inspect.signature(vna.V3Engine).parameters
+    args.solver=args.solver or ('cg_ir' if hasattr(vna,'OutputCG') else 'historical-cg' if old else 'gram')
+    if not supports_solver and not old and args.solver!=('cg_ir' if hasattr(vna,'OutputCG') else 'gram'):
+        raise ValueError('Requested solver unavailable in selected source')
     if args.branch=='D' and not supports_curvature and args.curvature!='power10':
         raise ValueError('Historical D supports power10 only')
     if old and not native_commit.startswith('d88abc4'):
@@ -268,7 +317,7 @@ def run(args):
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
         source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         capacity_profile=args.capacity_profile,curvature=args.curvature,
-        solver_backend='cg' if hasattr(vna,'OutputCG') else 'gram' if not old else 'historical-cg')
+        solver_backend=args.solver)
     if (out/'diagnostic.json').exists():
         prior=json.loads((out/'diagnostic.json').read_text())
         if prior.get('identity') != identity: raise ValueError('diagnostic result identity mismatch')
@@ -296,7 +345,8 @@ def run(args):
                 hookstate['rows'], hookstate['tasks'] = [], []
                 if args.branch == 'A': hookstate.pop('intervention_state',None)
                 if args.branch == 'D':
-                    engine=vna.V3Engine('vna_gir',seed=0,K0=1,**({'curvature':args.curvature} if supports_curvature else {}))
+                    engine=vna.V3Engine('vna_gir',seed=0,K0=1,**({'curvature':args.curvature} if supports_curvature else {}),
+                        **({'solver':args.solver} if supports_solver else {}))
                     oldengine = hookstate.get('intervention_state',{}).get('engine',{})
                     engine.mu = oldengine.get('mu')
                     engine.install_ages = deepcopy(oldengine.get('install_ages',{}))
@@ -408,7 +458,12 @@ def run(args):
         report['peak_cuda_bytes']=report['application_peak_cuda_bytes']
         report['applications'].append(event);intervention.events.append(event)
         if hasattr(vna,'OutputCG'):
-            report['cg']=[r for r in event.get('solves',[])+event.get('gir_solves',[]) if r.get('solver')=='cg']
+            report['cg']=[r for r in event.get('solves',[])+event.get('gir_solves',[]) if r.get('solver') in ('cg','cg_ir')]
+        report['ir_summary']=dict(actual_solves=sum(not r.get('cached',False) for r in report['cg']),
+            cached_requests=sum(bool(r.get('cached')) for r in report['cg']),
+            outer_corrections=sum(r.get('refinements',0) for r in report['cg']),
+            high_seconds=sum(r.get('high_seconds',0.) for r in report['cg']),
+            inner_seconds=sum(r.get('inner_seconds',0.) for r in report['cg']))
         report['systems_solved']=len(report['cg']) if old else event.get('systems_solved',len(event.get('solves',[])))
         if args.profile and args.branch=='D' and not event.get('skipped'):
             report['final_L_KD']=list(engine._evaluate_current(model,batch,spec,ctx))
@@ -417,7 +472,14 @@ def run(args):
             report['gamma_cost']=dict(trials=len(trials),total_seconds=sum(costs),
                 mean_seconds=sum(costs)/len(costs) if costs else None,
                 max_seconds=max(costs,default=None),
-                interpretation='Includes native slot columns once per slot; candidate Jacobians charged to prepare_gir when cached.')
+                interpretation=('Includes on-demand candidate columns inside Gamma; native slot coordinates are implicit.'
+                    if hasattr(vna,'Downstream') else
+                    'Includes native slot columns once per slot; candidate Jacobians charged to prepare_gir when cached.'))
+            ratios=[abs(r['Gamma_cg'])/r['linear_solve_error_bound'] for r in trials
+                    if r.get('linear_solve_error_bound',0)>0 and 'Gamma_cg' in r]
+            report['gamma_precision']=dict(min_abs_gamma_over_linear_solve_bound=min(ratios,default=None),
+                ratios_below_one=sum(r<1 for r in ratios),measured_trials=len(ratios),decision_gate=False,
+                scope='Float64 linear solves only; does not bound errors in frozen metric/residual/output shift.')
             report['performance_targets']=dict(application_target_seconds=180,
                 application_under_180_seconds=report['application_seconds']<180,
                 application_under_400_seconds=report['application_seconds']<400,
@@ -509,7 +571,7 @@ def run(args):
                                 measured=active['power_values'].get(('A',id(proposal['A'])),
                                     active['power_values'].get(('seed',proposal.get('power_seed_index')),{}))
                                 candidates.append(dict(id=proposal['_profile_id'],score=proposal['score'],
-                                    curvature=proposal.get('curvature',measured.get('curvature')),
+                                    curvature=proposal.get('curvature',measured.get('curvature')),curvature_method=proposal.get('curvature_method'),
                                     curvature_power10=proposal.get('curvature_power10'),score_power10=proposal.get('score_power10'),
                                     power_generator_seed=measured.get('power_generator_seed'),power_iterations=measured.get('power_iterations')))
                             active['audit_seconds']+=sum(p.get('audit_seconds',0.) for p in result)
@@ -539,12 +601,14 @@ def run(args):
     main.measure_task=lambda *a,**kw: ({}, {})
     schedule=dict(authoritative=True,code_commit=main.code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
                   backbone='resnet32_nobn',nobn_lr_scale=.5,synthetic=False,K0=1,curvature=args.curvature)
+    if supports_solver:schedule['solver']=args.solver
     (out/'schedule.json').write_text(json.dumps(schedule))
     main_parser=main.parser()
     runargs=main_parser.parse_args(['--arm','icarl' if args.branch=='A' else 'icarl_full',
         '--nobn-lr-scale','.5','--seed','0','--device','cuda:0','--data-dir',args.data_dir,
         '--out',str(out/'run'),'--schedule',str(out/'schedule.json')]+
-        (['--curvature',args.curvature] if '--curvature' in main_parser._option_string_actions else []))
+        (['--curvature',args.curvature] if '--curvature' in main_parser._option_string_actions else [])+
+        (['--solver',args.solver] if '--solver' in main_parser._option_string_actions else []))
     try:
         outcome=main.run(runargs)
         if outcome.get('status') in ('FAILED_DIVERGED','DIVERGED'):
@@ -580,7 +644,8 @@ def parser():
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
     p.add_argument('--capacity-profile',action='store_true')
-    p.add_argument('--curvature',choices=('power10',),default='power10')
+    p.add_argument('--solver',choices=('gram','cg_ir'))
+    p.add_argument('--curvature',choices=('power10','exact'),default='exact')
     return p
 
 

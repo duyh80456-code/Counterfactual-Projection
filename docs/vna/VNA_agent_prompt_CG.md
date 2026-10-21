@@ -1,31 +1,44 @@
 # Matrix-free T29/T31 follow-up protocol
 
-Authority: CG_OOM_REVIEW.md, PREREGISTRATION_CHANGES.md and theory/s9c_exact.tex.
-Do not reinterpret the old run's capacity proxy as actual task-20 training.
+Current authority: IR_DOWNSTREAM_REVIEW.md, the 2026-10-22 entry in
+PREREGISTRATION_CHANGES.md and theory/s9{b,c}_*.tex. CG_OOM_REVIEW.md describes
+historical measurements, not the current precision or curvature defaults.
 
 Implementation acceptance:
-- Production engine and diagnose use residual-verified CG on J^T M J + mu I;
-  no global output Gram/factor and no nonsymmetric CG. Native float32 products,
-  float64 iterates/reductions, relative tolerance 1e-8, 200 total iterations.
-- Nonconverged LM trial fails and increases mu; no invalid direction/Gamma is
-  accepted. Later failure rolls back the application. No cross-solve warm state.
-- Frozen J' uses exact column-coordinate replacement; shared sites are covered.
-  Native J_u columns and Woodbury are absent on the CG path.
-- power10 only: same generator and 10 iterations; ell_beta ranks candidates.
-  Preserve top-2/four-live limits and all loss/window checks.
-- Preserve baseline/coefficient=0 identity, RNG/model/optimizer isolation,
-  native exact resume, provenance, deadline and resumable exit-75 behavior.
-- Local reference checks: CG vs Gram on small MLP/conv/BN and singular metrics;
-  sequential/shared swaps, nonconvergence, LM retry, no dense Gram/native columns,
-  read-only measurement, exact resume and mode/schedule identity.
+- Engine and diagnose solve A64=J64^T M J64+mu I, b64=J64^T c. Use a genuine
+  double frozen model and double replacement columns for RHS/residual, native
+  float32 correction CG at 1e-4, double iterates, outer target 1e-10, total
+  200 CG iterations and at most eight corrections. Detect stagnation. Double
+  native models use the outer target directly. Never accept nonconvergence.
+- Failed LM trials advance mu; later failure restores the whole application.
+  Application-local warm starts/cache only; no state across applications.
+- Frozen J' uses column-coordinate replacement, including shared sites.
+  No global Gram, native J_u columns or Woodbury in production.
+- Default exact noBN: sample-separable double D in blocks of eight samples;
+  accumulate every candidate's s_v and K_v then discard the block. Exact small
+  eigvalsh curvature after accumulation; dense full-window J_v only at Gamma. BN/stochastic/coupling fallback
+  uses full products/power10. Keep explicit power10 comparison mode/generator.
+- Preserve candidate grid, top-2/four-live limits, native real-loss/window checks,
+  coefficient-zero identity, RNG isolation, exact resume and deadline/exit-75.
+- Local checks cover actual double reference accuracy, shared D for MLP/conv/
+  residual/inplace models, coupling fallback, local warm/cache, overlapping
+  replacement columns, nonconvergence and read-only full float32 GIR preflight.
 
 Kaggle acceptance, without automatically launching M1:
-1. One MODE=profile notebook: GPU0 D-CG power10/capacity; GPU1 D-Gram power10
-   at 8c56d02. Same checkpoint, first task-2 application. Report strict rel tol
-   1e-5 comparison of mu*, rho, L/KD, candidates, Gamma and installed swaps,
-   plus time, CG residuals/iterations and memory at m=12800/25600. Never hide FAIL.
-2. After review, MODE=smoke3: fresh baseline/full seed 0, three complete tasks,
-   fresh CG K0 preflight, native resume, full training epochs. Report actual
-   application counts, elapsed time, NaN and dead/dormant.
-3. Decide M1 only from those actual results. If still >400 s, investigate
-   prepare_gir before proposing any change to candidate sets or algorithm.
+1. MODE=profile: GPU0 current IR/exact/capacity; GPU1 8c56d02 Gram/power10,
+   then current IR/power10. Strict 1e-5 comparison ir_power10_vs_gram.json;
+   separate ir_exact_vs_power10.json. Preserve FAIL and numeric-failure audit.
+   Log true64 residuals, corrections, high/inner time, Gamma error margins,
+   D time/bytes/VJPs, L/KD and application peak memory. Capacity covers
+   m12800/m25600 diagnose plus D/frozen graphs at N128/C100. Label proxy scope.
+2. Review whether positive-rho reference mu trials were rejected numerically,
+   and whether unknown reference trials remain. No generic mu* equivalence claim.
+3. After review, MODE=smoke3: fresh baseline/full seed 0, three complete tasks,
+   fresh IR/exact K0 preflight, native resume/epochs; actual application counts,
+   elapsed time, NaN and dead/dormant. M1 remains held pending measured results.
+4. Do not reduce candidates or probe size on an unmeasured runtime/memory guess.
+
+The explicit same-commit Gram M1s0 / CG-IR profile notebook is now specified in
+GRAM_M1_IR_NOTEBOOK.md and the latest PREREG entry. --solver selects gram or
+cg_ir. Only that Gram lane is authorized for M1s0; CG-IR M1 remains held.
+The numerical IR policy above describes cg_ir, not the archival Gram backend.

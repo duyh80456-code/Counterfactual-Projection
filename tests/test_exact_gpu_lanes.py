@@ -32,9 +32,9 @@ def write_report(command,mu=1.):
 
 
 @pytest.mark.parametrize('mode,gpus,expected',[
-    ('profile',2,{0:['D-CG'],1:['R-Gram']}),
+    ('profile',2,{0:['D-IR'],1:['R-Gram','D-IR-power10']}),
     ('nan',2,{0:['A','C'],1:['B','D']}),
-    ('profile',1,{0:['D-CG','R-Gram']}),
+    ('profile',1,{0:['D-IR','R-Gram','D-IR-power10']}),
     ('nan',1,{0:['A','B','C','D']}),
 ])
 def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expected):
@@ -46,8 +46,8 @@ def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expect
         assert command[command.index('--checkpoint')+1]==str(tmp_path/'shared-task1.pt')
         assert command[command.index('--repo')+1]==str(tmp_path/('old' if branch in ('B','C') else 'reference' if branch=='R-Gram' else 'new'))
         assert ('--profile' in command)==(mode=='profile')
-        assert command[command.index('--curvature')+1]=='power10'
-        assert ('--capacity-profile' in command)==(mode=='profile' and branch=='D-CG')
+        assert command[command.index('--curvature')+1]==('power10' if branch in ('R-Gram','D-IR-power10','B','C') else 'exact')
+        assert ('--capacity-profile' in command)==(mode=='profile' and branch=='D-IR')
         with lock:
             calls[gpu].append(branch);active[gpu]+=1
             assert active[gpu]==1
@@ -75,8 +75,8 @@ def test_paused_lane_does_not_launch_its_remaining_jobs(tmp_path):
 def test_cg_failure_propagates_and_archives_outputs(tmp_path):
     archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
-        if name in ('profile_D-CG','profile_R-Gram'): barrier.wait(timeout=5)
-        if name=='profile_D-CG':
+        if name in ('profile_D-IR','profile_R-Gram'): barrier.wait(timeout=5)
+        if name=='profile_D-IR':
             raise subprocess.CalledProcessError(1,command)
         write_report(command)
         return True
@@ -92,11 +92,11 @@ def test_gram_mismatch_does_not_gate_cg(tmp_path):
         write_report(command,mu=2. if name.endswith('R-Gram') else 1.)
         return True
     run_schedule(tmp_path,'profile',1,launch,archives)
-    assert calls==['profile_D-CG','profile_R-Gram']
+    assert calls==['profile_D-IR','profile_R-Gram','profile_D-IR-power10']
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
-    report=json.loads((root/'cg_vs_gram_8c56d02.json').read_text())
+    report=json.loads((root/'ir_power10_vs_gram.json').read_text())
     assert report['status']=='FAIL' and report['advisory']
-    assert json.loads((root/'D-CG/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
+    assert json.loads((root/'D-IR/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
 
 
 @pytest.mark.parametrize('failed',['R-Gram'])
@@ -110,11 +110,11 @@ def test_gram_failure_keeps_cg(tmp_path,failed):
         write_report(command)
         return True
     run_schedule(tmp_path,'profile',2,launch,archives)
-    assert dict(calls)=={0:['D-CG'],1:['R-Gram']}
+    assert dict(calls)=={0:['D-IR'],1:['R-Gram','D-IR-power10']}
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
-    report=json.loads((root/'cg_vs_gram_8c56d02.json').read_text())
+    report=json.loads((root/'ir_power10_vs_gram.json').read_text())
     assert report['status']=='INCOMPLETE' and report['execution'][failed]['status']=='FAILED'
-    assert json.loads((root/'D-CG/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
+    assert json.loads((root/'D-IR/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
 
 
 @pytest.mark.parametrize('gpus',[1,2])
@@ -135,7 +135,7 @@ def test_three_task_rehearsal_uses_fresh_schedule_and_full_epoch_recipe(tmp_path
     assert {name for _,name,_ in jobs}=={'smoke3_icarl','smoke3_icarl_full'}
     for gpu,name,command in jobs:
         assert command[command.index('--max-tasks')+1]=='3'
-        assert command[command.index('--curvature')+1]=='power10'
+        assert command[command.index('--curvature')+1]=='exact'
         assert '--checkpoint' not in command and '--fake-data' not in command
         assert ('--schedule' in command)==(name=='smoke3_icarl_full')
         assert gpu==(1 if gpus==2 and name=='smoke3_icarl' else 0)

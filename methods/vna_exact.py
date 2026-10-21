@@ -1,5 +1,7 @@
 """T29 matrix-free solves, with dense Gram/Woodbury retained as a small reference."""
 import time
+import math
+from copy import copy, deepcopy
 import torch
 from projection.cg import conjugate_gradient
 
@@ -12,13 +14,24 @@ class CGConvergenceError(RuntimeError):
 
 class FrozenGram:
     """JJ^T products at one frozen linearization, plus accepted column swaps."""
-    def __init__(self, products):
+    def __init__(self, products, high=None):
         self.products = products
         device = products.parameter_refs[0][1].device
         self.removed = torch.empty(0,dtype=torch.long,device=device)
         self.added_ids = self.removed
         self.added = None
         self.version = 0
+        self.warm = {}
+        if high is not None:
+            self.high = high
+        elif products.parameter_refs[0][1].dtype == torch.float64:
+            self.high = self
+        else:
+            from methods.vna_sites import HookProducts
+            model = deepcopy(products.model).double()
+            names = tuple(n for n,_ in products.parameter_refs)
+            hp = HookProducts(model,[],{},products.inputs.double(),names,bn_mode=products.bn_mode)
+            self.high = FrozenGram(hp)
 
     def Jv(self, v):
         native = v.clone().index_fill(0,self.removed,0.)
@@ -34,8 +47,9 @@ class FrozenGram:
     def __matmul__(self, v):
         return self.Jv(self.JT(v))
 
-    def swapped(self, native_ids, outgoing_ids, add):
-        G = FrozenGram(self.products)
+    def swapped(self, native_ids, outgoing_ids, add, high_add=None):
+        G = copy(self)
+        G.warm = dict(self.warm)
         G.removed = torch.unique(torch.cat((self.removed,native_ids)))
         if self.added is None:
             G.added_ids, G.added = outgoing_ids, add
@@ -44,80 +58,134 @@ class FrozenGram:
             G.added_ids = torch.cat((self.added_ids[keep],outgoing_ids))
             G.added = torch.cat((self.added[:,keep],add),1)
         G.version = self.version+1
+        if self.high is self:
+            G.high = G
+        else:
+            if high_add is None: raise ValueError('float64 replacement columns are required for IR')
+            G.high = self.high.swapped(native_ids,outgoing_ids,high_add)
         return G
 
 
 class OutputCG:
-    def __init__(self, G, blocks, mu, *, max_iter=200, tolerance=1e-8):
+    def __init__(self, G, blocks, mu, *, max_iter=200, tolerance=1e-10):
         self.G, self.blocks, self.mu = G, blocks.double(), float(mu)
+        if any(p.dtype!=torch.float64 for _,p in G.high.products.parameter_refs):
+            raise ValueError('IR residual requires actual float64 model products')
         self.max_iter, self.tolerance = max_iter, tolerance
         self.solves, self.records, self._q_key = 0, [], None
+        self._warm = None
+        self._solution_key = None
 
     def metric(self, v):
         return torch.einsum('nij,nj->ni', self.blocks, v.double().reshape(self.blocks.shape[:2])).reshape(v.shape)
 
-    def solve(self, c):
+    def solve(self, c, x0=None):
+        original_c = c
+        key = (id(c),c._version,self.G.version,self.blocks._version,self.mu)
+        if self._solution_key == key:
+            self.records.append(dict(self.records[-1],cached=True,iterations=0,refinements=0,
+                                     inner_solves=[],high_seconds=0.,inner_seconds=0.,seconds=0.))
+            return self._solution.clone()
         self.solves += 1
         start = time.perf_counter()
         c = c.double()
-        # CG requires this symmetric SPD system, never the nonsymmetric mu I + M G.
+        high = self.G.high
         action = lambda v: self.mu*v+self.G.JT(self.metric(self.G.Jv(v)))
-        rhs = self.G.JT(c)
-        used, refinements, inner_tolerance, solution = 0, 0, self.tolerance, None
-        while used < self.max_iter:
-            result = conjugate_gradient(action, rhs, x0=solution,
-                max_iter=self.max_iter-used, tolerance=inner_tolerance, eps=1e-30)
-            used += result.iterations
-            residual = rhs-action(result.solution)
-            relative = float(residual.norm()/rhs.norm().clamp_min(1e-300))
-            if (relative<=self.tolerance or
-                    not result.converged or inner_tolerance<=torch.finfo(torch.float64).eps): break
-            # Recheck in caller units: native float32 products need not scale exactly.
-            inner_tolerance *= .1
-            solution = result.solution
-            refinements += 1
-        record = dict(solver='cg', iterations=used, refinements=refinements,
-            relative_residual=relative, symmetric_relative_residual=result.relative_residual,
-            parameter_relative_residual=relative,
-            vector_dtype=str(rhs.dtype), parameter_dtype=str(self.G.products.parameter_refs[0][1].dtype),
-            tolerance=self.tolerance, breakdown=result.breakdown,
-            converged=result.converged and bool(torch.isfinite(result.solution).all()) and relative<=self.tolerance,
+        exact_action = lambda v: self.mu*v+high.JT(self.metric(high.Jv(v)))
+        high_start = time.perf_counter()
+        rhs = high.JT(c)
+        rhs_norm = float(rhs.norm())
+        high_seconds = time.perf_counter()-high_start
+        solution = x0 if x0 is not None else self._warm
+        cold = solution is None
+        solution = torch.zeros_like(rhs) if cold else solution.detach().double().clone()
+        high_start = time.perf_counter()
+        residual = rhs.clone() if cold else rhs-exact_action(solution)
+        float(residual.norm())
+        high_seconds += time.perf_counter()-high_start
+        warm_reset = not bool(torch.isfinite(solution).all()) or float(residual.norm())>rhs_norm
+        if warm_reset: solution.zero_(); residual = rhs.clone()
+        history, inner, used, reason, inner_seconds = [], [], 0, None, 0.
+        inner_tolerance = self.tolerance if high is self.G else 1e-4
+        for refinement in range(9):
+            relative = float(residual.norm())/max(rhs_norm,1e-300)
+            history.append(relative)
+            if math.isfinite(relative) and relative<=self.tolerance: break
+            if not math.isfinite(relative): reason='nonfinite'; break
+            if len(history)>1 and relative>=.99*history[-2]: reason='ir_stagnation'; break
+            if used>=self.max_iter: reason='inner_budget'; break
+            if refinement==8: reason='ir_budget'; break
+            inner_start = time.perf_counter()
+            correction = conjugate_gradient(action,residual,max_iter=self.max_iter-used,
+                tolerance=inner_tolerance,eps=1e-30)
+            inner_seconds += time.perf_counter()-inner_start
+            used += correction.iterations
+            inner.append(dict(iterations=correction.iterations,converged=correction.converged,
+                              relative_residual=correction.relative_residual))
+            if not bool(torch.isfinite(correction.solution).all()): reason='inner_nonfinite'; break
+            solution += correction.solution
+            high_start = time.perf_counter()
+            residual = rhs-exact_action(solution)
+            float(residual.norm())
+            high_seconds += time.perf_counter()-high_start
+            # Only a true double residual accepts a correction, including an inexact inner solve.
+        relative = float(residual.norm())/max(rhs_norm,1e-300)
+        converged = math.isfinite(relative) and relative<=self.tolerance
+        record = dict(solver='cg_ir',iterations=used,refinements=len(inner),cached=False,
+            relative_residual=relative,parameter_relative_residual=relative,
+            residual_dtype='torch.float64',vector_dtype=str(rhs.dtype),
+            parameter_dtype=str(self.G.products.parameter_refs[0][1].dtype),
+            tolerance=self.tolerance,inner_tolerance=inner_tolerance,mu=self.mu,
+            residual_history=history,inner_solves=inner,warm_start=x0 is not None or self._warm is not None,
+            high_seconds=high_seconds,inner_seconds=inner_seconds,
+            q_error_bound=rhs_norm*float(residual.norm())/(2*self.mu),
+            warm_reset=warm_reset,converged=converged,failure_reason=None if converged else reason or 'not_converged',
             seconds=time.perf_counter()-start)
         self.records.append(record)
-        if not record['converged']: raise CGConvergenceError(record)
-        return result.solution
+        if not converged: raise CGConvergenceError(record)
+        self._warm = solution.detach().clone()
+        self._solution_key,self._solution,self._solution_c = key,solution.detach().clone(),original_c
+        self._rhs = rhs
+        return solution
 
     def q(self, c):
-        key = (id(c), c._version, self.G.version)
+        key = (id(c), c._version, self.G.version, self.blocks._version, self.mu)
         if self._q_key != key:
-            self._q_value = -.5*float(self.G.JT(c)@self.solve(c))
+            solution = self.solve(c)
+            self._q_value = -.5*float(self._rhs@solution)
+            self._q_bound = self.records[-1]['q_error_bound']
             self._q_key, self._q_c = key, c
         return self._q_value
 
-    def swapped(self, remove, add, *, native_ids, outgoing_ids):
-        return CGSwap(self, add, native_ids, outgoing_ids)
+    def swapped(self, remove, add, *, native_ids, outgoing_ids, high_add=None):
+        return CGSwap(self,add,native_ids,outgoing_ids,high_add)
 
 
 class CGSwap:
-    def __init__(self, base, add, native_ids, outgoing_ids):
+    def __init__(self, base, add, native_ids, outgoing_ids, high_add=None):
         self.base, self.add = base, add
-        G = base.G.swapped(native_ids, outgoing_ids, add)
+        G = base.G.swapped(native_ids,outgoing_ids,add,high_add)
         self.factor = OutputCG(G, base.blocks, base.mu,
                               max_iter=base.max_iter, tolerance=base.tolerance)
+        self.factor._warm = base._warm
 
     def gamma(self, e, fu):
         eprime = e-self.base.metric(fu)
         jump = -float(e@fu)+.5*float(fu@self.base.metric(fu))
-        return -jump+self.base.q(e)-self.factor.q(eprime)
+        value = -jump+self.base.q(e)-self.factor.q(eprime)
+        self.error_bound = self.base._q_bound+self.factor._q_bound
+        return value
 
     def commit(self):
         self.base.G = self.factor.G
+        self.base._warm = self.factor._warm
+        self.base._solution_key = None
         self.base.solves += self.factor.solves
         self.base.records.extend(self.factor.records)
 
 
 def solve_image(G, solution):
-    return G.Jv(solution) if isinstance(G, FrozenGram) else G@solution
+    return G.high.Jv(solution) if isinstance(G, FrozenGram) else G@solution
 
 
 def solve_norm2(G, solution):
@@ -137,13 +205,8 @@ def gram(products, chunk=64, vjp_chunk=16, jvp_chunk=16):
         G[:, lo:lo+len(ids)] = torch.vmap(products.Jv, chunk_size=jvp_chunk)(tangents).double().T
         del tangents
         if m >= 12800 and G.is_cuda: torch.cuda.synchronize(G.device)
-        if m >= 12800 and time.perf_counter()-start > 600:
-            raise RuntimeError(f'GRAM_LIMIT: m={m} gram_seconds={time.perf_counter()-start}; review required')
     G = (G+G.T)*.5
     if G.is_cuda: torch.cuda.synchronize(G.device)
-    elapsed = time.perf_counter()-start
-    if m >= 12800 and elapsed > 600:
-        raise RuntimeError(f'GRAM_LIMIT: m={m} gram_seconds={elapsed}; review required')
     return G, dict(gram_seconds=time.perf_counter()-start, m=m, gram_dtype=str(G.dtype),
                    parameter_dtype=str(ref.dtype), product_vector_dtype=str(ref.dtype), gram_chunk=chunk,
                    gram_vjp_chunk=vjp_chunk, gram_jvp_chunk=jvp_chunk)

@@ -11,6 +11,7 @@ from methods.vna import dedicated_generator, _unflatten
 from methods.vna_ggn import GGNConfig, GGNProducts
 from methods.vna_losses import CE
 from methods.vna_sites import HookProducts, HookSite
+from methods.vna_downstream import Downstream, separable
 from methods.vna_exact import gram, columns, OutputSolve, FrozenGram, OutputCG, CGConvergenceError, solve_image, solve_norm2
 from experiments.vna_resume import rng_state, restore_rng
 from projection.functional import _preserve_functional_state
@@ -209,10 +210,16 @@ def net_gain(e_beta, H_beta, J, J_prime, f_u, mu):
     return -jump + q(J, e_beta) - q(J_prime, e_prime)
 
 
-def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None):
+def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None, solver='cg_ir', b_probe_size=None):
     """Read-only T25 probe; all model state, buffers and RNG are restored."""
+    if solver not in ('gram','cg_ir'):raise ValueError('invalid diagnostic solver')
+    activity_batch=batch
     spec = spec or CE()
     ctx = dict(ctx or {})
+    if b_probe_size is not None:
+        if b_probe_size<1:raise ValueError('B probe must be positive')
+        n=len(batch[0]);batch=tuple(t[:b_probe_size] for t in batch)
+        ctx={k:v[:b_probe_size] if isinstance(v,torch.Tensor) and v.ndim and len(v)==n else v for k,v in ctx.items()}
     if 'targets' not in ctx:
         ctx['targets'] = batch[1]
     parameters = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
@@ -231,14 +238,17 @@ def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None):
             e = spec.residual(logits, ctx).reshape(-1).double()
             with training_products(model, sites or [], seed_proposals(sites or []), batch[0]) as products:
                 op = GGNProducts(products, batch[1], spec, ctx)
-                G = FrozenGram(products)
-                timing = dict(solver='cg', m=e.numel(), gram_bytes=0)
+                if solver=='gram':
+                    G,timing=gram(products);timing.update(solver='gram',gram_bytes=G.numel()*G.element_size())
+                else:
+                    G = FrozenGram(products)
+                    timing = dict(solver='cg_ir', m=e.numel(), gram_bytes=0)
                 if mu is None:
                     mu = max(1e-12, 1e-2*op.trace(GGNConfig())/max(op.size, 1))
                 blocks = spec.metric_blocks(logits, ctx)
                 factor = None
                 try:
-                    factor = OutputCG(G, blocks, mu)
+                    factor = (OutputSolve if isinstance(G,torch.Tensor) else OutputCG)(G, blocks, mu)
                     y = factor.solve(e)
                     B = max(float(e @ solve_image(G,y)), 0.)
                     flag = None
@@ -246,7 +256,8 @@ def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None):
                     B, flag = None, 'cg_not_converged'
                 except torch.linalg.LinAlgError:
                     B, flag = None, 'factor_fail'
-                timing['solves'] = factor.records if factor is not None else []
+                timing['solves'] = getattr(factor,'records',[])
+                timing.update(b_probe_size=len(batch[0]),activity_probe_size=len(activity_batch[0]))
             target = e.reshape_as(logits)
             norm_w = max(float(torch.einsum('ni,nij,nj->', target,
                 torch.linalg.pinv(blocks, hermitian=True), target)), 0.)
@@ -257,7 +268,7 @@ def diagnose(model, batch, *, sites=None, spec=None, ctx=None, mu=None):
             handles = [site.second_layer.layer.register_forward_pre_hook(
                 lambda _m, args, name=site.module_name: captures.__setitem__(name, args[0].detach()))
                 for site in sites]
-            with _global_state(), torch.no_grad(): model(batch[0])
+            with _global_state(), torch.no_grad(): model(activity_batch[0])
             for handle in handles: handle.remove()
             for site in sites:
                 value = captures.get(site.module_name)
@@ -310,9 +321,10 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='power10'):
-        if curvature != 'power10': raise ValueError('engine curvature must be power10; exact is a historical reference only')
-        self.curvature = curvature
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir'):
+        if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
+        if solver not in ('gram','cg_ir'): raise ValueError('solver must be gram or cg_ir')
+        self.solver,self.curvature = solver,curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
         self.K0 = self.K_next = K0
@@ -334,7 +346,8 @@ class V3Engine:
 
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state):
-        if state.get('curvature','power10') != 'power10': raise ValueError('checkpoint curvature mismatch')
+        if state.get('solver',self.solver)!=self.solver: raise ValueError('checkpoint solver mismatch')
+        if state.get('curvature','power10') != self.curvature: raise ValueError('checkpoint curvature mismatch')
         vars(self).update(deepcopy(state))
 
     @property
@@ -344,6 +357,7 @@ class V3Engine:
     def gir_only(self): return self.arm == 'gir'
 
     def configure_schedule(self, schedule):
+        if schedule.get('solver',self.solver)!=self.solver: raise ValueError('schedule solver mismatch')
         if schedule.get('curvature',self.curvature)!=self.curvature:
             raise ValueError('schedule curvature mismatch')
         self.K0 = self.K_next = int(schedule['K0'])
@@ -418,7 +432,9 @@ class V3Engine:
                 factor = (OutputSolve if isinstance(G, torch.Tensor) else OutputCG)(G, blocks+beta*old_blocks, mu)
                 cached_beta = beta
             try:
-                y = factor.solve(rhs.double())
+                warm=G.warm.get(name,G.warm.get('lm') if name=='z' else None) if isinstance(factor,OutputCG) else None
+                y = factor.solve(rhs.double(),x0=warm) if isinstance(factor,OutputCG) else factor.solve(rhs.double())
+                if isinstance(factor,OutputCG): G.warm[name]=y.detach().clone()
             except CGConvergenceError as error:
                 records.append(dict(error.record, name=name, beta=beta))
                 raise
@@ -464,7 +480,7 @@ class V3Engine:
 
     def _direction(self, p, op, mu, *, G=None, split=None, split_only=False):
         records = []
-        if G is None: G = FrozenGram(p)
+        if G is None: G = gram(p)[0] if self.solver=='gram' else FrozenGram(p)
         blocks, old_blocks = op.loss_spec.metric_blocks(op.logits, op.ctx), self.old_blocks(op)
         eold, H_old, chi = self.old_parts(op)
         solve = self._output_solver(G, blocks, old_blocks, mu, records)
@@ -481,7 +497,7 @@ class V3Engine:
         u, uR, uN = kernel(z).double(), kernel(zO).double(), kernel(zN).double()
         V, VO = max(float(z@u), 0.), max(float(zO@uR), 0.)
         # BetaRule uses the same parameter quadratic form in either representation.
-        B = lambda v: G.JT(H_old(G.Jv(v))) if isinstance(G,FrozenGram) else G@H_old(G@v)
+        B = lambda v: G.high.JT(H_old(G.high.Jv(v))) if isinstance(G,FrozenGram) else G@H_old(G@v)
         if not bool(eold.any()):
             dN = solve('d', op.H(u)); drep = torch.zeros_like(dN)
             beta = dict(beta=0., beta_branch='unprotected', leak=0., epsilon_star=None, beta_suf=None)
@@ -498,38 +514,41 @@ class V3Engine:
                     beta_leaks=leaks, leak_monotonicity_violation=monotonic, **beta)
 
     def _lm(self, model, batch, spec, ctx, p, op, G, mu):
-        mus, rhos, records = [], [], []
+        mus, rhos, records, trials = [], [], [], []
         nu = 2.
         for _ in range(40):
             mus.append(mu)
             solve = self._output_solver(G, spec.metric_blocks(op.logits, ctx), self.old_blocks(op), mu, records)
             try:
                 y = solve('lm', op.g)
-            except CGConvergenceError:
+            except CGConvergenceError as error:
+                trials.append(dict(mu=mu,outcome='numeric_failure',failure_reason=error.record.get('failure_reason'),
+                    relative_residual=error.record.get('relative_residual')))
                 rhos.append(float('-inf'))
                 mu *= nu; nu *= 2
                 if not math.isfinite(mu): break
                 continue
             except torch.linalg.LinAlgError:
-                return dict(reason='chol_fail', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records)
+                return dict(reason='chol_fail', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records, trials=trials)
             image = solve_image(G,y)
             pred = float(op.g@image)-.5*float(image@op.H(image))
             if not torch.isfinite(y).all() or not math.isfinite(pred):
-                return dict(reason='nonfinite', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records)
+                return dict(reason='nonfinite', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records, trials=trials)
             # Dense references return output cotangents; CG returns the parameter step directly.
             before, after = self._measure_ratio(model, batch, spec, ctx, p.parameter_refs, y if isinstance(G,FrozenGram) else p.JT(y))
             rho = ((before[0]-after[0])/pred if pred > 0 and
                    all(math.isfinite(v) for v in (before[0], after[0])) else float('-inf'))
             rhos.append(rho)
+            trials.append(dict(mu=mu,outcome='accepted' if math.isfinite(rho) and rho>0 else 'model_reject',rho=rho))
             if math.isfinite(rho) and rho > 0:
                 self.mu, self.nu = mu*(1/3 if rho >= 1 else max(1/3, 1-(2*rho-1)**3)), 2.
                 self.mu_star, self.mu_star_task = mu, self.task
                 return dict(reason=None, mu=mu, y=y, before=before, after=after,
-                            rho=rho, mu_trajectory=mus, rho_trajectory=rhos, records=records)
+                            rho=rho, mu_trajectory=mus, rho_trajectory=rhos, records=records, trials=trials)
             mu *= nu; nu *= 2
             if not math.isfinite(mu): break
         self.mu, self.nu = mu, nu
-        return dict(reason='lm_budget', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records)
+        return dict(reason='lm_budget', mu=mu, mu_trajectory=mus, rho_trajectory=rhos, records=records, trials=trials)
 
     def _select(self, model, sites, batch, values, *, matrix_values=None):
         proposals = {}
@@ -764,7 +783,7 @@ class V3Engine:
         ecur, shift = values['e_beta'].clone(), torch.zeros_like(values['e_beta'])
         init = next((t[len('girinit-'):] for t in self.arm.split('_') if t.startswith('girinit-')), None)
         records = []
-        values['gir_trials'], values['gir_solves'] = [], []
+        values['gir_trials'], values['gir_solves'], values['downstream'] = [], [], []
         fixed_dead = self.dead_slots(frozen, frozen_sites, batch)
         scopes = [set(s.parameter_names) for s in frozen_sites]
         replacements = {} if any(a & b for i, a in enumerate(scopes) for b in scopes[i+1:]) else None
@@ -772,6 +791,15 @@ class V3Engine:
             units = units_by_site.get(site.module_name, [])
             if not units: continue
             used, cache = [], {}
+            def downstream_stats():
+                ds=cache.get('downstream')
+                if ds is None:return
+                if 'downstream_log' not in cache:
+                    cache['downstream_log']={};values['downstream'].append(cache['downstream_log'])
+                cache['downstream_log'].update(site=site.module_name,seconds=ds.seconds,bytes=ds.bytes,
+                    vjp_calls=ds.vjp_calls,classes=ds.classes,dtype=str(ds.dtype),
+                    block_samples=ds.block_samples,blocks=ds.blocks,retains_full_D=False)
+            if isinstance(factor,OutputCG): cache['high_model']=factor.G.high.products.model
             def proposals():
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
                 residual_start = time.perf_counter()
@@ -781,9 +809,11 @@ class V3Engine:
                 if isinstance(factor, OutputCG): values['gir_solves'][-1].update(factor.records[-1])
                 if init in ('gradmax', 'tiny'): residual = values['e']
                 cache.pop('stats', None)
-                return self.prepare_gir(frozen, fixed, batch, spec, ctx, optimizer, units, iteration,
+                result = self.prepare_gir(frozen, fixed, batch, spec, ctx, optimizer, units, iteration,
                     residual=residual, used_directions=used, gradmax=init == 'gradmax',
                     random_rows=init == 'random', H=factor.metric, cache=cache, mu=mu)
+                downstream_stats()
+                return result
             start = time.perf_counter()
             choices = proposals()
             prepare_seconds = time.perf_counter()-start
@@ -815,6 +845,20 @@ class V3Engine:
                     start = time.perf_counter()
                     Jv = proposal.get('_Jv')
                     cached = Jv is not None
+                    previously_cached,streamed = cached,False
+                    if isinstance(factor,OutputCG) and separable(frozen) and 'downstream' not in cache:
+                        try: cache['downstream']=Downstream(factor.G.high.products.model,fixed,batch[0].double())
+                        except ValueError as error: cache['downstream']=None;cache['downstream_fallback']=str(error)
+                    ds=cache.get('downstream')
+                    if ds is not None and '_Jv64' not in proposal:
+                        try: proposal['_Jv64']=ds.columns(proposal['A'])
+                        except ValueError as error:
+                            cache['downstream']=None;cache['downstream_fallback']=str(error)
+                        else:
+                            streamed=True
+                            if not cached and proposal.get('curvature_method')=='eigvalsh_downstream':
+                                Jv=proposal['_Jv64'].to(fixed.first_layer.layer.weight.dtype).double()
+                                proposal['_Jv']=Jv;cached=True
                     if not cached:
                         with training_products(frozen, [fixed], {fixed.module_name: proposal['A']}, batch[0]) as pv:
                             ne = sum(v.numel() for _, v in pv.extension_refs)
@@ -824,8 +868,19 @@ class V3Engine:
                             features = proxy.virtual_features(cache['x'], incoming)
                             proposal['_activation'] = float(features.ne(0).double().mean())
                         proposal['_Jv'] = Jv
+                    high_column_jvps=0
+                    if isinstance(factor,OutputCG) and factor.G.high is not factor.G and '_Jv64' not in proposal:
+                        high_model=factor.G.high.products.model
+                        high_site=HookSite(high_model,fixed.first,fixed.second,fixed.kind,between=fixed.between,
+                                           o_params=fixed.parameter_names)
+                        A64={k:None if v is None else v.double() for k,v in proposal['A'].items()}
+                        with training_products(high_model,[high_site],{fixed.module_name:A64},batch[0].double()) as hp:
+                            size=sum(v.numel() for _,v in hp.extension_refs);ref=hp.extension_refs[0][1]
+                            proposal['_Jv64']=columns(hp.JEv,torch.arange(size,device=ref.device),size,ref,chunk=1)
+                            high_column_jvps=size
+                    downstream_stats()
                     ne, activation = Jv.shape[1], proposal['_activation']
-                    swap = (factor.swapped(Ju,Jv,native_ids=native_ids,outgoing_ids=outgoing_ids)
+                    swap = (factor.swapped(Ju,Jv,native_ids=native_ids,outgoing_ids=outgoing_ids,high_add=proposal.get('_Jv64'))
                             if isinstance(factor,OutputCG) else factor.swapped(Ju,Jv))
                     gamma = swap.gamma(ecur, contributions[unit])
                     if isinstance(factor, OutputCG):
@@ -836,9 +891,12 @@ class V3Engine:
                         native_columns_seconds=native_columns_seconds if trial_index==0 else 0.,
                         gamma_total_seconds=seconds+(native_columns_seconds if trial_index==0 else 0.),
                         n_jvp_evaluated=(native_jvps if trial_index==0 else 0)+(0 if cached else ne),
-                        candidate_jacobian_cached=cached, candidate_jvp_evaluated=0 if cached else ne))
+                        candidate_jacobian_cached=previously_cached,candidate_jacobian_streamed=streamed,
+                        candidate_jvp_evaluated=0 if cached else ne))
+                    values['gir_trials'][-1]['candidate_double_jvp_evaluated']=high_column_jvps
                     if isinstance(factor, OutputCG):
                         values['gir_trials'][-1]['Gamma_cg'] = values['gir_trials'][-1].pop('Gamma_woodbury')
+                        values['gir_trials'][-1]['linear_solve_error_bound'] = swap.error_bound
                     if math.isfinite(gamma) and gamma > 0 and (best is None or gamma > best[0]):
                         best = gamma, proposal, swap, seconds, activation, ne
                 if best is None: continue
@@ -897,9 +955,15 @@ class V3Engine:
             op = GGNProducts(p, batch[1], spec, ctx)
             if not bool(torch.isfinite(op.g).all()):
                 return dict(skipped=True, skip_reason='nonfinite', swaps=0)
-            G = FrozenGram(p)
-            timing = dict(solver='cg', m=op.g.numel(), gram_bytes=0)
-            gradient_norm = float(op.gradient.norm())
+            if self.solver=='gram':
+                G,timing=gram(p)
+                timing.update(solver='gram',gram_bytes=G.numel()*G.element_size())
+                if not bool(torch.isfinite(G).all()):return dict(**timing,skipped=True,skip_reason='nonfinite',swaps=0)
+                gradient_norm=math.sqrt(max(float(op.g@(G@op.g)),0.))
+            else:
+                G = FrozenGram(p)
+                timing = dict(solver='cg_ir', m=op.g.numel(), gram_bytes=0)
+                gradient_norm = float(op.gradient.norm())
             if gradient_norm == 0: return dict(**timing, skipped=True, skip_reason='zero_gradient', swaps=0)
             if self.mu is None:
                 self.mu = max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
@@ -907,7 +971,7 @@ class V3Engine:
             lm = self._lm(model, batch, spec, ctx, p, op, G, self.mu)
             row = dict(**timing, skipped=lm['reason'] is not None, skip_reason=lm['reason'],
                        mu_star=lm['mu'] if lm['reason'] is None else None, mu=lm['mu'], nu=self.nu,
-                       lm_tries=len(lm['mu_trajectory']), mu_trajectory=lm['mu_trajectory'],
+                       lm_tries=len(lm['mu_trajectory']), lm_trials=lm['trials'], mu_trajectory=lm['mu_trajectory'],
                        rho_trajectory=lm['rho_trajectory'], rho_tr=lm.get('rho'), swaps=0, swap_records=[],
                        gradient_norm=gradient_norm, solves=lm['records'], chol_fail=lm['reason']=='chol_fail')
             if lm['reason'] is not None: return row
@@ -949,7 +1013,8 @@ class V3Engine:
                 delta_old[:, :known] = -solve_image(G,values['yO']).reshape_as(op.logits)[:, :known]
                 e_beta = op.g-beta*values['H_old'](delta_old.flatten())
             Hb_blocks = values['blocks']+beta*values['old_blocks']
-            factor = OutputCG(G, Hb_blocks, mu)
+            factor = (OutputSolve if isinstance(G,torch.Tensor) else OutputCG)(G, Hb_blocks, mu)
+            if isinstance(factor,OutputCG):factor._warm = lm['y']
             values.update(e=op.g, e_beta=e_beta, H_beta=factor.metric, factor=factor)
             ne = sum(v.numel() for _, v in p.extension_refs)
             lam = power_lambda_max(lambda v: p.JET(op.H(p.JEv(v))), ne,
@@ -986,7 +1051,7 @@ class V3Engine:
                              units, iteration, values, mu) if apply else []
         row.update(swaps=len(swaps), swap_records=swaps, ell=[r['ell_beta'] for r in swaps],
                    gir_seconds=time.perf_counter()-start, gir_trials=values.get('gir_trials', []),
-                   gir_solves=values.get('gir_solves', []), systems_solved=len(row['solves'])+factor.solves)
+                   gir_solves=values.get('gir_solves', []), downstream=values.get('downstream',[]), systems_solved=len(row['solves'])+factor.solves)
         if apply and not self.kernel_self: self.A = A
         return row
 
@@ -1033,7 +1098,7 @@ class V3Engine:
                             delta_old = torch.zeros_like(op.logits)
                             delta_old[:, :known] = -solve_image(G,values['yO']).reshape_as(op.logits)[:, :known]
                             e_beta = op.g-beta*values['H_old'](delta_old.flatten())
-                        factor = OutputCG(G, values['blocks']+beta*values['old_blocks'], mu)
+                        factor = (OutputSolve if isinstance(G,torch.Tensor) else OutputCG)(G, values['blocks']+beta*values['old_blocks'], mu)
                         residual = e_beta-factor.metric(solve_image(G,factor.solve(e_beta)))
                         if H is None: H = factor.metric
                 if H is None: H = op.H
@@ -1090,6 +1155,27 @@ class V3Engine:
                     if not bool((projected+shift).ne(0).any()): continue
                     proposals.append(dict(A=candidate, bias_q=bias_q, direction=row.detach().clone()))
         if not proposals: return []
+        if self.curvature=='exact' and separable(model):
+            if 'downstream' not in cache:
+                high_model=cache.get('high_model')
+                if high_model is None: high_model=model if first.weight.dtype==torch.float64 else deepcopy(model).double()
+                try: cache['downstream']=Downstream(high_model,site,batch[0].double())
+                except ValueError as error: cache['downstream']=None;cache['downstream_fallback']=str(error)
+            ds=cache['downstream']
+            if ds is not None:
+                try: totals=ds.score(proposals,residual,metric)
+                except ValueError as error:
+                    cache['downstream']=None;cache['downstream_fallback']=str(error)
+                else:
+                    scored=[]
+                    for proposal,(gradient,small,active,count) in zip(proposals,totals):
+                        if not bool(torch.isfinite(gradient).all()) or not bool(gradient.ne(0).any()): continue
+                        curvature=max(float(torch.linalg.eigvalsh((small+small.T)*.5)[-1]),0.)
+                        if not math.isfinite(curvature): continue
+                        proposal.update(score=.5*float(gradient@gradient)/(curvature+mu),curvature=curvature,
+                            curvature_method='eigvalsh_downstream',_activation=float(active/count))
+                        scored.append(proposal)
+                    return sorted(scored,key=lambda p:p['score'],reverse=True)
         combined = {key: (None if proposals[0]['A'][key] is None else
                          torch.cat([entry['A'][key] for entry in proposals])) for key in proposals[0]['A']}
         scored = []
@@ -1122,9 +1208,10 @@ class V3Engine:
                     _activation=float(features[:, i*width:(i+1)*width].ne(0).double().mean()))
                 scored.append(proposal)
             scored.sort(key=lambda entry: entry['score'], reverse=True)
-            for proposal in scored[:int(self.protocol['gamma_candidates'])]:
-                i = next(i for i in active if proposals[i] is proposal)
-                proposal['_Jv'] = columns(pv.JEv, candidate_ids[i], size, ref)
+            if self.solver=='gram':
+                for proposal in scored[:int(self.protocol['gamma_candidates'])]:
+                    i=next(i for i in active if proposals[i] is proposal)
+                    proposal['_Jv']=columns(pv.JEv,candidate_ids[i],size,ref)
             return scored
 
     @staticmethod

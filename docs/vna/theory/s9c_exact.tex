@@ -64,10 +64,10 @@ Không gian tham số chỉ xuất hiện khi dựng $G_{\mathrm{out}}$ và ở 
 \end{proof}
 \begin{hequa}
 \begin{itemize}
-\item Bản Gram không cần CG. Bản sản xuất dùng dung sai residual $10^{-8}$, tối đa 200 vòng cho mỗi hệ, không warm start giữa các lần giải. Không đạt dung sai là thất bại của lần thử LM (nếu đang ở LM), không phải nghiệm được chấp nhận. Các bước sau LM thất bại thì hủy và khôi phục toàn bộ lần áp dụng.
-\item Mọi hệ của S1 đến S6 (gồm $g$, $g_O$, $d_{\mathrm{rep}}$, $d_N$ với mọi $\beta$, $\rperp^\beta$ và mọi $\Gamma$) dùng chung một $G_{\mathrm{out}}$. Mỗi $\beta$ cần một phân rã cỡ $m\times m$. Mỗi ứng viên của GIR chỉ cần các lát Jacobian $J_u$, $J_v$.
+\item Bản Gram không cần CG. Bản sản xuất dùng CG--IR với residual double $10^{-10}$, tối đa 200 vòng CG cho mỗi hệ và warm start chỉ trong một lần áp dụng (chi tiết phía dưới). Không đạt dung sai là thất bại của lần thử LM (nếu đang ở LM), không phải nghiệm được chấp nhận. Các bước sau LM thất bại thì hủy và khôi phục toàn bộ lần áp dụng.
+\item Ở bản Gram tham chiếu, mọi hệ của S1 đến S6 (gồm $g$, $g_O$, $d_{\mathrm{rep}}$, $d_N$ với mọi $\beta$, $\rperp^\beta$ và mọi $\Gamma$) dùng chung một $G_{\mathrm{out}}$. Mỗi $\beta$ cần một phân rã cỡ $m\times m$. Mỗi ứng viên của GIR chỉ cần các lát Jacobian $J_u$, $J_v$.
 \item Phép đồng nhất này chính là đồng nhất push-through mà \Tref{T25} và \Tref{T27} đã dùng: công thức trong định lý trở thành chính code.
-\item Chi phí dựng $G_{\mathrm{out}}$ là khoảng $m$ cặp VJP và JVP, nhưng bộ nhớ là $O(m^2)$; các thừa số và workspace còn tăng thêm bộ nhớ. Profiling quyết định có cần phương án dự phòng là PCG với preconditioner Nyström \cite{frangella2023} hay không. Phương án đó chỉ cho nghiệm gần đúng.
+\item Chi phí dựng $G_{\mathrm{out}}$ là khoảng $m$ cặp VJP và JVP, nhưng bộ nhớ là $O(m^2)$; các thừa số và workspace còn tăng thêm bộ nhớ. Bản sản xuất bỏ chi phí này bằng matvec CG--IR; các phép đo dung lượng phải bao gồm snapshot double và $D_{\mathrm{site}}$, không chỉ bộ giải.
 \end{itemize}
 \end{hequa}
 \begin{kiem}
@@ -109,15 +109,55 @@ $\widetilde x-x^*=-A^{-1}r$ và $\norm{A^{-1}}\le1/\mu$.
 Áp Cauchy--Schwarz cho hiệu bilinear, rồi cộng sai số hai $q$ trong $\Gamma$.
 \end{proof}
 
-\paragraph{Độ chính xác hữu hạn.}
-Matvec của mạng giữ dtype native (float32 trên T4), vector lặp và phép cộng
-vô hướng dùng float64. CG kiểm lại $b-A\widetilde x$ sau khi đổi về đơn vị
-vế phải ban đầu; residual đệ quy không đủ để chấp nhận. Tinh chỉnh chỉ trong
-cùng hệ, không tăng tổng quá 200 vòng, không nới dung sai $10^{-8}$.
-Nếu matvec là $A+E$, cận cho hệ lý tưởng phải có thêm
-$\norm{E\widetilde x}/\mu$: float32 không cho một chứng minh sai số tuyệt đối
-cho Jacobian thực. $\varrho$ và kiểm cửa sổ vẫn đánh giá loss thật;
-chúng không biến nghiệm CG thành nghiệm chính xác hay chứng minh mọi $\Gamma$.
+\paragraph{Cập nhật CG--IR: residual thật ở float64.}
+Tại điểm tham số đóng băng, dựng một snapshot model double bằng cách nâng
+\emph{các trọng số hiện tại} lên float64. Giữ $M$ và $c$ của bài toán đã chọn
+cố định; đặt $A_{64}=J_{64}\T M J_{64}+\mu I$, $b_{64}=J_{64}\T c$.
+Các cột thay thế trong $J'_{64}$ cũng phải được tính bằng model double;
+không được chỉ cast cột float32 sang double rồi gọi đó là residual float64.
+Cài đặt tính $r_k=b_{64}-A_{64}x_k$ bằng JVP/VJP của snapshot double, giải
+hiệu chỉnh bằng CG trên toán tử native float32 ở dung sai trong $10^{-4}$,
+rồi cập nhật $x_{k+1}=x_k+d_k$ bằng float64. Dừng chỉ khi
+$\norm{r_k}\le10^{-10}\norm{b_{64}}$; tổng tối đa 200 vòng CG và tám lần
+hiệu chỉnh mỗi hệ. Stagnation hay hết ngân sách là lỗi số của lần thử LM.
+Đây là CG hiệu chỉnh trong khung mixed-precision IR \cite{carsonhigham2018},
+không phải khẳng định dùng nguyên thuật toán LU/GMRES--IR của bài đó.
+
+\paragraph{Bổ đề hội tụ có điều kiện.}
+Giả sử $A_{64}\succ0$, $A_{32}=A_{64}+E$,
+$\delta=\norm{A_{64}^{-1}}\norm E<1$ và mỗi hiệu chỉnh có residual
+$\norm{r_k-A_{32}d_k}\le\eta\norm{r_k}$.
+Với $\kappa=\norm{A_{64}}\norm{A_{64}^{-1}}$, ta có
+\[
+ \norm{x_{k+1}-x^*}\le
+ \frac{\delta+\eta\kappa}{1-\delta}\norm{x_k-x^*}.
+\]
+Do đó $2\delta+\eta\kappa<1$ là một điều kiện đủ cho co sai số.
+Nếu sai số toán tử có cỡ $u_{32}\norm{A_{64}}$ thì $\delta$ có cỡ
+$\kappa u_{32}$, với các hằng số và giả thiết ổn định tương ứng;
+riêng $\kappa u_{32}<1$ chưa là chứng minh đủ cho CG hiệu chỉnh hữu hạn.
+\begin{proof}
+Đặt $e_k=x_k-x^*$ và $s_k=r_k-A_{32}d_k$.
+Khi đó $e_{k+1}=A_{32}^{-1}Ee_k-A_{32}^{-1}s_k$.
+Dùng $\norm{A_{32}^{-1}}\le\norm{A_{64}^{-1}}/(1-\delta)$ và
+$\norm{r_k}\le\norm{A_{64}}\norm{e_k}$.
+\end{proof}
+Khi residual cuối đạt dung sai, bổ đề sai số phía trên áp dụng cho $A_{64}$,
+bất kể điểm khởi đầu. Ở hữu hạn dung sai, warm start có thể làm các bit cuối
+khác nhau; nó không cho đẳng thức bitwise giữa các cách khởi đầu.
+Nếu không hội tụ khi $\mu$ nhỏ thì đánh dấu lỗi số và thử LM tiếp theo;
+không đặt cutoff $\mu$ tùy ý. Muốn kết luận $\mu^*$ không đổi phải đối chiếu
+các lần lỗi số với $\varrho$ tham chiếu tại cùng $\mu$ trên checkpoint đó.
+
+\paragraph{Warm start trong một lần áp dụng.}
+Các nghiệm ở $\mu$, $\beta$ lân cận và trước swap chỉ làm điểm khởi đầu;
+mọi nghiệm mới đều phải đạt residual double nói trên. Cache hệ trùng vế phải
+và ma trận chỉ được dùng khi version của residual/metric/span vẫn khớp.
+Mọi cache và snapshot được tạo mới trong lần áp dụng, không vào checkpoint
+engine và không truyền sang lần áp dụng sau. $\varrho$ và kiểm cửa sổ vẫn
+đo loss thật trên model native; không bỏ hay thay các cổng kiểm này.
+Log cận sai số hai $q$ để đánh giá nhiễu $\Gamma$, không thêm cổng chấp nhận:
+không có bảo đảm chung rằng sai số nhỏ hơn mọi $\Gamma$ khi $\Gamma$ gần $0$.
 
 \paragraph{Swap dưới dạng matvec.}
 Giữ $J$ tại mạng đóng băng; che các tọa độ incoming/outgoing của slot bỏ đi,
@@ -177,7 +217,7 @@ Cố định $\theta$, $J$, $H_\beta$, $e_\beta$, $\mu^*$ tại đầu lần áp
 Đặt $\hat q_k=\hat Q(-\sum_{i\le k}f_{u_i})+\min_x[\dots]$ như trong \Tref{T28}(a), và $\Gamma_k=\hat q_{k-1}-\hat q_k$. Khi đó $\hat q_0>\hat q_1>\dots$, và tổng lợi của mô hình bằng $\sum_k\Gamma_k$.
 \item Swap slot chết không đổi hàm mạng và cập nhật $G_{\mathrm{out}}$ chính xác (\Tref{T29}(e)): mô hình sau swap là mô hình tuyến tính hóa đúng của mạng thật.
 \item Swap slot sống đổi hàm mạng thật. Mô hình giữ tuyến tính hóa tại $\theta$, còn hiệu ứng trên mạng thật được kiểm bằng $j_L,j_{KD}\le0$, đo tuần tự trên mạng đã sửa. Lần áp dụng sau tuyến tính hóa lại, giống mỗi bước của LM.
-\item Chi phí mỗi ứng viên: các lát Jacobian $J_u$ và $J_v$ (khoảng $|u|+|v|$ JVP; với slot chết thì $J_u=0$), cộng một cập nhật Woodbury hạng $|u|+|v|$ trên phân rã của $K+\mu^*$ (\Tref{T29}(d)). Không cần CG và không cần tuyến tính hóa lại mạng. Các giới hạn top-2 ứng viên và 4 slot sống mỗi site chỉ tồn tại vì chi phí. Profiling quyết định có bỏ được chúng không; chúng không phải một phần của định lý.
+\item Ở bản Gram tham chiếu, chi phí mỗi ứng viên: các lát Jacobian $J_u$ và $J_v$ (khoảng $|u|+|v|$ JVP; với slot chết thì $J_u=0$), cộng một cập nhật Woodbury hạng $|u|+|v|$ trên phân rã của $K+\mu^*$ (\Tref{T29}(d)). Không cần CG và không cần tuyến tính hóa lại mạng. Các giới hạn top-2 ứng viên và 4 slot sống mỗi site chỉ tồn tại vì chi phí. Profiling quyết định có bỏ được chúng không; chúng không phải một phần của định lý.
 \end{enumerate}
 \end{namedthm}
 \begin{proof}

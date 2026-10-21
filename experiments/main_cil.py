@@ -1,6 +1,7 @@
 """Main B0 Inc5 iCaRL runs using pinned PyCIL training and exact resume hooks."""
 import argparse
 import copy
+import hashlib
 from contextlib import contextmanager
 import json
 import os
@@ -130,6 +131,7 @@ class Intervention:
 
 class Diverged(RuntimeError): pass
 class PreflightComplete(Exception): pass
+class BaselineReused(Exception): pass
 
 
 def accuracy_metrics(tasks, predictions, targets, known, label):
@@ -205,7 +207,7 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
                  torch.tensor([int(s[2]) for s in samples], device=learner._device))
         model = Prediction(learner._network)
         diagnostic = dict(task=row['task'], probe_seed=0, probe_indices=indices.tolist(),
-                              **vna_v3.diagnose(model, batch, sites=sites_for(model), mu=mu))
+                              **vna_v3.diagnose(model, batch, sites=sites_for(model), mu=mu,solver='cg_ir',b_probe_size=min(128,len(batch[0]))))
         if row['task'] in (5,10,15,20):
             row['feature_accuracy'] = feature_accuracy(learner, manager, boundary)
     fmt = lambda v: 'n/a' if v is None else f'{v:.2f}'
@@ -256,6 +258,12 @@ class MainHook(ICaRLHook):
         self.rows.append(diagnostic)
         self.tasks.append(row)
         if self.persist: self.persist(self)
+        if row['task']==2 and getattr(self,'baseline_reference',None) is not None:
+            from experiments.main_cil_baseline import compare
+            result=compare(self.baseline_reference,self.epochs)
+            write_json(self.progress.out/'baseline_loss_check.json',result)
+            log(f"BASELINE epoch-loss check: {result['status']} ({result['epochs_compared']} epochs, exact equality)")
+            if result['status']=='PASS':raise BaselineReused()
 
 
 def run(args):
@@ -277,7 +285,7 @@ def run(args):
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
     if schedule:
         expected = dict(authoritative=True, code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature)
+                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver)
         if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
         if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
     K0 = int(schedule['K0']) if schedule else 1
@@ -289,14 +297,14 @@ def run(args):
         params.update(memory_size=20, memory_per_class=2)
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
-    protocol = dict(setting='icarl', algorithm_version='v4', solver='T29-cg', arm=args.arm, seed=args.seed,
+    protocol = dict(setting='icarl', algorithm_version='v4', solver=args.solver, arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=tasks,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
         data_dir=args.data_dir, class_order=order, class_order_kind=args.class_order,
         backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, coefficient=args.coefficient, curvature=args.curvature,
         r=16, live_candidates=4, compute_budget=1., preflight_only=args.preflight_only, schedule=schedule, K0=K0, cfg=copy.deepcopy(params),
-        probe=dict(size=256, seed=0, source='seen test classes'),
+        probe=dict(size=256, b_size=128, b_solver='cg_ir',seed=0, source='seen test classes'),
         feature_probe=dict(tasks=[5,10,15,20], optimizer='LBFGS', max_iter=100,
                            initialization='zeros', data='all seen train, test transforms', regularization=0),
         training=dict(first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50,
@@ -307,17 +315,26 @@ def run(args):
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
+    baseline_reference=None
+    if args.baseline_reference:
+        if args.arm!='icarl' or args.max_tasks!=20 or args.fake_data or args.preflight_only:
+            raise ValueError('baseline reference requires real 20-task icarl')
+        from experiments.main_cil_baseline import validate
+        data=Path(args.baseline_reference).read_bytes()
+        baseline_reference=json.loads(data);validate(baseline_reference,protocol)
+        protocol['baseline_reference_sha256']=hashlib.sha256(data).hexdigest()
     progress = Progress(out, protocol)
     if (out/'summary.json').exists():
         previous = json.loads((out/'summary.json').read_text())
         if previous.get('identity') != protocol: raise ValueError('completed identity mismatch')
-        if previous['status'] == 'COMPLETED': return previous
+        if previous['status'] in ('COMPLETED','REUSED_BASELINE'): return previous
     status = Status(out, args.arm)
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
-        curvature=args.curvature), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+        curvature=args.curvature,solver=args.solver), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
+        write_json(out/'epochs.json', hook.epochs)
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])
         if not (out/'continual_eval.csv').exists(): (out/'continual_eval.csv').write_text('task,cnn_top1,nme_top1\n')
         write_json(out/'diagnostics.json', hook.rows)
@@ -337,6 +354,7 @@ def run(args):
         return value
     hook = MainHook(seed=args.seed, fake=args.fake_data, persist=persist, progress=progress,
                     intervention=intervention, manager=None, status=status)
+    hook.baseline_reference=baseline_reference
     started = time.monotonic()
     run_status, reason = 'COMPLETED', None
     try:
@@ -349,11 +367,15 @@ def run(args):
         points = intervention.engine.protocol['preflight_points']
         schedule = vna_v3.schedule_from_points(points, len(hook.learner.train_loader))
         schedule.update(authoritative=True, setting='icarl', backbone=args.backbone,
-            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,
+            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,
             source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
             schedule_source=args.schedule_source, r=16)
         write_json(Path(args.schedule_output), schedule)
         run_status = 'PREFLIGHT'
+    except BaselineReused:
+        run_status='REUSED_BASELINE'
+        write_json(out/'reused_baseline.json',dict(reference=baseline_reference,
+            verification=json.loads((out/'baseline_loss_check.json').read_text())))
     except Diverged as exc:
         run_status, reason = 'FAILED_DIVERGED', str(exc)
         status.update(status=run_status, phase='diverged', diverged=hook.diverged)
@@ -374,7 +396,7 @@ def run(args):
         seconds=seconds, gpu_hours=seconds/3600 if args.device != 'cpu' else 0.,
         resume_supported=True)
     for label in ('cnn','nme'):
-        if hook.tasks:
+        if hook.tasks and run_status!='REUSED_BASELINE':
             summary.update({label+'_average_accuracy': hook.tasks[-1][label+'_average_accuracy'],
                             label+'_last_accuracy': hook.tasks[-1][label+'_top1'],
                             label+'_forgetting': hook.tasks[-1][label+'_forgetting'],
@@ -393,7 +415,9 @@ def parser():
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
     p.add_argument('--coefficient', type=float, default=1.)
-    p.add_argument('--curvature', choices=('power10',), default='power10')
+    p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')
+    p.add_argument('--baseline-reference',help='Completed old baseline + 150 full-precision epoch losses')
+    p.add_argument('--curvature', choices=('power10','exact'), default='exact')
     p.add_argument('--max-tasks', type=int, default=20)
     p.add_argument('--schedule')
     p.add_argument('--preflight-only', action='store_true')

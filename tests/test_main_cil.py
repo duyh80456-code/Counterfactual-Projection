@@ -120,11 +120,11 @@ def test_collector_and_paired_table(tmp_path):
                 value=record.get(name[:-5],dict(status='COMPLETED'))
                 if name=='diagnostics.json': value=[dict(task=i,B=1.,mu_diag=.1,norm_w2=2.) for i in range(1,21)]
                 (folder/name).write_text('task\n' if name.endswith('.csv') else json.dumps(value))
-            if arm=='icarl_full': (folder/'interventions.json').write_text('[]')
+            if arm!='icarl': (folder/'interventions.json').write_text('[]')
     rows=table(jobs.values())
     row=next(r for r in rows if r['arm']=='icarl_full' and r['metric']=='nme_average_accuracy')
     assert row['paired_delta']==dict(mean=1.,std=0.) and row['seeds_won']==2
-    assert len(collect([tmp_path],'outputs'))==4
+    assert len(collect([tmp_path],'outputs'))==len(jobs)
     stability_plasticity(jobs.values(),tmp_path/'stability.svg')
     assert (tmp_path/'stability.svg').stat().st_size>0
     protocol_file=tmp_path/'outputs'/'icarl_full__nobn__superclass__s0'/'protocol.json'
@@ -226,7 +226,7 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
             with pytest.raises(SystemExit) as exc: main.run(args)
             assert exc.value.code == 75
         saved=state('measurement_pause')
-        assert saved['completed']==1 and saved['learner']['_cur_task']==0
+        assert saved['completed']==1 and saved['mid'] and saved['learner']['_cur_task']==1
         result=main.run(args)
         actual=state('measurement_pause')
         assert result['tasks']==results[0]['tasks']

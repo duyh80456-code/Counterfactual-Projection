@@ -111,7 +111,7 @@ def test_grouped_gir_candidates_match_serial_power10_scores_and_jacobians(monkey
         site=HookSite(model,'conv1','3','conv',between=('1','2'))
     model.to(dtype=dtype);batch=(batch[0].to(dtype),batch[1]);opt=torch.optim.SGD(model.parameters(),lr=.01)
     tolerance=1e-5 if dtype==torch.float32 else 1e-10
-    engine=V3Engine('vna_gir'); engine.begin_task(1); engine.mu=.2
+    engine=V3Engine('vna_gir',curvature='power10'); engine.begin_task(1); engine.mu=.2
     with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
         op=GGNProducts(p,batch[1],spec,ctx); G,_=gram(p)
         factor=OutputSolve(G,spec.metric_blocks(op.logits,ctx),engine.mu)
@@ -127,7 +127,7 @@ def test_grouped_gir_candidates_match_serial_power10_scores_and_jacobians(monkey
                               residual=residual,H=factor.metric,mu=engine.mu)
     assert result and len(counts)==1
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))
-    assert sum('_Jv' in entry for entry in result)==min(2,len(result))
+    assert all('_Jv' not in entry and '_Jv64' not in entry for entry in result)
     for proposal in result:
         with original(model,[site],{site.module_name:proposal['A']},batch[0]) as p:
             ne=sum(ref.numel() for _,ref in p.extension_refs)
@@ -165,7 +165,7 @@ def test_application_matches_serial_derivatives_with_power10_curvature(monkeypat
     for serial in (False,True):
         clone=deepcopy(initial);site=HookSite(clone,'0','2','linear',between=('1',))
         opt=torch.optim.SGD(clone.parameters(),lr=.01,momentum=.9)
-        engine=V3Engine('vna_gir');engine.begin_task(1);engine.mu=.2
+        engine=V3Engine('vna_gir',curvature='power10');engine.begin_task(1);engine.mu=.2
         with monkeypatch.context() as patch:
             if serial:
                 patch.setattr(vna,'gram',lambda p:gram(p,chunk=1,vjp_chunk=1,jvp_chunk=1))
@@ -282,7 +282,9 @@ def test_exact_engine_resume_one_native_step_is_bitwise():
         for event in es['events']:
             for key in tuple(event):
                 if key.endswith('seconds'):event.pop(key)
-            for record in event.get('solves',[]):record.pop('seconds',None)
+            for record in event.get('solves',[]):
+                for key in tuple(record):
+                    if key.endswith('seconds'):record.pop(key)
         return params,optim,es,rng_state()
     expected=advance()
     model.load_state_dict(state[0]);opt.load_state_dict(state[1]);engine.load_state_dict(state[2]);restore_rng(state[3])
