@@ -29,7 +29,7 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
         raise ValueError(f'{job}: summary/protocol code_commit mismatch')
     if protocol.get('benchmark') == 'v4_competitor':
         import math
-        from experiments.v4_competitors import recipe, grid, ROUND2, ROUND3, SOURCES
+        from experiments.v4_competitors import recipe, grid, ROUND2, ROUND3, SOURCES, DEFAULT_CONFIGS
         from adapters.v4_competitors import PINS
         from experiments.runners.pycil import UPSTREAM_PIN
         method = protocol.get('arm')
@@ -48,6 +48,8 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
                 protocol.get('config_overrides') != overrides or protocol.get('upstream_commit') != UPSTREAM_PIN or
                 protocol.get('competitor_pins') != PINS):
             raise ValueError(f'{job}: v4 recipe/provenance mismatch')
+        if method in DEFAULT_CONFIGS and protocol.get('parameter_policy')!='original_defaults_no_search_v1':
+            raise ValueError(f'{job}: missing original-default parameter policy')
         if method in ROUND2 and protocol.get('method_config') not in grid(method):
             raise ValueError(f'{job}: unregistered competitor configuration')
         expected_impl = SOURCES.get(method,dict(source=f'PyCIL/models/{method}.py',reimplemented=False))

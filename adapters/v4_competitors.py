@@ -117,12 +117,15 @@ class CompetitorHook:
     @contextmanager
     def install(self, learner, module):
         net = learner._network
+        # Expanded heads and auxiliary method state must share the training device.
+        net.to(learner._device)
+        if self.method=='icarl_redo':
+            self.steps=getattr(learner,'_v4_redo_step',0)
+            self.last_reset=getattr(learner,'_v4_redo_last_reset',0)
         handles = []
         old_optim = module.optim
         pairs = branch_pairs(net)
         if self.method == 'icarl_snp':
-            # update_fc creates a CPU head before native _train moves the model.
-            net.to(learner._device)
             shrink_perturb(net, learner.args, **self.config)
             if not all(torch.isfinite(p).all() for p in net.parameters()):
                 raise FloatingPointError('nonfinite_params after shrink-perturb, step=0')
@@ -160,7 +163,7 @@ class CompetitorHook:
                 bn = block.bn_a if isinstance(block.bn_a, nn.BatchNorm2d) else nn.BatchNorm2d(
                     first.out_channels).to(first.weight)
                 gnt = ResGnT(nn.Sequential(first, bn, block.conv_b), 'relu',
-                    replacement_rate=self.config['replacement_rate'], maturity_threshold=100,
+                    **self.config,
                     device=first.weight.device)
                 if saved:
                     for key, value in saved[index].items():
@@ -172,8 +175,9 @@ class CompetitorHook:
         def sgd(params, *args, **kwargs):
             if self.method == 'icarl_upgd':
                 upstream = source_module('v4_upgd', 'upgd/core/optim/weight_upgd/first_order.py')
-                optimizer = upstream.FirstOrderGlobalUPGD(net.named_parameters(),
-                    lr=kwargs['lr'], weight_decay=kwargs.get('weight_decay', 0.), **self.config)
+                settings=dict(lr=kwargs['lr'],weight_decay=kwargs.get('weight_decay',0.))
+                settings.update(self.config)
+                optimizer = upstream.FirstOrderGlobalUPGD(net.named_parameters(),**settings)
             else:
                 optimizer = original_sgd(params, *args, **kwargs)
             self.optimizer = optimizer
@@ -181,6 +185,10 @@ class CompetitorHook:
             def step(optimizer_self, *a, **kw):
                 result = original_step(*a, **kw)
                 self.steps += 1
+                if self.method=='icarl_redo' and self.steps-self.last_reset>=self.config['reset_steps']:
+                    for name,block in pairs:
+                        recycle(block,self.features[name][:self.config['score_batch_size']],optimizer,self.config['tau'])
+                    self.last_reset=self.steps
                 for name, gnt in self.generators: gnt.gen_and_test([self.features[name]])
                 if swr is not None: swr.step()
                 if not all(torch.isfinite(p).all() for p in net.parameters()):
@@ -194,6 +202,9 @@ class CompetitorHook:
         finally:
             module.optim = old_optim
             for handle in handles: handle.remove()
+            if self.method=='icarl_redo':
+                learner._v4_redo_step=self.steps
+                learner._v4_redo_last_reset=self.last_reset
             if swr is not None: learner._v4_swr_step = swr.param_groups[0]['current_step']
             if self.generators:
                 learner._v4_cbp = [{key: copy.deepcopy(getattr(gnt, key)) for key in
@@ -202,10 +213,3 @@ class CompetitorHook:
 
     def after_epoch(self, learner):
         self.epoch += 1
-        if self.method != 'icarl_redo' or self.epoch-self.last_reset < self.config['reset_epochs']:
-            return
-        for name, block in branch_pairs(learner._network):
-            recycle(block, self.features[name], self.optimizer, self.config['tau'])
-        self.last_reset = self.epoch
-        if not all(torch.isfinite(p).all() for p in learner._network.parameters()):
-            raise FloatingPointError(f'nonfinite_params after ReDo, step={self.steps}')

@@ -4,7 +4,6 @@ Run with python -m experiments.v4_competitors --help. Real sweeps are explicit;
 --fake-data is only a two-task, one-epoch CPU fixture and cannot select real configs.
 """
 import argparse
-import ast
 import copy
 from contextlib import contextmanager
 import importlib
@@ -43,26 +42,21 @@ CFLAT_REFERENCE = dict(value=59.13, metric='average accuracy (published head uns
     source='third_party/C-Flat/resources/cflat_results.png, Table 1, iCaRL w/ C-Flat, B0_Inc5; README.md:20')
 
 
-def upgd_values():
-    values = dict(beta_utility=[], sigma=[])
-    for name in ('label_permuted_emnist.py', 'label_permuted_cifar10.py'):
-        tree = ast.parse((ROOT/'third_party/upgd/experiments'/name).read_text())
-        call = next(node.value for node in tree.body if isinstance(node, ast.Assign)
-                    and any(isinstance(t, ast.Name) and t.id == 'up_grids' for t in node.targets))
-        for kw in call.keywords:
-            if kw.arg in values: values[kw.arg].extend(ast.literal_eval(kw.value))
-    return {k: sorted(set(v)) for k, v in values.items()}
+DEFAULT_CONFIGS = {
+    'icarl_cbp': dict(replacement_rate=1e-5, maturity_threshold=1000, util_type='contribution', decay_rate=.99),
+    'icarl_redo': dict(tau=.025, reset_steps=1000, score_batch_size=64),
+    'icarl_snp': dict(shrink=.4, sigma=.1),
+    'icarl_upgd': dict(beta_utility=.999, sigma=.001, weight_decay=.001),
+}
 
 
 def grid(method):
+    if method in DEFAULT_CONFIGS:return [copy.deepcopy(DEFAULT_CONFIGS[method])]
     values = {
-        'icarl_cbp': dict(replacement_rate=[1e-6,1e-5,1e-4,1e-3]),
-        'icarl_redo': dict(tau=[0.,.025,.1], reset_epochs=[1,5]),
-        'icarl_snp': dict(shrink=[.4,.8], sigma=[1e-4,1e-2]),
         'icarl_fire': dict(iter_num=[10]),
         'icarl_swr': dict(utility_function=['gradient'], pruning_method=['threshold'],
                           reinit_freq=[128], reinit_factor=[5e-4]),
-    }.get(method, upgd_values() if method == 'icarl_upgd' else {})
+    }.get(method, {})
     return [dict(zip(values, v)) for v in itertools.product(*values.values())] if values else [{}]
 
 
@@ -193,6 +187,7 @@ def run(args):
     identity = dict(benchmark='v4_competitor', arm=args.method, effective_method=method, seed=args.seed,
         backbone=args.backbone, order=args.order, nobn_lr_scale=args.nobn_lr_scale, cfg_source=source,
         config_overrides=overrides, cfg=copy.deepcopy(cfg), method_config=config,
+        parameter_policy='original_defaults_no_search_v1' if args.method in DEFAULT_CONFIGS else None,
         fake_data=args.fake_data, disabled=args.disabled, reproduction=args.reproduction,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, competitor_pins=PINS,

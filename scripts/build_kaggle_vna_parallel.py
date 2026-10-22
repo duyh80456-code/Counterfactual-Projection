@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from scripts.build_kaggle_pilot_common import notebook
 from scripts.build_kaggle_pilot_common import cell
 
-TUNED = ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')
+PLASTICITY_METHODS = ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')
 
 def cil_jobs(arms, backbones=('nobn',), order='superclass', seeds=range(3)):
     return [f'{arm}__{backbone}__{order}__s{seed}' for backbone in backbones
@@ -22,7 +22,6 @@ def cil_jobs(arms, backbones=('nobn',), order='superclass', seeds=range(3)):
 # Rough relative GPU cost per job (icarl = 1): icarl_full may spend up to 1.0x extra on the
 # algorithm (§2.5 budget), C-Flat reports ~2.9x, sweeps scale with their grid size.
 COST = {'icarl_full': 2., 'icarl_cflat': 2.9, 'gem': 1.5, 'podnet': 1.3,
-        'icarl_cbp__sweep': 4., 'icarl_redo__sweep': 6., 'icarl_snp__sweep': 4., 'icarl_upgd__sweep': 9.,
         'podnet__sweep': 1.3, 'wa__sweep': 1., 'gem__sweep': 1.5, 'icarl_cflat__sweep': 2.9}
 
 
@@ -41,12 +40,11 @@ PRESETS = {
     'M3': lanes(cil_jobs(('icarl','icarl_full'), order='random')),
     # Seed 0 only: icarl_full (GPU0) next to icarl (GPU1), same setup and K0 authority as M1.
     'M1s0': (['icarl_full__nobn__superclass__s0'], ['icarl__nobn__superclass__s0'], []),
-    'C1': lanes([method+'__sweep' for method in TUNED]),
     'C2': tuple(a+b for a,b in zip(
         lanes([m+'__sweep' for m in ('podnet','wa','gem','icarl_cflat')]),
         lanes(cil_jobs(('podnet','wa','gem','icarl_cflat'),seeds=(1,2))))),
-    'C3': lanes(cil_jobs(TUNED, ('nobn',),seeds=(1,2))),
-    'C4': lanes(cil_jobs(TUNED, ('bn',))),
+    'C3': lanes(cil_jobs(PLASTICITY_METHODS, ('nobn',))),
+    'C4': lanes(cil_jobs(PLASTICITY_METHODS, ('bn',))),
     'C5': (['icarl_cflat__bn__random__s1993'], [], []),
     'B5w': ([], [], [f'b5_{arm}__width{width}__s{seed}' for width in (5,20,100)
                     for arm in ('bp','bp_vna','bp_gir','bp_vna_gir') for seed in range(3)]),
@@ -198,13 +196,8 @@ def command(job):
     cmd = [sys.executable,'-u','-m','experiments.v4_competitors','--method',arm,
            '--backbone',backbone,'--order',order,'--seed',seed,'--out',str(ROOT/job),
            '--device','cuda:0','--data-dir',str(DATA_ROOT),'--resume']
-    if PRESET in ('C2','C3','C4'):
-        destination = ROOT/'_configs'/arm/'best_config.json'
-        path = ROOT/(arm+'__sweep')/'best_config.json' if PRESET=='C2' else None
-        if path is None:path = attached_file('best_config.json', destination, lambda v: v.get('method') == arm
-                             and v.get('code_commit') == REPO_COMMIT and v.get('source_digest') == SOURCE_DIGEST
-                             and v.get('synthetic') is False)
-        if path is None: raise FileNotFoundError(f'Attach the current C1 best_config.json for {arm}')
+    if PRESET=='C2':
+        path=ROOT/(arm+'__sweep')/'best_config.json'
         cmd += ['--best-config',str(path)]
     if PRESET == 'C5': cmd += ['--reproduction']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
@@ -269,8 +262,8 @@ REPORT = r'''from scripts.collect_parallel import collect, report
 from experiments.main_cil_results import stability_plasticity
 from collections import Counter
 records = collect([ROOT.parent],RUN_TAG)
-if PRESET in ('C1','C2'):
-    methods=('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd') if PRESET=='C1' else ('podnet','wa','gem','icarl_cflat')
+if PRESET=='C2':
+    methods=('podnet','wa','gem','icarl_cflat')
     for method in methods:
         selection = ROOT/(method+'__sweep')/'best_config.json'
         if not selection.exists(): continue
@@ -343,7 +336,7 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
         for item in result['cells']:
             item['source'] = [line.replace('0'*40,commit) for line in item['source']]
     cells=result['cells']
-    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1: Gram/power10, seeds1/2 only, attach seed0 Gram output for frozen K0. All noBN runs use nobn_lr_scale=0.5 (lr=0.05). C1 selects method configs at that fixed LR; C2 uses the same fixed LR. C2: noBN only, winner supplies seed0. C3: matched seeds1/2 plus C1 winner seed0. C3/C4 require current C1 selections.')
+    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1: Gram/power10, seeds1/2 only, attach seed0 Gram output for frozen K0. All noBN runs use nobn_lr_scale=0.5 (lr=0.05). C1 is retired. C2: noBN only, winner supplies seed0. C3 runs the four original-default methods at all three seeds, with no best_config input; C4 uses the same method defaults on BN. See docs/vna/C3_DEFAULTS_APPENDIX.md.')
     cells[1]=cell('code',config(commit,PRESETS[preset] if preset else ([],[],[]),run_tag,preset,source_digest))
     cells[2]=cell('code',''.join(cells[2]['source'])+OVERLAY)
     setup=''.join(cells[3]['source'])

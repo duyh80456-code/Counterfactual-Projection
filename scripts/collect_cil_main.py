@@ -36,7 +36,8 @@ def collect(inputs):
         relative=PurePosixPath(best.get('selected_trial',''))
         if relative.is_absolute() or '..' in relative.parts or not relative.parts or relative.parts[0]!='scan':
             continue
-        from experiments.v4_competitors import grid,ROUND2,NOBN_LR_SCALES
+        from experiments.v4_competitors import grid,ROUND2,NOBN_LR_SCALES,DEFAULT_CONFIGS
+        if best.get('method') in DEFAULT_CONFIGS:continue
         if best.get('method') not in ROUND2 or best.get('config') not in grid(best['method']) or best.get('lr_scales')!=list(NOBN_LR_SCALES):
             raise ValueError('Unregistered sweep selection')
         if ((best.get('seed'),best.get('backbone'),best.get('order'),best.get('metric'))!=(0,'nobn','superclass','cnn_average_accuracy')
@@ -61,6 +62,10 @@ def collect(inputs):
             validate(reused['reference'],p)
             summary,p=reused['reference']['summary'],reused['reference']['protocol']
         if not (p.get('setting')=='icarl' or p.get('benchmark')=='v4_competitor'):continue
+        from experiments.v4_competitors import DEFAULT_CONFIGS
+        if arm_config:=DEFAULT_CONFIGS.get(p.get('arm')):
+            if p.get('method_config')!=arm_config or p.get('parameter_policy')!='original_defaults_no_search_v1':
+                skipped.append(dict(source=source,path=str(parent),reason='retired C1/tuned plasticity configuration'));continue
         if summary.get('status')!='COMPLETED' or p.get('expected_tasks')!=20:
             skipped.append(dict(source=source,path=str(parent),status=summary.get('status'),reason='not a completed 20-task result'));continue
         tasks=summary.get('tasks') if reused else json.loads(payload.get('tasks.json',b'null'))

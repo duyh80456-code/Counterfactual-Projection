@@ -1,0 +1,50 @@
+\section{C3: tham số đối thủ cố định, không chọn cấu hình}\label{app:c3-defaults}
+
+C1 bị loại khỏi kế hoạch thực nghiệm. C3 chạy CBP, ReDo, S\&P và UPGD
+với ba seed $\{0,1,2\}$ (12 job), trên cùng thiết lập iCaRL noBN,
+thứ tự superclass và 20 task. Không quét tham số, không chọn bằng seed~0,
+và không cần tệp \texttt{best\_config.json} của C1.
+Theo quyết định của người thiết kế thực nghiệm, mọi phương pháp dùng
+learning rate iCaRL/PyCIL $0.1\times0.5=0.05$, ở cả task đầu và các task sau,
+với lịch giảm learning rate chung. Đây không phải một nửa learning rate
+riêng trong thí nghiệm RL hoặc Adam của từng bài gốc.
+
+\begin{tabularx}{\linewidth}{@{}lXX@{}}
+\toprule
+Phương pháp & Tham số cố định & Nguồn cụ thể \\
+\midrule
+CBP & Replacement rate $10^{-5}$; maturity threshold $1000$;
+utility contribution; decay $0.99$ & Cấu hình incremental CIFAR của tác giả
+và hàm khởi tạo thí nghiệm, commit \texttt{a6b7958}. \\
+ReDo & $\tau=0.025$; chu kỳ $1000$ bước optimizer; tối đa $64$ mẫu
+để tính score & Bảng~1, Phụ lục~A của Sokar và cộng sự (ICML 2023),
+thiết lập DQN mặc định. Bảng phân biệt $0.025$ cho default và $0.1$ cho các
+thiết lập khác; ở đây cố định trường hợp default. \\
+S\&P & Shrink $0.4$; perturb $0.1$ & Giá trị mặc định của
+\texttt{warm\_start/run.py}, commit \texttt{896176b}. Perturb nhân một
+khởi tạo mạng mới, không phải nhiễu Gaussian phương sai đơn vị. \\
+UPGD & $\beta_{\rm utility}=0.999$; $\sigma=0.001$;
+weight decay $0.001$ & Constructor được tác giả khuyến nghị trong README,
+commit \texttt{b75e90a}; chạy lớp native \texttt{FirstOrderGlobalUPGD}. \\
+\bottomrule
+\end{tabularx}
+
+\paragraph{Phạm vi chuyển sang iCaRL.}
+Giữ backbone, bộ nhớ, loss, số epoch và đánh giá chung của benchmark.
+ReDo đếm số bước optimizer thực tế, dùng tối đa 64 activation của minibatch
+hiện tại trước bước cập nhật; giữ bộ đếm và lần reset cuối trong trạng thái
+learner để tiếp tục chính xác qua task/checkpoint. Giữ bản chuyển NCHW
+hiện có, gồm khởi tạo Xavier cho trọng số vào, đặt trọng số ra bằng không
+và xóa trạng thái optimizer tương ứng. S\&P giữ lịch can thiệp theo task
+của adapter. UPGD dùng công thức cập nhật của lớp native đã pin, không
+chép hệ số cập nhật khác trong ví dụ README, và không thêm momentum SGD.
+Đây là các bản chuyển sang iCaRL, không phải tái lập toàn bộ giao thức gốc.
+
+\paragraph{Truy xuất nguồn và kết quả.}
+Mỗi protocol lưu đủ dictionary tham số với nhãn
+\texttt{original\_defaults\_no\_search\_v1}. Không đổi nhãn checkpoint
+C1 cũ thành cấu hình mới; loại kết quả đã chọn qua C1 khỏi bảng C3.
+Danh sách đường dẫn nguồn bất biến, khác biệt giữa các mặc định của
+bài gốc và giới hạn của bản chuyển được ghi trong
+\texttt{docs/vna/C3\_DEFAULTS\_APPENDIX.md} của repository.
+Bài ReDo: \url{https://proceedings.mlr.press/v202/sokar23a/sokar23a.pdf}.

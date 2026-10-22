@@ -391,3 +391,13 @@ jobs, then eight matched jobs. All notebook pins are refreshed together.
 Current best_config.json must carry lr_scales=[0.5]; regenerate selections
 instead of importing a winner chosen at a different LR. Seed0 native resume
 also accepts source359da84 without changing saved training state or K0.
+
+### Current C3 plan: C1 retired
+
+C3 now runs 12 jobs (CBP/ReDo/S&P/UPGD x seeds0/1/2) using frozen original-source
+method parameters and common iCaRL lr0.05. C1 and its notebook are removed;
+C3 requires only CIFAR-100, plus its own matching previous output for resume.
+No best_config input or seed0 winner reuse applies to C3. The definitive table
+of actual values and citations is [C3_DEFAULTS_APPENDIX.md](C3_DEFAULTS_APPENDIX.md).
+C4's deferred BN runs use the same method dictionaries without C1 input.
+Earlier C1 counts/instructions and C3 seed1/2-only instructions are superseded.

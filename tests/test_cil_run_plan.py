@@ -60,7 +60,8 @@ def test_notebook_jobs_and_real_commands(tmp_path):
     def jobs(preset):return sum((list(lane) for lane in builder.PRESETS[preset]),[])
     assert len(jobs('M1'))==4 and all(j.endswith(('__s1','__s2')) for j in jobs('M1'))
     assert len(jobs('C2'))==12 and all('__bn__' not in j and not j.endswith('__s0') for j in jobs('C2'))
-    assert len(jobs('C3'))==8
+    assert 'C1' not in builder.PRESETS
+    assert len(jobs('C3'))==12 and any(j.endswith('__s0') for j in jobs('C3'))
     nodes=[n for n in ast.parse(builder.RUNNER).body if isinstance(n,ast.FunctionDef) and n.name in ('schedule_name','command')]
     scope=dict(ROOT=tmp_path,STAGE_B=tmp_path,PRESET='M1',sys=sys,DATA_ROOT=tmp_path,NOBN_LR_SCALE=.5)
     exec(compile(ast.Module(body=nodes,type_ignores=[]),'commands','exec'),scope)
@@ -68,6 +69,8 @@ def test_notebook_jobs_and_real_commands(tmp_path):
         command=scope['command'](job)
         assert command[command.index('--solver')+1]=='gram'
         assert command[command.index('--curvature')+1]=='power10'
+    scope['PRESET']='C3'
+    assert '--best-config' not in scope['command']('icarl_cbp__nobn__superclass__s0')
     scope['PRESET']='C2'
     command=scope['command']('gem__sweep')
     assert '--reuse-root' in command

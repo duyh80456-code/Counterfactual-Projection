@@ -15,7 +15,7 @@ def configuration_signature(p):
                   lr_scale=p.get('nobn_lr_scale',1.) if backbone=='resnet32_nobn' else 1.)
     if p.get('benchmark')=='v4_competitor':
         cfg={k:v for k,v in p.get('cfg',{}).items() if k not in ('seed','device')}
-        result.update(cfg=cfg,method_config=p.get('method_config'),pins=p.get('competitor_pins'),implementation=p.get('implementation'))
+        result.update(cfg=cfg,method_config=p.get('method_config'),parameter_policy=p.get('parameter_policy'),pins=p.get('competitor_pins'),implementation=p.get('implementation'))
     else:
         result.update(comparison=p.get('comparison_protocol'),cfg={k:v for k,v in p.get('cfg',{}).items() if k not in ('seed','device')})
         if p.get('arm')!='icarl':

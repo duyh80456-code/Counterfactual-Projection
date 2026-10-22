@@ -1116,3 +1116,28 @@ creation remain unchanged. No RNG draws are added. CPU execution is unaffected.
 No DataLoader worker change is included. Gram seed0 source336dded is also
 registered for the existing strict native continuation, with lr0.05 and frozen
 K0; this S&P-only fix does not change Gram training or solver formulas.
+
+## 2026-10-23: retire C1; C3 original-source defaults, no selection
+
+User decision supersedes all C1/C3 selection and sweep entries above. Remove
+C1 from generated notebook presets and remove its notebook. C3 runs all four
+plasticity methods at seeds0/1/2 (12 jobs), no best_config input. User explicitly
+confirmed common iCaRL lr0.1 x0.5 =0.05 for all methods, rather than separate
+paper-specific learning rates. Complete values, pinned sources and adaptation
+limits are recorded in C3_DEFAULTS_APPENDIX.md. CBP now uses contribution utility,
+replacement1e-5, maturity1000 and decay0.99; ReDo uses the paper's Table1 DQN
+*default* setting tau0.025/period1000/score64; S&P shrink0.4/perturb0.1; UPGD
+README beta0.999/sigma0.001/weight_decay0.001 with the pinned native optimizer.
+
+ReDo now recycles by native optimizer-update cadence, not epochs, and persists
+update/last-reset counters in learner state for exact native task restart.
+Every method result declares original_defaults_no_search_v1. Collection excludes
+retired C1/tuned results instead of treating them as default seed0 scores.
+C4 also uses these fixed method defaults and loses its C1 input dependency.
+C2 and main M1 dispatch are otherwise unchanged. Gram seed0 source6be6543 is
+registered for formula-preserving continuation under the existing strict identity,
+lr0.05, policy and original K0 checks. No C3 tuned checkpoint is migrated.
+
+The existing device move is shared at hook entry before any method's auxiliary
+state is allocated, including CBP utility/age tensors. This avoids constructing
+CPU CBP state before native training moves network weights to CUDA.

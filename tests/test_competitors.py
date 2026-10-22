@@ -89,13 +89,13 @@ def test_cbp_calls_original_and_preserves_ages(tmp_path):
     from convs.cifar_resnet import ResNetBasicblock
     from adapters.cil_setup import FixtureBackbone
     net = nn.Sequential(FixtureBackbone(ResNetBasicblock))
-    learner = SimpleNamespace(_network=skipinit(net).double(),args=cfg)
+    learner = SimpleNamespace(_network=skipinit(net).double(),args=cfg,_device=torch.device('cpu'))
     hook = CompetitorHook('icarl_cbp',dict(replacement_rate=1e-3))
     with hook.install(learner,icarl):
         learner._network(torch.randn(2,3,32,32,dtype=torch.float64))
         for _,gnt in hook.generators:
             assert type(gnt).__module__ == 'lop.algos.res_gnt'
-            gnt.ages[0].fill_(101)
+            gnt.ages[0].fill_(1001)
             gnt.accumulated_num_features_to_replace[0] = .999
         opt = icarl.optim.SGD(learner._network.parameters(),lr=.01)
         opt.step()
@@ -148,7 +148,7 @@ def test_task_restart_exit75_is_bitwise_exact(tmp_path,monkeypatch):
 
 
 def test_grid_and_selection_provenance(tmp_path,monkeypatch):
-    assert [len(v4.grid(m)) for m in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')] == [4,6,4,9]
+    assert [len(v4.grid(m)) for m in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')] == [1,1,1,1]
     seen = []
     def run(trial):
         seen.append(trial)
@@ -156,7 +156,7 @@ def test_grid_and_selection_provenance(tmp_path,monkeypatch):
     monkeypatch.setattr(v4,'run',run)
     trial = args(tmp_path,'icarl_cbp')
     best = v4.sweep(trial)
-    assert best['config'] == dict(replacement_rate=1e-6)
+    assert best['config'] == v4.DEFAULT_CONFIGS['icarl_cbp']
     assert all((t.seed,t.backbone,t.order) == (0,'nobn','superclass') for t in seen)
     trial.best_config = str(tmp_path/'best_config.json')
     trial.fake_data = False
@@ -243,13 +243,13 @@ def test_fixed_lr_sweep_selects_config_and_consumes_rate(tmp_path,monkeypatch):
     seen=[]
     def run(trial):
         seen.append((trial.nobn_lr_scale,json.loads(trial.config)))
-        score=30. if json.loads(trial.config)==v4.grid('icarl_cbp')[1] else 10.
+        score=30.
         return dict(status='COMPLETED',average_incremental_accuracy=score)
     monkeypatch.setattr(v4,'run',run)
     trial=args(tmp_path,'icarl_cbp')
     best=v4.sweep(trial)
-    assert len(seen)==4 and {r for r,c in seen}=={.5}
-    assert best['total_trials']==4 and best['selected_trial']=='scan/lr0/1'
+    assert len(seen)==1 and {r for r,c in seen}=={.5}
+    assert best['total_trials']==1 and best['selected_trial']=='scan/lr0/0'
     assert best['lr']==pytest.approx(.05)
     trial.best_config=str(tmp_path/'best_config.json')
     assert v4.selected_config(trial)==best['config'] and trial.nobn_lr_scale==.5
@@ -258,12 +258,7 @@ def test_fixed_lr_sweep_selects_config_and_consumes_rate(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='grid'):v4.selected_config(trial)
 
 
-def test_fixed_lr_sweep_excludes_divergence_and_nonfinite(tmp_path,monkeypatch):
-    def run(trial):
-        i=v4.grid(trial.method).index(json.loads(trial.config))
-        if i==0:return dict(status='DIVERGED',average_incremental_accuracy=100.)
-        return dict(status='COMPLETED',average_incremental_accuracy=float('nan') if i==1 else 20.)
-    monkeypatch.setattr(v4,'run',run)
-    best=v4.sweep(args(tmp_path,'icarl_cbp'))
-    assert best['nobn_lr_scale']==.5 and best['total_trials']==4
-    assert best['config']==v4.grid('icarl_cbp')[2]
+@pytest.mark.parametrize('status,score',[('DIVERGED',100.),('COMPLETED',float('nan'))])
+def test_fixed_lr_sweep_excludes_divergence_and_nonfinite(tmp_path,monkeypatch,status,score):
+    monkeypatch.setattr(v4,'run',lambda trial:dict(status=status,average_incremental_accuracy=score))
+    with pytest.raises(ValueError,match='no completed finite'):v4.sweep(args(tmp_path,'icarl_cbp'))
