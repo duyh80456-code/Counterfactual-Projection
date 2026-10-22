@@ -134,3 +134,13 @@ includes both backend gain checks, bounded trace contractions at m12800 and
 m25600, exact native-state transfer, wrong-identity rejection and notebook
 cell construction. The failing-session archive was not supplied locally; the
 transfer was tested on controlled checkpoint fixtures. No T4 run was performed.
+
+### Dtype follow-up
+
+The blocked trace casts columns to blocks' dtype/device and accumulates in
+blocks' dtype (fp64 under both solver constructors). The fp32-column/fp64-block
+regression test passes. Updated notebooks can continue registered unfinished
+Gram runs from either 29cc735 or 1bf6d7a, selecting the greatest saved native
+step count when both are present. Source hashes and original K0 calibration
+provenance are retained. 77 affected tests passed for this follow-up; no T4
+execution is claimed.

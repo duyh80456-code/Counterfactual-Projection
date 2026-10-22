@@ -1020,3 +1020,24 @@ Current-source profile gates rerun unless a matching current report exists.
 This is a declared exception for this memory-only fix, not general cross-
 commit compatibility. Native continuation may replay work since the last safe
 epoch checkpoint. No hardware runtime or universal OOM guarantee is asserted.
+
+
+## 2026-10-23: preserve metric dtype/device in blocked trace
+
+metric_trace now casts columns with columns.to(blocks) and creates its scalar
+accumulator with blocks.new_zeros(()), matching the metric's dtype/device.
+The engine's existing blocks.double() contract makes accumulation fp64.
+This does not promote an arbitrary standalone fp32 metric to fp64. Sample
+blocking and the Schur formula remain unchanged. A mixed fp32-column/fp64-
+metric test checks bmm dtype, block size and agreement with a dense reference
+computed from the same quantized fp32 columns cast to double.
+
+All notebook pins are refreshed. The narrowly registered checkpoint continuation
+now also accepts 1bf6d7a (the preceding memory-only repair), in addition to
+29cc735. If both are attached, select the greatest saved native hook step
+count, preferring the newer registered source on a tie. Keep the original
+calibration_code_commit and K0, model/optimizer/scheduler/RNG/hook state and
+source files; retain existing strict recipe/seed/policy checks and migration
+hashes. This permits continuity through the dtype-only repair without general
+cross-commit checkpoint acceptance. Local affected validation: 77 tests PASS;
+no T4 run or real failing-session archive validation was performed.

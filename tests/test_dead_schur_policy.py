@@ -218,3 +218,18 @@ def test_metric_trace_matches_contraction_with_bounded_intermediates(samples,cla
     monkeypatch.setattr(torch,'vmap',lambda *a,**kw:pytest.fail('metric trace must not vmap candidates'))
     assert metric_trace(V,H)==pytest.approx(expected,rel=1e-12)
     assert len(seen)==(samples+15)//16
+
+
+def test_metric_trace_casts_fp32_columns_to_fp64_blocks(monkeypatch):
+    from methods.vna_exact import metric_trace
+    columns=torch.randn(19*3,7,dtype=torch.float32)
+    R=torch.randn(19,3,3,dtype=torch.float64);blocks=R@R.transpose(1,2)
+    values=columns.double().reshape(19,3,7)
+    expected=float(torch.einsum('nci,ncd,ndi->',values,blocks,values))
+    native=torch.bmm;seen=[]
+    def checked(a,b):
+        assert a.dtype==b.dtype==torch.float64 and a.device==b.device and len(a)<=16
+        seen.append(len(a));return native(a,b)
+    monkeypatch.setattr(torch,'bmm',checked)
+    assert metric_trace(columns,blocks)==pytest.approx(expected,rel=1e-12)
+    assert seen==[16,3] and columns.dtype==torch.float32

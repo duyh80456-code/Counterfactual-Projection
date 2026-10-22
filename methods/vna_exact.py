@@ -203,8 +203,8 @@ class CGSwap:
 
 
 def metric_trace(columns,blocks):
-    values=columns.reshape(*blocks.shape[:2],-1)
-    total=columns.new_zeros(())
+    values=columns.to(blocks).reshape(*blocks.shape[:2],-1)
+    total=blocks.new_zeros(())
     # Sample-block bmm avoids vmap's candidate x sample x class x class broadcast.
     for value,metric in zip(values.split(16),blocks.split(16)):
         total.add_((value*torch.bmm(metric,value)).sum())

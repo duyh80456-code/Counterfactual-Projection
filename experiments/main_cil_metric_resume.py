@@ -1,4 +1,4 @@
-"""Narrow checkpoint transfer for the 29cc735 metric-trace memory repair."""
+"""Narrow checkpoint transfer for registered metric-trace memory/dtype repairs."""
 from copy import deepcopy
 import hashlib
 import json
@@ -10,10 +10,12 @@ from experiments.io_utils import atomic_json_save,atomic_torch_save
 from methods.vna_v3 import POLICY_VERSION
 
 SOURCE='29cc735ab8770b3602c54c3c1f157649d02f807a'
+MEMORY_SOURCE='1bf6d7afe86c86da7c3f9202cb9e5380af02240c'
+SOURCES=(SOURCE,MEMORY_SOURCE)
 
 
 def _identity(value,commit,schedule):
-    expected=dict(code_commit=SOURCE,source_digest=None,policy_version='schur_gamma_bound_rho25_v2',
+    expected=dict(code_commit=schedule['code_commit'],source_digest=None,policy_version='schur_gamma_bound_rho25_v2',
         setting='icarl',algorithm_version='v4',arm='icarl_full',seed=0,solver='gram',curvature='power10',
         backbone='resnet32_nobn',class_order_kind='superclass',nobn_lr_scale=.5,coefficient=1.,
         fake_data=False,preflight_only=False,expected_tasks=20,gir_live=False)
@@ -26,25 +28,30 @@ def _identity(value,commit,schedule):
 
 
 def _schedule(value,commit):
-    expected=dict(code_commit=SOURCE,source_digest=None,policy_version=POLICY_VERSION,gir_live=False,
+    if value.get('code_commit') not in SOURCES:raise ValueError('metric-trace repair schedule source mismatch')
+    expected=dict(code_commit=value['code_commit'],source_digest=None,policy_version=POLICY_VERSION,gir_live=False,
         solver='gram',curvature='power10',backbone='resnet32_nobn',nobn_lr_scale=.5,authoritative=True)
     if any(value.get(k)!=v for k,v in expected.items()) or value.get('synthetic') or not isinstance(value.get('K0'),int) or value['K0']<1:
         raise ValueError('metric-trace repair schedule identity mismatch')
-    return {**deepcopy(value),'code_commit':commit,'calibration_code_commit':SOURCE}
+    return {**deepcopy(value),'code_commit':commit,'calibration_code_commit':value.get('calibration_code_commit',value['code_commit'])}
 
 
 @_global_state()
 def restore_metric_trace_run(stage,run_tag,commit):
-    source=Path(stage)/run_tag/SOURCE[:12]
-    target=Path(stage)/run_tag/commit[:12]
-    old=source/'icarl_full';new=target/'icarl_full'
-    if commit==SOURCE or not (old/'latest.pt').exists() or new.exists():return None
+    target=Path(stage)/run_tag/commit[:12];new=target/'icarl_full'
+    sources=[Path(stage)/run_tag/s[:12] for s in reversed(SOURCES)
+             if (Path(stage)/run_tag/s[:12]/'icarl_full'/'latest.pt').exists()]
+    if commit in SOURCES or not sources or new.exists():return None
+    source=max(sources,key=lambda p:torch.load(p/'icarl_full'/'latest.pt',map_location='cpu',weights_only=False)['hook']['steps'])
+    old=source/'icarl_full'
     schedule=json.loads((source/'_schedules'/'gram_power10.json').read_text())
     converted=_schedule(schedule,commit)
+    source_commit=schedule['code_commit']
+    if source.name!=source_commit[:12]:raise ValueError('metric-trace repair source directory mismatch')
     staging=target/'icarl_full.metric-trace-import'
     if staging.exists():shutil.rmtree(staging)
     staging.parent.mkdir(parents=True,exist_ok=True)
-    manifest=dict(source_commit=SOURCE,target_commit=commit,reason='bounded metric-trace temporary; unchanged frozen GN formula',
+    manifest=dict(source_commit=source_commit,target_commit=commit,reason='bounded metric-trace temporary; unchanged frozen GN formula',
         source_schedule_sha256=hashlib.sha256((source/'_schedules'/'gram_power10.json').read_bytes()).hexdigest(),checkpoints=[])
     try:
         shutil.copytree(old,staging)
@@ -58,7 +65,7 @@ def restore_metric_trace_run(stage,run_tag,commit):
             if 'protocol.json' in artifacts:
                 value=json.loads(artifacts['protocol.json'])
                 artifacts['protocol.json']=json.dumps(_identity(value,commit,schedule),default=str).encode()
-            state['metric_trace_repair']=deepcopy(manifest['checkpoints'][-1])|dict(source_commit=SOURCE,target_commit=commit)
+            state['metric_trace_repair']=deepcopy(manifest['checkpoints'][-1])|dict(source_commit=source_commit,target_commit=commit)
             atomic_torch_save(state,path)
         protocol=staging/'protocol.json'
         if protocol.exists():atomic_json_save(_identity(json.loads(protocol.read_text()),commit,schedule),protocol)
