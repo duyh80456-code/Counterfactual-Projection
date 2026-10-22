@@ -109,3 +109,28 @@ filename and random-order preflight. Baseline-only/competitor policies and
 tuning rules are not altered. Existing generic M1/M1s0 holds remain; no CG-IR
 M1 is enabled by this packaging update. The dedicated Gram notebook is the
 authorized M1s0 entrypoint.
+
+## Continuing after the metric-trace OOM
+
+Attach the failed session's output/archive (including its native latest.pt),
+along with CIFAR-100 and the historical task1 input used for diagnostics. The
+updated dedicated Gram notebook recognizes the known 29cc735 full-run source
+and transfers an unfinished matching checkpoint to the new source namespace.
+It prints METRIC TRACE REPAIR with completed tasks, safe epoch and hashes.
+It preserves all training tensors/optimizer/RNG/hook state, and preserves K0
+with its original calibration provenance. It does not use diagnostic profiles
+as training checkpoints, import an old-policy state, or label old profiles as
+new-source PASS. Current-source profile gates run again unless already cached.
+The original output remains available; transfers write metric_trace_repair.json.
+Resume uses the last safe native epoch checkpoint, so work after it is replayed.
+
+The OOM site is replaced by sample-block bmm for trace(V^T M V); this avoids
+the candidate-by-sample-by-class-squared vmap intermediate for both solvers.
+Tests compare dense metric contractions at m12800/m25600 and bound each bmm
+batch to16 samples. Actual T4 total-memory/timing must still be measured.
+
+Local validation for the metric-trace repair: 116 affected tests passed. This
+includes both backend gain checks, bounded trace contractions at m12800 and
+m25600, exact native-state transfer, wrong-identity rejection and notebook
+cell construction. The failing-session archive was not supplied locally; the
+transfer was tested on controlled checkpoint fixtures. No T4 run was performed.

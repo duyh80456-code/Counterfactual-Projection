@@ -988,3 +988,35 @@ again. Native K0/checkpoint policy checks remain. Generic outputs are isolated
 as outputs/<source-commit-prefix>/<RUN_TAG>/<job>; M3 has its own random-order
 preflight and schedule filename. Existing generic M1/M1s0 holds are preserved.
 No T4 runtime/capacity or M1 performance result is asserted by this refresh.
+
+
+## Metric-trace OOM repair and narrow continuation from 29cc735
+
+The uploaded Gram full-run traceback fails in dead_gain's vmap(metric) at
+allocation of 5.49 GiB, not in Gram construction. Candidate-batched metric
+application can materialize candidate x sample x class x class intermediates.
+Both Gram and CG-IR dead gains now share metric_trace: reshape replacement
+columns as sample x class x coordinate, multiply the actual metric blocks by
+bmm over at most 16 samples, and accumulate the scalar trace. The frozen
+Schur formula, LM/GIR policy, solve tolerance and candidate limits are unchanged.
+Floating-point summation order changes; equality is checked to 1e-12 relative
+on dense metrics, including m12800/m25600 and coordinate count576. At C100,
+k576 the output temporary is at most 16*100*576 doubles (~7.03 MiB), rather
+than the 5.49 GiB broadcast in the report; this is not total process VRAM.
+
+The dedicated Gram notebook can transfer only unfinished icarl_full, seed0,
+noBN/superclass, Gram/power10 from source29cc735, policy
+schur_gamma_bound_rho25_v2. It copies into the new commit namespace and leaves
+the original untouched. Full native learner/optimizer/scheduler/RNG/hook state
+is preserved; only implementation identity, schedule consumer commit and the
+protocol artifact are adjusted. Old K0/timing remain unchanged and retain
+calibration_code_commit=29cc735. The transfer manifest records both commits,
+source checkpoint hashes, completed tasks/epoch and the original schedule hash.
+Main's exact protocol validation still runs before any training; changed
+recipe/data/order/seed/policy/solver cannot pass it. Missing old checkpoint
+starts normally; an existing new target is not overwritten. Completed old
+results and old diagnostic PASS/timing are not imported as current results.
+Current-source profile gates rerun unless a matching current report exists.
+This is a declared exception for this memory-only fix, not general cross-
+commit compatibility. Native continuation may replay work since the last safe
+epoch checkpoint. No hardware runtime or universal OOM guarantee is asserted.

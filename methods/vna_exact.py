@@ -189,7 +189,7 @@ class CGSwap:
         extended=self.factor.solve(e)
         t=extended[self.outgoing_ids]
         s=self.high_add.T@residual
-        trace=float((self.high_add*torch.vmap(base.metric)(self.high_add.T).T).sum())
+        trace=metric_trace(self.high_add,base.blocks)
         gain,self.error_bound,self.gain_record=schur_gain(s,t,trace,base.mu,r0,
             self.factor.records[-1]['residual_norm'])
         return gain
@@ -200,6 +200,15 @@ class CGSwap:
         self.base._solution_key = None
         self.base.solves += self.factor.solves
         self.base.records.extend(self.factor.records)
+
+
+def metric_trace(columns,blocks):
+    values=columns.reshape(*blocks.shape[:2],-1)
+    total=columns.new_zeros(())
+    # Sample-block bmm avoids vmap's candidate x sample x class x class broadcast.
+    for value,metric in zip(values.split(16),blocks.split(16)):
+        total.add_((value*torch.bmm(metric,value)).sum())
+    return float(total)
 
 
 def schur_gain(s,t,trace,mu,base_residual,augmented_residual):
@@ -354,7 +363,7 @@ class WoodburySwap:
         error=e-base.metric(self.Gv(extended))-base.mu*extended
         r1=math.sqrt(base.norm_bound()+float(self.add.square().sum()))*float(error.norm())
         s,t=self.add.T@residual,self.add.T@extended
-        trace=float((self.add*torch.vmap(base.metric)(self.add.T).T).sum())
+        trace=metric_trace(self.add,base.blocks)
         gain,self.error_bound,self.gain_record=schur_gain(s,t,trace,base.mu,r0,r1)
         return gain
 

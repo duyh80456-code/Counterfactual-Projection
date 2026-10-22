@@ -200,3 +200,21 @@ def test_live_gram_gamma_bound_covers_perturbed_solves(monkeypatch):
     gamma=swap.gamma(e,fu)
     assert abs(gamma-expected)<=swap.error_bound and swap.error_bound>0
     assert swap.error_bound==swap.gain_record['base_q_error_bound']+swap.gain_record['swapped_q_error_bound']
+
+
+@pytest.mark.parametrize('samples,classes,width',[(19,3,7),(128,100,576),(256,100,576)])
+def test_metric_trace_matches_contraction_with_bounded_intermediates(samples,classes,width,monkeypatch):
+    from methods.vna_exact import metric_trace
+    V=torch.randn(samples*classes,width,dtype=torch.float64)
+    R=torch.randn(samples,classes,classes,dtype=V.dtype)
+    H=R@R.transpose(1,2)/samples
+    blocks=V.reshape(samples,classes,width)
+    expected=float(torch.einsum('nci,ncd,ndi->',blocks,H,blocks))
+    native=torch.bmm;seen=[]
+    def bounded(a,b):
+        assert a.ndim==b.ndim==3 and a.shape[0]==b.shape[0]<=16
+        seen.append(tuple(b.shape));return native(a,b)
+    monkeypatch.setattr(torch,'bmm',bounded)
+    monkeypatch.setattr(torch,'vmap',lambda *a,**kw:pytest.fail('metric trace must not vmap candidates'))
+    assert metric_trace(V,H)==pytest.approx(expected,rel=1e-12)
+    assert len(seen)==(samples+15)//16

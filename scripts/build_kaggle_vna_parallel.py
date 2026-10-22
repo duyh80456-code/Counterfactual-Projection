@@ -572,6 +572,8 @@ for upstream in (REPO/'third_party').iterdir():
     destination=REFERENCE_REPO/'third_party'/upstream.name
     if upstream.is_dir() and not destination.exists():destination.symlink_to(upstream,target_is_directory=True)
 upstream_imports()
+from experiments.main_cil_metric_resume import restore_metric_trace_run
+restore_metric_trace_run(STAGE_B,RUN_TAG,REPO_COMMIT)
 checkpoint=find_task1_checkpoint(Path('/kaggle/input'),ROOT/'profiles'/'task1_source.pt')
 script=REPO/'diagnostics/exact_solver.py'
 '''
