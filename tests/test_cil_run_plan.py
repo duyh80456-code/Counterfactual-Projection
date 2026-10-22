@@ -14,7 +14,7 @@ from scripts.collect_cil_main import collect,export
 def completed(root,seed,solver='gram',commit='a'*40):
     p=dict(setting='icarl',algorithm_version='v4',arm='icarl_full',seed=seed,code_commit=commit,
         upstream_commit=main.cil.UPSTREAM_PIN,expected_tasks=20,r=16,backbone='resnet32_nobn',
-        class_order_kind='superclass',class_order=class_order(seed),solver=solver,curvature='power10',
+        class_order_kind='superclass',class_order=class_order(seed),nobn_lr_scale=.5,solver=solver,curvature='power10',
         policy_version='schur_gamma_bound_rho25_v2',schedule=dict(K0=40,calibration_code_commit='c'*40),
         cfg=dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False),
         training=dict(first_epochs=100,later_epochs=50,first_milestones=[30,60,85],later_milestones=[24,35]),
@@ -36,7 +36,7 @@ def completed(root,seed,solver='gram',commit='a'*40):
     return p
 
 
-def competitor_result(root,method='gem',scale=.2):
+def competitor_result(root,method='gem',scale=.5):
     cfg,source,overrides=competitors.recipe(method,'nobn',0,'cpu',False,scale)
     p=dict(benchmark='v4_competitor',arm=method,effective_method=method,backbone='nobn',order='superclass',seed=0,
         code_commit='a'*40,cfg=cfg,cfg_source=source,config_overrides=overrides,upstream_commit=main.cil.UPSTREAM_PIN,
@@ -101,7 +101,7 @@ def test_gem_reuse_is_exact_rate_validated_and_cacheable(tmp_path,monkeypatch):
     monkeypatch.setattr('experiments.parallel_validity.dataset_fingerprint',lambda root:s['identity']['dataset_fingerprint'])
     monkeypatch.setattr(competitors,'class_order',lambda *a:s['identity']['class_order'])
     trial=competitors.parser().parse_args(['--method','gem','--out',str(tmp_path/'new'),'--reuse-root',str(tmp_path),
-                                         '--config','{}','--nobn-lr-scale','.2'])
+                                         '--config','{}','--nobn-lr-scale','.5'])
     # GEM's registered config, rather than an arbitrary user override.
     trial.config=json.dumps(competitors.grid('gem')[0])
     result=competitors.reuse_gem_candidate(trial)
@@ -109,7 +109,7 @@ def test_gem_reuse_is_exact_rate_validated_and_cacheable(tmp_path,monkeypatch):
     assert competitors.reuse_gem_candidate(trial)==s
     trial.nobn_lr_scale=.1
     assert competitors.reuse_gem_candidate(trial) is None
-    trial.nobn_lr_scale=.2
+    trial.nobn_lr_scale=.5
     (tmp_path/'new'/'status.json').write_text('{}')
     # Remove the source so the cache itself must pass validation.
     import shutil
@@ -119,11 +119,11 @@ def test_gem_reuse_is_exact_rate_validated_and_cacheable(tmp_path,monkeypatch):
 
 def test_sweep_collection_keeps_only_registered_winner(tmp_path):
     root=tmp_path/'gem__sweep'
-    winner=competitor_result(root/'scan'/'lr2'/'0')
-    competitor_result(root/'scan'/'lr0'/'0',scale=1.)
+    winner=competitor_result(root/'scan'/'lr0'/'0')
+    competitor_result(root/'scan'/'lr1'/'0',scale=1.)
     p=winner['identity']
-    best=dict(method='gem',config=p['method_config'],nobn_lr_scale=.2,lr_scales=list(competitors.NOBN_LR_SCALES),
-        selected_trial='scan/lr2/0',score=10.,code_commit='a'*40,dataset_fingerprint=p['dataset_fingerprint'],
+    best=dict(method='gem',config=p['method_config'],nobn_lr_scale=.5,lr_scales=list(competitors.NOBN_LR_SCALES),
+        selected_trial='scan/lr0/0',score=10.,code_commit='a'*40,dataset_fingerprint=p['dataset_fingerprint'],
         seed=0,backbone='nobn',order='superclass',metric='cnn_average_accuracy',synthetic=False)
     (root/'best_config.json').write_text(json.dumps(best))
     groups,skipped=collect([tmp_path]);assert len(groups)==1 and len(next(iter(groups.values())))==1

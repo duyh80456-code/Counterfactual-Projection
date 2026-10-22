@@ -173,6 +173,7 @@ def set_epochs(module, learner, args, method):
 
 
 def run(args):
+    if args.backbone=='nobn' and args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     method = 'icarl' if args.disabled else args.method
     prepare_method(method)
     if args.reproduction and (args.method != 'icarl_cflat' or args.backbone != 'bn' or args.order != 'random' or args.seed != 1993 or args.disabled):
@@ -463,7 +464,7 @@ def parser():
     p.add_argument('--seeds',type=int,choices=(3,5),default=3)
     p.add_argument('--backbone',choices=('bn','nobn'),default='nobn')
     p.add_argument('--order',choices=('superclass','random'),default='superclass')
-    p.add_argument('--nobn-lr-scale',type=float,choices=NOBN_LR_SCALES,default=1.)
+    p.add_argument('--nobn-lr-scale',type=float,choices=NOBN_LR_SCALES,default=.5)
     p.add_argument('--device',default='cpu')
     p.add_argument('--data-dir',default='/kaggle/input/datasets/nlnk1607/cifar100')
     p.add_argument('--config'); p.add_argument('--best-config')

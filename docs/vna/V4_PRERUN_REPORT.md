@@ -382,3 +382,12 @@ validated GEM reuse, M1/C2 dispatch and sweep resume, native checkpoint transfer
 fixed Gram math, aggregation/curves, main CIL and diagnostic GPU lanes). Notebook
 cells are also parsed after generation. No real T4 run or new seed0 run archive
 was available for validation.
+
+### Fixed-LR override (latest user decision)
+
+All noBN jobs now use nobn_lr_scale=0.5 (lr=0.05). The preceding four-LR counts
+are superseded: C1 has 23 method-config trials and C2 has four fixed-LR seed0
+jobs, then eight matched jobs. All notebook pins are refreshed together.
+Current best_config.json must carry lr_scales=[0.5]; regenerate selections
+instead of importing a winner chosen at a different LR. Seed0 native resume
+also accepts source359da84 without changing saved training state or K0.

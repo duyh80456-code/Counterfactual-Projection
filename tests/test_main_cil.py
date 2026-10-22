@@ -192,7 +192,7 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
             assert (tmp_path/name/'interventions.json').exists() == (name != 'icarl')
             protocol = json.loads((tmp_path/name/'protocol.json').read_text())
             assert protocol['parameter_count'] == result['parameter_count'] > 0
-            assert protocol['r'] == 16 and protocol['nobn_lr_scale'] == 1.
+            assert protocol['r'] == 16 and protocol['nobn_lr_scale'] == .5
             assert main.run(args) == result
         def state(name): return torch.load(tmp_path/name/'latest.pt',weights_only=False)
         from diagnostics.vna_align import _assert_bitwise

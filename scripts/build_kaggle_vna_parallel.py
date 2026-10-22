@@ -22,8 +22,8 @@ def cil_jobs(arms, backbones=('nobn',), order='superclass', seeds=range(3)):
 # Rough relative GPU cost per job (icarl = 1): icarl_full may spend up to 1.0x extra on the
 # algorithm (§2.5 budget), C-Flat reports ~2.9x, sweeps scale with their grid size.
 COST = {'icarl_full': 2., 'icarl_cflat': 2.9, 'gem': 1.5, 'podnet': 1.3,
-        'icarl_cbp__sweep': 16., 'icarl_redo__sweep': 24., 'icarl_snp__sweep': 16., 'icarl_upgd__sweep': 36.,
-        'podnet__sweep': 5.2, 'wa__sweep': 4., 'gem__sweep': 6., 'icarl_cflat__sweep': 11.6}
+        'icarl_cbp__sweep': 4., 'icarl_redo__sweep': 6., 'icarl_snp__sweep': 4., 'icarl_upgd__sweep': 9.,
+        'podnet__sweep': 1.3, 'wa__sweep': 1., 'gem__sweep': 1.5, 'icarl_cflat__sweep': 2.9}
 
 
 def lanes(jobs):
@@ -343,7 +343,7 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
         for item in result['cells']:
             item['source'] = [line.replace('0'*40,commit) for line in item['source']]
     cells=result['cells']
-    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1: Gram/power10, seeds1/2 only, attach seed0 Gram output for frozen K0. C1/C2: joint method-config x four-LR seed0 sweep. C2: noBN only, winner supplies seed0. C3: matched seeds1/2 plus C1 winner seed0. C3/C4 require current C1 selections.')
+    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1: Gram/power10, seeds1/2 only, attach seed0 Gram output for frozen K0. All noBN runs use nobn_lr_scale=0.5 (lr=0.05). C1 selects method configs at that fixed LR; C2 uses the same fixed LR. C2: noBN only, winner supplies seed0. C3: matched seeds1/2 plus C1 winner seed0. C3/C4 require current C1 selections.')
     cells[1]=cell('code',config(commit,PRESETS[preset] if preset else ([],[],[]),run_tag,preset,source_digest))
     cells[2]=cell('code',''.join(cells[2]['source'])+OVERLAY)
     setup=''.join(cells[3]['source'])

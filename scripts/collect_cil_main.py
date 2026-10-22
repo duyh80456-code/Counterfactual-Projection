@@ -86,6 +86,7 @@ def collect(inputs):
             if (p.get('method_config'),p.get('nobn_lr_scale'))!=(cfg,scale):
                 if seed!=0:raise ValueError(arm+': matched seed uses an unselected LR/config')
                 skipped.append(dict(source=source,path=str(parent),reason='non-winning seed0 LR/config'));continue
+        if backbone=='resnet32_nobn' and p.get('nobn_lr_scale')!=.5:raise ValueError('Main noBN table requires nobn_lr_scale=0.5')
         job=f'{arm}__{"nobn" if backbone=="resnet32_nobn" else "bn"}__{order}__s{seed}'
         artifacts={name:json.loads(data) if name.endswith('.json') else data for name,data in payload.items()}
         validate_result(job,summary,p,tasks,artifacts=None if reused else artifacts)

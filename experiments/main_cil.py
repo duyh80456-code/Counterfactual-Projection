@@ -29,7 +29,7 @@ ENGINE_ARMS = {
     'icarl_gir_gradmax': 'vna_gir_girinit-gradmax', 'icarl_gir_tiny': 'vna_gir_girinit-tiny'}
 ARMS = ('icarl',)+tuple(ENGINE_ARMS)
 # noBN lr = 0.1 * scale; the registered scale is 0.5 for every noBN arm (PREREGISTRATION_CHANGES).
-NOBN_LR_SCALES = (1., .5, .2, .1)
+NOBN_LR_SCALES = (.5,)
 RESULT_FILES = ('summary.json', 'tasks.json', 'continual_eval.csv', 'diagnostics.json',
                 'protocol.json', 'status.json')
 
@@ -297,8 +297,8 @@ def run(args):
     from methods.vna_v3 import V3Engine
     if not callable(getattr(vna_v3, 'diagnose', None)):
         raise RuntimeError('Merge Phase 2 first: methods.vna_v3.diagnose(model, batch) is required')
-    if args.backbone == 'resnet32' and args.nobn_lr_scale != 1.:
-        raise ValueError('nobn_lr_scale applies only to noBN')
+    if args.backbone == 'resnet32':args.nobn_lr_scale=1.
+    elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
     tasks = min(args.max_tasks, 2 if args.fake_data else 20)
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
@@ -440,7 +440,7 @@ def parser():
     p.add_argument('--arm', choices=ARMS, default='icarl')
     p.add_argument('--backbone', choices=('resnet32', 'resnet32_nobn'), default='resnet32_nobn')
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
-    p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
+    p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--gir-live',action='store_true',help='Ablation: allow live-slot GIR')
     p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')

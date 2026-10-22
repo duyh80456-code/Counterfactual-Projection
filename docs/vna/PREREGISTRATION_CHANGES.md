@@ -1087,3 +1087,20 @@ std. BN reproduction results are excluded from this main table.
 
 No new real T4 training, runtime estimate or actual seed0 archive validation is
 claimed by these local implementation checks.
+
+## 2026-10-23: user override — fixed noBN learning rate for every method
+
+Supersedes the preceding four-LR selection plan. Every new noBN run uses
+nobn_lr_scale=0.5 (lr=0.05), including main arms, competitors, preflight and
+profiles. C1 selects only the registered method configurations at this fixed LR:
+23 seed0 trials total. C2 has one fixed-LR seed0 candidate per method (four
+total), followed by the same eight seed1/2 jobs. There is no LR sweep. Selected
+configuration artifacts must declare lr_scales=[0.5]; artifacts from the earlier
+four-LR selection cannot silently change the fixed LR. The main collector
+rejects noBN results at any other scale. BN retains its upstream training LR.
+
+The command-line default is 0.5 for noBN. Main BN normalizes the inapplicable
+noBN scale to 1.0. Historical validators retain the original rate metadata;
+existing checkpoint identity and K0 are not rewritten to change learning rates.
+The formula-preserving Gram seed0 continuation also registers source359da84
+so its unfinished lr0.05 run can resume with original calibration provenance.

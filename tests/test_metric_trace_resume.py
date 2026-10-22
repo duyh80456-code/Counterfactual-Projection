@@ -6,7 +6,7 @@ import pytest
 import torch
 from diagnostics.vna_align import _assert_bitwise
 from experiments.vna_resume import rng_state,Progress
-from experiments.main_cil_metric_resume import SOURCE,MEMORY_SOURCE,DTYPE_SOURCE,restore_metric_trace_run,seed0_gram_schedule
+from experiments.main_cil_metric_resume import SOURCE,MEMORY_SOURCE,DTYPE_SOURCE,PLAN_SOURCE,restore_metric_trace_run,seed0_gram_schedule
 
 
 def fixture(stage,source_commit=SOURCE):
@@ -14,7 +14,7 @@ def fixture(stage,source_commit=SOURCE):
     schedule=dict(code_commit=source_commit,source_digest=None,policy_version='schur_gamma_bound_rho25_v2',
         gir_live=False,solver='gram',curvature='power10',backbone='resnet32_nobn',nobn_lr_scale=.5,
         authoritative=True,synthetic=False,K0=40,calibration=[dict(task=2,vna_seconds=1.)]*3)
-    if source_commit in (MEMORY_SOURCE,DTYPE_SOURCE):schedule['calibration_code_commit']=SOURCE
+    if source_commit in (MEMORY_SOURCE,DTYPE_SOURCE,PLAN_SOURCE):schedule['calibration_code_commit']=SOURCE
     (root/'_schedules').mkdir();(root/'_schedules'/'gram_power10.json').write_text(json.dumps(schedule))
     identity=dict(code_commit=source_commit,source_digest=None,policy_version=schedule['policy_version'],
         setting='icarl',algorithm_version='v4',arm='icarl_full',seed=0,solver='gram',curvature='power10',
@@ -33,7 +33,7 @@ def fixture(stage,source_commit=SOURCE):
     return directory,state
 
 
-@pytest.mark.parametrize('source_commit',[SOURCE,MEMORY_SOURCE,DTYPE_SOURCE])
+@pytest.mark.parametrize('source_commit',[SOURCE,MEMORY_SOURCE,DTYPE_SOURCE,PLAN_SOURCE])
 def test_known_memory_run_transfer_preserves_all_native_training_state(tmp_path,source_commit):
     source,state=fixture(tmp_path,source_commit);commit='b'*40
     digest=hashlib.sha256((source/'latest.pt').read_bytes()).hexdigest();before=rng_state()
