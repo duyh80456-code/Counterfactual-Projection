@@ -37,7 +37,7 @@ def validate_record(job, summary, protocol, tasks, expected_commit=None):
         expected_job = f'{method}__{backbone}__{order}__s{seed}'
         if job != expected_job or method not in ('icarl',)+ROUND2+ROUND3:
             raise ValueError(f'{job}: invalid v4 competitor label')
-        if backbone not in ('bn','nobn') or order not in ('superclass','random') or protocol.get('nobn_lr_scale',1.) not in (1.,.5):
+        if backbone not in ('bn','nobn') or order not in ('superclass','random') or protocol.get('nobn_lr_scale',1.) not in (1.,.5,.2,.1):
             raise ValueError(f'{job}: invalid v4 setup')
         if protocol.get('fake_data') is not False or protocol.get('disabled') is not False:
             raise ValueError(f'{job}: synthetic or disabled competitor')

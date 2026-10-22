@@ -345,3 +345,40 @@ two-task fake-data runs (`tests/test_main_cil.py::test_round3_ablation_arms_run_
 `tests/test_competitors.py::test_77_native_wrapper_and_disabled_identity[icarl_fire|icarl_swr]`).
 MRFA needs a dedicated runner; Forget-Forgetting has no public code. Definitions:
 PREREGISTRATION_CHANGES.md "Round-3 code preparation".
+
+## Current execution plan (2026-10-23; supersedes original job counts)
+
+1. `vna4_gram_m1s0_ir.ipynb`: attach the failed/paused Gram seed0 output and
+   CIFAR-100; resume full seed0, retaining the historical baseline verification.
+2. `vna4_C1.ipynb`: CIFAR-100; four LR levels x registered method configs,
+   92 full seed0 trials. Attach its previous output to continue its native jobs.
+3. `vna4_C2.ipynb`: CIFAR-100 plus old GEM output if available; noBN only,
+   16 seed0 LR trials followed by eight selected-config seed1/2 jobs. Compatible
+   old GEM seed0 supplies its exact LR candidate without retraining it.
+4. `vna4_C3.ipynb`: CIFAR-100 plus this version's C1 output containing four
+   best_config.json files. Eight seed1/2 jobs; combine with C1 winners for all seeds.
+5. `vna4_M1.ipynb`: CIFAR-100 plus Gram seed0 output containing the frozen
+   gram_power10.json authority. Four seed1/2 jobs, Gram/power10, no hold.
+
+All generated notebooks share one source commit. M1 does not repeat seed0 or
+recompute K0. The seed0 repair accepts registered source80608ab in addition to
+29cc735/1bf6d7a; it preserves native checkpoint state and calibration provenance.
+
+After gathering completed outputs (install the project's diagnostics extras
+for matplotlib when running locally):
+
+```bash
+.venv/bin/python -m scripts.collect_cil_main seed0.tar.gz M1.tar.gz C1.tar.gz C2.tar.gz C3.tar.gz --out results/cil
+```
+
+The output includes main_cil_table.csv/.md, average_accuracy_by_task.csv,
+PNG/SVG curves and provenance.json. It reports partial seed coverage explicitly
+and refuses to pool mismatched solver/curvature/LR/configuration. Include both
+C1 and C3 outputs: C3 does not rerun the winning seed0 trials. See the latest
+PREREGISTRATION_CHANGES entry for exact trial counts and reuse validation.
+
+Local affected checks: 83 tests PASS (competitor wrappers, joint LR selection,
+validated GEM reuse, M1/C2 dispatch and sweep resume, native checkpoint transfer,
+fixed Gram math, aggregation/curves, main CIL and diagnostic GPU lanes). Notebook
+cells are also parsed after generation. No real T4 run or new seed0 run archive
+was available for validation.

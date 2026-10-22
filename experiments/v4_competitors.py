@@ -347,23 +347,78 @@ def run(args):
     finally: status.close()
 
 
+def reuse_gem_candidate(args):
+    if args.method!='gem' or args.fake_data or not args.reuse_root:return None
+    from scripts.collect_parallel import validate_result
+    from experiments.parallel_validity import dataset_fingerprint
+    import hashlib
+    import shutil
+    expected=dataset_fingerprint(args.data_dir);matches={}
+    target=Path(args.out).resolve()
+    for path in Path(args.reuse_root).rglob('summary.json'):
+        if path.parent.resolve()==target and not (target/'reused_candidate.json').exists():continue
+        value=json.loads(path.read_text());p=value.get('identity',{})
+        if value.get('status')!='COMPLETED' or any(p.get(k)!=v for k,v in dict(
+            benchmark='v4_competitor',arm='gem',seed=0,backbone='nobn',order='superclass',
+            nobn_lr_scale=args.nobn_lr_scale,method_config=json.loads(args.config),dataset_fingerprint=expected).items()):continue
+        validate_result('gem__nobn__superclass__s0',value,p,value.get('tasks'))
+        if p.get('class_order')!=class_order(0,'superclass',args.data_dir) or p.get('training')!=training_settings(False,False,args.nobn_lr_scale):
+            raise ValueError('GEM reuse order/training mismatch')
+        matches[hashlib.sha256(path.read_bytes()).hexdigest()]=(path,value)
+    if len(matches)>1:raise ValueError('Conflicting existing GEM seed0 candidates')
+    if not matches:return None
+    digest,(path,value)=next(iter(matches.items()))
+    names=('summary.json','protocol.json','tasks.json','diagnostics.json','continual_eval.csv','status.json')
+    if any(not path.with_name(name).exists() for name in names):raise ValueError('GEM reuse artifact missing')
+    protocol=json.loads(path.with_name('protocol.json').read_text())
+    tasks=json.loads(path.with_name('tasks.json').read_text())
+    validate_result('gem__nobn__superclass__s0',value,protocol,tasks)
+    import csv
+    if len(json.loads(path.with_name('diagnostics.json').read_text()))!=20 or json.loads(path.with_name('status.json').read_text()).get('phase')!='COMPLETED':
+        raise ValueError('GEM reuse diagnostics/status incomplete')
+    if len(list(csv.DictReader(path.with_name('continual_eval.csv').read_text().splitlines())))!=20:
+        raise ValueError('GEM reuse evaluation incomplete')
+    if path.parent.resolve()==target:
+        metadata=json.loads((target/'reused_candidate.json').read_text())
+        if metadata.get('consumer_commit')!=code_commit() or metadata.get('summary_sha256')!=digest:
+            raise ValueError('GEM reuse cache identity mismatch')
+        return value
+    target.mkdir(parents=True,exist_ok=True)
+    for name in names:shutil.copy2(path.with_name(name),target/name)
+    print(f'GEM REUSE: validated seed0 lr={.1*args.nobn_lr_scale:g} from {path}',flush=True)
+    lop.write_json(target/'reused_candidate.json',dict(source=str(path),summary_sha256=digest,
+        source_commit=value['identity']['code_commit'],consumer_commit=code_commit(),scope='GEM seed0 at this exact LR/config'))
+    return value
+
+
 def sweep(args):
     if args.disabled or args.reproduction: raise ValueError('sweep requires an enabled main-protocol method')
     out = Path(args.out)
     candidates = []
-    for i,config in enumerate(grid(args.method)):
-        trial = copy.deepcopy(args)
-        trial.seed, trial.backbone, trial.order = 0,'nobn','superclass'
-        trial.config, trial.out = json.dumps(config), str(out/'scan'/str(i))
-        result = run(trial)
-        if result['status'] == 'COMPLETED': candidates.append((config,result))
-    if not candidates: raise ValueError('no completed sweep candidates')
-    config, result = max(candidates,key=lambda item:item[1]['average_incremental_accuracy'])
+    trials=[]
+    for j,scale in enumerate(NOBN_LR_SCALES):
+        for i,config in enumerate(grid(args.method)):
+            trial = copy.deepcopy(args)
+            trial.seed, trial.backbone, trial.order = 0,'nobn','superclass'
+            trial.nobn_lr_scale=scale;trial.best_config=None
+            relative=f'scan/lr{j}/{i}'
+            trial.config, trial.out = json.dumps(config), str(out/relative)
+            print(f'SWEEP {args.method}: lr={.1*scale:g} config={config} out={trial.out}',flush=True)
+            result = reuse_gem_candidate(trial) or run(trial)
+            score=result.get('average_incremental_accuracy',float('nan'))
+            trials.append(dict(config=config,nobn_lr_scale=scale,lr=.1*scale,path=relative,
+                status=result['status'],score=score if math.isfinite(score) else None))
+            lop.write_json(out/'selection_report.json',dict(lr_scales=list(NOBN_LR_SCALES),trials=trials))
+            if result['status']=='COMPLETED' and math.isfinite(score):candidates.append((config,scale,relative,result))
+    if not candidates: raise ValueError('no completed finite sweep candidates')
+    config,scale,relative,result=max(candidates,key=lambda item:item[3]['average_incremental_accuracy'])
     best = dict(method=args.method,config=config,seed=0,backbone='nobn',order='superclass',
         metric='cnn_average_accuracy',score=result['average_incremental_accuracy'],
         synthetic=args.fake_data,code_commit=code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         dataset_fingerprint=result.get('identity',{}).get('dataset_fingerprint'),
-        nobn_lr_scale=args.nobn_lr_scale,grid=grid(args.method),selection='maximum average incremental accuracy; first grid entry wins ties')
+        nobn_lr_scale=scale,lr=.1*scale,lr_scales=list(NOBN_LR_SCALES),grid=grid(args.method),
+        selected_trial=relative,total_trials=len(trials),
+        selection='maximum finite average incremental accuracy at seed0; first registered LR/config wins ties')
     lop.write_json(out/'best_config.json',best)
     return best
 
@@ -373,14 +428,15 @@ def selected_config(args):
         best = json.loads(Path(args.best_config).read_text())
         if best.get('synthetic') != args.fake_data or best.get('method') != args.method or best.get('code_commit') != code_commit() or best.get('source_digest') != os.environ.get('VNA_SOURCE_DIGEST'):
             raise ValueError('best_config provenance mismatch')
-        if best.get('grid') != grid(args.method) or best.get('config') not in grid(args.method):
+        if best.get('grid') != grid(args.method) or best.get('config') not in grid(args.method) or best.get('lr_scales')!=list(NOBN_LR_SCALES):
             raise ValueError('best_config grid mismatch')
-        if (best.get('seed'),best.get('backbone'),best.get('order'),best.get('metric'),best.get('nobn_lr_scale')) != (0,'nobn','superclass','cnn_average_accuracy',args.nobn_lr_scale) or not math.isfinite(best.get('score',float('nan'))):
+        if (best.get('seed'),best.get('backbone'),best.get('order'),best.get('metric')) != (0,'nobn','superclass','cnn_average_accuracy') or best.get('nobn_lr_scale') not in NOBN_LR_SCALES or not math.isfinite(best.get('score',float('nan'))):
             raise ValueError('best_config selection policy mismatch')
         if not args.fake_data:
             from experiments.parallel_validity import dataset_fingerprint
             if best.get('dataset_fingerprint') != dataset_fingerprint(args.data_dir):
                 raise ValueError('best_config dataset mismatch')
+        args.nobn_lr_scale=best['nobn_lr_scale']
         config = best['config']
     elif len(grid(args.method)) == 1: config = grid(args.method)[0]
     else: raise ValueError('--best-config is required for tuned methods')
@@ -411,6 +467,7 @@ def parser():
     p.add_argument('--device',default='cpu')
     p.add_argument('--data-dir',default='/kaggle/input/datasets/nlnk1607/cifar100')
     p.add_argument('--config'); p.add_argument('--best-config')
+    p.add_argument('--reuse-root',help='Expanded prior output tree for validated GEM seed0 sweep-candidate reuse')
     p.add_argument('--fake-data',action='store_true'); p.add_argument('--disabled',action='store_true')
     p.add_argument('--resume',action='store_true'); p.add_argument('--reproduction',action='store_true')
     return p

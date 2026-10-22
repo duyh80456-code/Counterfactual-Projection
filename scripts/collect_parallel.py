@@ -16,19 +16,19 @@ if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from experiments.parallel_validity import validate_record
 
 
-def files(source):
+def files(source,names=None):
     source = Path(source)
     if source.is_dir():
         for path in source.rglob('*'):
-            if path.is_file(): yield PurePosixPath(path.relative_to(source).as_posix()), path.read_bytes()
+            if path.is_file() and (names is None or path.name in names): yield PurePosixPath(path.relative_to(source).as_posix()), path.read_bytes()
     elif zipfile.is_zipfile(source):
         with zipfile.ZipFile(source) as archive:
             for name in archive.namelist():
-                if not name.endswith('/'): yield PurePosixPath(name), archive.read(name)
+                if not name.endswith('/') and (names is None or PurePosixPath(name).name in names): yield PurePosixPath(name), archive.read(name)
     elif tarfile.is_tarfile(source):
         with tarfile.open(source) as archive:
             for member in archive.getmembers():
-                if member.isfile(): yield PurePosixPath(member.name), archive.extractfile(member).read()
+                if member.isfile() and (names is None or PurePosixPath(member.name).name in names): yield PurePosixPath(member.name), archive.extractfile(member).read()
     else:
         raise ValueError(f'unsupported input: {source}')
 
@@ -176,10 +176,13 @@ def collect(inputs, run_tag):
     if len(digests)>1: raise ValueError('mixed source_digest artifacts')
     offline=[r['protocol'].get('dataset_fingerprint') for r in jobs.values() if r['protocol'].get('setting')=='icarl' or r['protocol'].get('benchmark') in ('cil_competitor','v4_competitor')]
     if offline and any(f != offline[0] for f in offline): raise ValueError('offline CIL dataset mismatch')
-    scales = {r['protocol'].get('nobn_lr_scale',1.) for r in jobs.values()
-              if (r['protocol'].get('algorithm_version') == 'v4' or r['protocol'].get('benchmark') == 'v4_competitor')
-              and r['protocol'].get('backbone') in ('nobn','resnet32_nobn')}
-    if len(scales)>1: raise ValueError('mixed noBN learning-rate scales')
+    scales={}
+    for r in jobs.values():
+        p=r['protocol']
+        if p.get('backbone') not in ('nobn','resnet32_nobn'):continue
+        key=(p.get('arm'),p.get('class_order_kind',p.get('order')))
+        scales.setdefault(key,set()).add(p.get('nobn_lr_scale',1.))
+    if any(len(values)>1 for values in scales.values()):raise ValueError('mixed noBN learning-rate scales within one method')
     validate_shared_schedules(jobs)
     return jobs
 

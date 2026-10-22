@@ -14,15 +14,16 @@ from scripts.build_kaggle_pilot_common import cell
 
 TUNED = ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd')
 
-def cil_jobs(arms, backbones=('nobn',), order='superclass'):
+def cil_jobs(arms, backbones=('nobn',), order='superclass', seeds=range(3)):
     return [f'{arm}__{backbone}__{order}__s{seed}' for backbone in backbones
-            for seed in range(3) for arm in arms]
+            for seed in seeds for arm in arms]
 
 
 # Rough relative GPU cost per job (icarl = 1): icarl_full may spend up to 1.0x extra on the
 # algorithm (§2.5 budget), C-Flat reports ~2.9x, sweeps scale with their grid size.
 COST = {'icarl_full': 2., 'icarl_cflat': 2.9, 'gem': 1.5, 'podnet': 1.3,
-        'icarl_cbp__sweep': 4., 'icarl_redo__sweep': 6., 'icarl_snp__sweep': 4., 'icarl_upgd__sweep': 9.}
+        'icarl_cbp__sweep': 16., 'icarl_redo__sweep': 24., 'icarl_snp__sweep': 16., 'icarl_upgd__sweep': 36.,
+        'podnet__sweep': 5.2, 'wa__sweep': 4., 'gem__sweep': 6., 'icarl_cflat__sweep': 11.6}
 
 
 def lanes(jobs):
@@ -35,14 +36,16 @@ def lanes(jobs):
 
 
 PRESETS = {
-    'M1': lanes(cil_jobs(('icarl','icarl_full'))),
+    'M1': lanes(cil_jobs(('icarl','icarl_full'),seeds=(1,2))),
     'M2': lanes(cil_jobs(('icarl','icarl_full'), ('bn',))),
     'M3': lanes(cil_jobs(('icarl','icarl_full'), order='random')),
     # Seed 0 only: icarl_full (GPU0) next to icarl (GPU1), same setup and K0 authority as M1.
     'M1s0': (['icarl_full__nobn__superclass__s0'], ['icarl__nobn__superclass__s0'], []),
     'C1': lanes([method+'__sweep' for method in TUNED]),
-    'C2': lanes(cil_jobs(('podnet','wa','gem','icarl_cflat'), ('nobn','bn'))),
-    'C3': lanes(cil_jobs(TUNED, ('nobn',))),
+    'C2': tuple(a+b for a,b in zip(
+        lanes([m+'__sweep' for m in ('podnet','wa','gem','icarl_cflat')]),
+        lanes(cil_jobs(('podnet','wa','gem','icarl_cflat'),seeds=(1,2))))),
+    'C3': lanes(cil_jobs(TUNED, ('nobn',),seeds=(1,2))),
     'C4': lanes(cil_jobs(TUNED, ('bn',))),
     'C5': (['icarl_cflat__bn__random__s1993'], [], []),
     'B5w': ([], [], [f'b5_{arm}__width{width}__s{seed}' for width in (5,20,100)
@@ -96,7 +99,7 @@ if SOURCE_DIGEST:
     (RUN_ROOT/'source_manifest.json').write_text(json.dumps(dict(code_commit=REPO_COMMIT, source_digest=SOURCE_DIGEST)))
 '''
 
-RUNNER = r'''if PRESET in ('M1','M1s0'):
+RUNNER = r'''if PRESET == 'M1s0':
     raise RuntimeError('MAIN RUN HELD: review exact-solver T4 profiling and A–D NaN report before enabling M1')
 import re
 NOBN_LR_SCALE = .5  # registered noBN lr = 0.05, chosen by the 3-task baseline probe (PREREGISTRATION_CHANGES)
@@ -109,10 +112,11 @@ ENV.update(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
 def attached_file(filename, destination, predicate):
     if destination.exists(): return destination
     candidates = []
-    for path in Path('/kaggle/input').rglob(filename):
-        try: value = json.loads(path.read_text())
-        except (ValueError, OSError): continue
-        if predicate(value): candidates.append((path,value))
+    for root in (STAGE_B,Path('/kaggle/input')):
+        for path in root.rglob(filename):
+            try: value = json.loads(path.read_text())
+            except (ValueError, OSError): continue
+            if predicate(value): candidates.append((path,value))
     if not candidates: return None
     if any(value != candidates[0][1] for _,value in candidates): raise ValueError(f'conflicting {filename}')
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -138,12 +142,17 @@ def completed(job):
     return True
 
 def schedule_name(backbone):
+    if PRESET=='M1':return 'gram_power10.json'
     name='icarl_BN' if backbone=='bn' else 'icarl_noBN'
     return name+('_random' if PRESET=='M3' else '')+'.json'
 
 def prepare_schedule(backbone):
     filename = schedule_name(backbone)
     destination = ROOT/'_schedules'/filename
+    if PRESET=='M1':
+        from experiments.main_cil_metric_resume import seed0_gram_schedule
+        seed0_gram_schedule(STAGE_B,destination,REPO_COMMIT)
+        return
     from methods.vna_v3 import POLICY_VERSION
     attached_file(filename, destination, lambda v: v.get('code_commit') == REPO_COMMIT
                   and v.get('source_digest') == SOURCE_DIGEST and v.get('authoritative')
@@ -171,14 +180,17 @@ def command(job):
         if arm != 'bp': cmd += ['--schedule',str(ROOT/'_schedules'/f'b5_width{width}.json')]
         return cmd
     if job.endswith('__sweep'):
-        return [sys.executable,'-u','-m','experiments.v4_competitors','--method',job.split('__')[0],
-                '--mode','sweep','--device','cuda:0','--data-dir',str(DATA_ROOT),
-                '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(NOBN_LR_SCALE)]
+        cmd=[sys.executable,'-u','-m','experiments.v4_competitors','--method',job.split('__')[0],
+            '--mode','sweep','--device','cuda:0','--data-dir',str(DATA_ROOT),
+            '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(NOBN_LR_SCALE)]
+        if PRESET=='C2' and job.startswith('gem__'):cmd+=['--reuse-root',str(STAGE_B)]
+        return cmd
     arm,backbone,order,seed = job.split('__'); seed = seed[1:]
     if arm in ('icarl','icarl_full'):
         cmd = [sys.executable,'-u','-m','experiments.main_cil','--arm',arm,
                '--backbone','resnet32' if backbone == 'bn' else 'resnet32_nobn',
-               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),'--solver','cg_ir','--curvature','exact',
+               '--class-order',order,'--seed',seed,'--out',str(ROOT/job),
+               '--solver','gram' if PRESET=='M1' else 'cg_ir','--curvature','power10' if PRESET=='M1' else 'exact',
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
         if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
@@ -186,12 +198,13 @@ def command(job):
     cmd = [sys.executable,'-u','-m','experiments.v4_competitors','--method',arm,
            '--backbone',backbone,'--order',order,'--seed',seed,'--out',str(ROOT/job),
            '--device','cuda:0','--data-dir',str(DATA_ROOT),'--resume']
-    if PRESET in ('C3','C4'):
+    if PRESET in ('C2','C3','C4'):
         destination = ROOT/'_configs'/arm/'best_config.json'
-        path = attached_file('best_config.json', destination, lambda v: v.get('method') == arm
+        path = ROOT/(arm+'__sweep')/'best_config.json' if PRESET=='C2' else None
+        if path is None:path = attached_file('best_config.json', destination, lambda v: v.get('method') == arm
                              and v.get('code_commit') == REPO_COMMIT and v.get('source_digest') == SOURCE_DIGEST
                              and v.get('synthetic') is False)
-        if path is None: raise FileNotFoundError(f'Attach C1 best_config.json for {arm}')
+        if path is None: raise FileNotFoundError(f'Attach the current C1 best_config.json for {arm}')
         cmd += ['--best-config',str(path)]
     if PRESET == 'C5': cmd += ['--reproduction']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
@@ -235,7 +248,15 @@ try:
                 destination.write_text(json.dumps(schedule,indent=2))
             if pause_due(): break
     archive_outputs()
+    if PRESET=='C2' and not pause_due():
+        with ThreadPoolExecutor(max_workers=2) as sweep_pool:
+            sweeps=[sweep_pool.submit(run_gpu,gpu,[j for j in jobs if j.endswith('__sweep')])
+                    for gpu,jobs in enumerate((JOBS_GPU0,JOBS_GPU1))]
+            for future in sweeps:future.result()
     if not pause_due():
+        if PRESET=='C2':
+            JOBS_GPU0=[j for j in JOBS_GPU0 if not j.endswith('__sweep')]
+            JOBS_GPU1=[j for j in JOBS_GPU1 if not j.endswith('__sweep')]
         with ThreadPoolExecutor(max_workers=2) as gpu_pool, ThreadPoolExecutor(max_workers=4) as cpu_pool:
             futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
             futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
@@ -248,17 +269,17 @@ REPORT = r'''from scripts.collect_parallel import collect, report
 from experiments.main_cil_results import stability_plasticity
 from collections import Counter
 records = collect([ROOT.parent],RUN_TAG)
-if PRESET == 'C1':
-    from experiments.v4_competitors import grid
-    for method in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd'):
+if PRESET in ('C1','C2'):
+    methods=('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd') if PRESET=='C1' else ('podnet','wa','gem','icarl_cflat')
+    for method in methods:
         selection = ROOT/(method+'__sweep')/'best_config.json'
         if not selection.exists(): continue
         best = json.loads(selection.read_text())
-        directory = selection.parent/'scan'/str(grid(method).index(best['config']))
+        directory = selection.parent/best['selected_trial']
         record = {key:json.loads((directory/(key+'.json')).read_text())
                   for key in ('summary','protocol','tasks','diagnostics')}
         job = method+'__nobn__superclass__s0'
-        validate_result(job,record['summary'],record['protocol'],record['tasks'],REPO_COMMIT,SOURCE_DIGEST)
+        validate_result(job,record['summary'],record['protocol'],record['tasks'])
         records[job] = dict(record,job=job)
 if PRESET != 'B5w': report(records)
 flags = []
@@ -322,7 +343,7 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
         for item in result['cells']:
             item['source'] = [line.replace('0'*40,commit) for line in item['source']]
     cells=result['cells']
-    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1/M2 own backbone schedules; C3/C4 require C1 selections.')
+    cells[0]=cell('markdown','# VNA v4 main run\nAttach previous output archives to resume. M1: Gram/power10, seeds1/2 only, attach seed0 Gram output for frozen K0. C1/C2: joint method-config x four-LR seed0 sweep. C2: noBN only, winner supplies seed0. C3: matched seeds1/2 plus C1 winner seed0. C3/C4 require current C1 selections.')
     cells[1]=cell('code',config(commit,PRESETS[preset] if preset else ([],[],[]),run_tag,preset,source_digest))
     cells[2]=cell('code',''.join(cells[2]['source'])+OVERLAY)
     setup=''.join(cells[3]['source'])
@@ -337,7 +358,8 @@ def build(commit, preset=None, run_tag='vna_v4_main', source_digest=None):
     cells[3]=cell('code',setup)
     runtime=''.join(cells[4]['source'])
     cells[4]=cell('code',runtime)
-    cells[-1]=cell('code',RUNNER)
+    runner=RUNNER[RUNNER.index('import re\n'):] if preset=='M1' else RUNNER
+    cells[-1]=cell('code',runner)
     cells.append(cell('code',REPORT))
     result['cells']=[cells[1],cells[0],*cells[2:]]
     return result

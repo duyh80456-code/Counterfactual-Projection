@@ -237,3 +237,31 @@ def test_cflat_original_protocol_fixture(tmp_path):
     assert result['reproduction']['value'] == 59.13
     assert result['reproduction']['status'] == 'INVALID'
     assert 'delta_cnn_pp' in result['reproduction'] and 'delta_nme_pp' in result['reproduction']
+
+
+def test_joint_lr_sweep_selects_and_consumes_rate(tmp_path,monkeypatch):
+    seen=[]
+    def run(trial):
+        seen.append((trial.nobn_lr_scale,json.loads(trial.config)))
+        score=30. if trial.nobn_lr_scale==.2 else 10.
+        return dict(status='COMPLETED',average_incremental_accuracy=score)
+    monkeypatch.setattr(v4,'run',run)
+    trial=args(tmp_path,'icarl_cbp')
+    best=v4.sweep(trial)
+    assert len(seen)==16 and {r for r,c in seen}=={1.,.5,.2,.1}
+    assert best['total_trials']==16 and best['selected_trial']=='scan/lr2/0'
+    assert best['lr']==pytest.approx(.02)
+    trial.best_config=str(tmp_path/'best_config.json')
+    assert v4.selected_config(trial)==best['config'] and trial.nobn_lr_scale==.2
+    best['lr_scales']=[1.,.5]
+    (tmp_path/'best_config.json').write_text(json.dumps(best))
+    with pytest.raises(ValueError,match='grid'):v4.selected_config(trial)
+
+
+def test_joint_lr_sweep_excludes_divergence_and_nonfinite(tmp_path,monkeypatch):
+    def run(trial):
+        if trial.nobn_lr_scale==1.:return dict(status='DIVERGED',average_incremental_accuracy=100.)
+        return dict(status='COMPLETED',average_incremental_accuracy=float('nan') if trial.nobn_lr_scale==.5 else 20.)
+    monkeypatch.setattr(v4,'run',run)
+    best=v4.sweep(args(tmp_path,'wa'))
+    assert best['nobn_lr_scale']==.2 and best['total_trials']==4

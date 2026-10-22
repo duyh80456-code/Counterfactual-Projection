@@ -11,7 +11,8 @@ from methods.vna_v3 import POLICY_VERSION
 
 SOURCE='29cc735ab8770b3602c54c3c1f157649d02f807a'
 MEMORY_SOURCE='1bf6d7afe86c86da7c3f9202cb9e5380af02240c'
-SOURCES=(SOURCE,MEMORY_SOURCE)
+DTYPE_SOURCE='80608ab8610372e79d2bd4d8828f3b11b9ab3f45'
+SOURCES=(SOURCE,MEMORY_SOURCE,DTYPE_SOURCE)
 
 
 def _identity(value,commit,schedule):
@@ -28,7 +29,7 @@ def _identity(value,commit,schedule):
 
 
 def _schedule(value,commit):
-    if value.get('code_commit') not in SOURCES:raise ValueError('metric-trace repair schedule source mismatch')
+    if value.get('code_commit') not in (*SOURCES,commit):raise ValueError('metric-trace repair schedule source mismatch')
     expected=dict(code_commit=value['code_commit'],source_digest=None,policy_version=POLICY_VERSION,gir_live=False,
         solver='gram',curvature='power10',backbone='resnet32_nobn',nobn_lr_scale=.5,authoritative=True)
     if any(value.get(k)!=v for k,v in expected.items()) or value.get('synthetic') or not isinstance(value.get('K0'),int) or value['K0']<1:
@@ -82,3 +83,18 @@ def restore_metric_trace_run(stage,run_tag,commit):
         raise
     print('METRIC TRACE REPAIR: restored native checkpoint',json.dumps(manifest),flush=True)
     return manifest
+
+
+def seed0_gram_schedule(stage,destination,commit):
+    matches=[]
+    for path in Path(stage).rglob('gram_power10.json'):
+        value=json.loads(path.read_text())
+        if value.get('code_commit') not in (*SOURCES,commit):continue
+        converted=_schedule(value,commit)
+        matches.append(converted)
+    if not matches:raise FileNotFoundError('Attach the Gram seed0 output/archive with gram_power10.json; M1 seeds1/2 reuse its frozen K0')
+    if any(value!=matches[0] for value in matches):raise ValueError('Conflicting seed0 Gram K0 authorities')
+    destination=Path(destination)
+    if destination.exists() and json.loads(destination.read_text())!=matches[0]:raise ValueError('M1 schedule conflicts with seed0 authority')
+    atomic_json_save(matches[0],destination)
+    return destination

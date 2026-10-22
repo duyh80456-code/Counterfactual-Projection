@@ -1041,3 +1041,49 @@ source files; retain existing strict recipe/seed/policy checks and migration
 hashes. This permits continuity through the dtype-only repair without general
 cross-commit checkpoint acceptance. Local affected validation: 77 tests PASS;
 no T4 run or real failing-session archive validation was performed.
+
+## 2026-10-23: consistent Gram M1 seeds and joint competitor LR selection
+
+This entry supersedes earlier generic M1/C2/C3 dispatch and sweep counts.
+M1 is Gram/power10, noBN/superclass, lr=0.05, budget 1.0x. Its notebook
+runs only full and baseline seeds 1/2 (four jobs), without MAIN RUN HELD.
+It imports the frozen Gram seed0 K0 from attached output, preserving calibration
+producer identity; missing or conflicting authorities fail instead of recalibrating.
+The dedicated gram_m1s0_ir notebook remains the seed0 native continuation path,
+including the 1bf6d7a bounded-memory repair and 80608ab dtype repair. Registered
+unfinished seed0 sources are 29cc735, 1bf6d7a and 80608ab. Model, optimizer,
+scheduler, RNG, counters and original K0 retain the preceding transfer contract.
+80608ab already contains columns.to(blocks) and blocks.new_zeros(()).
+
+User decision: C1 and C2 both select noBN lr from {0.1, 0.05, 0.02, 0.01}.
+Each method-config/LR pair runs the complete seed0 20-task protocol. Maximize
+finite CNN average incremental accuracy; ties take the first registered LR,
+then first registered method config. Diverged/invalid/nonfinite trials cannot
+win. Persist per-trial status/score and the winning LR/config/path/provenance.
+This is the same LR grid, not equal total tuning compute: C1 has 92 trials
+(4 LRs times 4 CBP + 6 ReDo + 4 S&P + 9 UPGD configs); C2 has 16 trials
+(4 LRs times PODNet, WA, GEM and C-Flat, one config each).
+
+C2 contains no BN jobs. It finishes its sweep stage on two GPU lanes before
+launching matched seeds1/2 with the selected LR/config. The winning seed0 trial
+supplies seed0: no redundant matched seed0 job. An attached completed GEM seed0
+result can supply only its identical LR/config candidate, after recipe, dataset,
+order, training and all result artifacts pass validation. Its producer identity
+is retained with source hash and consumer metadata. It cannot replace another
+LR trial; if another LR wins, the earlier GEM result is excluded from the main
+aggregate. C3 similarly runs eight matched jobs (four methods, seeds1/2), using
+current C1 best_config.json; C1 winners supply seed0. C4/C5/M2/M3/B5w and exact
+diagnostics remain available as deferred experiments.
+
+scripts.collect_cil_main accepts expanded outputs and tar/zip archives. It
+validates full 20-task artifacts, uses only selected sweep winners, checks
+summary/final-task consistency and rejects conflicting duplicate seeds or mixed
+solver/curvature/policy/K0/LR/config within a method. Producer commits remain in
+provenance; registered formula-preserving memory repairs can be combined when
+the complete mathematical configuration agrees. Outputs: CNN/NME A-bar and last
+accuracy CSV/Markdown, sample standard deviation, taskwise A-bar CSV and PNG/SVG
+curves. Incomplete seed coverage is explicitly PARTIAL_SEEDS; n=1 has no estimated
+std. BN reproduction results are excluded from this main table.
+
+No new real T4 training, runtime estimate or actual seed0 archive validation is
+claimed by these local implementation checks.
