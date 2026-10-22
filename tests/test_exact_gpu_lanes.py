@@ -27,14 +27,18 @@ def write_report(command,mu=1.):
         candidate_rankings=[dict(site='s',candidates=[dict(id='a',score=1.,curvature=1.,power_generator_seed=12,power_iterations=10)])],
         applications=[dict(mu_star=mu,rho_tr=.5,L_before=3.,L_after=2.,KD_before=2.,KD_after=1.,
             swap_records=[dict(site='s',unit=0,Gamma=.2)],gir_trials=[dict(site='s',unit=0,Gamma_woodbury=.2)])])
+    from methods.vna_v3 import POLICY_VERSION
+    report['identity'].update(policy_version=POLICY_VERSION,gir_live=False)
+    if '--gram-reference' in command:
+        report['fixed_gram_reference']=dict(status='PASS',scope='fixed system',checks={'direction':dict(matches=True)})
     path=Path(command[command.index('--out')+1])/'diagnostic.json'
     path.write_text(json.dumps(report))
 
 
 @pytest.mark.parametrize('mode,gpus,expected',[
-    ('profile',2,{0:['D-IR'],1:['R-Gram','D-IR-power10']}),
+    ('profile',2,{0:['D-IR'],1:['D-Gram','D-IR-power10']}),
     ('nan',2,{0:['A','C'],1:['B','D']}),
-    ('profile',1,{0:['D-IR','R-Gram','D-IR-power10']}),
+    ('profile',1,{0:['D-IR','D-Gram','D-IR-power10']}),
     ('nan',1,{0:['A','B','C','D']}),
 ])
 def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expected):
@@ -44,10 +48,12 @@ def test_gpu_dispatch_parallel_and_single_gpu_fallback(tmp_path,mode,gpus,expect
         branch=name.split('_')[-1]
         assert command[command.index('--branch')+1]==('D' if mode=='profile' else branch)
         assert command[command.index('--checkpoint')+1]==str(tmp_path/'shared-task1.pt')
-        assert command[command.index('--repo')+1]==str(tmp_path/('old' if branch in ('B','C') else 'reference' if branch=='R-Gram' else 'new'))
+        assert command[command.index('--repo')+1]==str(tmp_path/('old' if branch in ('B','C') else 'new'))
         assert ('--profile' in command)==(mode=='profile')
-        assert command[command.index('--curvature')+1]==('power10' if branch in ('R-Gram','D-IR-power10','B','C') else 'exact')
+        assert command[command.index('--curvature')+1]==('power10' if branch in ('D-Gram','D-IR-power10','B','C') else 'exact')
         assert ('--capacity-profile' in command)==(mode=='profile' and branch=='D-IR')
+        assert ('--gram-reference' in command)==(mode=='profile' and branch=='D-Gram')
+        if mode=='profile':assert command[command.index('--solver')+1]==('gram' if branch=='D-Gram' else 'cg_ir')
         with lock:
             calls[gpu].append(branch);active[gpu]+=1
             assert active[gpu]==1
@@ -75,7 +81,7 @@ def test_paused_lane_does_not_launch_its_remaining_jobs(tmp_path):
 def test_cg_failure_propagates_and_archives_outputs(tmp_path):
     archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
-        if name in ('profile_D-IR','profile_R-Gram'): barrier.wait(timeout=5)
+        if name in ('profile_D-IR','profile_D-Gram'): barrier.wait(timeout=5)
         if name=='profile_D-IR':
             raise subprocess.CalledProcessError(1,command)
         write_report(command)
@@ -89,17 +95,17 @@ def test_gram_mismatch_does_not_gate_cg(tmp_path):
     calls=[];archives=[]
     def launch(command,gpu,name,*a):
         calls.append(name)
-        write_report(command,mu=2. if name.endswith('R-Gram') else 1.)
+        write_report(command,mu=2. if name.endswith('D-Gram') else 1.)
         return True
     run_schedule(tmp_path,'profile',1,launch,archives)
-    assert calls==['profile_D-IR','profile_R-Gram','profile_D-IR-power10']
+    assert calls==['profile_D-IR','profile_D-Gram','profile_D-IR-power10']
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
     report=json.loads((root/'ir_power10_vs_gram.json').read_text())
     assert report['status']=='FAIL' and report['advisory']
     assert json.loads((root/'D-IR/diagnostic.json').read_text())['status']=='PROFILE_COMPLETED'
 
 
-@pytest.mark.parametrize('failed',['R-Gram'])
+@pytest.mark.parametrize('failed',['D-Gram'])
 def test_gram_failure_keeps_cg(tmp_path,failed):
     calls=defaultdict(list);archives=[];barrier=threading.Barrier(2)
     def launch(command,gpu,name,*args):
@@ -110,7 +116,7 @@ def test_gram_failure_keeps_cg(tmp_path,failed):
         write_report(command)
         return True
     run_schedule(tmp_path,'profile',2,launch,archives)
-    assert dict(calls)=={0:['D-IR'],1:['R-Gram','D-IR-power10']}
+    assert dict(calls)=={0:['D-IR'],1:['D-Gram','D-IR-power10']}
     root=tmp_path/'outputs/exact_diagnostics/profile/fixture'
     report=json.loads((root/'ir_power10_vs_gram.json').read_text())
     assert report['status']=='INCOMPLETE' and report['execution'][failed]['status']=='FAILED'

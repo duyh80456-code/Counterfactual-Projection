@@ -295,13 +295,13 @@ def test_rebuilt_notebooks_keep_checkpoint_runtime_and_placeholder_pin(tmp_path,
     monkeypatch.setattr('sys.argv', ['build_kaggle_vna_parallel', '--commit', 'PLACEHOLDER',
         '--variants', '--output', str(tmp_path/'vna4_M1.ipynb')])
     build_notebooks()
-    assert {p.name for p in tmp_path.glob('*.ipynb')} == {f'vna4_{name}.ipynb' for name in PRESETS} | {'vna4_exact_diagnostics.ipynb'}
+    assert {p.name for p in tmp_path.glob('*.ipynb')} == {f'vna4_{name}.ipynb' for name in PRESETS} | {'vna4_exact_diagnostics.ipynb','vna4_gram_m1s0_ir.ipynb'}
     for path in tmp_path.glob('*.ipynb'):
         notebook = json.loads(path.read_text())
         source = '\n'.join(''.join(cell['source']) for cell in notebook['cells'])
         assert "REPO_COMMIT = 'PLACEHOLDER'" in source
         assert 'launch_logged' in source
-        assert ('--branch' in source if path.stem == 'vna4_exact_diagnostics' else 'validate_result' in source)
+        assert ('--branch' in source if path.stem in ('vna4_exact_diagnostics','vna4_gram_m1s0_ir') else 'validate_result' in source)
         assert 'restore_stage_archives' in source and 'VNA_DEADLINE' in source
         assert 'One-Shot-TAS-CCIL' not in source and 'GROMO' not in source
         for cell in notebook['cells']:

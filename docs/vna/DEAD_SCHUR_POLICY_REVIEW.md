@@ -115,11 +115,12 @@ Strict profile comparison refuses a policy mismatch. The archival Gram test
 now compares fixed-system direction math to 8c56d02, since whole-application
 identity is intentionally broken by this requested policy change.
 
-Existing notebooks stay pinned to their historical source commits. In
-particular `vna4_gram_m1s0_ir.ipynb` still pins a9e04b9, with its old-policy
-8c56d02 equivalence gate. It does not run these uncommitted changes. A future
-new-policy notebook needs a matching fresh preflight/reference protocol; old
-PASS files cannot certify the new policy.
+The notebooks are regenerated with one updated source pin. The dedicated Gram
+M1s0 notebook gates training on a completed current-policy Gram profile and a
+strict fixed-system check against 8c56d02 (historical OutputSolve and direction
+source). It does not compare changed LM/GIR decisions against the old policy.
+Standalone solver profiles compare same-policy Gram/power10 and CG-IR/power10.
+See GRAM_M1_IR_NOTEBOOK.md for lanes, inputs, cache/resume and remaining holds.
 
 ## Live-slot ablation error gate (follow-up)
 

@@ -955,3 +955,36 @@ principle. The bound is for represented frozen systems, excluding jump and
 operator-assembly rounding. Main preflight remains three task-2 points, with
 no task-1 intervention points. Focused tests cover perturbed-solution gain
 error <= bound and rejection of positive live Gamma below its bound.
+
+
+## 2026-10-22: refresh every vna4 notebook for the current policy
+
+Explicit user request to update all notebooks/builders after the v2 engine
+commit. All generated notebooks pin one immutable implementation commit;
+no source ZIP is needed. Runtime pin precedes the notebook packaging commit.
+The dedicated Gram M1s0 notebook remains the authorized 20-task seed0 route,
+with Gram/power10 preflight on three task2 points, native resume and unchanged
+baseline 150-epoch verification. GPU1 profiles same-commit Gram/power10 with
+a strict fixed-system 8c56d02 direction/OutputSolve check, then CG-IR/exact with
+capacity and stops. Training waits for the completed current Gram profile and
+that fixed-system PASS. The old whole-application gate cannot apply across the
+requested LM/GIR policy change; this replacement explicitly narrows the claim.
+
+The reference check reuses the exact same frozen Gram, theta, residual/metric,
+proposals and accepted damping, at rel tol 1e-5/abs tol 0. Reference source must
+be a clean 8c56d02 checkout, and historical OutputSolve is loaded from it.
+The check is read-only and separately timed as diagnostic audit overhead.
+Its status/fields/scope are logged. It does not assert LM/swap equivalence.
+No profile mismatch or pending report is reclassified as a whole-application
+PASS. Current-policy CG-IR/exact vs Gram/power10 stays a strict, explicit
+comparison permitting only the labelled curvature change; it does not gate
+the authorized Gram lane or authorize CG-IR M1.
+
+Standalone diagnostic GPU1 uses current-policy Gram/power10 plus the fixed
+reference check, then current CG-IR/power10. Thus strict solver-only comparison
+no longer mixes policy versions; GPU0 still runs CG-IR/exact/capacity.
+Matching completed diagnostic identities are reused, with fixed PASS checked
+again. Native K0/checkpoint policy checks remain. Generic outputs are isolated
+as outputs/<source-commit-prefix>/<RUN_TAG>/<job>; M3 has its own random-order
+preflight and schedule filename. Existing generic M1/M1s0 holds are preserved.
+No T4 runtime/capacity or M1 performance result is asserted by this refresh.

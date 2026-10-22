@@ -101,12 +101,15 @@ def test_lanes_overlap_and_only_Gram_full_is_authorized(tmp_path,failure):
     barrier=threading.Barrier(2);compat_done=threading.Event();paused=threading.Event()
     def launch(cmd,gpu,name,log):
         with lock:calls.append((gpu,name,cmd))
-        if name in ('gram_preflight','gram_8c56d02'):barrier.wait(timeout=5)
+        if name in ('gram_preflight','gram_current'):barrier.wait(timeout=5)
         if name=='gram_preflight':
             p=Path(cmd[cmd.index('--schedule-output')+1]);p.parent.mkdir(parents=True);p.write_text('{}')
         elif '--profile' in cmd:
             if name=='cg_ir' and failure=='cheap':raise RuntimeError('fixture OOM')
-            write_report(cmd,mu=2. if name=='gram_8c56d02' and failure=='compatibility' else 1.)
+            write_report(cmd)
+            if name=='gram_current' and failure=='compatibility':
+                path=Path(cmd[cmd.index('--out')+1])/'diagnostic.json'
+                value=json.loads(path.read_text());value['fixed_gram_reference']['status']='FAIL';path.write_text(json.dumps(value))
             if name=='gram_current':compat_done.set()
         else:
             assert gpu==0 and compat_done.is_set()
@@ -128,7 +131,7 @@ def test_lanes_overlap_and_only_Gram_full_is_authorized(tmp_path,failure):
     else:
         exec(GRAM_M1_IR_RUNNER,scope)
         assert [n for g,n,_ in calls if g==0]==['gram_preflight','gram_full_s0','gram_baseline_s0']
-        assert [n for g,n,_ in calls if g==1]==['gram_8c56d02','gram_current','cg_ir']
+        assert [n for g,n,_ in calls if g==1]==['gram_current','cg_ir']
         cheap=next(c for g,n,c in calls if n=='cg_ir')
         assert '--capacity-profile' in cheap and '--arm' not in cheap
         result=json.loads((root/'profiles'/'cg_ir_vs_gram.json').read_text())
@@ -163,3 +166,54 @@ def test_strict_cross_curvature_still_checks_numeric_values(tmp_path):
     assert compare_profiles(old,new,strict=True,allow_curvature_change=True)['status']=='PASS'
     candidate['curvature']*=1.01
     assert compare_profiles(old,new,strict=True,allow_curvature_change=True)['status']=='FAIL'
+
+
+def test_fixed_reference_loads_historical_solver_and_detects_numeric_change(tmp_path,monkeypatch):
+    from diagnostics.exact_solver import load_gram_reference,compare_fixed_gram
+    from methods.vna_v3 import training_products,seed_proposals
+    from methods.vna_ggn import GGNProducts
+    from diagnostics.vna_align import _assert_bitwise
+    reference=tmp_path/'reference';(reference/'methods').mkdir(parents=True)
+    for name in ('vna_v3','vna_exact'):
+        source=subprocess.check_output(['git','show','8c56d02:methods/'+name+'.py'],text=True)
+        (reference/'methods'/(name+'.py')).write_text(source)
+    monkeypatch.setattr('diagnostics.exact_solver.subprocess.check_output',lambda cmd,**kw:
+        '8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2\n' if cmd[-1]=='HEAD' else '')
+    cls=load_gram_reference(reference)
+    assert 'q' in cls._output_solver.__globals__['OutputSolve'].__dict__
+    model=nn.Sequential(nn.Linear(2,3),nn.ReLU(),nn.Linear(3,1)).double()
+    site=HookSite(model,'0','2','linear',between=('1',))
+    batch=torch.randn(5,2),torch.randn(5,1)
+    engine=V3Engine(solver='gram',curvature='power10');engine.begin_task(2)
+    with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],MSE(),dict(targets=batch[1]));G,_=gram(p)
+        current=engine._direction(p,op,.3,G=G)
+        before=deepcopy(model.state_dict()),rng_state(),engine.state_dict()
+        report=compare_fixed_gram(cls,engine,p,op,.3,G,current)
+        assert report['status']=='PASS' and 'excludes changed LM/GIR' in report['scope']
+        _assert_bitwise(before,(model.state_dict(),rng_state(),engine.state_dict()))
+        changed={**current,'dy':current['dy']+.01}
+        assert compare_fixed_gram(cls,engine,p,op,.3,G,changed)['status']=='FAIL'
+    monkeypatch.setattr('diagnostics.exact_solver.subprocess.check_output',lambda *a,**kw:'wrong')
+    with pytest.raises(ValueError,match='clean 8c56d02'):load_gram_reference(reference)
+
+
+@pytest.mark.parametrize('preset,order,filename',[('M2','superclass','icarl_BN.json'),('M3','random','icarl_noBN_random.json')])
+def test_generic_authority_uses_current_policy_and_own_class_order(tmp_path,preset,order,filename):
+    from scripts.build_kaggle_vna_parallel import RUNNER
+    from methods.vna_v3 import POLICY_VERSION
+    nodes=[n for n in ast.parse(RUNNER).body if isinstance(n,ast.FunctionDef) and n.name in ('schedule_name','prepare_schedule')]
+    calls=[]
+    def launch(command,*args):
+        calls.append(command)
+        path=Path(command[command.index('--schedule-output')+1]);path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('{}');return True
+    scope=dict(ROOT=tmp_path,PRESET=preset,Path=Path,sys=sys,DATA_ROOT=tmp_path/'cifar',RUN_ROOT=tmp_path,RUN_TAG='fixture',
+        REPO_COMMIT='a'*40,SOURCE_DIGEST=None,NOBN_LR_SCALE=.5,launch=launch,
+        attached_file=lambda *a:None,archive_outputs=lambda:None,pause_due=lambda:False)
+    exec(compile(ast.Module(body=nodes,type_ignores=[]),'authority','exec'),scope)
+    scope['prepare_schedule']('bn' if preset=='M2' else 'nobn')
+    cmd=calls[0]
+    assert cmd[cmd.index('--class-order')+1]==order
+    assert cmd[cmd.index('--solver')+1]=='cg_ir' and cmd[cmd.index('--curvature')+1]=='exact'
+    assert Path(cmd[cmd.index('--schedule-output')+1]).name==filename

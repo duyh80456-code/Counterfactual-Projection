@@ -10,6 +10,7 @@ import io
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tarfile
@@ -106,6 +107,45 @@ def compare_profiles(reference, current, strict=False, allow_curvature_change=Fa
         interpretation=('Strict numeric comparison on the same checkpoint with an intentional curvature change; ranking/swaps may differ.'
             if allow_curvature_change else
             'Compare the same checkpoint and curvature mode; failures remain explicit, including near-zero values at abs tol zero.'))
+
+
+def load_gram_reference(tree):
+    tree=Path(tree).resolve()
+    commit=subprocess.check_output(['git','-C',str(tree),'rev-parse','HEAD'],text=True).strip()
+    dirty=subprocess.check_output(['git','-C',str(tree),'status','--porcelain','--untracked-files=no'],text=True).strip()
+    if commit!='8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2' or dirty:
+        raise ValueError('Fixed Gram reference must be a clean 8c56d02 checkout')
+    spaces=[]
+    for name in ('vna_exact','vna_v3'):
+        path=tree/'methods'/(name+'.py');space={'__name__':'reference_'+name}
+        exec(compile(path.read_text(),str(path),'exec'),space);spaces.append(space)
+    spaces[1]['OutputSolve']=spaces[0]['OutputSolve']
+    return spaces[1]['V3Engine']
+
+
+def compare_fixed_gram(reference_class,engine,p,op,mu,G,current):
+    import math
+    import torch
+    from diagnostics.vna_align import _global_state
+    with _global_state():
+        reference=reference_class(engine.arm,seed=engine.seed,curvature=engine.curvature)
+        reference.begin_task(engine.task)
+        expected=reference._direction(p,op,mu,G=G)
+    checks={}
+    for name in ('y','yO','z','zO','zN','dy','d_N','d_rep','uN','V','V_O','beta','leak'):
+        a,b=expected[name],current[name]
+        if isinstance(a,torch.Tensor):
+            matches=a.shape==b.shape and bool(torch.isfinite(a).all() and torch.isfinite(b).all() and
+                torch.isclose(a,b,rtol=1e-5,atol=0.).all())
+            checks[name]=dict(matches=matches,max_abs_error=float((a-b).abs().max()) if a.shape==b.shape else None)
+        else:
+            checks[name]=dict(matches=math.isfinite(a) and math.isfinite(b) and math.isclose(a,b,rel_tol=1e-5,abs_tol=0.),
+                              reference=a,current=b)
+    checks['beta_branch']=dict(matches=expected['beta_branch']==current['beta_branch'])
+    return dict(status='PASS' if all(v['matches'] for v in checks.values()) else 'FAIL',checks=checks,
+        mu=mu,m=G.shape[0],relative_tolerance=1e-5,absolute_tolerance=0.,
+        reference_commit='8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2',
+        scope='Fixed Gram, theta, metric, proposals and damping only; excludes changed LM/GIR policy and full-application identity.')
 
 
 def record_profile_loss(report,step,loss):
@@ -316,6 +356,9 @@ def run(args):
     if not is_task1_checkpoint(state):
         raise ValueError('Need d88abc4 full/noBN/superclass/s0 checkpoint at completed task 1, epoch 100')
     native_commit = main.code_commit()
+    reference_class=load_gram_reference(args.gram_reference) if args.gram_reference else None
+    if reference_class and (args.branch!='D' or not args.profile or args.solver!='gram'):
+        raise ValueError('--gram-reference requires D profile with --solver gram')
     old = args.branch in ('B','C')
     if old: args.curvature='power10'
     supports_curvature='curvature' in inspect.signature(vna.V3Engine).parameters
@@ -332,7 +375,8 @@ def run(args):
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
         source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         capacity_profile=args.capacity_profile,curvature=args.curvature,
-        solver_backend=args.solver,followup_steps=20)
+        solver_backend=args.solver,followup_steps=20,
+        gram_reference='8c56d02dab1ee16c47eb9138bf4aa3a64b9b45e2' if reference_class else None)
     if supports_live: identity.update(policy_version=vna.POLICY_VERSION,gir_live=args.gir_live)
     prior=None
     if (out/'diagnostic.json').exists():
@@ -593,6 +637,12 @@ def run(args):
                     if name=='prepare_gir': active['proposal_rows'],active['power_values']=[],{}
                     try:
                         result=original(*a,**kw)
+                        if name=='_direction' and reference_class and not kw.get('split_only') and 'fixed_gram_reference' not in report:
+                            check_start=time.perf_counter()
+                            report['fixed_gram_reference']=compare_fixed_gram(reference_class,a[0],a[1],a[2],a[3],kw['G'],result)
+                            torch.cuda.synchronize();check_seconds=time.perf_counter()-check_start
+                            report['fixed_gram_reference']['seconds']=check_seconds
+                            active['audit_seconds']+=check_seconds
                         if name=='prepare_gir':
                             candidates=[]
                             for proposal in result:
@@ -679,6 +729,7 @@ def parser():
     p.add_argument('--archive');p.add_argument('--checkpoint');p.add_argument('--input-root',default='/kaggle/input')
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
+    p.add_argument('--gram-reference',help='Clean 8c56d02 checkout for a fixed-system Gram regression check')
     p.add_argument('--gir-live',action='store_true')
     p.add_argument('--capacity-profile',action='store_true')
     p.add_argument('--solver',choices=('gram','cg_ir'))
