@@ -74,7 +74,8 @@ def test_active_resume_preserves_fifo_and_solver_state(tmp_path):
     _assert_bitwise(expected,actual)
     _assert_bitwise(learner_state(full.last_learner),learner_state(resumed.last_learner))
     _assert_bitwise(list(full.buffer.samples),list(resumed.buffer.samples))
-    for key in ('warm','A','K_next','last_iteration','applications'):
+    assert not hasattr(fp.engine,'warm') and not hasattr(rp.engine,'warm')
+    for key in ('mu','mu_star','nu','A','K_next','last_iteration','applications','policy_version','gir_live'):
         _assert_bitwise(getattr(fp.engine,key),getattr(rp.engine,key))
     assert len(fp.task_metrics)==2
 

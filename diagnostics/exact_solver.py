@@ -64,6 +64,10 @@ def compare_profiles(reference, current, strict=False, allow_curvature_change=Fa
         for calls in (oldr,newr) for call in calls for p in call['candidates'])
     checks['data_complete']=dict(matches=complete)
     if strict:
+        policies=[r.get('identity',{}).get('policy_version') for r in (reference,current)]
+        if any(policies):
+            checks['same_policy']=dict(matches=policies[0]==policies[1] and
+                reference.get('identity',{}).get('gir_live')==current.get('identity',{}).get('gir_live'))
         sha=reference.get('identity',{}).get('checkpoint_sha256')
         checks['same_checkpoint']=dict(matches=bool(sha) and sha==current.get('identity',{}).get('checkpoint_sha256'))
         if not allow_curvature_change:
@@ -102,6 +106,15 @@ def compare_profiles(reference, current, strict=False, allow_curvature_change=Fa
         interpretation=('Strict numeric comparison on the same checkpoint with an intentional curvature change; ranking/swaps may differ.'
             if allow_curvature_change else
             'Compare the same checkpoint and curvature mode; failures remain explicit, including near-zero values at abs tol zero.'))
+
+
+def record_profile_loss(report,step,loss):
+    if report.get('status')!='PROFILE_FOLLOWUP':return
+    samples=report.setdefault('post_application_sgd',[])
+    origin=report['application_step']
+    if step<=origin or samples and step<=samples[-1]['step']:return
+    samples.append(dict(step=step,relative_step=step-origin,loss=loss))
+    if len(samples)>=20:report['status']='PROFILE_COMPLETED'
 
 
 def curvature_differences(report):
@@ -307,6 +320,8 @@ def run(args):
     if old: args.curvature='power10'
     supports_curvature='curvature' in inspect.signature(vna.V3Engine).parameters
     supports_solver='solver' in inspect.signature(vna.V3Engine).parameters
+    supports_live='gir_live' in inspect.signature(vna.V3Engine).parameters
+    if args.gir_live and not supports_live: raise ValueError('Live-slot ablation unavailable in selected source')
     args.solver=args.solver or ('cg_ir' if hasattr(vna,'OutputCG') else 'historical-cg' if old else 'gram')
     if not supports_solver and not old and args.solver!=('cg_ir' if hasattr(vna,'OutputCG') else 'gram'):
         raise ValueError('Requested solver unavailable in selected source')
@@ -317,7 +332,9 @@ def run(args):
     identity = dict(branch=args.branch, code_commit=native_commit, profile=args.profile,
         source_digest=os.environ.get('VNA_SOURCE_DIGEST'), checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         capacity_profile=args.capacity_profile,curvature=args.curvature,
-        solver_backend=args.solver)
+        solver_backend=args.solver,followup_steps=20)
+    if supports_live: identity.update(policy_version=vna.POLICY_VERSION,gir_live=args.gir_live)
+    prior=None
     if (out/'diagnostic.json').exists():
         prior=json.loads((out/'diagnostic.json').read_text())
         if prior.get('identity') != identity: raise ValueError('diagnostic result identity mismatch')
@@ -346,12 +363,21 @@ def run(args):
                 if args.branch == 'A': hookstate.pop('intervention_state',None)
                 if args.branch == 'D':
                     engine=vna.V3Engine('vna_gir',seed=0,K0=1,**({'curvature':args.curvature} if supports_curvature else {}),
-                        **({'solver':args.solver} if supports_solver else {}))
+                        **({'solver':args.solver} if supports_solver else {}),
+                        **({'gir_live':args.gir_live} if supports_live else {}))
                     oldengine = hookstate.get('intervention_state',{}).get('engine',{})
-                    engine.mu = oldengine.get('mu')
-                    engine.install_ages = deepcopy(oldengine.get('install_ages',{}))
-                    engine.protocol['mu0'] = oldengine.get('protocol',{}).get('mu0')
+                    if not supports_live:
+                        engine.mu = oldengine.get('mu')
+                        engine.install_ages = deepcopy(oldengine.get('install_ages',{}))
+                        engine.protocol['mu0'] = oldengine.get('protocol',{}).get('mu0')
                     hookstate['intervention_state']=main.Intervention(engine,1).state_dict()
+            if prior and prior.get('status')=='PROFILE_FOLLOWUP':
+                origin=prior['application_step']
+                events=self.state['hook'].get('intervention_state',{}).get('events',[])
+                if any(e.get('iteration')==origin for e in events):
+                    report.clear();report.update(deepcopy(prior));active['applications']=1
+                    report['post_application_sgd']=[r for r in report.get('post_application_sgd',[])
+                        if r['step']<=self.state['hook']['steps']]
             history=out/'sgd.jsonl'
             if history.exists():
                 rows=[json.loads(line) for line in history.read_text().splitlines() if line.strip()]
@@ -419,6 +445,9 @@ def run(args):
         bad=nonfinite(model,optimizer)
         if bad:
             report.update(status='FAILED_DIVERGED',first_nonfinite=dict(task=2,epoch=epoch,step=hook.steps,tensor=bad));write();raise Stop()
+        if args.profile and report.get('status')=='PROFILE_FOLLOWUP':
+            record_profile_loss(report,hook.steps,loss);write()
+            if report['status']=='PROFILE_COMPLETED':raise Stop()
         return result
     torch.optim.SGD.step=step
     def after(intervention,hook,learner,optimizer):
@@ -444,13 +473,15 @@ def run(args):
         engine=intervention.engine
         torch.cuda.reset_peak_memory_stats()
         audit_start=active['audit_seconds'];start=time.perf_counter()
-        event=engine.apply(model,sites_for(model),batch,spec,ctx,optimizer,hook.steps,force=True)
+        event=engine.apply(model,sites_for(model),batch,spec,ctx,optimizer,hook.steps,force=True,
+            **({'probe_batch':main.fixed_probe(learner,256)[0]} if supports_live else {}))
         if event.get('skipped') and not event.get('swap_records') and report['applied_swaps']:
             report['rolled_back_swaps'],report['applied_swaps']=report['applied_swaps'],[]
         torch.cuda.synchronize();report['application_wall_seconds']=time.perf_counter()-start
         report['curvature_audit_seconds']=active['audit_seconds']-audit_start
         report['peak_cuda_includes_curvature_audit']=report['curvature_audit_seconds']>0
-        report['application_seconds']=report['application_wall_seconds']-report['curvature_audit_seconds']
+        report['stability_seconds']=event.get('stability_seconds',0.)
+        report['application_seconds']=report['application_wall_seconds']-report['curvature_audit_seconds']-report['stability_seconds']
         event['raw_seconds']=event.get('seconds')
         for key in ('seconds','gir_seconds'):
             if event.get(key) is not None: event[key]-=report['curvature_audit_seconds']
@@ -478,8 +509,9 @@ def run(args):
             ratios=[abs(r['Gamma_cg'])/r['linear_solve_error_bound'] for r in trials
                     if r.get('linear_solve_error_bound',0)>0 and 'Gamma_cg' in r]
             report['gamma_precision']=dict(min_abs_gamma_over_linear_solve_bound=min(ratios,default=None),
-                ratios_below_one=sum(r<1 for r in ratios),measured_trials=len(ratios),decision_gate=False,
-                scope='Float64 linear solves only; does not bound errors in frozen metric/residual/output shift.')
+                ratios_below_one=sum(r<1 for r in ratios),measured_trials=len(ratios),decision_gate=bool(supports_live),
+                decision_scope='Dead/live gain must exceed its corresponding residual bound' if supports_live else 'observational',
+                scope='Linear solves in the represented frozen system only; excludes metric/Jacobian assembly and jump rounding.')
             report['performance_targets']=dict(application_target_seconds=180,
                 application_under_180_seconds=report['application_seconds']<180,
                 application_under_400_seconds=report['application_seconds']<400,
@@ -513,8 +545,10 @@ def run(args):
                     vna.dedicated_generator(0,'nan-ggn',learner._device),iterations=10,device=learner._device)
         write()
         if args.profile:
-            report['status']='PROFILE_SKIPPED' if event.get('skipped') else 'PROFILE_COMPLETED'
-            raise Stop()
+            report['application_step']=hook.steps
+            report['status']='PROFILE_SKIPPED' if event.get('skipped') else 'PROFILE_FOLLOWUP'
+            write()
+            if event.get('skipped'): raise Stop()
     main.Intervention.after_step=after
     if args.branch == 'C':
         original_install=vna.V3Engine.install_gir
@@ -602,13 +636,15 @@ def run(args):
     schedule=dict(authoritative=True,code_commit=main.code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
                   backbone='resnet32_nobn',nobn_lr_scale=.5,synthetic=False,K0=1,curvature=args.curvature)
     if supports_solver:schedule['solver']=args.solver
+    if supports_live:schedule.update(policy_version=vna.POLICY_VERSION,gir_live=args.gir_live)
     (out/'schedule.json').write_text(json.dumps(schedule))
     main_parser=main.parser()
     runargs=main_parser.parse_args(['--arm','icarl' if args.branch=='A' else 'icarl_full',
         '--nobn-lr-scale','.5','--seed','0','--device','cuda:0','--data-dir',args.data_dir,
         '--out',str(out/'run'),'--schedule',str(out/'schedule.json')]+
         (['--curvature',args.curvature] if '--curvature' in main_parser._option_string_actions else [])+
-        (['--solver',args.solver] if '--solver' in main_parser._option_string_actions else []))
+        (['--solver',args.solver] if '--solver' in main_parser._option_string_actions else [])+
+        (['--gir-live'] if args.gir_live else []))
     try:
         outcome=main.run(runargs)
         if outcome.get('status') in ('FAILED_DIVERGED','DIVERGED'):
@@ -643,6 +679,7 @@ def parser():
     p.add_argument('--archive');p.add_argument('--checkpoint');p.add_argument('--input-root',default='/kaggle/input')
     p.add_argument('--data-dir',required=True)
     p.add_argument('--profile',action='store_true')
+    p.add_argument('--gir-live',action='store_true')
     p.add_argument('--capacity-profile',action='store_true')
     p.add_argument('--solver',choices=('gram','cg_ir'))
     p.add_argument('--curvature',choices=('power10','exact'),default='exact')

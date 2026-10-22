@@ -90,7 +90,7 @@ class LoPV3(Calibration):
 
     def after(self, hook, learner):
         elapsed = time.monotonic()-self._started
-        elapsed -= sum(e.get('seconds', 0.) for e in self.engine.events
+        elapsed -= sum(e.get('wall_seconds',e.get('seconds', 0.)) for e in self.engine.events
                        if e.get('iteration') == hook.step)
         if len(self.iteration_times) < 200: self.iteration_times.append(elapsed)
         self.engine.protocol['baseline_iteration_seconds'] = elapsed

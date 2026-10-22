@@ -14,7 +14,7 @@ def test_curvature_configuration_defaults_and_checkpoint_state():
     restored=V3Engine(curvature='power10');restored.load_state_dict(V3Engine(curvature='power10').state_dict())
     assert restored.curvature=='power10'
     with pytest.raises(ValueError,match='curvature'):
-        restored.configure_schedule(dict(K0=1,curvature='exact'))
+        restored.configure_schedule(dict(K0=1,curvature='exact',policy_version=restored.policy_version))
     with pytest.raises(ValueError,match='curvature'): V3Engine(curvature='invalid')
 
 
@@ -143,3 +143,22 @@ def test_capacity_proxy_includes_double_stage1_downstream_with_native_graphs(mon
     assert seen==[('low',12800),('high',12800),('stream',8)]
     assert result['rows'][1]['downstream_capacity']['status']=='MEASURED'
     assert result['rows'][1]['downstream_capacity']['bytes']==1234
+
+
+def test_profile_followup_records_twenty_steps_without_duplicates():
+    from diagnostics.exact_solver import record_profile_loss
+    report=dict(status='PROFILE_FOLLOWUP',application_step=10)
+    for step in range(10,35):
+        record_profile_loss(report,step,float(step))
+        record_profile_loss(report,step,float(step))
+    assert report['status']=='PROFILE_COMPLETED'
+    assert [r['relative_step'] for r in report['post_application_sgd']]==list(range(1,21))
+
+
+def test_strict_comparison_does_not_approve_cross_policy_profiles(tmp_path):
+    from tests.test_exact_gpu_lanes import write_report
+    import json
+    write_report(['--out',str(tmp_path),'--curvature','power10'])
+    report=json.loads((tmp_path/'diagnostic.json').read_text())
+    current=deepcopy(report);current['identity'].update(policy_version='dead_schur_rho25_v1',gir_live=False)
+    assert not compare_profiles(report,current,strict=True)['checks']['same_policy']['matches']

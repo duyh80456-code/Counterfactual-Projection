@@ -320,10 +320,14 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
         task_iterations=lengths, K_units='iterations')
 
 
+POLICY_VERSION='schur_gamma_bound_rho25_v2'
+
+
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir'):
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False):
         if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
         if solver not in ('gram','cg_ir'): raise ValueError('solver must be gram or cg_ir')
+        self.policy_version,self.gir_live=POLICY_VERSION,bool(gir_live)
         self.solver,self.curvature = solver,curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
@@ -346,6 +350,8 @@ class V3Engine:
 
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state):
+        if state.get('policy_version')!=self.policy_version:raise ValueError('checkpoint correction policy mismatch')
+        if state.get('gir_live',False)!=self.gir_live:raise ValueError('checkpoint live-slot ablation mismatch')
         if state.get('solver',self.solver)!=self.solver: raise ValueError('checkpoint solver mismatch')
         if state.get('curvature','power10') != self.curvature: raise ValueError('checkpoint curvature mismatch')
         vars(self).update(deepcopy(state))
@@ -357,6 +363,8 @@ class V3Engine:
     def gir_only(self): return self.arm == 'gir'
 
     def configure_schedule(self, schedule):
+        if schedule.get('policy_version')!=self.policy_version:raise ValueError('schedule correction policy mismatch')
+        if schedule.get('gir_live',False)!=self.gir_live:raise ValueError('schedule live-slot ablation mismatch')
         if schedule.get('solver',self.solver)!=self.solver: raise ValueError('schedule solver mismatch')
         if schedule.get('curvature',self.curvature)!=self.curvature:
             raise ValueError('schedule curvature mismatch')
@@ -539,8 +547,8 @@ class V3Engine:
             rho = ((before[0]-after[0])/pred if pred > 0 and
                    all(math.isfinite(v) for v in (before[0], after[0])) else float('-inf'))
             rhos.append(rho)
-            trials.append(dict(mu=mu,outcome='accepted' if math.isfinite(rho) and rho>0 else 'model_reject',rho=rho))
-            if math.isfinite(rho) and rho > 0:
+            trials.append(dict(mu=mu,outcome='accepted' if math.isfinite(rho) and rho>=.25 else 'model_reject',rho=rho))
+            if math.isfinite(rho) and rho >= .25:
                 self.mu, self.nu = mu*(1/3 if rho >= 1 else max(1/3, 1-(2*rho-1)**3)), 2.
                 self.mu_star, self.mu_star_task = mu, self.task
                 return dict(reason=None, mu=mu, y=y, before=before, after=after,
@@ -602,7 +610,7 @@ class V3Engine:
             result[name] = proposal
         return result
 
-    def preflight(self, model, sites, batch, spec, ctx, optimizer, iteration=1, remaining=None):
+    def preflight(self, model, sites, batch, spec, ctx, optimizer, iteration=1, remaining=None, probe_batch=None):
         """Measure one read-only point; the adapter calls this three times per task."""
         # Time a complete application (VNA step, exact check and GIR swaps), then restore
         # model, optimizer, RNG and engine state bitwise: GIR is the most expensive part of K0.
@@ -611,12 +619,12 @@ class V3Engine:
         started = time.perf_counter()
         try:
             row = self.apply(model, sites, batch, spec, ctx, optimizer, iteration,
-                             remaining=remaining, force=True, apply=True)
+                             remaining=remaining, force=True, apply=True,probe_batch=probe_batch)
         finally:
             self._restore_training_state(model, optimizer, training)
             self.load_state_dict(saved)
         point = {**(row or {}), 'task': self.task,
-                 'vna_seconds': time.perf_counter()-started,
+                 'vna_seconds': max(0.,time.perf_counter()-started-(row or {}).get('stability_seconds',0.)),
                  'iteration_seconds': float(self.protocol.get('baseline_iteration_seconds', 0.)),
                  'task_iterations': int(self.protocol.get('task_iterations', remaining or 1))}
         points = self.protocol.setdefault('preflight_points', [])
@@ -647,7 +655,28 @@ class V3Engine:
             return True
         return finite(model.state_dict()) and finite(optimizer.state_dict())
 
-    def apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
+    def _stability(self,model,sites,batch,spec,ctx,iteration,probe_batch):
+        with training_products(model,[],{},batch[0]) as p:
+            op=GGNProducts(p,batch[1],spec,ctx)
+            seed=dedicated_generator(self.seed,f'stability-ggn:{self.task}:{iteration}',batch[0].device)
+            value=(power_lambda_max(op.F,op.size,seed,iterations=10,device=batch[0].device)
+                   if bool(torch.isfinite(op.g).all()) else float('nan'))
+        window=self.dead_slots(model,sites,batch)
+        probe=None if probe_batch is None else self.dead_slots(model,sites,probe_batch)
+        comparisons={}
+        for site in sites:
+            name=site.module_name;w=set(window.get(name,[]))
+            q=None if probe is None else set(probe.get(name,[]))
+            comparisons[name]=dict(window_dead=sorted(w),probe_dead=None if q is None else sorted(q),
+                window_only=None if q is None else sorted(w-q),probe_only=None if q is None else sorted(q-w),
+                intersection=None if q is None else sorted(w&q),
+                disagreement_fraction=None if q is None else len(w^q)/site.second_layer.layer.weight.shape[1])
+        return dict(lambda_max_ggn=value if math.isfinite(value) else None,
+            lambda_flag=None if math.isfinite(value) else 'nonfinite',method='power10_estimate',
+            generator_seed=seed.initial_seed(),window_size=len(batch[0]),
+            probe_size=None if probe_batch is None else len(probe_batch[0]),dead_comparison=comparisons)
+
+    def apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True, probe_batch=None):
         if self.coefficient == 0 or self.arm in ('baseline', 'bp', 'cbp', 'icarl') or ('cbp' in self.arm and 'vna' not in self.arm): return None
         if not force and self.last_iteration is not None and iteration-self.last_iteration < self.K_next: return None
         saved = self.state_dict()
@@ -656,6 +685,9 @@ class V3Engine:
         start = time.perf_counter()
         try:
             with _global_state():
+                diagnostic_start=time.perf_counter()
+                stability_before=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
+                diagnostic_seconds=time.perf_counter()-diagnostic_start
                 try:
                     row = self._apply(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
                 except CGConvergenceError as error:
@@ -673,8 +705,15 @@ class V3Engine:
                     self.load_state_dict(saved)
                     row.update(nonfinite_after_apply=True, skipped=True, skip_reason='nonfinite_after_apply',
                                swaps=0, swap_records=[], after_restore=self._norms(model, sites))
+                diagnostic_start=time.perf_counter()
+                stability_after=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
+                diagnostic_seconds+=time.perf_counter()-diagnostic_start
+                row.update(stability_before=stability_before,stability_after=stability_after,
+                    lambda_max_ggn_before=stability_before['lambda_max_ggn'],
+                    lambda_max_ggn_after=stability_after['lambda_max_ggn'],stability_seconds=diagnostic_seconds)
+            wall=time.perf_counter()-start
             row.update(kind='correction', task=self.task, iteration=iteration, step=iteration,
-                       K=self.K_next, K_next=self.K_next*2, seconds=time.perf_counter()-start)
+                       K=self.K_next, K_next=self.K_next*2, wall_seconds=wall,seconds=max(0.,wall-diagnostic_seconds))
             row['skip_rate'] = (sum(bool(r.get('skipped')) for r in self.events)+int(row['skipped']))/(len(self.events)+1)
             if apply:
                 self.last_iteration, self.K_next = iteration, self.budget_guard(row, iteration)
@@ -785,11 +824,21 @@ class V3Engine:
         records = []
         values['gir_trials'], values['gir_solves'], values['downstream'] = [], [], []
         fixed_dead = self.dead_slots(frozen, frozen_sites, batch)
+        if isinstance(factor,OutputCG):
+            high_model=factor.G.high.products.model
+            high_sites=[HookSite(high_model,s.first,s.second,s.kind,between=s.between,o_params=s.parameter_names)
+                        for s in frozen_sites]
+            high_dead=self.dead_slots(high_model,high_sites,(batch[0].double(),batch[1]))
+        else:high_dead=fixed_dead
         scopes = [set(s.parameter_names) for s in frozen_sites]
         replacements = {} if any(a & b for i, a in enumerate(scopes) for b in scopes[i+1:]) else None
         for site, fixed in zip(sites, frozen_sites):
             units = units_by_site.get(site.module_name, [])
             if not units: continue
+            current_dead=self.dead_slots(model,[site],batch).get(site.module_name,[])
+            dead=[u for u in units if u in fixed_dead.get(fixed.module_name,[]) and
+                  u in high_dead.get(fixed.module_name,[]) and u in current_dead]
+            if not dead and not self.gir_live:continue
             used, cache = [], {}
             def downstream_stats():
                 ds=cache.get('downstream')
@@ -819,13 +868,14 @@ class V3Engine:
             prepare_seconds = time.perf_counter()-start
             if not choices: continue
             start = time.perf_counter()
-            contributions = {u: self._slot_contribution(frozen, fixed, batch, spec, ctx, u) for u in units}
+            contributions = {u: self._slot_contribution(frozen, fixed, batch, spec, ctx, u) for u in (units if self.gir_live else dead)}
             contribution_seconds = time.perf_counter()-start
             norms = {u: math.sqrt(max(float(f@factor.metric(f)), 0.)) for u, f in contributions.items()}
-            dead = [u for u in units if u in fixed_dead.get(fixed.module_name, [])]
-            live = sorted((u for u in units if u not in dead), key=lambda u: norms[u])[:int(self.protocol['live_candidates'])]
+            live=(sorted((u for u in units if u not in dead),key=lambda u:norms[u])[:int(self.protocol['live_candidates'])]
+                  if self.gir_live else [])
             for unit in dead+live:
                 if not choices: break
+                if unit in dead and unit not in self.dead_slots(model,[site],batch).get(site.module_name,[]):continue
                 start = time.perf_counter()
                 jL, jKD = self._slot_jump(model, site, batch, spec, ctx, unit)
                 jump_seconds = time.perf_counter()-start
@@ -838,7 +888,7 @@ class V3Engine:
                 if ecur.is_cuda: torch.cuda.synchronize(ecur.device)
                 native_columns_seconds = time.perf_counter()-columns_start
                 gain_start = time.perf_counter()
-                factor.q(ecur)
+                if unit not in dead:factor.q(ecur)
                 values['gir_solves'].append(dict(name='baseline_gain', seconds=time.perf_counter()-gain_start))
                 best = None
                 for trial_index, proposal in enumerate(choices[:int(self.protocol['gamma_candidates'])]):
@@ -882,7 +932,10 @@ class V3Engine:
                     ne, activation = Jv.shape[1], proposal['_activation']
                     swap = (factor.swapped(Ju,Jv,native_ids=native_ids,outgoing_ids=outgoing_ids,high_add=proposal.get('_Jv64'))
                             if isinstance(factor,OutputCG) else factor.swapped(Ju,Jv))
-                    gamma = swap.gamma(ecur, contributions[unit])
+                    gamma = swap.dead_gain(ecur) if unit in dead else swap.gamma(ecur, contributions[unit])
+                    bound=getattr(swap,'error_bound',None)
+                    gain_ok=(math.isfinite(gamma) and gamma>0 and bound is not None and
+                        math.isfinite(bound) and gamma>bound)
                     if isinstance(factor, OutputCG):
                         values['gir_solves'].extend(dict(r, name='Gamma') for r in swap.factor.records)
                     seconds = time.perf_counter()-start
@@ -894,10 +947,14 @@ class V3Engine:
                         candidate_jacobian_cached=previously_cached,candidate_jacobian_streamed=streamed,
                         candidate_jvp_evaluated=0 if cached else ne))
                     values['gir_trials'][-1]['candidate_double_jvp_evaluated']=high_column_jvps
+                    values['gir_trials'][-1].update(getattr(swap,'gain_record',{}))
+                    values['gir_trials'][-1].update(slot_kind='dead' if unit in dead else 'live',
+                        gain=gamma,gain_accepted=gain_ok,linear_solve_error_bound=bound,
+                        gain_method='dead_schur' if unit in dead else 'live_q_difference_ablation')
                     if isinstance(factor, OutputCG):
                         values['gir_trials'][-1]['Gamma_cg'] = values['gir_trials'][-1].pop('Gamma_woodbury')
                         values['gir_trials'][-1]['linear_solve_error_bound'] = swap.error_bound
-                    if math.isfinite(gamma) and gamma > 0 and (best is None or gamma > best[0]):
+                    if gain_ok and (best is None or gamma > best[0]):
                         best = gamma, proposal, swap, seconds, activation, ne
                 if best is None: continue
                 gamma, proposal, swap, seconds, activation, ne = best
@@ -926,6 +983,8 @@ class V3Engine:
                     n_jvp=native_jvps+ne, gamma_seconds=seconds, prepare_gir_seconds=prepare_seconds,
                     slot_jump_seconds=jump_seconds, slot_contribution_seconds=contribution_seconds,
                     output_shift_norm=float(shift.norm()), contribution_norm={1: None, 5: None, 10: None})
+                record.update(getattr(swap,'gain_record',{}))
+                record['gain']=gamma
                 records.append(record)
                 if isinstance(factor, OutputCG): record['Gamma_cg'] = record.pop('Gamma_woodbury')
                 self.install_ages[(site.module_name, int(unit))] = dict(site=site.module_name,

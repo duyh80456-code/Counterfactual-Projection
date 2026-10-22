@@ -896,3 +896,62 @@ FAIL continues the fresh run to 20 tasks. Missing/invalid reference runs a fresh
 full baseline. Resume identity includes reference digest; references cannot be
 silently substituted in a resumed run. Current epochs.json is saved atomically
 alongside native checkpoints; it is evidence, not a replacement resume format.
+
+## 2026-10-22: dead-only GIR, direct Schur gain, rho >= 1/4, CIL task >= 2
+
+Explicit user-requested algorithm revision `dead_schur_rho25_v1`, applying to
+both solver backends. Native GIR uses dead slots by default; `--gir-live`
+retains live-slot trials only as a labelled ablation. Existing candidate
+limits remain. Deadness must hold on the frozen and current post-VNA loss
+window, and on the CG-IR double target; the seeded 256-sample probe comparison
+is observational. No rule based on probe agreement is introduced.
+
+Dead gain is evaluated directly as 0.5 s^T S^-1 s, using new-coordinate
+coefficients of the augmented solve, without subtracting q and q'. Accept only
+finite positive gain strictly exceeding `linear_solve_error_bound`, derived
+from both verified linear-system residuals. Existing actual-loss/KD and finite
+checks remain. The bound covers the represented frozen linear system, not
+Jacobian/Gram assembly rounding or future SGD; derivation and logs are in
+DEAD_SCHUR_POLICY_REVIEW.md. Live ablation retains the old q-difference path.
+
+LM accepts only finite rho >= 0.25 and shares its accepted mu_star with GIR.
+This is a deliberately stricter acceptance policy: Nocedal–Wright Algorithm
+4.1's radius-shrink threshold is 1/4, but its eta acceptance threshold may be
+smaller. No claim of a universal 1/4 acceptance requirement is made.
+
+Main CIL skips interventions and intervention preflight throughout task 1.
+Its K0 now uses three real task-2 points; task1 ordinary SGD, optimizer and RNG
+remain baseline-identical. LoP regression/MNIST task1 is not disabled. This
+change does not implement or silently authorize cross-protocol checkpoint
+import. New engine checkpoints and Main schedules carry policy/live identity;
+old policy cannot resume under the new one. Historical task1 full checkpoints
+can seed diagnostic theta, with fresh new-policy engine state.
+
+Log 10-step GGN spectral estimates before/after each attempted application,
+window-vs-probe dead-mask disagreement, and 20 subsequent native SGD losses
+for each effective Main CIL application. Followups are checkpointed with
+step-based duplicate protection; incomplete task-end followups are labelled.
+These logs introduce no extra stability acceptance rule. Diagnostic profiles
+record immediate final L/KD and then 20 native SGD losses before completion.
+Observational timing is separate from K0/correction budget; wall-clock and
+exit-75/deadline accounting still include it.
+
+The already pinned a9e04b9 notebook/source retains its historical policy and
+8c56d02 compatibility gate. This entry does not repin that notebook or waive
+its gate. The requested changes intentionally preclude a new-policy whole-
+application identity claim against 8c56d02; fixed-system Gram direction math
+remains checked against that source. New-policy strict profiles require equal
+policy/live identity. No T4 profile or M1 outcome is asserted here.
+
+
+### Follow-up: gate live-slot Gamma by its solve error as well
+
+Policy `schur_gamma_bound_rho25_v2` replaces the preceding v1 identity. With
+`--gir-live`, require finite positive Gamma strictly exceeding the sum of the
+base and swapped q linear-solve error bounds, for both Gram and CG-IR. Dead
+slots retain their direct Schur bound. Log the two q bounds; do not add a
+stability threshold. This gives the ablation the same numerical acceptance
+principle. The bound is for represented frozen systems, excluding jump and
+operator-assembly rounding. Main preflight remains three task-2 points, with
+no task-1 intervention points. Focused tests cover perturbed-solution gain
+error <= bound and rejection of positive live Gamma below its bound.

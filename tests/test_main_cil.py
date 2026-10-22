@@ -154,7 +154,7 @@ def test_schedule_skips_and_roundtrip():
     from types import SimpleNamespace
     from unittest.mock import patch
     engine = Engine(); intervention = main.Intervention(engine, 3)
-    learner = SimpleNamespace(_cur_task=0, _total_classes=5, _device='cpu', _network=nn.Linear(1,1))
+    learner = SimpleNamespace(_cur_task=1, _total_classes=5, _device='cpu', _network=nn.Linear(1,1))
     hook = SimpleNamespace(steps=1, current_batch=(torch.ones(1,1),torch.zeros(1,dtype=torch.long)))
     intervention.start_task(learner)
     with patch.object(main,'sites_for',return_value=[]), patch.object(main,'loss_context',return_value=(None,{})):
@@ -164,7 +164,7 @@ def test_schedule_skips_and_roundtrip():
     state = intervention.state_dict()
     restored = main.Intervention(Engine(), 1); restored.load_state_dict(state)
     assert restored.state_dict() == state
-    learner._cur_task = 1; restored.start_task(learner)
+    learner._cur_task = 2; restored.start_task(learner)
     assert restored.last_iteration is None and restored.interval == 3
 
 
@@ -172,6 +172,14 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
     main.cil.upstream_imports()
     monkeypatch.setattr(main, 'resnet32_nobn', Tiny)
     old_dtype = torch.get_default_dtype(); torch.set_default_dtype(torch.float64)
+    first_tasks={};native_checkpoint=main.ICaRLHook.checkpoint
+    def capture_first(hook,**kw):
+        native_checkpoint(hook,**kw)
+        if not kw.get('mid',True) and hook.completed==1:
+            from experiments.vna_resume import rng_state
+            first_tasks[hook.progress.out.name]=copy.deepcopy((hook.learner._network.state_dict(),rng_state(),
+                [{k:v for k,v in r.items() if k!='seconds'} for r in hook.epochs]))
+    monkeypatch.setattr(main.ICaRLHook,'checkpoint',capture_first)
     try:
         results = []
         for name, coefficient in (('icarl',1.), ('off',0.), ('full',1.)):
@@ -187,6 +195,8 @@ def test_two_task_smoke_identity_and_resume(tmp_path, monkeypatch):
             assert protocol['r'] == 16 and protocol['nobn_lr_scale'] == 1.
             assert main.run(args) == result
         def state(name): return torch.load(tmp_path/name/'latest.pt',weights_only=False)
+        from diagnostics.vna_align import _assert_bitwise
+        _assert_bitwise(first_tasks['icarl'],first_tasks['full'])
         baseline, off = state('icarl'), state('off')
         a,b = baseline['learner']['_network'].state_dict(), off['learner']['_network'].state_dict()
         assert all(torch.equal(a[k],b[k]) for k in a)
@@ -247,7 +257,8 @@ def test_main_authority_preflight_real_engine(tmp_path, monkeypatch):
     schedule = json.loads((tmp_path/'schedule.json').read_text())
     assert result['status'] == 'PREFLIGHT'
     assert schedule['authoritative'] and schedule['K0'] >= 1
-    assert [p['task'] for p in schedule['calibration']] == [1]*3+[2]*3
+    assert [p['task'] for p in schedule['calibration']] == [2]*3
+    assert schedule['t_vna_task1']==[] and len(schedule['t_vna_task2'])==3
     assert schedule['seconds_per_application'] > 0
     assert all(p['iteration_seconds'] > 0 for p in schedule['calibration'])
 

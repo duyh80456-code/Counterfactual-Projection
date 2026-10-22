@@ -223,7 +223,7 @@ def test_7_3c_rejected_swap_restores_all_state(monkeypatch):
         return result[:1]
     monkeypatch.setattr(engine,'prepare_gir',proposals)
     from methods.vna_exact import WoodburySwap
-    monkeypatch.setattr(WoodburySwap, 'gamma', lambda *a: -1.)
+    monkeypatch.setattr(WoodburySwap, 'dead_gain', lambda *a: -1.)
     before = deepcopy(model.state_dict()),deepcopy(opt.state_dict()),rng_state(),deepcopy(engine.install_ages)
     assert not run_gir(engine,model,site,batch,spec,ctx,opt)
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state(),engine.install_ages))
@@ -286,6 +286,7 @@ def test_mid_task_resume_after_rejection_and_swap_bitwise(monkeypatch):
 
 def test_slot_jump_computed_once_per_live_unit(monkeypatch):
     engine,model,site,batch,spec,ctx,opt = gir_problem()
+    engine.gir_live=True
     calls = []
     def jump(*args):
         calls.append(args[-1])

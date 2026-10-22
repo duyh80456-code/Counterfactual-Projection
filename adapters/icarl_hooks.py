@@ -240,7 +240,7 @@ class ICaRLHook:
                         if events is None: events = hook.intervention.engine.events
                         correction = events[-1] if events else {}
                         if correction.get('kind')=='correction' and correction.get('step')==hook.steps:
-                            elapsed -= correction['seconds']
+                            elapsed -= correction.get('wall_seconds',correction['seconds'])
                         hook.intervention.iteration_times.append(max(elapsed, 1e-9))
         class EpochScheduler(original_scheduler):
             def __init__(self, *args, **kwargs):

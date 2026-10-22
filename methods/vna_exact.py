@@ -136,6 +136,7 @@ class OutputCG:
             residual_dtype='torch.float64',vector_dtype=str(rhs.dtype),
             parameter_dtype=str(self.G.products.parameter_refs[0][1].dtype),
             tolerance=self.tolerance,inner_tolerance=inner_tolerance,mu=self.mu,
+            rhs_norm=rhs_norm,residual_norm=float(residual.norm()),
             residual_history=history,inner_solves=inner,warm_start=x0 is not None or self._warm is not None,
             high_seconds=high_seconds,inner_seconds=inner_seconds,
             q_error_bound=rhs_norm*float(residual.norm())/(2*self.mu),
@@ -164,6 +165,8 @@ class OutputCG:
 class CGSwap:
     def __init__(self, base, add, native_ids, outgoing_ids, high_add=None):
         self.base, self.add = base, add
+        self.high_add=add if high_add is None else high_add
+        self.outgoing_ids=outgoing_ids
         G = base.G.swapped(native_ids,outgoing_ids,add,high_add)
         self.factor = OutputCG(G, base.blocks, base.mu,
                               max_iter=base.max_iter, tolerance=base.tolerance)
@@ -174,7 +177,22 @@ class CGSwap:
         jump = -float(e@fu)+.5*float(fu@self.base.metric(fu))
         value = -jump+self.base.q(e)-self.factor.q(eprime)
         self.error_bound = self.base._q_bound+self.factor._q_bound
+        self.gain_record=dict(gain_method='live_q_difference_ablation',linear_solve_error_bound=self.error_bound,
+            base_q_error_bound=self.base._q_bound,swapped_q_error_bound=self.factor._q_bound)
         return value
+
+    def dead_gain(self,e):
+        base=self.base
+        x=base.solve(e)
+        residual=e-base.metric(base.G.high.Jv(x))
+        r0=base.records[-1]['residual_norm']
+        extended=self.factor.solve(e)
+        t=extended[self.outgoing_ids]
+        s=self.high_add.T@residual
+        trace=float((self.high_add*torch.vmap(base.metric)(self.high_add.T).T).sum())
+        gain,self.error_bound,self.gain_record=schur_gain(s,t,trace,base.mu,r0,
+            self.factor.records[-1]['residual_norm'])
+        return gain
 
     def commit(self):
         self.base.G = self.factor.G
@@ -182,6 +200,18 @@ class CGSwap:
         self.base._solution_key = None
         self.base.solves += self.factor.solves
         self.base.records.extend(self.factor.records)
+
+
+def schur_gain(s,t,trace,mu,base_residual,augmented_residual):
+    """Residual bound for .5*s^T*t, with t the new-coordinate augmented solution."""
+    a=math.sqrt(max(trace,0.)/mu)*base_residual
+    b=augmented_residual/mu
+    bound=.5*(a*float(t.norm())+(float(s.norm())+a)*b)
+    gain=.5*float(s@t)
+    return gain,bound,dict(gain_method='dead_schur',linear_solve_error_bound=bound,
+        base_residual_norm=base_residual,augmented_residual_norm=augmented_residual,
+        schur_rhs_error_bound=a,schur_solution_error_bound=b,
+        schur_rhs_norm=float(s.norm()),schur_solution_norm=float(t.norm()),metric_trace=trace)
 
 
 def solve_image(G, solution):
@@ -260,9 +290,18 @@ class OutputSolve:
     def q(self, c):
         key = (id(c), c._version, self.G._version)
         if self._q_key != key:
-            self._q_value = -.5*float(c @ (self.G @ self.solve(c)))
+            y=self.solve(c)
+            self._q_value = -.5*float(c @ (self.G @ y))
+            residual=c-self.metric(self.G@y)-self.mu*y
+            self._q_bound=self.norm_bound()*float(c.norm())*float(residual.norm())/(2*self.mu)
             self._q_key, self._q_c = key, c
         return self._q_value
+
+    def norm_bound(self):
+        if getattr(self,'_norm_key',None)!=self.G._version:
+            self._norm_bound=max(float(block.abs().sum(1).max()) for block in self.G.split(64))
+            self._norm_key=self.G._version
+        return self._norm_bound
 
     def swapped(self, remove, add):
         return WoodburySwap(self, remove, add)
@@ -292,8 +331,32 @@ class WoodburySwap:
     def gamma(self, e, fu):
         eprime = e-self.base.metric(fu)
         jump = -float(e@fu)+.5*float(fu@self.base.metric(fu))
-        qprime = -.5*float(eprime @ self.Gv(self.solve(eprime)))
-        return -jump+self.base.q(e)-qprime
+        y=self.solve(eprime)
+        qprime = -.5*float(eprime @ self.Gv(y))
+        qbase=self.base.q(e)
+        residual=eprime-self.base.metric(self.Gv(y))-self.base.mu*y
+        # Removing columns decreases the PSD Gram norm; added columns give this upper bound.
+        norm=self.base.norm_bound()+float(self.add.square().sum())
+        prime_bound=norm*float(eprime.norm())*float(residual.norm())/(2*self.base.mu)
+        self.error_bound=self.base._q_bound+prime_bound
+        self.gain_record=dict(gain_method='live_q_difference_ablation',linear_solve_error_bound=self.error_bound,
+            base_q_error_bound=self.base._q_bound,swapped_q_error_bound=prime_bound)
+        return -jump+qbase-qprime
+
+    def dead_gain(self,e):
+        base=self.base
+        if self.remove.numel() and bool(self.remove.ne(0).any()):
+            raise ValueError('dead Schur gain requires zero removed columns')
+        y=base.solve(e)
+        residual=e-base.metric(base.G@y)
+        r0=math.sqrt(base.norm_bound())*float((residual-base.mu*y).norm())
+        extended=self.solve(e)
+        error=e-base.metric(self.Gv(extended))-base.mu*extended
+        r1=math.sqrt(base.norm_bound()+float(self.add.square().sum()))*float(error.norm())
+        s,t=self.add.T@residual,self.add.T@extended
+        trace=float((self.add*torch.vmap(base.metric)(self.add.T).T).sum())
+        gain,self.error_bound,self.gain_record=schur_gain(s,t,trace,base.mu,r0,r1)
+        return gain
 
     def commit(self):
         base = self.base

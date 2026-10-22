@@ -50,7 +50,7 @@ def make_engine(args):
     arm = engine_arm(args.arm)
     engine = V3Engine(arm=arm, seed=args.seed,
         coefficient=0. if arm == 'baseline' else args.coefficient,
-        K0=schedule['K0'] if schedule else 100)
+        K0=schedule['K0'] if schedule else 100,gir_live=getattr(args,'gir_live',False))
     engine.preflight_only = args.preflight_only
     if schedule: engine.configure_schedule(schedule)
     return engine
@@ -65,7 +65,8 @@ def protocol(args, engine, params, upstream):
         window='FIFO 128 most recent samples from the current task; reset at task boundaries; first application after 32 samples',
         step_rule='phase 2', K_units='iterations',
         K0=engine.K0, budget=engine.protocol.get('budget', 1.0),
-        solver=dict(method='T29 exact output Gram float64 Cholesky', lm_max_trials=40),
+        solver=dict(method=engine.solver,lm_max_trials=40,lm_acceptance_rho=.25),
+        policy_version=engine.policy_version,gir_live=engine.gir_live,
         preflight=read_schedule(args))
 
 
@@ -78,7 +79,7 @@ def finalize_calibration(args, engine, adapter, out):
     schedule = schedule_from_points(points, epoch_iters)
     schedule.update(setting=args.setting, authoritative=True, authority_arm=args.arm,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-        synthetic=args.fake_data, calibration=points,
+        synthetic=args.fake_data, calibration=points,policy_version=engine.policy_version,gir_live=engine.gir_live,
         timing_basis='three measured applications in tasks 1 and 2 and measured baseline iterations',
         iteration_samples=len(adapter.iteration_times[:200]))
     path = Path(args.schedule_output) if args.schedule_output else out/'_schedules'/f'{args.setting}.json'
@@ -203,6 +204,7 @@ def run(args):
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--gir-live',action='store_true')
     p.add_argument('--setting',choices=('regression','mnist'),required=True)
     p.add_argument('--arm',required=True)
     p.add_argument('--seed',type=int,default=0)

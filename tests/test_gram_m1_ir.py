@@ -32,36 +32,34 @@ def isolated():
 
 
 @pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
-def test_gram_application_matches_8c56d02_exactly(dtype):
+def test_fixed_gram_direction_matches_8c56d02_exactly(dtype):
+    from methods.vna_v3 import training_products,seed_proposals
+    from methods.vna_ggn import GGNProducts
     source=subprocess.check_output(['git','show','8c56d02:methods/vna_v3.py'],text=True)
     namespace={'__name__':'reference_gram'};exec(compile(source,'8c56d02/vna_v3.py','exec'),namespace)
     torch.manual_seed(29)
-    original=nn.Sequential(nn.Linear(3,4),nn.ReLU(),nn.Linear(4,1)).to(dtype)
-    with torch.no_grad():original[0].weight[:2]=0;original[0].bias[:2]=-1;original[2].weight[:,:2]=0
+    model=nn.Sequential(nn.Linear(3,4),nn.ReLU(),nn.Linear(4,1)).to(dtype)
+    site=HookSite(model,'0','2','linear',between=('1',))
     batch=torch.randn(6,3,dtype=dtype),torch.randn(6,1,dtype=dtype)
-    rng=rng_state();results=[]
-    for cls in (namespace['V3Engine'],V3Engine):
-        model=deepcopy(original);site=HookSite(model,'0','2','linear',between=('1',))
-        optimizer=torch.optim.SGD(model.parameters(),lr=.01,momentum=.9)
-        restore_rng(rng)
-        engine=cls('vna_gir',curvature='power10',**({'solver':'gram'} if cls is V3Engine else {}))
-        engine.begin_task(2);engine.mu=.3
-        row=engine.apply(model,[site],batch,MSE(),dict(targets=batch[1]),optimizer,1,force=True)
-        results.append((row,deepcopy(model.state_dict())))
+    results=[]
+    with training_products(model,[site],seed_proposals([site]),batch[0]) as p:
+        op=GGNProducts(p,batch[1],MSE(),dict(targets=batch[1]));G,_=gram(p)
+        for cls in (namespace['V3Engine'],V3Engine):
+            engine=cls('vna_gir',curvature='power10',**({'solver':'gram'} if cls is V3Engine else {}))
+            engine.begin_task(2)
+            results.append(engine._direction(p,op,.3,G=G))
     a,b=results
-    for name in ('mu_star','rho_tr','L_before','L_after','KD_before','KD_after','beta','s'):
-        assert a[0][name]==b[0][name]
-    assert b[0]['swaps']>0
-    assert [(r['unit'],r['Gamma'],r['ell_beta']) for r in a[0]['swap_records']]==[
-        (r['unit'],r['Gamma'],r['ell_beta']) for r in b[0]['swap_records']]
-    for name in a[1]:torch.testing.assert_close(a[1][name],b[1][name],rtol=0,atol=0)
+    for name in ('y','yO','z','zO','zN','dy','d_N','d_rep','uN'):
+        torch.testing.assert_close(a[name],b[name],rtol=0,atol=0)
+    for name in ('V','V_O','beta','beta_branch','leak'):
+        assert a[name]==b[name]
     assert 'GRAM_LIMIT' not in inspect.getsource(gram)
 
 
 def test_solver_state_and_schedule_cannot_cross_backends():
     a=V3Engine(solver='gram')
     with pytest.raises(ValueError,match='solver'):V3Engine().load_state_dict(a.state_dict())
-    with pytest.raises(ValueError,match='solver'):a.configure_schedule(dict(K0=1,solver='cg_ir'))
+    with pytest.raises(ValueError,match='solver'):a.configure_schedule(dict(K0=1,solver='cg_ir',policy_version=a.policy_version))
 
 
 def test_B_uses_prefix_while_dead_dormant_use_all_samples():

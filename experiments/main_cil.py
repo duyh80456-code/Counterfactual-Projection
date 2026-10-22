@@ -84,7 +84,7 @@ class Intervention:
         self.preflight = preflight
         self.counts = {}
         self.task, self.last_iteration, self.interval = None, None, K0
-        self.iteration_times, self.events = [], []
+        self.iteration_times, self.events, self.followups = [], [], []
 
     def state_dict(self):
         return {**{k: copy.deepcopy(v) for k, v in vars(self).items() if k != 'engine'},
@@ -96,12 +96,23 @@ class Intervention:
             if k != 'engine': setattr(self, k, copy.deepcopy(value))
 
     def start_task(self, learner):
+        for row in self.followups:
+            if row['status']=='RUNNING':row['status']='TASK_ENDED'
         self.task = learner._cur_task+1
         self.last_iteration, self.interval = None, self.K0
         self.engine.begin_task(self.task)
 
+    def observe_loss(self,hook,loss):
+        for row in self.followups:
+            if row['status']!='RUNNING' or self.task!=row['task'] or hook.steps<=row['iteration']:continue
+            if row['samples'] and hook.steps<=row['samples'][-1]['step']:continue
+            value=float(loss.detach())
+            row['samples'].append(dict(step=hook.steps,relative_step=hook.steps-row['iteration'],
+                loss=value if np.isfinite(value) else None,finite=bool(np.isfinite(value))))
+            if len(row['samples'])==20:row['status']='COMPLETED'
+
     def after_step(self, hook, learner, optimizer):
-        if self.engine.coefficient == 0: return
+        if self.engine.coefficient == 0 or self.task<2: return
         if self.preflight and self.counts.get(self.task, 0) >= 3: return
         if not self.preflight and self.last_iteration is not None and hook.steps-self.last_iteration < self.interval: return
         if self.preflight and learner._device.type == 'cuda': torch.cuda.synchronize(learner._device)
@@ -110,22 +121,26 @@ class Intervention:
         spec, ctx = loss_context(learner, batch)
         ctx.update(classes=learner._total_classes, task=self.task)
         model = Prediction(learner._network)
+        probe=fixed_probe(learner,256)[0] if hasattr(learner,'test_loader') else None
         if self.preflight:
             epochs = training_settings()['init_epoch' if self.task == 1 else 'epochs']
             self.engine.protocol.update(baseline_iteration_seconds=iteration_seconds,
                 iterations_per_epoch=len(learner.train_loader),
                 task_iterations=len(learner.train_loader)*epochs)
-            self.engine.preflight(model, sites_for(model), batch, spec, ctx, optimizer, hook.steps)
+            self.engine.preflight(model, sites_for(model), batch, spec, ctx, optimizer, hook.steps,probe_batch=probe)
             self.counts[self.task] = self.counts.get(self.task, 0)+1
             if self.task == 2 and self.counts[self.task] == 3: raise PreflightComplete()
             return
         event = self.engine.apply(model, sites_for(model), batch, spec, ctx, optimizer,
-                                  hook.steps, force=True)
+                                  hook.steps, force=True,probe_batch=probe)
         if self.last_iteration is not None: self.interval *= 2
         # Compute-budget guard (§2.5): over budget -> the next gap doubles once more.
         if event is not None and event.get('budget_guard'): self.interval *= 2
         self.last_iteration = hook.steps
-        if event is not None: self.events.append(event)
+        if event is not None:
+            self.events.append(event)
+            if not event.get('skipped') and (event.get('s',0)>0 or event.get('swaps',0)>0):
+                self.followups.append(dict(task=self.task,iteration=hook.steps,status='RUNNING',samples=[]))
 
 
 
@@ -193,6 +208,16 @@ def read_only(model):
             for m,mode in modes.items(): m.training = mode
 
 
+def fixed_probe(learner,size):
+    with _global_state():
+        dataset=learner.test_loader.dataset
+        indices=np.random.RandomState(0).permutation(len(dataset))[:size]
+        samples=[dataset[int(i)] for i in indices]
+        batch=(torch.stack([s[1] for s in samples]).to(learner._device),
+               torch.tensor([int(s[2]) for s in samples],device=learner._device))
+    return batch,indices
+
+
 def measure_task(learner, manager, history, boundary=lambda: None, probe_size=256, mu=None):
     row = dict(task=learner._cur_task+1, parameter_count=sum(p.numel() for p in learner._network.parameters()))
     with read_only(learner._network):
@@ -200,11 +225,7 @@ def measure_task(learner, manager, history, boundary=lambda: None, probe_size=25
         for label, predictions in (('cnn', learner._eval_cnn(learner.test_loader)),
                 ('nme', learner._eval_nme(learner.test_loader, learner._class_means))):
             row.update(accuracy_metrics(history, *predictions, learner._known_classes, label))
-        dataset = learner.test_loader.dataset
-        indices = np.random.RandomState(0).permutation(len(dataset))[:probe_size]
-        samples = [dataset[int(i)] for i in indices]
-        batch = (torch.stack([s[1] for s in samples]).to(learner._device),
-                 torch.tensor([int(s[2]) for s in samples], device=learner._device))
+        batch,indices=fixed_probe(learner,probe_size)
         model = Prediction(learner._network)
         diagnostic = dict(task=row['task'], probe_seed=0, probe_indices=indices.tolist(),
                               **vna_v3.diagnose(model, batch, sites=sites_for(model), mu=mu,solver='cg_ir',b_probe_size=min(128,len(batch[0]))))
@@ -231,6 +252,9 @@ class MainHook(ICaRLHook):
 
     def before_optimizer_step(self, frame):
         loss = frame.f_locals.get('loss')
+        intervention=getattr(self,'intervention',None)
+        if isinstance(loss,torch.Tensor) and intervention is not None and not intervention.preflight:
+            intervention.observe_loss(self,loss)
         if isinstance(loss, torch.Tensor) and not bool(torch.isfinite(loss).all()):
             self.diverged = dict(task=self.learner._cur_task+1, epoch=self.current_epoch+1,
                                  step=self.steps, tensor='loss')
@@ -285,7 +309,7 @@ def run(args):
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
     if schedule:
         expected = dict(authoritative=True, code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver)
+                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver,policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live)
         if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
         if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
     K0 = int(schedule['K0']) if schedule else 1
@@ -297,7 +321,8 @@ def run(args):
         params.update(memory_size=20, memory_per_class=2)
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
-    protocol = dict(setting='icarl', algorithm_version='v4', solver=args.solver, arm=args.arm, seed=args.seed,
+    protocol = dict(setting='icarl', algorithm_version='v4', solver=args.solver,
+        policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live,lm_acceptance_rho=.25,intervention_start_task=2, arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=tasks,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
@@ -330,7 +355,7 @@ def run(args):
         if previous['status'] in ('COMPLETED','REUSED_BASELINE'): return previous
     status = Status(out, args.arm)
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
-        curvature=args.curvature,solver=args.solver), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+        curvature=args.curvature,solver=args.solver,gir_live=args.gir_live), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
@@ -338,7 +363,9 @@ def run(args):
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])
         if not (out/'continual_eval.csv').exists(): (out/'continual_eval.csv').write_text('task,cnn_top1,nme_top1\n')
         write_json(out/'diagnostics.json', hook.rows)
-        if intervention is not None: write_json(out/'interventions.json', intervention.events)
+        if intervention is not None:
+            write_json(out/'interventions.json', intervention.events)
+            write_json(out/'stability.json',intervention.followups)
         write_json(out/'protocol.json', {**protocol, 'parameter_count': hook.tasks[-1]['parameter_count'] if hook.tasks else None,
                    'mu0': intervention.engine.protocol.get('mu0') if intervention else None})
     original_manager, original_random = trainer.DataManager, trainer._set_random
@@ -367,7 +394,7 @@ def run(args):
         points = intervention.engine.protocol['preflight_points']
         schedule = vna_v3.schedule_from_points(points, len(hook.learner.train_loader))
         schedule.update(authoritative=True, setting='icarl', backbone=args.backbone,
-            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,
+            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live,
             source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
             schedule_source=args.schedule_source, r=16)
         write_json(Path(args.schedule_output), schedule)
@@ -415,6 +442,7 @@ def parser():
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=NOBN_LR_SCALES, default=1.)
     p.add_argument('--coefficient', type=float, default=1.)
+    p.add_argument('--gir-live',action='store_true',help='Ablation: allow live-slot GIR')
     p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')
     p.add_argument('--baseline-reference',help='Completed old baseline + 150 full-precision epoch losses')
     p.add_argument('--curvature', choices=('power10','exact'), default='exact')
