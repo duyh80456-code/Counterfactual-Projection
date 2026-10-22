@@ -121,6 +121,8 @@ class CompetitorHook:
         old_optim = module.optim
         pairs = branch_pairs(net)
         if self.method == 'icarl_snp':
+            # update_fc creates a CPU head before native _train moves the model.
+            net.to(learner._device)
             shrink_perturb(net, learner.args, **self.config)
             if not all(torch.isfinite(p).all() for p in net.parameters()):
                 raise FloatingPointError('nonfinite_params after shrink-perturb, step=0')

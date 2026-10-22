@@ -1104,3 +1104,15 @@ noBN scale to 1.0. Historical validators retain the original rate metadata;
 existing checkpoint identity and K0 are not rewritten to change learning rates.
 The formula-preserving Gram seed0 continuation also registers source359da84
 so its unfinished lr0.05 run can resume with original calibration provenance.
+
+## 2026-10-23: S&P expanded-head device ordering repair
+
+Before applying S&P in CompetitorHook.install, move the original network to
+learner._device, matching the device move in native iCaRL _train. On later tasks,
+update_fc has just created a CPU head while the backbone remains on CUDA; the
+hook runs before native _train and must perform that move before S&P arithmetic.
+Fresh-network initialization, S&P coefficients, task cadence and optimizer
+creation remain unchanged. No RNG draws are added. CPU execution is unaffected.
+No DataLoader worker change is included. Gram seed0 source336dded is also
+registered for the existing strict native continuation, with lr0.05 and frozen
+K0; this S&P-only fix does not change Gram training or solver formulas.
