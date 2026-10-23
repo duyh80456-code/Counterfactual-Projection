@@ -255,6 +255,8 @@ class ICaRLHook:
                         result = original_step(*a, **kw)
                         if hook.intervention is not None:
                             hook.intervention.after_step(hook, hook.learner, self.optimizer)
+                        if hasattr(hook,'after_optimizer_step'):
+                            hook.after_optimizer_step(inspect.currentframe().f_back)
                         return result
                     step._wrapped_by_lr_sched = True
                     self.optimizer.step = step

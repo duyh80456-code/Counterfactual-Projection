@@ -10,7 +10,7 @@ def mean_std(values):
 
 def configuration_signature(p):
     backbone={'bn':'resnet32','nobn':'resnet32_nobn'}.get(p.get('backbone'),p.get('backbone'))
-    result={k:p.get(k) for k in ('dataset_fingerprint','upstream_commit','training','expected_tasks','reproduction','source_digest')}
+    result={k:p.get(k) for k in ('dataset_fingerprint','upstream_commit','training','expected_tasks','reproduction','source_digest','grad_clip')}
     result.update(backbone=backbone,order=p.get('class_order_kind',p.get('order')),
                   lr_scale=p.get('nobn_lr_scale',1.) if backbone=='resnet32_nobn' else 1.)
     if p.get('benchmark')=='v4_competitor':
@@ -43,8 +43,8 @@ def table(records):
         if p['arm'] == 'icarl': controls[(*group, p['seed'])] = r['summary']
     rows = []
     for (arm, backbone, order), runs in sorted(grouped.items()):
-        signature=configuration_signature(runs[0]['protocol'])
-        if any(configuration_signature(r['protocol'])!=signature for r in runs):
+        signature=configuration_signature(runs[0].get('comparison_protocol',runs[0]['protocol']))
+        if any(configuration_signature(r.get('comparison_protocol',r['protocol']))!=signature for r in runs):
             raise ValueError(f'{arm}: mixed solver/curvature/LR/configuration across seeds')
         if len({r['protocol']['seed'] for r in runs})!=len(runs):raise ValueError(f'{arm}: duplicate seed results')
         for metric in [f'{label}_{name}' for label in ('cnn','nme') for name in

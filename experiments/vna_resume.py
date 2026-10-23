@@ -43,7 +43,7 @@ def set_locals(frame, values):
 
 def hook_state(hook):
     state = {k: copy.deepcopy(getattr(hook, k)) for k in
-             ('rows', 'epochs', 'point_seconds', 'steps', 'tasks', 'batch_counts') if hasattr(hook, k)}
+             ('rows', 'epochs', 'point_seconds', 'steps', 'tasks', 'batch_counts', 'grad_clip_state') if hasattr(hook, k)}
     if getattr(hook, 'intervention', None) is not None:
         state['intervention_state'] = copy.deepcopy(hook.intervention.state_dict())
     state['buffer'] = list(hook.buffer.samples)

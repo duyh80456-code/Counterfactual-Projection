@@ -1141,3 +1141,38 @@ lr0.05, policy and original K0 checks. No C3 tuned checkpoint is migrated.
 The existing device move is shared at hook entry before any method's auxiliary
 state is allocated, including CBP utility/age tensors. This avoids constructing
 CPU CBP state before native training moves network weights to CUDA.
+
+## 2026-10-23: common noBN clipping, closed-grid A/B/C study
+
+User authorized one common gradient-norm threshold for every noBN method,
+without changing LR0.05, milestones/task resets, epochs, head initialization,
+method defaults or VNA/GIR policy. New --grad-clip defaults to None; inactive
+clipping does not write gradients. Always measure norms. Clip the vector
+actually consumed by the optimizer, after GEM projection, C-Flat aggregation
+and UPGD noise/utility; VNA/GIR interventions are excluded. Preserve native
+checkpoints/RNG, with clipping state added and threshold identity checked.
+
+A uses four safe end-task1 checkpoints and all seven settings
+None/1/2/5/10/20/50 immediately, per user's amendment (28 replays). B replays
+baseline s0/s1 for20 tasks at None and requires all1050 full-precision epoch
+losses per seed to match exactly. Choose the smallest tau in1/2/5/10/20/50
+such that tau>=2*G_max and all four A runs survive60 task2 steps. Missing
+checks or no feasible grid point stop the study; do not extend the grid.
+The measured choice and evidence hashes are written into an output copy of
+this preregistration before C. No measured threshold is asserted here.
+
+C applies the exact/no-clip full or prefix reuse checks specified in
+GRAD_CLIP_STUDY.md. A completed run's task1–4 proof is explicitly scoped to
+that prefix. Failed runs import native safe state only after every epoch
+before the checkpoint passes the no-clip proof; otherwise train anew. Old
+competitor producers without full-precision logs regenerate their reference
+prefix at the original source commit. Original summary identity is preserved;
+reuse certificates declare the effective common threshold and consumer pin.
+UPGD s2 is now completed and receives the same prefix check as UPGD s0/s1.
+C2 WA/PODNet/C-Flat seeds0–2 and GEM s1/s2 train fresh. Full uses the original
+frozen Gram/power10 K0 throughout. Archive separately, continue queued jobs
+after divergence, retain deadline/exit75 behavior and safe native resume.
+
+Collection permits missing B only for an explicit diagnostic solve failure
+(cg_not_converged/factor_fail), while still validating the finite remaining
+metrics and256-sample activity probe. It does not invent a B value.

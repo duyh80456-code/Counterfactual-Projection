@@ -107,8 +107,10 @@ def swr_init_parameters(net):
 
 
 class CompetitorHook:
-    def __init__(self, method, config):
+    def __init__(self, method, config, grad_callback=None):
         self.method, self.config = method, config
+        self.grad_callback=grad_callback
+        self.last_resets=0
         self.features, self.generators = {}, []
         self.epoch = self.last_reset = 0
         self.optimizer = None
@@ -178,18 +180,24 @@ class CompetitorHook:
                 settings=dict(lr=kwargs['lr'],weight_decay=kwargs.get('weight_decay',0.))
                 settings.update(self.config)
                 optimizer = upstream.FirstOrderGlobalUPGD(net.named_parameters(),**settings)
+                if self.grad_callback is not None:
+                    from experiments.grad_clip import upgd_step
+                    optimizer.step=MethodType(lambda opt:upgd_step(opt,self.grad_callback),optimizer)
             else:
                 optimizer = original_sgd(params, *args, **kwargs)
             self.optimizer = optimizer
             original_step = optimizer.step
             def step(optimizer_self, *a, **kw):
+                self.last_resets=0
                 result = original_step(*a, **kw)
                 self.steps += 1
                 if self.method=='icarl_redo' and self.steps-self.last_reset>=self.config['reset_steps']:
                     for name,block in pairs:
-                        recycle(block,self.features[name][:self.config['score_batch_size']],optimizer,self.config['tau'])
+                        self.last_resets+=recycle(block,self.features[name][:self.config['score_batch_size']],optimizer,self.config['tau'])
                     self.last_reset=self.steps
-                for name, gnt in self.generators: gnt.gen_and_test([self.features[name]])
+                for name,gnt in self.generators:
+                    gnt.gen_and_test([self.features[name]])
+                    self.last_resets+=sum(int((ages==0).sum()) for ages in gnt.ages)
                 if swr is not None: swr.step()
                 if not all(torch.isfinite(p).all() for p in net.parameters()):
                     raise FloatingPointError(f'nonfinite_params at step={self.steps}')

@@ -209,7 +209,7 @@ def test_generic_authority_uses_current_policy_and_own_class_order(tmp_path,pres
         path=Path(command[command.index('--schedule-output')+1]);path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text('{}');return True
     scope=dict(ROOT=tmp_path,PRESET=preset,Path=Path,sys=sys,DATA_ROOT=tmp_path/'cifar',RUN_ROOT=tmp_path,RUN_TAG='fixture',
-        REPO_COMMIT='a'*40,SOURCE_DIGEST=None,NOBN_LR_SCALE=.5,launch=launch,
+        REPO_COMMIT='a'*40,SOURCE_DIGEST=None,NOBN_LR_SCALE=.5,GRAD_CLIP=None,launch=launch,
         attached_file=lambda *a:None,archive_outputs=lambda:None,pause_due=lambda:False)
     exec(compile(ast.Module(body=nodes,type_ignores=[]),'authority','exec'),scope)
     scope['prepare_schedule']('bn' if preset=='M2' else 'nobn')

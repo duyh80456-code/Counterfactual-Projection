@@ -2,6 +2,7 @@
 import ast
 import csv
 import json
+import subprocess
 import sys
 from pathlib import Path
 import pytest
@@ -63,7 +64,7 @@ def test_notebook_jobs_and_real_commands(tmp_path):
     assert 'C1' not in builder.PRESETS
     assert len(jobs('C3'))==12 and any(j.endswith('__s0') for j in jobs('C3'))
     nodes=[n for n in ast.parse(builder.RUNNER).body if isinstance(n,ast.FunctionDef) and n.name in ('schedule_name','command')]
-    scope=dict(ROOT=tmp_path,STAGE_B=tmp_path,PRESET='M1',sys=sys,DATA_ROOT=tmp_path,NOBN_LR_SCALE=.5)
+    scope=dict(ROOT=tmp_path,STAGE_B=tmp_path,PRESET='M1',sys=sys,DATA_ROOT=tmp_path,NOBN_LR_SCALE=.5,GRAD_CLIP=None)
     exec(compile(ast.Module(body=nodes,type_ignores=[]),'commands','exec'),scope)
     for job in jobs('M1'):
         command=scope['command'](job)
@@ -97,6 +98,89 @@ def test_main_export_partial_then_three_seeds_and_rejects_solver_mix(tmp_path):
     path=tmp_path/'s1'/'protocol.json';p=json.loads(path.read_text());p['solver']='cg_ir';path.write_text(json.dumps(p))
     summary=tmp_path/'s1'/'summary.json';s=json.loads(summary.read_text());s['identity']=p;summary.write_text(json.dumps(s))
     with pytest.raises(ValueError,match='mixed solver'):collect([tmp_path])
+
+
+def clip_package(root,baseline=False):
+    from scripts.collect_cil_main import canonical_hash
+    from experiments.clip_study import GRID,A_CASES
+    import hashlib
+    native=root/'_sources'/'native'
+    p=completed(native,0);p['source_digest']='1'*64
+    if baseline:p['arm']='icarl'
+    summary=json.loads((native/'summary.json').read_text());summary['identity']=p
+    summary['parameter_count']=100
+    (native/'protocol.json').write_text(json.dumps({**p,'parameter_count':100,'mu0':None if baseline else .01}))
+    raw=json.dumps(summary);(native/'summary.json').write_text(raw)
+    digest=hashlib.sha256(raw.encode()).hexdigest()
+    source={f.name:json.loads(f.read_text()) if f.suffix=='.json' else f.read_text() for f in native.iterdir()}
+    reference=dict(identity=p,summary=summary,summary_sha256=digest,safe=dict(sha256='3'*64))
+    epochs=1050 if baseline else 250
+    loss=dict(status='PASS',epochs_compared=epochs,expected_epochs=epochs,
+              absolute_tolerance=0.,relative_tolerance=0.,differences=[])
+    study=dict(mode='B' if baseline else 'prefix',arm=p['arm'],seed=0,tau=None if baseline else 2.,
+        status='COMPLETED' if baseline else 'PREFIX_COMPLETED',tasks=20 if baseline else 4,epoch=None,
+        code_commit='c'*40,reference_sha256=digest,loss_check=loss,diagnostic_only=True,
+        equivalent_under_clip=True,checkpoint_sha256=None,
+        grad_clip=dict(run=dict(n_steps=2500,n_clipped=0,nonfinite_steps=0,max_preclip_norm=1.)))
+    proof=dict(status='EQUIVALENT_PREFIX',tau=2.,loss_check=loss,n_clipped=0,n_steps_checked=2500,
+        scope='all 20 tasks; full norm replay in B' if baseline else dict(task=4,epoch=None),
+        checkpoint_sha256='3'*64,reference=reference)
+    selection=dict(status='SELECTED',tau=2.,G_max=1.,grid=list(GRID),code_commit='c'*40,
+        checks=[dict(tau=t,baseline_bound=t>=2.,all_four_survive_60=True) for t in GRID],
+        source_reports={**{f'A/{a}__s{s}/{label}/study.json':'4'*64 for a,s in A_CASES
+            for label in ('none',*(f'tau{t:g}' for t in GRID))},**{f'B/icarl__s{s}/study.json':'4'*64 for s in (0,1)}})
+    package=dict(reference=reference,verification=proof,source_artifacts=source,
+        source_artifact_sha256={k:canonical_hash(v) for k,v in source.items()},source_summary_text=raw,
+        source_summary_sha256=digest,selection=selection,selection_sha256=canonical_hash(selection),
+        study=study,consumer_commit='c'*40,consumer_source_digest='2'*64)
+    destination=root/'C'/'reused';destination.mkdir(parents=True)
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    return package,destination
+
+
+@pytest.mark.parametrize('baseline',[False,True])
+def test_collector_clip_reuse_preserves_producer_and_ignores_diagnostics(tmp_path,baseline):
+    package,destination=clip_package(tmp_path,baseline)
+    diagnostic=tmp_path/'C'/'other'/'prefix'
+    completed(diagnostic,0,solver='deliberately_not_a_result')
+    (diagnostic/'study.json').write_text(json.dumps(dict(diagnostic_only=True,mode='prefix')))
+    groups,skipped=collect([tmp_path]);runs=next(iter(groups.values()))
+    assert len(runs)==1 and runs[0]['summary']['identity']==package['reference']['identity']
+    assert runs[0]['protocol']['parameter_count']==100
+    assert runs[0]['protocol'].get('grad_clip') is None
+    assert runs[0]['comparison_protocol']['grad_clip']==2.
+    assert runs[0]['comparison_protocol']['source_digest']=='2'*64
+    assert runs[0]['clip_reuse']['epochs_compared']==(1050 if baseline else 250)
+    assert any(s['reason']=='diagnostic-only clipping study' for s in skipped)
+    if not baseline:
+        p=completed(tmp_path/'C'/'trained',1,commit='c'*40)
+        p.update(grad_clip=2.,source_digest='2'*64)
+        (tmp_path/'C'/'trained'/'protocol.json').write_text(json.dumps(p))
+        path=tmp_path/'C'/'trained'/'summary.json';s=json.loads(path.read_text());s['identity']=p;path.write_text(json.dumps(s))
+        groups,_=collect([tmp_path]);assert len(next(iter(groups.values())))==2
+    package['study']['grad_clip']['run']['n_clipped']=1
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError,match='loss/norm evidence'):collect([tmp_path])
+
+
+def test_collector_rejects_tampered_clipping_reuse_source(tmp_path):
+    package,destination=clip_package(tmp_path)
+    package['source_artifacts']['tasks.json'][0]['cnn_top1']=99.
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError,match='artifact hash mismatch'):collect([tmp_path])
+
+
+def test_clipping_certificate_upgrades_identical_attached_source_only(tmp_path):
+    package,_=clip_package(tmp_path/'clip')
+    native=tmp_path/'original';native.mkdir()
+    for name,value in package['source_artifacts'].items():
+        (native/name).write_text(json.dumps(value) if name.endswith('.json') else value)
+    for inputs in ([native,tmp_path/'clip'],[tmp_path/'clip',native]):
+        groups,_=collect(inputs);records=next(iter(groups.values()))
+        assert len(records)==1 and records[0]['clip_reuse']['tau']==2.
+    summary=json.loads((native/'summary.json').read_text());summary['gpu_hours']=2.
+    (native/'summary.json').write_text(json.dumps(summary))
+    with pytest.raises(ValueError,match='Conflicting duplicate'):collect([native,tmp_path/'clip'])
 
 
 def test_gem_reuse_is_exact_rate_validated_and_cacheable(tmp_path,monkeypatch):
@@ -148,7 +232,8 @@ def test_c2_sweep_barrier_and_resume_skip(tmp_path):
     scope=dict(PRESET='C2',STAGE_B=tmp_path,REPO_COMMIT='a'*40,RUN_TAG='fixture',ENV={},
         JOBS_GPU0=lanes[0],JOBS_GPU1=lanes[1],JOBS_CPU=[],SOURCE_DIGEST=None,
         Path=Path,json=json,sys=sys,DATA_ROOT=tmp_path,launch=launch,pause_due=lambda:False,
-        archive_outputs=lambda:None,RUN_ROOT=tmp_path,archive_stop=threading.Event(),archiver=SimpleNamespace(join=lambda **k:None))
+        archive_outputs=lambda:None,RUN_ROOT=tmp_path,archive_stop=threading.Event(),archiver=SimpleNamespace(join=lambda **k:None),
+        GRAD_CLIP=None,subprocess=subprocess)
     exec(builder.RUNNER,scope)
     assert len(calls)==12 and {g for g,j in calls}=={0,1}
     # Native completed sweeps are skipped by the same runner on a later session.

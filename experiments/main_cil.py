@@ -19,6 +19,7 @@ from experiments.competitors import cil_recipe, cil_runtime
 from experiments.runners.lop import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status, log
+from experiments.grad_clip import GradClip, TrainingDiverged, positive_tau, step_details, check_parameters
 
 DATA_ROOT = '/kaggle/input/datasets/nlnk1607/cifar100'
 # Engine arm per CIL arm; ablations (§4 round 3) differ from icarl_full in one component only.
@@ -246,6 +247,12 @@ class MainHook(ICaRLHook):
         super().__init__(*a, **kw)
         self.manager, self.status = manager, status
         self.diverged = None
+        self.clipper=None
+        self.step_observer=self.epoch_observer=None
+
+    def checkpoint(self,**kwargs):
+        if self.clipper is not None:self.grad_clip_state=self.clipper.state_dict()
+        return super().checkpoint(**kwargs)
 
     def before_training_epochs(self):
         self.checkpoint()
@@ -255,10 +262,25 @@ class MainHook(ICaRLHook):
         intervention=getattr(self,'intervention',None)
         if isinstance(loss,torch.Tensor) and intervention is not None and not intervention.preflight:
             intervention.observe_loss(self,loss)
-        if isinstance(loss, torch.Tensor) and not bool(torch.isfinite(loss).all()):
-            self.diverged = dict(task=self.learner._cur_task+1, epoch=self.current_epoch+1,
-                                 step=self.steps, tensor='loss')
+        if self.clipper is not None:
+            epoch=int(frame.f_locals.get('epoch',self.current_epoch))+1
+            self.pending_clip=self.clipper.apply((p.grad for p in self.learner._network.parameters()),
+                task=self.learner._cur_task+1,step=self.steps,epoch=epoch)
+            if self.step_observer:
+                self.pending_clip.update(step_details(self.learner,self.optimizer,frame))
+                self.clipper.steps.append(self.pending_clip)
+        if isinstance(loss,torch.Tensor) and not bool(torch.isfinite(loss).all()):
+            self.diverged=dict(task=self.learner._cur_task+1,epoch=int(frame.f_locals.get('epoch',0))+1,
+                               step=self.steps,tensor='loss')
             raise Diverged('nonfinite training loss')
+        if self.clipper is not None and self.pending_clip['nonfinite_norm']:
+            raise TrainingDiverged(dict(task=self.learner._cur_task+1,epoch=self.pending_clip['epoch'],step=self.steps,tensor='gradient'))
+
+    def after_optimizer_step(self,frame):
+        if self.clipper is None:return
+        row=self.pending_clip
+        check_parameters(self.learner,task=row['task'],epoch=row['epoch'],step=self.steps)
+        if self.step_observer:self.step_observer(row,self.learner)
 
     def after_epoch(self, learner, optimizer, frame):
         if not np.isfinite(frame.f_locals['losses']):
@@ -266,6 +288,7 @@ class MainHook(ICaRLHook):
                                  step=self.steps, tensor='loss')
             raise Diverged('nonfinite training loss')
         super().after_epoch(learner, optimizer, frame)
+        if self.epoch_observer:self.epoch_observer(self.epochs[-1])
         self.status.update(task=learner._cur_task+1, epoch=self.current_epoch, step=self.steps, phase='training')
         self.checkpoint()
 
@@ -297,6 +320,7 @@ def run(args):
     from methods.vna_v3 import V3Engine
     if not callable(getattr(vna_v3, 'diagnose', None)):
         raise RuntimeError('Merge Phase 2 first: methods.vna_v3.diagnose(model, batch) is required')
+    if args.grad_clip is not None and args.backbone!='resnet32_nobn':raise ValueError('grad-clip requires noBN')
     if args.backbone == 'resnet32':args.nobn_lr_scale=1.
     elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
@@ -340,6 +364,7 @@ def run(args):
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
+    if args.grad_clip is not None:protocol['grad_clip']=args.grad_clip
     baseline_reference=None
     if args.baseline_reference:
         if args.arm!='icarl' or args.max_tasks!=20 or args.fake_data or args.preflight_only:
@@ -360,6 +385,7 @@ def run(args):
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
         write_json(out/'epochs.json', hook.epochs)
+        if hook.clipper is not None:hook.clipper.save(out/'grad_clip.json')
         write_csv(out/'continual_eval.csv', [{k:v for k,v in row.items() if not k.endswith('_per_class')} for row in hook.tasks])
         if not (out/'continual_eval.csv').exists(): (out/'continual_eval.csv').write_text('task,cnn_top1,nme_top1\n')
         write_json(out/'diagnostics.json', hook.rows)
@@ -381,6 +407,10 @@ def run(args):
         return value
     hook = MainHook(seed=args.seed, fake=args.fake_data, persist=persist, progress=progress,
                     intervention=intervention, manager=None, status=status)
+    hook.clipper=GradClip(args.grad_clip) if args.backbone=='resnet32_nobn' else None
+    if hook.clipper is not None and hasattr(hook,'grad_clip_state'):hook.clipper.load_state_dict(hook.grad_clip_state)
+    hook.step_observer=getattr(args,'_step_observer',None)
+    hook.epoch_observer=getattr(args,'_epoch_observer',None)
     hook.baseline_reference=baseline_reference
     started = time.monotonic()
     run_status, reason = 'COMPLETED', None
@@ -403,7 +433,9 @@ def run(args):
         run_status='REUSED_BASELINE'
         write_json(out/'reused_baseline.json',dict(reference=baseline_reference,
             verification=json.loads((out/'baseline_loss_check.json').read_text())))
-    except Diverged as exc:
+    except (Diverged,FloatingPointError,torch.linalg.LinAlgError) as exc:
+        if isinstance(exc,TrainingDiverged):hook.diverged=exc.detail
+        elif hook.diverged is None:hook.diverged=dict(task=hook.learner._cur_task+1,epoch=hook.current_epoch+1,step=hook.steps,tensor='training')
         run_status, reason = 'FAILED_DIVERGED', str(exc)
         status.update(status=run_status, phase='diverged', diverged=hook.diverged)
     except SystemExit as exc:
@@ -442,6 +474,7 @@ def parser():
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)
+    p.add_argument('--grad-clip',type=positive_tau,default=None)
     p.add_argument('--gir-live',action='store_true',help='Ablation: allow live-slot GIR')
     p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')
     p.add_argument('--baseline-reference',help='Completed old baseline + 150 full-precision epoch losses')

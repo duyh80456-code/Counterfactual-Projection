@@ -23,7 +23,9 @@ from experiments.runners import pycil as cil, lop
 from adapters.cil_setup import class_order, skipinit, FixtureBackbone
 from experiments.main_cil import measure_task, training_settings, recipe as main_recipe, NOBN_LR_SCALES
 from experiments.vna_provenance import code_commit
-from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pause_if_due
+from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pause_if_due, log
+from experiments.grad_clip import (GradClip, TrainingDiverged, positive_tau, step_details,
+    check_parameters, training_frame, optimizer_clipping)
 
 ROUND2 = ('podnet', 'wa', 'gem', 'icarl_cbp', 'icarl_redo', 'icarl_snp', 'icarl_upgd', 'icarl_cflat')
 ROUND3 = ('icarl_l2init', 'icarl_forget_forgetting', 'icarl_fire', 'icarl_swr', 'icarl_mrfa',
@@ -89,7 +91,7 @@ def prepare_method(method):
 
 
 @contextmanager
-def runtime(args, method, cfg, boundary, epoch_done):
+def runtime(args, method, cfg, boundary, epoch_done, step_done=None):
     source = cfg['model_name']
     with cil_runtime(source, fake=args.fake_data, data_dir=args.data_dir, boundary=boundary) as native:
         module = cflat_module() if method == 'icarl_cflat' else native
@@ -131,6 +133,7 @@ def runtime(args, method, cfg, boundary, epoch_done):
                 for batch in super().__iter__():
                     boundary()
                     yield batch
+                    if step_done and getattr(self,'_v4_training',False):step_done()
                 if getattr(self, '_v4_training', False): epoch_done()
         inc_net.get_convnet = backbone
         data_manager._get_idata = data
@@ -168,6 +171,7 @@ def set_epochs(module, learner, args, method):
 
 def run(args):
     if args.backbone=='nobn' and args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
+    if args.grad_clip is not None and args.backbone!='nobn':raise ValueError('grad-clip requires noBN')
     method = 'icarl' if args.disabled else args.method
     prepare_method(method)
     if args.reproduction and (args.method != 'icarl_cflat' or args.backbone != 'bn' or args.order != 'random' or args.seed != 1993 or args.disabled):
@@ -203,6 +207,7 @@ def run(args):
         epochs='1/1 fixture' if args.fake_data else ('200/170' if args.reproduction else '100/50'),
         fixture='two-channel float64 residual backbone, 8 images/class, memory 20' if args.fake_data else None,
         resume='exact task-boundary restart, including method state and RNG')
+    if args.grad_clip is not None:identity['grad_clip']=args.grad_clip
     out = Path(args.out).resolve(); out.mkdir(parents=True,exist_ok=True)
     progress = Progress(out, identity)
     if progress.state and not args.resume: raise ValueError('existing checkpoint requires --resume')
@@ -218,6 +223,31 @@ def run(args):
     tasks, diagnostics = [], []
     started, base_seconds = time.monotonic(), 0.
     learner, hook = None, None
+    clipper=GradClip(args.grad_clip) if args.backbone=='nobn' else None
+    args._clipper=clipper
+    pending={};epochs=[]
+    step_observer=getattr(args,'_step_observer',None)
+    def before_step(optimizer,frame,gradients=None):
+        pending['optimizer']=optimizer
+        if clipper is None:return
+        task=learner._cur_task+1;epoch=int(frame.f_locals.get('epoch',0))+1 if frame else None
+        step=sum(len(rows) for rows in clipper.tasks.values())+1
+        row=clipper.apply(gradients if gradients is not None else
+            (p.grad for group in optimizer.param_groups for p in group['params']),task=task,step=step,epoch=epoch)
+        pending.update(row=row,optimizer=optimizer)
+        if step_observer:
+            row.update(step_details(learner,optimizer,frame));clipper.steps.append(row)
+        values=frame.f_locals if frame else {}
+        loss=values.get('loss');losses=values.get('loss_list')
+        if losses is not None:loss=sum(losses)
+        if isinstance(loss,torch.Tensor) and not bool(torch.isfinite(loss).all()):
+            raise TrainingDiverged(dict(task=task,epoch=epoch,step=step,tensor='loss'))
+        if row['nonfinite_norm']:raise TrainingDiverged(dict(task=task,epoch=epoch,step=step,tensor='gradient'))
+    def step_done():
+        if clipper is None or 'row' not in pending:return
+        row=pending['row'];row['resets']=hook.last_resets if hook else 0
+        check_parameters(learner,task=row['task'],epoch=row['epoch'],step=row['step'])
+        if step_observer:step_observer(row,learner)
     def boundary():
         def paused():
             if progress.path.exists():
@@ -228,9 +258,20 @@ def run(args):
             status.update(phase='PAUSED')
         pause_if_due(paused)
     def epoch_done():
-        if hook: hook.after_epoch(learner)
+        if hook:hook.after_epoch(learner)
+        frame=training_frame();values=frame.f_locals if frame else {}
+        optimizer=pending.get('optimizer')
+        row=dict(task=learner._cur_task+1,epoch=int(values.get('epoch',0))+1,
+            train_loss=float(values.get('losses',float('nan')))/len(learner.train_loader),
+            lr=optimizer.param_groups[0]['lr'] if optimizer else None)
+        epochs.append(row);learner._v4_epochs=epochs
+        lop.write_json(out/'epochs.json',epochs)
+        log(f"task={row['task']} epoch={row['epoch']} train_loss={row['train_loss']:.9g} lr={row['lr']}")
+        observer=getattr(args,'_epoch_observer',None)
+        if observer:observer(row)
+        if clipper is not None:clipper.save(out/'grad_clip.json')
     try:
-        with lop.working_directory(out), runtime(args,method,cfg,boundary,epoch_done) as (module,order):
+        with lop.working_directory(out), runtime(args,method,cfg,boundary,epoch_done,step_done) as (module,order), optimizer_clipping(module,before_step):
             import trainer
             from utils.data_manager import DataManager
             from utils import factory
@@ -253,11 +294,14 @@ def run(args):
                 for value in vars(learner).values():
                     if isinstance(value, torch.nn.Module): value.to(cfg['device'][0])
                 restore_rng(progress.state['rng'])
+                epochs=getattr(learner,'_v4_epochs',[])
+                if clipper is not None and 'grad_clip' in progress.state:clipper.load_state_dict(progress.state['grad_clip'])
             def checkpoint():
                 state = copy.deepcopy(learner)
                 for key in ('train_loader','test_loader','val_loader'): vars(state).pop(key,None)
                 progress.save(dict(model=state,tasks=tasks,diagnostics=diagnostics,rng=rng_state(),
-                    elapsed_seconds=base_seconds+time.monotonic()-started))
+                    elapsed_seconds=base_seconds+time.monotonic()-started,
+                    **({'grad_clip':clipper.state_dict()} if clipper else {})))
                 lop.write_json(out/'tasks.json',tasks)
                 lop.write_json(out/'diagnostics.json',diagnostics)
                 lop.write_csv(out/'continual_eval.csv',tasks)
@@ -279,7 +323,7 @@ def run(args):
                         if a[-1] == 0: return
                         return original_run(model,*a,**kw)
                     type(learner)._run = native_run
-                hook = CompetitorHook(method,config) if method in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd','icarl_fire','icarl_swr') else None
+                hook = CompetitorHook(method,config,grad_callback=before_step if clipper else None) if method in ('icarl_cbp','icarl_redo','icarl_snp','icarl_upgd','icarl_fire','icarl_swr') else None
                 handles = []
                 if method == 'icarl_l2init':
                     initial = getattr(learner,'_v4_initial',{})
@@ -333,18 +377,23 @@ def run(args):
             return result
     except (AssertionError,FloatingPointError,torch.linalg.LinAlgError) as error:
         diverged = not isinstance(error,AssertionError)
-        result = dict(status='DIVERGED' if diverged else 'INVALID',identity=identity,tasks=tasks,
+        detail=error.detail if isinstance(error,TrainingDiverged) else dict(task=learner._cur_task+1 if learner else len(tasks)+1,
+            epoch=pending.get('row',{}).get('epoch'),step=pending.get('row',{}).get('step'),tensor='parameters' if diverged else 'assertion')
+        log(f'FAILED_DIVERGED {detail}')
+        result = dict(status='DIVERGED' if diverged else 'INVALID',diverged=detail,identity=identity,tasks=tasks,
                       task=len(tasks)+1,step=hook.steps if hook else None,
                       nonfinite_params=bool(learner is not None and any(not torch.isfinite(p).all() for p in learner._network.parameters())),
                       error=f'{type(error).__name__}: {error}')
         lop.write_json(out/'summary.json',result)
         status.update(phase=result['status'],nonfinite_params=result['nonfinite_params'],step=result['step'])
         return result
-    finally: status.close()
+    finally:
+        if clipper is not None:clipper.save(out/'grad_clip.json')
+        status.close()
 
 
 def reuse_gem_candidate(args):
-    if args.method!='gem' or args.fake_data or not args.reuse_root:return None
+    if args.method!='gem' or args.fake_data or not args.reuse_root or args.grad_clip is not None:return None
     from scripts.collect_parallel import validate_result
     from experiments.parallel_validity import dataset_fingerprint
     import hashlib
@@ -410,7 +459,7 @@ def sweep(args):
     config,scale,relative,result=max(candidates,key=lambda item:item[3]['average_incremental_accuracy'])
     best = dict(method=args.method,config=config,seed=0,backbone='nobn',order='superclass',
         metric='cnn_average_accuracy',score=result['average_incremental_accuracy'],
-        synthetic=args.fake_data,code_commit=code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
+        synthetic=args.fake_data,grad_clip=args.grad_clip,code_commit=code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         dataset_fingerprint=result.get('identity',{}).get('dataset_fingerprint'),
         nobn_lr_scale=scale,lr=.1*scale,lr_scales=list(NOBN_LR_SCALES),grid=grid(args.method),
         selected_trial=relative,total_trials=len(trials),
@@ -422,6 +471,7 @@ def sweep(args):
 def selected_config(args):
     if args.best_config:
         best = json.loads(Path(args.best_config).read_text())
+        if best.get('grad_clip')!=args.grad_clip:raise ValueError('best_config gradient clipping mismatch')
         if best.get('synthetic') != args.fake_data or best.get('method') != args.method or best.get('code_commit') != code_commit() or best.get('source_digest') != os.environ.get('VNA_SOURCE_DIGEST'):
             raise ValueError('best_config provenance mismatch')
         if best.get('grid') != grid(args.method) or best.get('config') not in grid(args.method) or best.get('lr_scales')!=list(NOBN_LR_SCALES):
@@ -460,6 +510,7 @@ def parser():
     p.add_argument('--backbone',choices=('bn','nobn'),default='nobn')
     p.add_argument('--order',choices=('superclass','random'),default='superclass')
     p.add_argument('--nobn-lr-scale',type=float,choices=NOBN_LR_SCALES,default=.5)
+    p.add_argument('--grad-clip',type=positive_tau,default=None)
     p.add_argument('--device',default='cpu')
     p.add_argument('--data-dir',default='/kaggle/input/datasets/nlnk1607/cifar100')
     p.add_argument('--config'); p.add_argument('--best-config')

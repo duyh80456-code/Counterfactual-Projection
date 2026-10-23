@@ -73,6 +73,7 @@ RUN_TAG = {run_tag!r}
 PRESET = {preset!r}
 REPO_COMMIT = {commit!r}
 SOURCE_DIGEST = {source_digest!r}
+GRAD_CLIP = None  # Registered runs stay unclipped; selected tau is authorized only by the clip-study C gate.
 import time
 SESSION_HOURS = 11.5
 SESSION_START = time.time()
@@ -165,6 +166,7 @@ def prepare_schedule(backbone):
            '--device','cuda:0','--data-dir',str(DATA_ROOT),'--solver','cg_ir','--curvature','exact','--preflight-only',
            '--schedule-output',str(destination),'--schedule-source','self' if PRESET == 'M3' else 'authority']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
+    if GRAD_CLIP is not None:cmd+=['--grad-clip',str(GRAD_CLIP)]
     launch(cmd,0,backbone+'_preflight',RUN_ROOT/f'{RUN_TAG}_{backbone}_preflight.log')
     archive_outputs()
     if not destination.exists() and not pause_due(): raise RuntimeError('preflight did not produce K0')
@@ -182,6 +184,7 @@ def command(job):
             '--mode','sweep','--device','cuda:0','--data-dir',str(DATA_ROOT),
             '--out',str(ROOT/job),'--resume','--nobn-lr-scale',str(NOBN_LR_SCALE)]
         if PRESET=='C2' and job.startswith('gem__'):cmd+=['--reuse-root',str(STAGE_B)]
+        if GRAD_CLIP is not None:cmd+=['--grad-clip',str(GRAD_CLIP)]
         return cmd
     arm,backbone,order,seed = job.split('__'); seed = seed[1:]
     if arm in ('icarl','icarl_full'):
@@ -192,6 +195,7 @@ def command(job):
                '--device','cuda:0','--data-dir',str(DATA_ROOT)]
         if arm == 'icarl_full': cmd += ['--schedule',str(ROOT/'_schedules'/schedule_name(backbone))]
         if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
+        if GRAD_CLIP is not None:cmd+=['--grad-clip',str(GRAD_CLIP)]
         return cmd
     cmd = [sys.executable,'-u','-m','experiments.v4_competitors','--method',arm,
            '--backbone',backbone,'--order',order,'--seed',seed,'--out',str(ROOT/job),
@@ -201,14 +205,34 @@ def command(job):
         cmd += ['--best-config',str(path)]
     if PRESET == 'C5': cmd += ['--reproduction']
     if backbone == 'nobn': cmd += ['--nobn-lr-scale',str(NOBN_LR_SCALE)]
+    if GRAD_CLIP is not None:cmd+=['--grad-clip',str(GRAD_CLIP)]
     return cmd
 
-def run_gpu(gpu,jobs):
-    for job in jobs:
-        if pause_due(): break
-        if completed(job): continue
-        if not launch(command(job),gpu,job,RUN_ROOT/f'{RUN_TAG}_{job}.log'): break
+def run_gpu(gpu,jobs,pending=None):
+    import queue
+    initial=iter(jobs)
+    while not pause_due():
+        try:job=next(initial)
+        except StopIteration:
+            if pending is None:return
+            try:job=pending.get_nowait()
+            except queue.Empty:return
+        if completed(job):continue
+        try:
+            if not launch(command(job),gpu,job,RUN_ROOT/f'{RUN_TAG}_{job}.log'):break
+        except subprocess.CalledProcessError:
+            path=ROOT/job/'summary.json'
+            if not path.exists() or json.loads(path.read_text()).get('status') not in ('DIVERGED','FAILED_DIVERGED'):raise
+            print('FAILED_DIVERGED: continuing lane',gpu,job,flush=True)
         archive_outputs()
+
+def dispatch_gpu(pool,queues):
+    import queue
+    pending=queue.Queue()
+    for index in range(1,max(map(len,queues),default=0)):
+        for jobs in queues:
+            if index<len(jobs):pending.put(jobs[index])
+    return [pool.submit(run_gpu,gpu,jobs[:1],pending) for gpu,jobs in enumerate(queues)]
 
 def run_cpu(job):
     if pause_due() or completed(job): return
@@ -243,15 +267,14 @@ try:
     archive_outputs()
     if PRESET=='C2' and not pause_due():
         with ThreadPoolExecutor(max_workers=2) as sweep_pool:
-            sweeps=[sweep_pool.submit(run_gpu,gpu,[j for j in jobs if j.endswith('__sweep')])
-                    for gpu,jobs in enumerate((JOBS_GPU0,JOBS_GPU1))]
+            sweeps=dispatch_gpu(sweep_pool,[[j for j in jobs if j.endswith('__sweep')] for jobs in (JOBS_GPU0,JOBS_GPU1)])
             for future in sweeps:future.result()
     if not pause_due():
         if PRESET=='C2':
             JOBS_GPU0=[j for j in JOBS_GPU0 if not j.endswith('__sweep')]
             JOBS_GPU1=[j for j in JOBS_GPU1 if not j.endswith('__sweep')]
         with ThreadPoolExecutor(max_workers=2) as gpu_pool, ThreadPoolExecutor(max_workers=4) as cpu_pool:
-            futures=[gpu_pool.submit(run_gpu,0,JOBS_GPU0),gpu_pool.submit(run_gpu,1,JOBS_GPU1)]
+            futures=dispatch_gpu(gpu_pool,(JOBS_GPU0,JOBS_GPU1))
             futures += [cpu_pool.submit(run_cpu,job) for job in JOBS_CPU]
             for future in futures: future.result()
 finally:
@@ -677,17 +700,99 @@ if failures:raise failures[0]
 if archive_errors:raise RuntimeError(archive_errors)
 '''
 
+
+CLIP_STUDY_RUNNER = r'''from experiments.clip_study import load_selection
+from experiments.vna_resume import launch_logged
+study_root = STAGE_B/'clip_study'
+study_root.mkdir(parents=True,exist_ok=True)
+selection = study_root/'grad_clip_selection.json'
+try:
+    if PHASE == 'C':
+        chosen=load_selection(selection)
+        if chosen['code_commit'] != REPO_COMMIT:
+            raise ValueError('Phase C requires the exact A/B source commit')
+        if not (study_root/'PREREGISTRATION_CHANGES.md').exists():
+            raise FileNotFoundError('Attach A/B output with selection evidence and its written preregistration')
+        print('Phase C authorized threshold:',chosen['tau'],'G_max:',chosen['G_max'],flush=True)
+        import re
+        producers=set()
+        for path in (study_root/'_references').glob('*.json'):
+            descriptor=json.loads(path.read_text());identity=descriptor.get('identity',{})
+            if descriptor.get('epochs') or identity.get('arm') in ('wa','podnet','icarl_cflat'):continue
+            if identity.get('arm')=='gem' and identity.get('seed')!=0:continue
+            commit=identity.get('code_commit')
+            if commit and commit!=REPO_COMMIT:producers.add(commit)
+        for commit in sorted(producers):
+            if not re.fullmatch('[0-9a-f]{40}',commit):raise ValueError('Invalid historical producer commit')
+            target=REPO.with_name('clip_reference_'+commit[:12])
+            if not target.exists():private_clone(MAIN_URL,target,commit)
+            head=subprocess.check_output(['git','-C',str(target),'rev-parse','HEAD'],text=True).strip()
+            dirty=subprocess.check_output(['git','-C',str(target),'status','--porcelain','--untracked-files=no'],text=True).strip()
+            if head!=commit or dirty:raise ValueError('Historical producer checkout is not clean: '+commit)
+    command=[sys.executable,'-u','-m','experiments.clip_study','--phase',PHASE,
+             '--input-root','/kaggle/input','--out',str(study_root),'--data-dir',str(DATA_ROOT)]
+    if PHASE == 'C':command+=['--selection',str(selection)]
+    launch_logged(command,cwd=REPO,env={**ENV,'CUDA_VISIBLE_DEVICES':'0,1'},
+        log_path=RUN_ROOT/f'clip_study_{PHASE}.log',lane='study',job='clip_'+PHASE,
+        lanes=lane_state,paused=session_paused,deadline=VNA_DEADLINE)
+finally:
+    archive_stop.set();archiver.join(timeout=10);archive_outputs()
+report=study_root/'CLIP_STUDY_REPORT.md'
+if report.exists():
+    from IPython.display import Markdown,display
+    display(Markdown(report.read_text()))
+if selection.exists():print(selection.read_text())
+if session_paused.is_set():print('PAUSED: reattach these study outputs AND all four historical inputs, then rerun.')
+if archive_errors:raise RuntimeError(archive_errors)
+'''
+
+
+def build_clip_study(commit, phase, source_digest=None):
+    """Package study orchestration separately from historical training sources."""
+    if phase not in ('AB','C'):raise ValueError('phase must be AB or C')
+    result=build(commit,'M1s0','clip_study',source_digest)
+    cases=[f'C:{arm}:s{seed}' for arm in ('icarl','icarl_full','icarl_cbp','icarl_redo','icarl_snp','icarl_upgd','gem','wa','podnet','icarl_cflat') for seed in range(3)]
+    jobs=([f'A:{arm}:s{seed}:tau{tau}' for arm,seed in
+           (('icarl',2),('icarl_full',2),('icarl_cbp',1),('icarl_redo',1))
+           for tau in ('none','1','2','5','10','20','50')],['B:icarl:s0','B:icarl:s1'],[]) if phase=='AB' else (cases[::2],cases[1::2],[])
+    result['cells'][0]=cell('code',config(commit,jobs,'clip_study','CLIP_'+phase,source_digest)+
+        f"\nPHASE = {phase!r}\nDISK_CAP_BYTES = 20_000_000_000\n")
+    inputs='Attach CIFAR-100 with cifar-100-python/{train,test,meta}, plus the four original historical archives: M1 seeds1/2, C3, C2 and Gram seed0. '
+    inputs+='Reattach all four original archives on EVERY resumed session; imported _sources are deliberately excluded from output archives. '
+    inputs+='Attach the matching source ZIP. ' if source_digest else 'The pinned source must include experiments/clip_study.py; regenerate from the published study commit before running. '
+    detail=('GPU0 runs all 28 task-2 replays (four cases × no clip and six fixed thresholds). GPU1 runs the complete baseline s0 then s1 norm/loss replay. The selected tau is written only after complete A/B evidence; an infeasible grid does not launch C.' if phase=='AB' else
+        'Also attach the A/B output archive containing all A/B reports, grad_clip_selection.json and PREREGISTRATION_CHANGES.md. The selection is recomputed and checked before any Phase C job starts. Both GPUs process the authorized 30 cases. No manual tau override is accepted.')
+    result['cells'][1]=cell('markdown','# Gradient clipping study — Phase '+phase+'\n'+inputs+detail+' The 11.5-hour deadline pauses safely; rerunning continues cached/native checkpoints. This notebook archives only clip_study results, checkpoints and logs; it does not copy other historical runs into the output archive.')
+    bootstrap=''.join(result['cells'][2]['source']).replace('RUN_ROOT = Path("/kaggle/working/vna4_main")',f'RUN_ROOT = Path("/kaggle/working/vna4_clip_{phase}")')
+    result['cells'][2]=cell('code',bootstrap)
+    runtime=''.join(result['cells'][4]['source'])
+    runtime=runtime.replace("restore_stage_archives(Path('/kaggle/input'), STAGE_B, 'outputs')", "restore_stage_archives(Path('/kaggle/input'), STAGE_B/'clip_study', 'clip_study', exclude_parts=('_sources',))")
+    runtime=runtime.replace('folders=("outputs",), exclude_parts=("data",)', 'folders=("outputs/clip_study",), exclude_parts=("data","_sources")')
+    result['cells'][4]=cell('code',runtime)
+    result['cells'][-2]=cell('code',CLIP_STUDY_RUNNER)
+    result['cells'].pop()
+    return result
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--commit',required=True)
     parser.add_argument('--run-tag',default='vna_v4_main')
-    parser.add_argument('--output',default=str(ROOT/'notebooks/vna4_M1.ipynb'))
+    parser.add_argument('--output')
     parser.add_argument('--variants',action='store_true')
+    parser.add_argument('--clip-study',choices=('AB','C'),help='Build only the dedicated clipping-study phase notebook')
     parser.add_argument('--source-bundle',help='Write source overlay ZIP here and pin its SHA256 in every notebook')
-    args=parser.parse_args(); output=Path(args.output); output.parent.mkdir(parents=True,exist_ok=True)
+    args=parser.parse_args()
+    output=Path(args.output) if args.output else ROOT/'notebooks'/('vna4_clip_'+args.clip_study+'.ipynb' if args.clip_study else 'vna4_M1.ipynb')
+    output.parent.mkdir(parents=True,exist_ok=True)
     digest=source_bundle(args.source_bundle) if args.source_bundle else None
+    if args.clip_study:
+        output.write_text(json.dumps(build_clip_study(args.commit,args.clip_study,digest),indent=1)+'\n')
+        return
     output.write_text(json.dumps(build(args.commit,'M1',args.run_tag,digest),indent=1)+'\n')
     if args.variants:
+        for phase in ('AB','C'):
+            output.with_name('vna4_clip_'+phase+'.ipynb').write_text(json.dumps(
+                build_clip_study(args.commit,phase,digest),indent=1)+'\n')
         output.with_name('vna4_gram_m1s0_ir.ipynb').write_text(json.dumps(
             build_gram_m1_ir(args.commit,digest),indent=1)+'\n')
         output.with_name('vna4_exact_diagnostics.ipynb').write_text(json.dumps(
