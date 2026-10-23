@@ -12,6 +12,7 @@ import sys
 
 
 class ReplayComplete(Exception):pass
+class ReplayMismatch(Exception):pass
 
 
 def import_support(root):
@@ -105,6 +106,12 @@ def run(args):
         original_init=main.MainHook.__init__
         def init(hook,*a,**kw):
             original_init(hook,*a,**kw);holder['hook']=hook
+            if args.stop_file:
+                before=hook.before_optimizer_step
+                def checked(frame):
+                    if Path(args.stop_file).exists():raise ReplayMismatch()
+                    return before(frame)
+                hook.before_optimizer_step=checked
         main.MainHook.__init__=init
     original_progress=native.Progress
     if args.checkpoint:
@@ -175,7 +182,10 @@ def run(args):
     try:
         outcome=native.run(parsed)
         status=outcome['status']
+        if args.mode=='train' and args.tau is not None and status in ('DIVERGED','FAILED_DIVERGED'):
+            status='DIVERGED_WITH_CLIP'
     except ReplayComplete:status='REPLAY_COMPLETED' if args.mode=='A' else 'PREFIX_COMPLETED'
+    except ReplayMismatch:status='STOPPED_REPLAY_MISMATCH'
     except SystemExit as exc:
         if exc.code!=75:raise
         status='PAUSED'
@@ -210,13 +220,21 @@ def run(args):
         rows=sorted(selected,key=lambda r:r['step'])
     check=compare_epochs(reference_epochs,epochs,args.tasks,args.epoch) if reference_epochs else dict(status='MISSING_REFERENCE')
     passed=status in ('COMPLETED','PREFIX_COMPLETED') and check['status']=='PASS' and clip_report is not None and clip_report['run']['n_clipped']==0
+    intervention=getattr(holder.get('hook'),'intervention',None)
+    trace=[{**{k:r.get(k) for k in ('kind','task','iteration','step','K','K_next','skipped','s','swaps','reason')},
+        'K0':intervention.K0} for r in getattr(intervention,'events',[]) if r.get('task')==2]
     report=dict(mode=args.mode,arm=args.arm,seed=args.seed,tau=args.tau,status=status,error=error,tasks=args.tasks,epoch=args.epoch,
         code_commit=code_commit(),source_digest=os.environ.get('VNA_SOURCE_DIGEST'),reference_commit=identity.get('code_commit') if identity else None,
         reference_sha256=descriptor.get('summary_sha256') if descriptor else None,rows=rows,
         loss_check=check,grad_clip=clip_report,diagnostic_only=args.mode!='train',
         equivalent_under_clip=passed if args.mode in ('B','prefix') else None,
         checkpoint_sha256=hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest() if args.checkpoint else None,
+        frozen_K0=schedule.get('K0') if schedule else None,intervention_trace=trace,
+        failure_policy='record DIVERGED_WITH_CLIP; keep the selected tau; no retuning' if args.mode=='train' else None,
         outcome=outcome)
+    if args.mode=='A' and args.tau is None and status not in ('PAUSED','ERROR','RUNNING','STOPPED_REPLAY_MISMATCH'):
+        from experiments.clip_study import control_check
+        report['control_check']=control_check(report)
     atomic_json_save(report,out/'study.json')
     print(json.dumps({k:report[k] for k in ('mode','arm','seed','tau','status','error','equivalent_under_clip')}),flush=True)
     if status=='PAUSED':raise SystemExit(75)
@@ -230,7 +248,7 @@ def parser():
     p.add_argument('--mode',choices=('A','B','prefix','train'),required=True)
     p.add_argument('--arm',required=True);p.add_argument('--seed',type=int,required=True)
     p.add_argument('--tau',type=float);p.add_argument('--tasks',type=int,default=20);p.add_argument('--epoch',type=int)
-    p.add_argument('--reference');p.add_argument('--reference-epochs');p.add_argument('--checkpoint');p.add_argument('--proof')
+    p.add_argument('--reference');p.add_argument('--reference-epochs');p.add_argument('--checkpoint');p.add_argument('--proof');p.add_argument('--stop-file')
     p.add_argument('--out',required=True);p.add_argument('--data-dir',required=True);p.add_argument('--device',default='cuda:0')
     return p
 

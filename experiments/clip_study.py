@@ -106,11 +106,49 @@ def read_study(path):
     return json.loads(path.read_text()) if path.exists() else None
 
 
+def intervention_check(report):
+    K0=report.get('frozen_K0')
+    events=[r for r in report.get('intervention_trace',[]) if
+        r.get('kind')=='correction' and r.get('task')==2 and r.get('step')==2001]
+    passed=isinstance(K0,int) and K0>0 and any(r.get('K')==K0 and r.get('K0')==K0 for r in events)
+    return dict(status='PASS' if passed else 'REPLAY_MISMATCH',expected=dict(task=2,step=2001,K0=K0),observed=events)
+
+
+def control_check(report):
+    arm,seed=report.get('arm'),report.get('seed')
+    expected=dict(task=2,epoch=1)
+    if (arm,seed)==('icarl',2):expected['step']=2008
+    elif (arm,seed)==('icarl_full',2):expected['step']=2011
+    elif (arm,seed) in (('icarl_cbp',1),('icarl_redo',1)):expected['task_step']=6
+    else:raise ValueError('unregistered Phase A control')
+    detail=(report.get('outcome') or {}).get('diverged') or {}
+    failed=next((r for r in report.get('rows',[]) if r.get('task')==2 and r.get('step')==detail.get('step')),{})
+    observed={**detail,'task_step':failed.get('task_step')}
+    passed=(report.get('tau') is None and report.get('status') in ('DIVERGED','FAILED_DIVERGED') and
+        all(observed.get(k)==v for k,v in expected.items()))
+    intervention=intervention_check(report) if arm=='icarl_full' else None
+    if intervention and intervention['status']!='PASS':passed=False
+    return dict(status='PASS' if passed else 'REPLAY_MISMATCH',arm=arm,seed=seed,
+        expected=expected,observed=observed,intervention_check=intervention)
+
+
 def choose_tau(root,commit):
     root=Path(root);B={};missing=[]
     def binding(report,mode,arm,seed,tau):
         if report and any(report.get(k)!=v for k,v in dict(mode=mode,arm=arm,seed=seed,tau=tau,code_commit=commit,source_digest=os.environ.get('VNA_SOURCE_DIGEST')).items()):
             raise ValueError('study report identity mismatch')
+    mismatches=[]
+    for arm,seed in A_CASES:
+        control=read_study(root/'A'/key(arm,seed)/'none')
+        binding(control,'A',arm,seed,None)
+        if control and control.get('status') not in ('PAUSED','ERROR','RUNNING'):
+            check=control_check(control)
+            if check['status']!='PASS':mismatches.append(check)
+        for report_path in (root/'A'/key(arm,seed)).glob('tau*/study.json') if arm=='icarl_full' else ():
+            report=json.loads(report_path.read_text())
+            if report.get('status')=='REPLAY_COMPLETED' and intervention_check(report)['status']!='PASS':
+                mismatches.append(intervention_check(report))
+    if mismatches:return dict(status='REPLAY_MISMATCH',tau=None,mismatches=mismatches,grid=list(GRID),code_commit=commit)
     for seed in (0,1):
         report=read_study(root/'B'/key('icarl',seed))
         binding(report,'B','icarl',seed,None)
@@ -187,6 +225,7 @@ def run(args):
     source=import_inputs(args.input_root,root/'_sources')
     refs=inventory(source,root/'_references')
     paused=threading.Event();lanes={};deadline=float(os.environ.get('VNA_DEADLINE',time.time()+11.5*3600))
+    stop_file=root/'replay_mismatch.json'
     worker=repo/'diagnostics/grad_clip_study.py'
     def execute(gpu,mode,arm,seed,destination,tau=None,reference=None,checkpoint=None,tasks=20,epoch=None,
                 reference_epochs=None,reference_repo=None,proof=None):
@@ -196,11 +235,13 @@ def run(args):
                 raise ValueError('cached study identity mismatch')
             return existing
         if paused.is_set():return None
+        if mode in ('A','B') and stop_file.exists():return None
         destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
         cmd=[sys.executable,'-u',str(worker),'--repo',str(reference_repo or repo),'--support-repo',str(repo),
             '--mode',mode,'--arm',arm,'--seed',str(seed),'--out',str(destination),'--data-dir',args.data_dir,'--tasks',str(tasks)]
         for flag,value in (('--tau',tau),('--reference',reference),('--checkpoint',checkpoint),('--epoch',epoch),
-                           ('--reference-epochs',reference_epochs),('--proof',proof)):
+                           ('--reference-epochs',reference_epochs),('--proof',proof),
+                           ('--stop-file',stop_file if mode in ('A','B') else None)):
             if value is not None:cmd.extend([flag,str(value)])
         launch_logged(cmd,cwd=repo,env={**os.environ,'CUDA_VISIBLE_DEVICES':str(gpu),'PYTHONUNBUFFERED':'1',
             'VNA_LANE':str(gpu),'VNA_JOB':f'clip_{mode}_{arm}_s{seed}','PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION':'python'},
@@ -223,11 +264,18 @@ def run(args):
                 if not ref or not ref['task1']:
                     print('MISSING TASK1 CHECKPOINT:',key(arm,seed),flush=True);continue
                 for tau in (None,*GRID):
-                    if paused.is_set():return
+                    if paused.is_set() or stop_file.exists():return
                     destination=root/'A'/key(arm,seed)/('none' if tau is None else f'tau{tau:g}')
-                    guarded(lambda:execute(0,'A',arm,seed,destination,tau=tau,reference=path,checkpoint=ref['task1']['path']))
+                    def replay():
+                        result=execute(0,'A',arm,seed,destination,tau=tau,reference=path,checkpoint=ref['task1']['path'])
+                        if result and result['status'] not in ('PAUSED','ERROR','RUNNING'):
+                            check=control_check(result) if tau is None else intervention_check(result) if arm=='icarl_full' else None
+                            if check and check['status']!='PASS':
+                                atomic_json_save(check,stop_file);print('REPLAY_MISMATCH:',json.dumps(check),flush=True)
+                    guarded(replay)
         def phase_B():
             for seed in (0,1):
+                if stop_file.exists():return
                 path,ref=reference('icarl',seed)
                 if not ref or ref['summary']['status']!='COMPLETED' or len(ref.get('epochs') or [])!=1050:
                     print('MISSING COMPLETE BASELINE EPOCHS:',seed,flush=True);continue
@@ -313,7 +361,9 @@ def run(args):
             row=dict(arm=arm,seed=seed,tau=tau,status=final_status,action=status,equivalent_under_clip=status in ('REUSED','RESUME'),
                 n_clipped=metrics.get('n_clipped'),n_steps=metrics.get('n_steps'),
                 clip_rate=metrics['n_clipped']/metrics['n_steps'] if metrics.get('n_steps') else 0. if status=='REUSED' else None,
-                proof=str(proof) if proof else str(destination/'equivalence.json') if status=='REUSED' else None)
+                proof=str(proof) if proof else str(destination/'equivalence.json') if status=='REUSED' else None,
+                failure_policy='record DIVERGED_WITH_CLIP; keep the selected tau; no retuning',
+                diverged=(result.get('outcome') or {}).get('diverged') if result else None)
             atomic_json_save(row,destination/'result.json')
             with lock:records[key(arm,seed)]=row;atomic_json_save(list(records.values()),root/'phase_C.json')
         pending=Queue()
@@ -333,7 +383,10 @@ def run(args):
         with ThreadPoolExecutor(max_workers=2) as pool:
             a=pool.submit(lane,0);b=pool.submit(lane,1);a.result();b.result()
         write_report(root)
-    atomic_json_save(dict(errors=failures,paused=paused.is_set()),root/'study_status.json')
+    mismatch=args.phase=='AB' and stop_file.exists()
+    atomic_json_save(dict(status='REPLAY_MISMATCH' if mismatch else 'PAUSED' if paused.is_set() else 'ERROR' if failures else 'FINISHED',
+        errors=failures,paused=paused.is_set()),root/'study_status.json')
+    if mismatch:raise RuntimeError('REPLAY_MISMATCH: control failure or VNA intervention does not match the registered replay')
     if paused.is_set():raise SystemExit(75)
     if failures:raise RuntimeError('Clipping study has infrastructure errors; see study_status.json')
 

@@ -46,6 +46,20 @@ def norm_summary(rows):
         nonfinite_steps=sum(r['nonfinite_norm'] for r in rows),max_preclip_norm=max(norms,default=None))
 
 
+def control_report(arm,seed):
+    failure={'icarl':2008,'icarl_full':2011,'icarl_cbp':6,'icarl_redo':2006}[arm]
+    within={'icarl':8,'icarl_full':11,'icarl_cbp':6,'icarl_redo':6}[arm]
+    rows=[dict(task=2,step=failure-within+i,task_step=i,preclip_norm=3.,loss=4.,
+               nonfinite_norm=False,clipped=False) for i in range(1,within+1)]
+    rows[-1].update(preclip_norm=None,nonfinite_norm=True)
+    return dict(mode='A',arm=arm,seed=seed,tau=None,tasks=20,epoch=None,code_commit=COMMIT,
+        status='FAILED_DIVERGED',rows=rows,
+        outcome=dict(status='FAILED_DIVERGED',diverged=dict(task=2,epoch=1,step=failure,tensor='gradient')),
+        frozen_K0=512 if arm=='icarl_full' else None,
+        intervention_trace=[dict(kind='correction',task=2,step=2001,K=512,K0=512)] if arm=='icarl_full' else [],
+        grad_clip=dict(tau=None,run=norm_summary(rows)))
+
+
 def studies(root):
     for arm,seed in A_CASES:
         for tau in (None,*GRID):
@@ -55,6 +69,9 @@ def studies(root):
             report=dict(mode='A',arm=arm,seed=seed,tau=tau,tasks=20,epoch=None,code_commit=COMMIT,
                 status='REPLAY_COMPLETED' if survive else 'FAILED_DIVERGED',rows=rows,
                 grad_clip=dict(tau=tau,run=norm_summary(rows)))
+            if arm=='icarl_full':
+                report.update(frozen_K0=512,intervention_trace=control_report(arm,seed)['intervention_trace'])
+            if tau is None:report=control_report(arm,seed)
             write(root/'A'/key(arm,seed)/('none' if tau is None else f'tau{tau:g}')/'study.json',report)
     for seed in (0,1):
         report=dict(mode='B',arm='icarl',seed=seed,tau=None,tasks=20,epoch=None,
@@ -217,3 +234,145 @@ def test_imported_task1_checkpoint_is_transactional_and_checks_math(monkeypatch,
         imported=json.loads((out/'checkpoint_import.json').read_text())
         assert imported['source_sha256']==source_hash
     assert hashlib.sha256(checkpoint.read_bytes()).hexdigest()==source_hash
+
+
+@pytest.mark.parametrize('arm,seed',A_CASES)
+def test_unclipped_controls_match_registered_failure_coordinates(arm,seed):
+    from experiments.clip_study import control_check
+    report=control_report(arm,seed)
+    checked=control_check(report)
+    assert checked['status']=='PASS'
+    assert 'expected' in checked and 'observed' in checked
+
+
+@pytest.mark.parametrize('damage',['survived','wrong_step','wrong_task','wrong_epoch','missing_outcome'])
+@pytest.mark.parametrize('arm,seed',A_CASES)
+def test_unclipped_controls_reject_unreproduced_failures(arm,seed,damage):
+    from experiments.clip_study import control_check
+    report=control_report(arm,seed)
+    if damage=='survived':report['status']='REPLAY_COMPLETED';report['outcome']=None
+    elif damage=='wrong_step':report['outcome']['diverged']['step']+=1
+    elif damage=='wrong_task':report['outcome']['diverged']['task']=3
+    elif damage=='wrong_epoch':report['outcome']['diverged']['epoch']=2
+    else:report.pop('outcome')
+    assert control_check(report)['status']=='REPLAY_MISMATCH'
+
+
+def test_tau_selection_stops_when_an_unclipped_control_does_not_reproduce(tmp_path):
+    studies(tmp_path)
+    path=tmp_path/'A'/key('icarl',2)/'none'/'study.json'
+    report=json.loads(path.read_text());report['outcome']['diverged']['step']=2009;write(path,report)
+    result=choose_tau(tmp_path,COMMIT)
+    assert result['status']=='REPLAY_MISMATCH' and result.get('tau') is None
+    assert result['mismatches']
+
+
+@pytest.mark.parametrize('damage',['missing','wrong_step','wrong_K0'])
+def test_full_control_needs_actual_correction_at2001_with_frozen_K0(damage):
+    from experiments.clip_study import control_check
+    report=control_report('icarl_full',2)
+    if damage=='missing':report['intervention_trace']=[]
+    elif damage=='wrong_step':report['intervention_trace'][0]['step']=2002
+    else:
+        report['intervention_trace'][0]['K0']=100
+        report['intervention_trace'][0]['K']=100
+    assert control_check(report)['status']=='REPLAY_MISMATCH'
+
+
+@pytest.mark.parametrize('mode,tau,expected',[
+    ('train',5.,'DIVERGED_WITH_CLIP'),('train',None,'FAILED_DIVERGED'),('A',5.,'FAILED_DIVERGED')])
+def test_clipped_phaseC_divergence_has_distinct_terminal_status(monkeypatch,tmp_path,mode,tau,expected):
+    from types import SimpleNamespace
+    import diagnostics.grad_clip_study as worker
+    from experiments import main_cil,vna_provenance
+    from experiments.runners import pycil
+    repo=Path(__file__).resolve().parents[1]
+    cli=['--repo',str(repo),'--support-repo',str(repo),'--mode',mode,'--arm','icarl',
+         '--seed','2','--out',str(tmp_path),'--data-dir',str(tmp_path)]
+    if tau is not None:cli+=['--tau',str(tau)]
+    args=worker.parser().parse_args(cli)
+    class Parser:
+        def parse_args(self,cli):return SimpleNamespace(out=str(tmp_path))
+    outcome=dict(status='FAILED_DIVERGED',diverged=dict(task=2,epoch=1,step=2008,tensor='weight'))
+    monkeypatch.setattr(pycil,'upstream_imports',lambda:None)
+    monkeypatch.setattr(main_cil,'parser',lambda:Parser())
+    monkeypatch.setattr(main_cil,'run',lambda parsed:outcome)
+    monkeypatch.setattr(vna_provenance,'code_commit',lambda:COMMIT)
+    report=worker.run(args)
+    assert report['status']==expected and report['outcome']['diverged']==outcome['diverged']
+    assert json.loads((tmp_path/'study.json').read_text())['status']==expected
+
+
+def test_phaseB_stop_signal_is_graceful_before_another_optimizer_step(monkeypatch,tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    import diagnostics.grad_clip_study as worker
+    from experiments import main_cil,vna_provenance
+    from experiments.runners import pycil
+    repo=Path(__file__).resolve().parents[1]
+    stop=tmp_path/'replay_mismatch.json';write(stop,dict(status='REPLAY_MISMATCH'))
+    checkpoint=tmp_path/'latest.pt';checkpoint.write_bytes(b'last native safe checkpoint')
+    before_hash=hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    reference_epochs=tmp_path/'original_epochs.json';write(reference_epochs,epochs())
+    args=worker.parser().parse_args(['--repo',str(repo),'--support-repo',str(repo),
+        '--mode','B','--arm','icarl','--seed','0','--out',str(tmp_path),'--data-dir',str(tmp_path),
+        '--reference-epochs',str(reference_epochs),'--stop-file',str(stop)])
+    calls=[]
+    class Hook:
+        def __init__(self):self.clipper=None;self.intervention=None;self.epochs=[]
+        def before_optimizer_step(self,frame):calls.append('must not run')
+    class Parser:
+        def parse_args(self,cli):return SimpleNamespace(out=str(tmp_path))
+    def native(parsed):
+        hook=main_cil.MainHook();hook.before_optimizer_step(None)
+        raise AssertionError('stop signal was ignored')
+    monkeypatch.setattr(pycil,'upstream_imports',lambda:None)
+    monkeypatch.setattr(main_cil,'MainHook',Hook)
+    monkeypatch.setattr(main_cil,'parser',lambda:Parser())
+    monkeypatch.setattr(main_cil,'run',native)
+    monkeypatch.setattr(vna_provenance,'code_commit',lambda:COMMIT)
+    report=worker.run(args)
+    assert report['status']=='STOPPED_REPLAY_MISMATCH' and not calls
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest()==before_hash
+    assert json.loads((tmp_path/'study.json').read_text())['equivalent_under_clip'] is False
+
+
+def test_worker_full_trace_records_actual_correction_and_frozen_K0(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    import diagnostics.grad_clip_study as worker
+    from experiments import main_cil,vna_provenance
+    from experiments.runners import pycil
+    repo=Path(__file__).resolve().parents[1]
+    source=dict(arm='icarl_full',seed=2,code_commit=COMMIT,
+        solver='gram',curvature='power10',gir_live=False,schedule=dict(K0=512,code_commit=COMMIT))
+    reference=tmp_path/'reference.json';write(reference,dict(identity=source,summary_sha256='c'*64))
+    args=worker.parser().parse_args(['--repo',str(repo),'--support-repo',str(repo),
+        '--mode','A','--arm','icarl_full','--seed','2','--out',str(tmp_path),
+        '--data-dir',str(tmp_path),'--reference',str(reference)])
+    actual=dict(kind='correction',task=2,step=2001,iteration=2001,K=512,K_next=1024,skipped=False)
+    class Hook:
+        def __init__(self):
+            self.clipper=None;self.epochs=[]
+            self.intervention=SimpleNamespace(K0=512,events=[dict(kind='correction',task=1,step=1),actual])
+    class Parser:
+        def parse_args(self,cli):return SimpleNamespace(out=str(tmp_path))
+    def native(parsed):
+        main_cil.MainHook()
+        return control_report('icarl_full',2)['outcome']
+    monkeypatch.setattr(pycil,'upstream_imports',lambda:None)
+    monkeypatch.setattr(main_cil,'MainHook',Hook)
+    monkeypatch.setattr(main_cil,'parser',lambda:Parser())
+    monkeypatch.setattr(main_cil,'run',native)
+    monkeypatch.setattr(vna_provenance,'code_commit',lambda:COMMIT)
+    report=worker.run(args)
+    assert report['frozen_K0']==512 and len(report['intervention_trace'])==1
+    trace=report['intervention_trace'][0]
+    assert (trace['kind'],trace['task'],trace['step'],trace['K'],trace['K0'])==('correction',2,2001,512,512)
+
+
+def test_tau_selection_requires_full_trace_even_at_largest_grid_threshold(tmp_path):
+    studies(tmp_path)
+    path=tmp_path/'A'/key('icarl_full',2)/'tau50'/'study.json'
+    report=json.loads(path.read_text());report['intervention_trace']=[];write(path,report)
+    result=choose_tau(tmp_path,COMMIT)
+    assert result['status']=='REPLAY_MISMATCH' and result.get('tau') is None

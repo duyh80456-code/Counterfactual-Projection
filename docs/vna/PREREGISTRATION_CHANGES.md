@@ -1176,3 +1176,26 @@ after divergence, retain deadline/exit75 behavior and safe native resume.
 Collection permits missing B only for an explicit diagnostic solve failure
 (cg_not_converged/factor_fail), while still validating the finite remaining
 metrics and256-sample activity probe. It does not invent a B value.
+
+## 2026-10-23: exact unclipped controls and fixed-tau late divergence
+
+Before attributing rescue to clipping, each Phase A None control must reproduce
+its registered task2/epoch1 failure: baseline s2 globalstep2008; full s2
+globalstep2011; CBP s1 and ReDo s1 task-relative step6. A surviving control,
+a different failure coordinate, or missing failure evidence is
+REPLAY_MISMATCH. Stop A and stop the concurrent B replay before its next SGD
+update; keep its last native safe checkpoint. Selection and C remain blocked.
+Do not relabel an earlier numerical check as the original later failure.
+
+Every full s2 Phase A replay records the actual task2 intervention event at
+step2001 in study.json, including frozen_K0 and event K/K0. Missing/mismatched
+intervention evidence is also REPLAY_MISMATCH. This records the native engine
+result, including a rejected/skipped correction; it does not force a swap or
+change the original Gram/power10/K0 schedule.
+
+If any Phase C run diverges after passing the60-step test, record
+DIVERGED_WITH_CLIP in study.json and the Phase C table, with its unchanged tau
+and native failure coordinates. Keep the run incomplete, continue other queued
+jobs at the same selected tau, and report the failure. No tau retuning,
+replacement threshold, grid expansion or automatic retry at a different tau is
+permitted after observing Phase C outcomes.

@@ -95,3 +95,23 @@ A/B/C numerical results require running the notebooks; none is fabricated.
 Local affected-file run: **121 passed** (test_grad_clip, test_clip_study,
 test_main_cil, test_competitors, test_cil_run_plan, test_gram_m1_ir,
 test_exact_gpu_lanes). This is a CPU validation result, not a T4 replay result.
+
+### Required unclipped replay and late-divergence checks
+
+The four None controls must reproduce task2/epoch1 failure at baseline2008,
+full2011 (global steps), CBP/ReDo task-step6. Their `control_check` records
+expected and observed coordinates. A different or absent failure is
+`REPLAY_MISMATCH`: no rescue claim, no selected tau, no C. The A lane stops;
+the B lane checks the shared stop marker before its next training update and
+retains its last native safe checkpoint. An earlier finite-norm/parameter
+check is not silently treated as the original later failure.
+
+For full s2, `study.json` additionally embeds `frozen_K0` and actual
+`intervention_trace` events. The correction at task2/globalstep2001 must be
+present with K/K0 equal to the frozen authority. This is evidence that the
+engine ran, including its native rejection/skipping decision, not a forced
+parameter edit. All completed full A replays need this trace.
+
+Phase C late divergence is `DIVERGED_WITH_CLIP`, retaining native failure
+coordinates and the selected tau. It is not a final score. Other queued runs
+continue with the same tau; the workflow never retunes tau from C outcomes.
