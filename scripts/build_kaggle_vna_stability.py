@@ -18,6 +18,29 @@ def read(path,default=None):
     try:return json.loads(Path(path).read_text())
     except (FileNotFoundError,ValueError):return default
 
+def checkpoint_epochs(directory):
+    """epochs.json, or the full-precision hook.epochs saved in the run's own checkpoint (pre-epochs.json commits)."""
+    epochs=read(directory/'epochs.json',[])
+    if epochs:return epochs
+    import torch
+    for name in ('latest.pt','latest.previous.pt'):
+        if (directory/name).exists():
+            try:state=torch.load(directory/name,map_location='cpu',weights_only=False)
+            except Exception as error:print('CHECKPOINT UNREADABLE',directory/name,error,flush=True);continue
+            epochs=state.get('hook',{}).get('epochs',[])
+            if epochs:return epochs
+    return []
+
+def staged_reference(job,directory):
+    # Replays compare against protocol/tasks plus the recovered epoch losses of the same run.
+    target=ROOT/'_references'/job
+    target.mkdir(parents=True,exist_ok=True)
+    for name in ('protocol.json','tasks.json','metric_trace_repair.json'):
+        if (directory/name).exists():shutil.copy2(directory/name,target/name)
+    (target/'epochs.json').write_text(json.dumps(checkpoint_epochs(directory)))
+    (target/'source.txt').write_text(str(directory))
+    return target
+
 def p1_references():
     """Attached registered P1 jobs: noBN, superclass, lr scale 0.5, 20-task protocol, >= 5 tasks."""
     found={}
@@ -33,7 +56,7 @@ def p1_references():
                 or p.get('nobn_lr_scale')!=.5 or 'max_tasks' in p.get('comparison_protocol',{})
                 or p.get('fake_data') or p.get('preflight_only')):continue
         if arm=='icarl_full' and (p.get('solver'),p.get('curvature'),p.get('policy_version'))!=('gram','power10',POLICY):continue
-        tasks=read(path.parent/'tasks.json',[]);epochs=read(path.parent/'epochs.json',[])
+        tasks=read(path.parent/'tasks.json',[]);epochs=checkpoint_epochs(path.parent)
         if len([t for t in tasks if t.get('task',99)<=5])<5 or len([e for e in epochs if e.get('task',99)<=5])<300:
             print(f'SKIP {arm}__s{seed} {path.parent}: tasks={len(tasks)} epochs={len(epochs)} commit={p.get("code_commit","")[:7]} '
                   f'status={read(path.parent/"summary.json",{}).get("status")}',flush=True)
@@ -60,8 +83,9 @@ def p1_references():
     return jobs,commits
 
 REFERENCES,COMMITS=p1_references()
+REFERENCES={job:staged_reference(job,directory) for job,directory in REFERENCES.items()}
 for job in ('icarl_full__s0','icarl__s0','icarl_full__s1','icarl__s1'):
-    print(f'REPLAY {job}: commit {COMMITS[job]}  reference {REFERENCES[job]}',flush=True)
+    print(f'REPLAY {job}: commit {COMMITS[job]}  reference {(REFERENCES[job]/"source.txt").read_text()}',flush=True)
 SOURCES={}
 for commit in sorted(set(COMMITS.values())):
     source=Path('/kaggle/working')/f'p1_source_{commit[:12]}'
