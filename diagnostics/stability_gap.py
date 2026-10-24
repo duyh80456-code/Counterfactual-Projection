@@ -16,7 +16,7 @@ import random
 import shutil
 import sys
 
-STEP_EVERY, STEP_WINDOW, MAX_TASKS = 5, 200, 5
+DENSE, STEP_EVERY, STEP_WINDOW, MAX_TASKS = 10, 5, 200, 5
 VOLATILE = ('second', 'time', 'elapsed', 'wall')
 
 
@@ -115,7 +115,8 @@ class Tracker:
         if not 2 <= task <= MAX_TASKS: return
         if self.data is None or getattr(self, 'task', None) != task: self.begin(hook, learner, task)
         r = hook.steps-1-self.state['tasks'][str(task)]['offset']  # SGD updates already applied in this task
-        if (r <= STEP_WINDOW and r % STEP_EVERY == 0) or (r > STEP_WINDOW and getattr(hook, 'epoch_step', 0) == 1):
+        # Every step for r <= 10, every 5 steps to 200, then at every epoch start.
+        if r <= DENSE or (r <= STEP_WINDOW and r % STEP_EVERY == 0) or (r > STEP_WINDOW and getattr(hook, 'epoch_step', 0) == 1):
             self.measure(hook, learner, r, 'step' if r <= STEP_WINDOW else 'epoch')
 
     def task_end(self, hook, learner):

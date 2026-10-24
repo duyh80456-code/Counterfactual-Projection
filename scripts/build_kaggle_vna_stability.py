@@ -140,9 +140,9 @@ DISK_CAP_BYTES = 20_000_000_000
     markdown=cell('markdown','''# Stability gap (P1 replay, tasks 1-5) and GroupNorm V_O/h
 Enable Internet, T4x2 and the `github_token` secret. Attach CIFAR-100 (`cifar-100-python/{train,test,meta}`) and the P1 output(s) containing `icarl` and `icarl_full` (Gram/power10) seeds 0 and 1, noBN, superclass. Attach this notebook's own output to resume.
 
-Each P1 job is replayed on its own source commit (taken from the attached P1 VNA schedule) through task 5 with the same K0. Old/new-class test accuracy is read every 5 SGD steps for the first 200 steps of tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
+Each P1 job is replayed on its own source commit (taken from the attached P1 VNA schedule) through task 5 with the same K0. Old/new-class test accuracy is read at every SGD step for r = 0-10, every 5 steps to 200 in tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
 
-GroupNorm: baseline iCaRL on ResNet-32 with GroupNorm(8) trains task 1; during the first 200 steps of task 2 a VNA-GIR engine (Gram/power10) measures V_O and h read-only every 5 steps (state checked bitwise unchanged). Output: `outputs/vna_stability_gap/`.
+GroupNorm: baseline iCaRL on ResNet-32 with GroupNorm(8) trains task 1; in task 2 (every step for r = 0-10, every 5 steps to 200) a VNA engine (Gram/power10) applies one full T26 application to a discarded copy of the network and logs V_O, h, L/KD before/after, s, Delta and would_accept (T26f); the real model is checked bitwise unchanged. The virtual neuron bypasses GroupNorm (a definition choice, see preregistration). Output: `outputs/vna_stability_gap/`.
 ''')
     bootstrap=''.join(cells[2]['source']).replace('/kaggle/working/vna4_main','/kaggle/working/vna_stability_gap')+OVERLAY
     runtime=''.join(cells[4]['source'])
