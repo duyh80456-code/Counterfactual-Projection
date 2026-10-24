@@ -1253,3 +1253,56 @@ has60 successful updates. B s0/s1 each have1050 exact epoch matches and zero
 clipping. Their maxima are42.94707489013672 and15.826339721679688 respectively.
 Thus both are eligible for no-clip baseline reuse at50. This verification does
 not assert the superseded2*G_max rule passed. Related local checks:113 tests PASS.
+
+## 2026-10-24: protocol P2, B0 Inc10 and the seed-0 CertSwap pilot
+
+Recorded before any P2 pilot training outcomes. P2 retains the native PyCIL
+optimizer, epoch counts (100 first / 50 later), LR milestones and task reset,
+head initialization, memory 2000, KD definition and method defaults. The only
+common training change is linear warmup for one epoch at EVERY task, including
+task 1: SGD step s of S uses scheduled_lr*s/S, then returns to the native
+scheduled LR. Defaults remain warmup_epochs=0 and clipping=None. P2 does not
+use clipping; the clipping implementation and all prior studies stay intact.
+
+P2 uses CIFAR-100 B0 Inc10 (init_cls=increment=10), ten tasks, superclass order
+(two consecutive superclasses per task), ResNet32 noBN/SkipInit and
+nobn_lr_scale=0.5. Record the class-order hash in the protocol. Seeds 0, 1, 2
+are the registered future comparison; ONLY seed 0 and four arms are authorized
+for this pilot: iCaRL, VNA+CertSwap, original-default CBP and original-default
+ReDo. Seeds 1–2 and any other methods require approval after the pilot.
+
+CertSwap policy certswap_t32_v1 is opt-in; schur_dead remains the unchanged
+historical default. At each site, pair the lowest eight ReDo-scored eligible
+internal conv_a channels with the first eight available tiny_V directions in
+rank order, each direction used once. Per the final user clarification, retain
+the native architecture and use exactly (a_v, b_v) from the already computed
+tiny_V: no median bias and no additional sign selection. Log the fraction of
+sample-by-spatial positions where each candidate is active on the current
+window, including rejected candidates, from the prefix cache. Process sites deep to shallow and reuse
+the site prefix, current logits, teacher logits and tiny_V proposals. Reject
+positive measured CE or KD jumps before computing the slot gradient. On the
+swapped network, reject zero CE gradient, form the CE slot curvature and take
+one eigendecomposition per candidate. Try at most 20 damping values
+mu_k=mu0*2**(k*(k+1)/2); accept only measured rho>=1/4 AND KD_after<=KD_before
+(the pre-swap KD). Rejected candidates restore parameters and optimizer state
+bitwise; accepted swaps reset all incoming/bias/outgoing slot optimizer state.
+Schur gain is optional accepted-swap logging on the pre-VNA frozen reference,
+explicitly labelled as a diagnostic, never the decision rule or a current-model
+certificate. Disable it when the application time/memory allowance is exhausted. Existing
+VNA Gram/power10, LM/BetaRule, trust-region and window checks are unchanged.
+
+The new K0 authority is calibrated afresh for Inc10/P2 with CertSwap; no Inc5,
+no-warmup, Schur-dead or clipping-study schedule/checkpoint/result is imported.
+The pilot notebook is notebooks/vna5_inc10_p2_pilot.ipynb; its namespace is
+outputs/vna_v5_inc10_p2/. GPU0 runs preflight then full seed 0; GPU1 starts
+baseline seed 0, and both GPUs can draw CBP/ReDo from a shared pending queue.
+Native resume, deadline/exit-75, archive protections and continued dispatch
+after FAILED_DIVERGED remain enabled.
+
+Report without stopping after task 2: divergence coordinates, task-2 learning
+accuracy for every arm, accepted CertSwap count and rejection reasons. After
+task 10: CNN/NME average and last accuracy, learning accuracy, forgetting,
+swaps by task, per-application VNA and CertSwap seconds, and each arm's per-site
+dead/dormant fractions by task on the fixed 256-sample probe (ReDo tau=0.025).
+P1 (Inc5/no warmup) remains a separate reported protocol; never pool P1 and P2.
+This implementation-only handoff does not run tests, preflight or training.

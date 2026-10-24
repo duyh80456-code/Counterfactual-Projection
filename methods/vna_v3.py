@@ -324,10 +324,18 @@ POLICY_VERSION='schur_gamma_bound_rho25_v2'
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False):
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False,
+                 gir_rule='schur_dead', certswap_topk=8, certswap_lm_budget=20, certswap_log_schur=True):
         if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
         if solver not in ('gram','cg_ir'): raise ValueError('solver must be gram or cg_ir')
         self.policy_version,self.gir_live=POLICY_VERSION,bool(gir_live)
+        if gir_rule not in ('schur_dead', 'certswap'): raise ValueError('invalid GIR rule')
+        if gir_rule == 'certswap':
+            if certswap_topk < 1 or certswap_lm_budget < 1: raise ValueError('CertSwap budgets must be positive')
+            self.policy_version = 'certswap_t32_v1'
+            self.gir_rule = gir_rule
+            self.certswap_topk, self.certswap_lm_budget = certswap_topk, certswap_lm_budget
+            self.certswap_log_schur = bool(certswap_log_schur)
         self.solver,self.curvature = solver,curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
@@ -351,6 +359,9 @@ class V3Engine:
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state):
         if state.get('policy_version')!=self.policy_version:raise ValueError('checkpoint correction policy mismatch')
+        if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
+            for key in ('gir_rule', 'certswap_topk', 'certswap_lm_budget', 'certswap_log_schur'):
+                if state.get(key) != getattr(self, key): raise ValueError('checkpoint CertSwap configuration mismatch')
         if state.get('gir_live',False)!=self.gir_live:raise ValueError('checkpoint live-slot ablation mismatch')
         if state.get('solver',self.solver)!=self.solver: raise ValueError('checkpoint solver mismatch')
         if state.get('curvature','power10') != self.curvature: raise ValueError('checkpoint curvature mismatch')
@@ -364,6 +375,9 @@ class V3Engine:
 
     def configure_schedule(self, schedule):
         if schedule.get('policy_version')!=self.policy_version:raise ValueError('schedule correction policy mismatch')
+        if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
+            for key in ('gir_rule', 'certswap_topk', 'certswap_lm_budget', 'certswap_log_schur'):
+                if schedule.get(key) != getattr(self, key): raise ValueError('schedule CertSwap configuration mismatch')
         if schedule.get('gir_live',False)!=self.gir_live:raise ValueError('schedule live-slot ablation mismatch')
         if schedule.get('solver',self.solver)!=self.solver: raise ValueError('schedule solver mismatch')
         if schedule.get('curvature',self.curvature)!=self.curvature:
@@ -627,6 +641,9 @@ class V3Engine:
                  'vna_seconds': max(0.,time.perf_counter()-started-(row or {}).get('stability_seconds',0.)),
                  'iteration_seconds': float(self.protocol.get('baseline_iteration_seconds', 0.)),
                  'task_iterations': int(self.protocol.get('task_iterations', remaining or 1))}
+        if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
+            point.update(application_seconds=point['vna_seconds'],
+                         vna_only_seconds=(row or {}).get('vna_seconds'))
         points = self.protocol.setdefault('preflight_points', [])
         points.append(point)
         if len(points) >= 6:
@@ -714,6 +731,8 @@ class V3Engine:
             wall=time.perf_counter()-start
             row.update(kind='correction', task=self.task, iteration=iteration, step=iteration,
                        K=self.K_next, K_next=self.K_next*2, wall_seconds=wall,seconds=max(0.,wall-diagnostic_seconds))
+            if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
+                row['vna_seconds'] = max(0., row['seconds']-row.get('certswap_seconds', 0.))
             row['skip_rate'] = (sum(bool(r.get('skipped')) for r in self.events)+int(row['skipped']))/(len(self.events)+1)
             if apply:
                 self.last_iteration, self.K_next = iteration, self.budget_guard(row, iteration)
@@ -1098,16 +1117,55 @@ class V3Engine:
             with torch.no_grad():
                 for (name, ref), value in zip(p.parameter_refs, delta.split([v.numel() for _, v in p.parameter_refs])):
                     refs[name].add_(value.reshape_as(ref).to(ref), alpha=-scale)
-            after = self._evaluate_current(model, batch, spec, ctx)
+            if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
+                from methods.vna_certswap import PrefixCache
+                cache = PrefixCache(model, sites, batch[0],
+                    measure=lambda: self._evaluate_current(model, batch, spec, ctx))
+                after = cache.losses
+                values['certswap_cache'] = cache
+            else:
+                after = self._evaluate_current(model, batch, spec, ctx)
             rejected = (not math.isfinite(after[0]) or after[0] > lm['before'][0] or
                         (after[1] is not None and (not math.isfinite(after[1]) or after[1] > lm['before'][1])))
-            if rejected: self._restore_params(model, before)
+            if rejected:
+                self._restore_params(model, before)
+                values.pop('certswap_cache', None)
         row.update(rejected=rejected, s=0. if rejected else scale, L_before=lm['before'][0], L_after=after[0],
                    KD_before=lm['before'][1], KD_after=after[1])
         start = time.perf_counter()
         units = {s.module_name: list(range(s.second_layer.layer.weight.shape[1])) for s in sites}
-        swaps = self._run_gir(model, sites, frozen, frozen_sites, batch, spec, ctx, optimizer,
-                             units, iteration, values, mu) if apply else []
+        if getattr(self, 'gir_rule', 'schur_dead') == 'certswap' and apply:
+            from methods.vna_certswap import run as certswap
+            if self.certswap_log_schur:
+                def schur_log(site, proposal, record):
+                    fixed = next(s for s in frozen_sites if s.module_name == site.module_name)
+                    size = fixed.second_layer.layer.weight[:, record['unit']].numel()
+                    estimate = 8*len(batch[0])*values['blocks'].shape[1]*(
+                        2*size+fixed.first_layer.layer.weight[0].numel()+1)
+                    if batch[0].is_cuda and estimate > torch.cuda.mem_get_info(batch[0].device)[0]//4:
+                        return dict(schur_disabled='diagnostic_memory_budget')
+                    reference_dead = record['unit'] in self.dead_slots(frozen, [fixed], batch)[fixed.module_name]
+                    with training_products(frozen, [], {}, batch[0]) as base:
+                        Ju, ids, outgoing = self._slot_columns(base, fixed, record['unit'],
+                            dead=reference_dead, materialize=not isinstance(factor, OutputCG))
+                    with training_products(frozen, [fixed], {fixed.module_name: proposal}, batch[0]) as virtual:
+                        count = sum(v.numel() for _, v in virtual.extension_refs)
+                        ref = virtual.extension_refs[0][1]
+                        Jv = columns(virtual.JEv, torch.arange(count, device=ref.device), count, ref)
+                    swapped = (factor.swapped(Ju, Jv, native_ids=ids, outgoing_ids=outgoing)
+                               if isinstance(factor, OutputCG) else factor.swapped(Ju, Jv))
+                    gain = (swapped.dead_gain(values['e_beta']) if reference_dead else
+                            swapped.gamma(values['e_beta'], self._slot_contribution(
+                                frozen, fixed, batch, spec, ctx, record['unit'])))
+                    return dict(schur_gain=gain, schur_reference='pre_vna_frozen_model_diagnostic_only')
+                values['certswap_schur'] = schur_log
+            report = certswap(self, model, sites, A, batch, spec, ctx, optimizer, iteration, values)
+            row['certswap'] = report
+            row['certswap_seconds'] = report['seconds']
+            swaps = report['accepted']
+        else:
+            swaps = self._run_gir(model, sites, frozen, frozen_sites, batch, spec, ctx, optimizer,
+                                 units, iteration, values, mu) if apply else []
         row.update(swaps=len(swaps), swap_records=swaps, ell=[r['ell_beta'] for r in swaps],
                    gir_seconds=time.perf_counter()-start, gir_trials=values.get('gir_trials', []),
                    gir_solves=values.get('gir_solves', []), downstream=values.get('downstream',[]), systems_solved=len(row['solves'])+factor.solves)

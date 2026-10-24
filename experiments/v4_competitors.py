@@ -22,6 +22,7 @@ from experiments.competitors import cil_runtime
 from experiments.runners import pycil as cil, lop
 from adapters.cil_setup import class_order, skipinit, FixtureBackbone
 from experiments.main_cil import measure_task, training_settings, recipe as main_recipe, NOBN_LR_SCALES
+from experiments.lr_warmup import task_warmup,optimizer_frame,nonnegative_epochs
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status, rng_state, restore_rng, pause_if_due, log
 from experiments.grad_clip import (GradClip, TrainingDiverged, positive_tau, step_details,
@@ -62,15 +63,15 @@ def grid(method):
     return [dict(zip(values, v)) for v in itertools.product(*values.values())] if values else [{}]
 
 
-def recipe(method, backbone, seed, device, reproduction=False, nobn_lr_scale=1.):
+def recipe(method, backbone, seed, device, reproduction=False, nobn_lr_scale=1., increment=5):
     source = method if method in ('podnet','wa','gem','bic','der','foster','memo') else 'icarl'
     path = ROOT/('third_party/C-Flat/exps/icarl.json' if reproduction or method == 'icarl_cflat'
                  else f'third_party/PyCIL/exps/{source}.json')
     original = json.loads(path.read_text())
     cfg = copy.deepcopy(original)
-    common = main_recipe(seed, device, 'resnet32')
+    common = main_recipe(seed, device, 'resnet32',increment)
     cfg.update({k: common[k] for k in ('init_cls','increment','memory_size','fixed_memory','dataset','seed','device')})
-    cfg.update(init_cls=5, increment=5, memory_size=2000, fixed_memory=False,
+    cfg.update(init_cls=increment, increment=increment, memory_size=2000, fixed_memory=False,
                dataset='cifar100', shuffle=reproduction, seed=[seed],
                device=[-1] if device == 'cpu' else [device.split(':')[-1]])
     if source not in ('podnet','memo'): cfg['convnet_type'] = 'resnet32'
@@ -101,6 +102,7 @@ def runtime(args, method, cfg, boundary, epoch_done, step_done=None):
         original_get = inc_net.get_convnet
         original_data = data_manager._get_idata
         original_loader = module.DataLoader
+        warmup_task,warmup_step,warmup_size=None,0,0
         saved = {k: copy.deepcopy(getattr(module, k)) for k in
                  ('init_epoch','epochs','ft_epochs','init_milestones','milestones','init_lr','lrate') if hasattr(module,k)}
         order = class_order(args.seed, args.order, None if args.fake_data else args.data_dir)
@@ -130,9 +132,19 @@ def runtime(args, method, cfg, boundary, epoch_done, step_done=None):
                 if args.fake_data: kw['num_workers'] = 0
                 super().__init__(*a, **kw)
             def __iter__(self):
+                nonlocal warmup_task,warmup_step,warmup_size
                 for batch in super().__iter__():
                     boundary()
-                    yield batch
+                    frame=optimizer_frame(self) if getattr(args,'warmup_epochs',0) else None
+                    if frame is not None:
+                        values=frame.f_locals
+                        current=(id(values['self']),values['self']._cur_task)
+                        if current!=warmup_task:
+                            warmup_task,warmup_step,warmup_size=current,0,len(self)
+                        warmup_step+=1
+                        with task_warmup(values['optimizer'],args.warmup_epochs,warmup_size,
+                                         warmup_step,current[1]+1):yield batch
+                    else:yield batch
                     if step_done and getattr(self,'_v4_training',False):step_done()
                 if getattr(self, '_v4_training', False): epoch_done()
         inc_net.get_convnet = backbone
@@ -170,6 +182,8 @@ def set_epochs(module, learner, args, method):
 
 
 def run(args):
+    increment=getattr(args,'increment',5)
+    warmup_epochs=getattr(args,'warmup_epochs',0)
     if args.backbone=='nobn' and args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if args.grad_clip is not None and args.backbone!='nobn':raise ValueError('grad-clip requires noBN')
     method = 'icarl' if args.disabled else args.method
@@ -183,7 +197,7 @@ def run(args):
         if 'coefficient' not in config: raise ValueError('L2-Init requires --config with coefficient')
     elif config not in grid(method): raise ValueError('configuration outside registered grid')
     cil.upstream_imports()
-    cfg, source, overrides = recipe(method,args.backbone,args.seed,args.device,args.reproduction,args.nobn_lr_scale)
+    cfg, source, overrides = recipe(method,args.backbone,args.seed,args.device,args.reproduction,args.nobn_lr_scale,increment)
     if args.fake_data:
         torch.set_num_threads(1)
         cfg.update(memory_size=20, memory_per_class=2)
@@ -196,7 +210,7 @@ def run(args):
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, competitor_pins=PINS,
         implementation=SOURCES.get(method, dict(source=f'PyCIL/models/{method}.py', reimplemented=False)),
-        expected_tasks=2 if args.fake_data else 20,
+        expected_tasks=2 if args.fake_data else 100//increment,
         class_order=class_order(args.seed,args.order,None if args.fake_data else args.data_dir),
         training=training_settings(args.fake_data,args.reproduction,args.nobn_lr_scale if args.backbone=='nobn' else 1.),
         probe=dict(size=4 if args.fake_data else 256,seed=0,source='seen test classes'),
@@ -208,6 +222,14 @@ def run(args):
         fixture='two-channel float64 residual backbone, 8 images/class, memory 20' if args.fake_data else None,
         resume='exact task-boundary restart, including method state and RNG')
     if args.grad_clip is not None:identity['grad_clip']=args.grad_clip
+    if increment!=5 or warmup_epochs:
+        import hashlib
+        identity.update(init_cls=increment,increment=increment,
+            class_order_sha256=hashlib.sha256(json.dumps(identity['class_order'],separators=(',',':')).encode()).hexdigest())
+        if warmup_epochs:
+            identity['warmup_epochs']=warmup_epochs
+            identity['training']['warmup_epochs']=warmup_epochs
+        if increment==10 and warmup_epochs==1:identity['training_protocol']='P2'
     out = Path(args.out).resolve(); out.mkdir(parents=True,exist_ok=True)
     progress = Progress(out, identity)
     if progress.state and not args.resume: raise ValueError('existing checkpoint requires --resume')
@@ -282,7 +304,7 @@ def run(args):
                 trainer._set_random()
                 torch.manual_seed(args.seed)
             trainer._set_device(cfg)
-            manager = DataManager('cifar100',args.reproduction,args.seed,5,5)
+            manager = DataManager('cifar100',args.reproduction,args.seed,increment,increment)
             if args.fake_data: manager._increments = manager._increments[:2]
             lop.write_json(out/'class_order.json',order)
             learner = module.iCaRL(cfg) if method == 'icarl_cflat' else factory.get_model(cfg['model_name'],cfg)
@@ -349,6 +371,11 @@ def run(args):
                 if not all(torch.isfinite(p).all() for p in learner._network.parameters()):
                     status.update(phase='DIVERGED',nonfinite_params=True)
                     result = dict(status='DIVERGED',identity=identity,task=task+1,nonfinite_params=True,tasks=tasks)
+                    if increment==10 and warmup_epochs==1:
+                        result.update(status='FAILED_DIVERGED',diverged=dict(task=task+1,
+                            epoch=pending.get('row',{}).get('epoch'),
+                            step=pending.get('row',{}).get('step'),tensor='parameters'))
+                        log(f"FAILED_DIVERGED {result['diverged']}")
                     lop.write_json(out/'summary.json',result)
                     return result
                 row, diagnostic = measure_task(learner,manager,tasks,boundary,4 if args.fake_data else 256)
@@ -357,7 +384,7 @@ def run(args):
                 tasks.append(row); checkpoint()
             seconds = base_seconds+time.monotonic()-started
             result = dict(status='COMPLETED',identity=identity,tasks=tasks,tasks_run=len(tasks),
-                arm=args.method,seed=args.seed,init_cls=5,increment=5,parameter_count=tasks[-1]['parameter_count'],
+                arm=args.method,seed=args.seed,init_cls=increment,increment=increment,parameter_count=tasks[-1]['parameter_count'],
                 model_group='expanding' if method in ('der','foster','memo') else 'fixed',
                 seconds=seconds,gpu_hours=seconds/3600 if args.device != 'cpu' else 0.,
                 average_incremental_accuracy=tasks[-1]['cnn_average_accuracy'],
@@ -394,6 +421,7 @@ def run(args):
 
 def reuse_gem_candidate(args):
     if args.method!='gem' or args.fake_data or not args.reuse_root or args.grad_clip is not None:return None
+    if getattr(args,'increment',5)!=5 or getattr(args,'warmup_epochs',0):return None
     from scripts.collect_parallel import validate_result
     from experiments.parallel_validity import dataset_fingerprint
     import hashlib
@@ -511,6 +539,8 @@ def parser():
     p.add_argument('--order',choices=('superclass','random'),default='superclass')
     p.add_argument('--nobn-lr-scale',type=float,choices=NOBN_LR_SCALES,default=.5)
     p.add_argument('--grad-clip',type=positive_tau,default=None)
+    p.add_argument('--increment',type=int,choices=(5,10),default=5)
+    p.add_argument('--warmup-epochs',type=nonnegative_epochs,default=0)
     p.add_argument('--device',default='cpu')
     p.add_argument('--data-dir',default='/kaggle/input/datasets/nlnk1607/cifar100')
     p.add_argument('--config'); p.add_argument('--best-config')

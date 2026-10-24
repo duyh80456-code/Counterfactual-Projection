@@ -20,6 +20,7 @@ from experiments.runners.lop import working_directory, write_json, write_csv
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress, Status, log
 from experiments.grad_clip import GradClip, TrainingDiverged, positive_tau, step_details, check_parameters
+from experiments.lr_warmup import nonnegative_epochs
 
 DATA_ROOT = '/kaggle/input/datasets/nlnk1607/cifar100'
 # Engine arm per CIL arm; ablations (§4 round 3) differ from icarl_full in one component only.
@@ -35,9 +36,9 @@ RESULT_FILES = ('summary.json', 'tasks.json', 'continual_eval.csv', 'diagnostics
                 'protocol.json', 'status.json')
 
 
-def recipe(seed=0, device='cuda:0', backbone='resnet32_nobn'):
+def recipe(seed=0, device='cuda:0', backbone='resnet32_nobn', increment=5):
     params, _, _ = cil_recipe('icarl', 'b0inc5', seed, device)
-    params.update(init_cls=5, increment=5, fixed_memory=False, convnet_type=backbone)
+    params.update(init_cls=increment, increment=increment, fixed_memory=False, convnet_type=backbone)
     return params
 
 
@@ -325,7 +326,20 @@ def run(args):
     if args.backbone == 'resnet32':args.nobn_lr_scale=1.
     elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
-    tasks = min(args.max_tasks, 2 if args.fake_data else 20)
+    increment=getattr(args,'increment',5)
+    warmup_epochs=getattr(args,'warmup_epochs',0)
+    gir_rule=getattr(args,'gir_rule','schur_dead')
+    if gir_rule=='certswap' and args.backbone!='resnet32_nobn':
+        raise ValueError('CertSwap suffix cache requires the noBN SkipInit backbone')
+    policy_version='certswap_t32_v1' if gir_rule=='certswap' else vna_v3.POLICY_VERSION
+    setup={}
+    if increment!=5:setup.update(init_cls=increment,increment=increment)
+    if warmup_epochs:setup['warmup_epochs']=warmup_epochs
+    if gir_rule!='schur_dead':
+        setup.update(gir_rule=gir_rule,certswap_topk=args.certswap_topk,
+            certswap_lm_budget=args.certswap_lm_budget,certswap_log_schur=args.certswap_log_schur,
+            certswap_candidate_rule='tiny_V_unchanged_no_median_no_sign')
+    tasks = min(args.max_tasks, 2 if args.fake_data else 100//increment)
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None
     if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
@@ -333,13 +347,16 @@ def run(args):
     if args.preflight_only and not args.schedule_output: raise ValueError('preflight requires --schedule-output')
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
     if schedule:
+        if (schedule.get('increment',5)!=increment or schedule.get('warmup_epochs',0)!=warmup_epochs or
+                schedule.get('gir_rule','schur_dead')!=gir_rule):
+            raise ValueError('authority schedule incremental/warmup/GIR setup mismatch')
         expected = dict(authoritative=True, code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
-                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver,policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live)
+                        backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver,policy_version=policy_version,gir_live=args.gir_live,**setup)
         if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
         if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
     K0 = int(schedule['K0']) if schedule else 1
     if K0 < 1: raise ValueError('K0 must be positive')
-    params = recipe(args.seed, args.device, args.backbone)
+    params = recipe(args.seed, args.device, args.backbone, increment)
     params['shuffle'] = False
     if args.fake_data:
         torch.set_num_threads(1)
@@ -347,7 +364,7 @@ def run(args):
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
     protocol = dict(setting='icarl', algorithm_version='v4', solver=args.solver,
-        policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live,lm_acceptance_rho=.25,intervention_start_task=2, arm=args.arm, seed=args.seed,
+        policy_version=policy_version,gir_live=args.gir_live,lm_acceptance_rho=.25,intervention_start_task=2, arm=args.arm, seed=args.seed,
         code_commit=code_commit(), source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
         upstream_commit=cil.UPSTREAM_PIN, fake_data=args.fake_data, expected_tasks=tasks,
         dataset_fingerprint=None if args.fake_data else dataset_fingerprint(args.data_dir),
@@ -361,14 +378,19 @@ def run(args):
                       first_milestones=[30,60,85], later_milestones=[24,35]),
         resume='native exact epoch checkpoint; task prefix replay',
         model_config=dict(backbone=args.backbone, class_order=args.class_order),
-        comparison_protocol=dict(init_cls=5, increment=5, memory_size=params['memory_size'], fixed_memory=False,
+        comparison_protocol=dict(init_cls=increment, increment=increment, memory_size=params['memory_size'], fixed_memory=False,
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
+    if setup:
+        protocol.update(setup,class_order_sha256=hashlib.sha256(json.dumps(order,separators=(',',':')).encode()).hexdigest())
+        if warmup_epochs:protocol['training']['warmup_epochs']=warmup_epochs
+        if increment==10 and warmup_epochs==1:protocol['training_protocol']='P2'
+        protocol['comparison_protocol'].update(setup)
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
     if args.grad_clip is not None:protocol['grad_clip']=args.grad_clip
     baseline_reference=None
     if args.baseline_reference:
-        if args.arm!='icarl' or args.max_tasks!=20 or args.fake_data or args.preflight_only:
+        if args.arm!='icarl' or args.max_tasks!=20 or args.fake_data or args.preflight_only or setup:
             raise ValueError('baseline reference requires real 20-task icarl')
         from experiments.main_cil_baseline import validate
         data=Path(args.baseline_reference).read_bytes()
@@ -380,8 +402,9 @@ def run(args):
         if previous.get('identity') != protocol: raise ValueError('completed identity mismatch')
         if previous['status'] in ('COMPLETED','REUSED_BASELINE'): return previous
     status = Status(out, args.arm)
+    engine_options={k:setup[k] for k in ('gir_rule','certswap_topk','certswap_lm_budget','certswap_log_schur') if k in setup}
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
-        curvature=args.curvature,solver=args.solver,gir_live=args.gir_live), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+        curvature=args.curvature,solver=args.solver,gir_live=args.gir_live,**engine_options), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
@@ -408,6 +431,7 @@ def run(args):
         return value
     hook = MainHook(seed=args.seed, fake=args.fake_data, persist=persist, progress=progress,
                     intervention=intervention, manager=None, status=status)
+    if warmup_epochs:hook.warmup_epochs=warmup_epochs
     hook.clipper=GradClip(args.grad_clip) if args.backbone=='resnet32_nobn' else None
     if hook.clipper is not None and hasattr(hook,'grad_clip_state'):hook.clipper.load_state_dict(hook.grad_clip_state)
     hook.step_observer=getattr(args,'_step_observer',None)
@@ -425,9 +449,9 @@ def run(args):
         points = intervention.engine.protocol['preflight_points']
         schedule = vna_v3.schedule_from_points(points, len(hook.learner.train_loader))
         schedule.update(authoritative=True, setting='icarl', backbone=args.backbone,
-            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live,
+            nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,policy_version=policy_version,gir_live=args.gir_live,
             source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
-            schedule_source=args.schedule_source, r=16)
+            schedule_source=args.schedule_source, r=16,**setup)
         write_json(Path(args.schedule_output), schedule)
         run_status = 'PREFLIGHT'
     except BaselineReused:
@@ -449,7 +473,7 @@ def run(args):
         status.close()
     seconds = hook.elapsed_base+time.monotonic()-started
     summary = dict(identity=protocol, setting='icarl', algorithm_version='v4', arm=args.arm, seed=args.seed,
-        init_cls=5, increment=5,
+        init_cls=increment, increment=increment,
         status=run_status, reason=reason, diverged=hook.diverged,
         safe_checkpoint=str(progress.path) if progress.path.exists() else None, tasks=hook.tasks, tasks_run=len(hook.tasks),
         parameter_count=sum(p.numel() for p in hook.learner._network.parameters()),
@@ -476,6 +500,12 @@ def parser():
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--grad-clip',type=positive_tau,default=None)
+    p.add_argument('--increment',type=int,choices=(5,10),default=5)
+    p.add_argument('--warmup-epochs',type=nonnegative_epochs,default=0)
+    p.add_argument('--gir-rule',choices=('schur_dead','certswap'),default='schur_dead')
+    p.add_argument('--certswap-topk',type=int,default=8)
+    p.add_argument('--certswap-lm-budget',type=int,default=20)
+    p.add_argument('--certswap-log-schur',action=argparse.BooleanOptionalAction,default=True)
     p.add_argument('--gir-live',action='store_true',help='Ablation: allow live-slot GIR')
     p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')
     p.add_argument('--baseline-reference',help='Completed old baseline + 150 full-precision epoch losses')

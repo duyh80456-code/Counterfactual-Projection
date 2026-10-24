@@ -250,9 +250,17 @@ class ICaRLHook:
                     original_step = self.optimizer.step
                     @wraps(original_step)
                     def step(*a, **kw):
-                        if hasattr(hook, 'before_optimizer_step'):
-                            hook.before_optimizer_step(inspect.currentframe().f_back)
-                        result = original_step(*a, **kw)
+                        frame=inspect.currentframe().f_back
+                        if getattr(hook,'warmup_epochs',0):
+                            from experiments.lr_warmup import task_warmup
+                            count=hook.current_epoch*len(hook.learner.train_loader)+hook.epoch_step
+                            with task_warmup(self.optimizer,hook.warmup_epochs,len(hook.learner.train_loader),
+                                             count,hook.learner._cur_task+1):
+                                if hasattr(hook,'before_optimizer_step'):hook.before_optimizer_step(frame)
+                                result=original_step(*a,**kw)
+                        else:
+                            if hasattr(hook, 'before_optimizer_step'):hook.before_optimizer_step(frame)
+                            result = original_step(*a, **kw)
                         if hook.intervention is not None:
                             hook.intervention.after_step(hook, hook.learner, self.optimizer)
                         if hasattr(hook,'after_optimizer_step'):
