@@ -4,12 +4,12 @@ This is a separate four-arm pilot. Existing notebooks and P1 outputs remain
 historical records. The new namespace is `outputs/vna_v5_inc10_p2/`.
 
 The notebook pins the complete source commit
-`c2499f306c41d143db75e8135ab79d7f3f51e325` directly from GitHub.
+`70c68a6b83deabb6f9d9c86fb8a35527bed35d04` directly from GitHub.
 No source ZIP is needed. Regenerate the notebook with:
 
 ```bash
 .venv/bin/python -m scripts.build_kaggle_vna5_inc10_p2 \
-  --commit c2499f306c41d143db75e8135ab79d7f3f51e325
+  --commit 70c68a6b83deabb6f9d9c86fb8a35527bed35d04
 ```
 
 Kaggle inputs: CIFAR-100 containing `cifar-100-python/{train,test,meta}`; only
