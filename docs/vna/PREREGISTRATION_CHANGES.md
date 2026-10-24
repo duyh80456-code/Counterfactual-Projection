@@ -1333,9 +1333,13 @@ in Output. No GPU PASS is inferred from CPU results.
 ### Stability-gap replay and GroupNorm V_O/h check (2026-10-25, diagnostics only)
 
 - **Stability gap (P1, tasks 1-5).** Four jobs: baseline `icarl` and VNA-GIR `icarl_full`
-  (Gram/power10, policy `schur_gamma_bound_rho25_v2`), seeds 0 and 1, replayed on the P1 source
-  commit recorded in the attached P1 VNA schedule (same K0), command rebuilt from each P1
-  `protocol.json` with only `--max-tasks 5` added. Gate: epoch `train_loss`/`train_acc` (300
+  (Gram/power10, policy `schur_gamma_bound_rho25_v2`), seeds 0 and 1, each replayed with the same
+  K0 on the commit that ran its tasks 1-5, one checkout per commit: VNA uses
+  `schedule.calibration_code_commit`, else `metric_trace_repair.json` `source_commit` (a
+  metric-trace repair overwrites `schedule.code_commit`), else `schedule.code_commit`, and stops if
+  the first two disagree; each baseline uses its seed's VNA commit. Expected: s0 on 29cc735, s1 on
+  6be6543. The replayed schedule keeps the P1 K0 with `code_commit` set back to the replay commit.
+  Command rebuilt from each P1 `protocol.json` with only `--max-tasks 5` added. Gate: epoch `train_loss`/`train_acc` (300
   epochs) and every non-timing `tasks.json` field for tasks 1-5 must equal the attached P1 run
   exactly, otherwise no measurement is reported. Measurement (`diagnostics/stability_gap.py`):
   old/new-class CNN test accuracy at step r = SGD updates since the task switch, at every step

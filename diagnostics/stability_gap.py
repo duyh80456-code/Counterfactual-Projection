@@ -187,10 +187,12 @@ def run(args):
     if len([r for r in reference['tasks'] if r['task'] <= MAX_TASKS]) < MAX_TASKS:
         raise ValueError(f'reference {reference_dir} has fewer than {MAX_TASKS} tasks')
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True); args.out = out
-    if main.code_commit() != (protocol.get('schedule') or {}).get('code_commit', main.code_commit()):
-        raise ValueError(f"checkout {main.code_commit()} differs from the P1 schedule commit {protocol['schedule']['code_commit']}")
+    if main.code_commit() != args.commit:
+        raise ValueError(f'checkout {main.code_commit()} is not the commit that ran tasks 1-5 ({args.commit})')
     schedule_path = out/'schedule.json'
-    if protocol.get('schedule'): write(schedule_path, protocol['schedule'])
+    if protocol.get('schedule'):
+        # A metric-trace repair relabels the schedule commit; the same K0 authority is replayed on its own source.
+        write(schedule_path, {**protocol['schedule'], 'code_commit': args.commit})
     tracker = Tracker(out, torch, np)
     original_before, original_record = main.MainHook.before_optimizer_step, main.MainHook.record_task
     def before(self, frame):
@@ -219,6 +221,7 @@ def parser():
     p.add_argument('--repo', required=True, help='checkout of the P1 commit')
     p.add_argument('--reference', required=True, help='attached P1 job directory (protocol/epochs/tasks)')
     p.add_argument('--job', required=True)
+    p.add_argument('--commit', required=True, help='commit that ran tasks 1-5 of this job')
     p.add_argument('--out', required=True)
     p.add_argument('--data-dir', required=True)
     p.add_argument('--device', default='cuda:0')

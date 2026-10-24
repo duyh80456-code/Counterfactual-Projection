@@ -39,27 +39,41 @@ def p1_references():
         if not candidates:raise FileNotFoundError(f'Attach the P1 output containing {job} (>=5 tasks, epochs.json)')
         if len(candidates)>1:raise ValueError(f'{job}: attached P1 copies disagree on tasks 1-5: {candidates}')
         jobs[job]=candidates[0]
-    commits={read(jobs[j]/'protocol.json')['schedule']['code_commit'] for j in ('icarl_full__s0','icarl_full__s1')}
-    if len(commits)!=1:raise ValueError(f'P1 VNA seeds use different schedule commits: {commits}')
-    return jobs,commits.pop()
+    commits={}
+    for seed in (0,1):
+        directory=jobs[f'icarl_full__s{seed}']
+        schedule=read(directory/'protocol.json')['schedule']
+        repair=read(directory/'metric_trace_repair.json',{}).get('source_commit')
+        original=schedule.get('calibration_code_commit')
+        # A metric-trace repair overwrites schedule.code_commit; tasks 1-5 ran on the original source.
+        if original and repair and original!=repair:
+            raise ValueError(f'icarl_full__s{seed}: calibration_code_commit {original} != metric_trace_repair source {repair}')
+        commit=original or repair or schedule['code_commit']
+        commits[f'icarl_full__s{seed}']=commits[f'icarl__s{seed}']=commit  # baseline replays on its VNA seed's source
+    return jobs,commits
 
-REFERENCES,P1_COMMIT=p1_references()
-print('P1 REFERENCES:',json.dumps({k:str(v) for k,v in REFERENCES.items()},indent=1),'\nP1 COMMIT:',P1_COMMIT,flush=True)
-P1_SRC=Path('/kaggle/working/p1_source')
-if not (P1_SRC/'.git').exists():
-    private_clone(MAIN_URL,P1_SRC,P1_COMMIT)
-    subprocess.run(['bash','scripts/fetch_third_party.sh'],cwd=P1_SRC,check=True)
-head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=P1_SRC,text=True).strip()
-if head!=P1_COMMIT:raise RuntimeError(f'P1 checkout is {head}, expected {P1_COMMIT}')
+REFERENCES,COMMITS=p1_references()
+for job in ('icarl_full__s0','icarl__s0','icarl_full__s1','icarl__s1'):
+    print(f'REPLAY {job}: commit {COMMITS[job]}  reference {REFERENCES[job]}',flush=True)
+SOURCES={}
+for commit in sorted(set(COMMITS.values())):
+    source=Path('/kaggle/working')/f'p1_source_{commit[:12]}'
+    if not (source/'.git').exists():
+        private_clone(MAIN_URL,source,commit)
+        subprocess.run(['bash','scripts/fetch_third_party.sh'],cwd=source,check=True)
+    head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
+    if head!=commit:raise RuntimeError(f'checkout {source} is {head}, expected {commit}')
+    SOURCES[commit]=source
 errors=[]
 
 def replay(gpu,job):
     out=ROOT/job
     if read(out/'stability_gap'/'report.json',{}).get('status')=='OK':return True
-    env={**gpu_env(gpu),'PYTHONPATH':str(P1_SRC)}
-    cmd=[sys.executable,'-u',str(REPO/'diagnostics'/'stability_gap.py'),'--repo',str(P1_SRC),
+    source=SOURCES[COMMITS[job]]
+    env={**gpu_env(gpu),'PYTHONPATH':str(source)}
+    cmd=[sys.executable,'-u',str(REPO/'diagnostics'/'stability_gap.py'),'--repo',str(source),'--commit',COMMITS[job],
          '--reference',str(REFERENCES[job]),'--job',job,'--out',str(out),'--data-dir',str(DATA_ROOT)]
-    return launch_logged(cmd,cwd=P1_SRC,env=env,log_path=RUN_ROOT/f'{job}.log',lane=gpu,job=job,
+    return launch_logged(cmd,cwd=source,env=env,log_path=RUN_ROOT/f'{job}.log',lane=gpu,job=job,
                          lanes=lane_state,paused=session_paused,deadline=VNA_DEADLINE)
 
 def groupnorm(gpu,seed):
@@ -140,7 +154,7 @@ DISK_CAP_BYTES = 20_000_000_000
     markdown=cell('markdown','''# Stability gap (P1 replay, tasks 1-5) and GroupNorm V_O/h
 Enable Internet, T4x2 and the `github_token` secret. Attach CIFAR-100 (`cifar-100-python/{train,test,meta}`) and the P1 output(s) containing `icarl` and `icarl_full` (Gram/power10) seeds 0 and 1, noBN, superclass. Attach this notebook's own output to resume.
 
-Each P1 job is replayed on its own source commit (taken from the attached P1 VNA schedule) through task 5 with the same K0. Old/new-class test accuracy is read at every SGD step for r = 0-10, every 5 steps to 200 in tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
+Each P1 job is replayed through task 5 with the same K0 on the commit that ran its tasks 1-5 (VNA: schedule.calibration_code_commit, else metric_trace_repair.json source_commit, else schedule.code_commit; baseline: its seed's VNA commit), one checkout per commit; the commit of every job is printed before launch. Old/new-class test accuracy is read at every SGD step for r = 0-10, every 5 steps to 200 in tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
 
 GroupNorm: baseline iCaRL on ResNet-32 with GroupNorm(8) trains task 1; in task 2 (every step for r = 0-10, every 5 steps to 200) a VNA engine (Gram/power10) applies one full T26 application to a discarded copy of the network and logs V_O, h, L/KD before/after, s, Delta and would_accept (T26f); the real model is checked bitwise unchanged. The virtual neuron bypasses GroupNorm (a definition choice, see preregistration). Output: `outputs/vna_stability_gap/`.
 ''')
