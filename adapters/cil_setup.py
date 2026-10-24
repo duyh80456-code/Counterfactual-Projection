@@ -73,6 +73,20 @@ def resnet32_nobn():
     return skipinit(resnet32())
 
 
+GN_GROUPS = 8  # registered GroupNorm variant (V_O/h check only): 8 groups, affine weight 1, bias 0
+
+
+def resnet32_gn():
+    """PyCIL resnet32 with every BatchNorm2d replaced by GroupNorm(8, C); convolutions unchanged."""
+    from convs.cifar_resnet import resnet32
+    model = resnet32()
+    for module in list(model.modules()):
+        for name, child in list(module.named_children()):
+            if isinstance(child, nn.BatchNorm2d):
+                setattr(module, name, nn.GroupNorm(GN_GROUPS, child.num_features).to(child.weight))
+    return model
+
+
 class FixtureBackbone(nn.Module):
     """Two-channel residual fixture; the production backbone is never reduced."""
     def __init__(self, block):

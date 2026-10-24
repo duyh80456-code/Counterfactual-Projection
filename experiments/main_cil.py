@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 from torch import nn
-from adapters.cil_setup import class_order, resnet32_nobn
+from adapters.cil_setup import class_order, resnet32_nobn, resnet32_gn
 from adapters.icarl_hooks import ICaRLHook, Prediction, sites_for, loss_context
 from diagnostics.vna_align import _global_state
 from methods import vna_v3
@@ -64,7 +64,8 @@ def runtime(args, order):
         value.class_order = order
         return value
     def convnet(params, pretrained=False):
-        net = resnet32_nobn() if params['convnet_type'] == 'resnet32_nobn' else original_convnet(params, pretrained)
+        net = (resnet32_nobn() if params['convnet_type'] == 'resnet32_nobn' else resnet32_gn()
+               if params['convnet_type'] == 'resnet32_gn' else original_convnet(params, pretrained))
         if hasattr(net, 'fc'): del net.fc
         return net
     try:
@@ -323,7 +324,7 @@ def run(args):
     if not callable(getattr(vna_v3, 'diagnose', None)):
         raise RuntimeError('Merge Phase 2 first: methods.vna_v3.diagnose(model, batch) is required')
     if args.grad_clip is not None and args.backbone!='resnet32_nobn':raise ValueError('grad-clip requires noBN')
-    if args.backbone == 'resnet32':args.nobn_lr_scale=1.
+    if args.backbone in ('resnet32','resnet32_gn'):args.nobn_lr_scale=1.
     elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
     increment=getattr(args,'increment',5)
@@ -495,7 +496,7 @@ def run(args):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--arm', choices=ARMS, default='icarl')
-    p.add_argument('--backbone', choices=('resnet32', 'resnet32_nobn'), default='resnet32_nobn')
+    p.add_argument('--backbone', choices=('resnet32', 'resnet32_nobn', 'resnet32_gn'), default='resnet32_nobn')
     p.add_argument('--class-order', choices=('superclass','random'), default='superclass')
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)

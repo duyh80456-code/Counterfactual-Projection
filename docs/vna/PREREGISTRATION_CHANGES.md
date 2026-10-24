@@ -1329,3 +1329,26 @@ j/rho for two trials of the same candidate. A failure, error, skip, or missing
 test blocks all preflight and training. Tests run in a separate process and
 do not affect training initialization or RNG. GPU log and JUnit XML remain
 in Output. No GPU PASS is inferred from CPU results.
+
+### Stability-gap replay and GroupNorm V_O/h check (2026-10-25, diagnostics only)
+
+- **Stability gap (P1, tasks 1-5).** Four jobs: baseline `icarl` and VNA-GIR `icarl_full`
+  (Gram/power10, policy `schur_gamma_bound_rho25_v2`), seeds 0 and 1, replayed on the P1 source
+  commit recorded in the attached P1 VNA schedule (same K0), command rebuilt from each P1
+  `protocol.json` with only `--max-tasks 5` added. Gate: epoch `train_loss`/`train_acc` (300
+  epochs) and every non-timing `tasks.json` field for tasks 1-5 must equal the attached P1 run
+  exactly, otherwise no measurement is reported. Measurement (`diagnostics/stability_gap.py`):
+  old/new-class CNN test accuracy at step r = SGD updates since the task switch, every 5 steps
+  for r <= 200, then at every epoch start, plus the end of the task, read inside
+  `before_optimizer_step` (so the state includes all earlier updates and interventions), under
+  no_grad, with python/numpy/torch CPU/CUDA RNG and module modes restored and the test images
+  pre-tensorized (no DataLoader). Gap depth = previous task's final old-class accuracy (its
+  `cnn_top1`) minus the minimum; recovery = first step after the minimum reaching that value
+  (and half of the gap). VNA interventions are reported with L, KD, V_O, h at their step.
+  Task-boundary checkpoints (end of tasks 1-4) are kept.
+- **GroupNorm V_O/h.** New backbone `resnet32_gn`: PyCIL ResNet-32 with every BatchNorm2d
+  replaced by GroupNorm(8, C) (affine 1/0), lr 0.1 as BN. Baseline iCaRL, seeds 0 and 1, trains
+  task 1; in the first 200 steps of task 2 a fresh VNA-GIR engine (Gram/power10) runs one
+  read-only application (apply=False) every 5 steps on the current window; parameters, optimizer
+  state, RNG and modes are checked bitwise unchanged. The virtual neuron bypasses GroupNorm as it
+  bypasses every normalization layer in `HookSite.virtual_features`. BN is not measured.
