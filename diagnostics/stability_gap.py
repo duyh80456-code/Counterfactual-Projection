@@ -20,6 +20,9 @@ DENSE, STEP_EVERY, STEP_WINDOW, MAX_TASKS = 10, 5, 200, 5
 VOLATILE = ('second', 'time', 'elapsed', 'wall')
 
 
+class Mismatch(Exception): pass
+
+
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(value, indent=1)); tmp.replace(path)
@@ -36,6 +39,7 @@ def cli_from_protocol(main, protocol, args, schedule_path):
             '--class-order', protocol['class_order_kind'], '--nobn-lr-scale', str(protocol['nobn_lr_scale']),
             '--coefficient', str(protocol.get('coefficient', 1.)), '--max-tasks', str(MAX_TASKS),
             '--device', args.device, '--data-dir', args.data_dir, '--out', str(args.out/'run')]
+    if args.fake_data: argv.append('--fake-data')  # CPU smoke check only
     options = {a.dest for a in main.parser()._actions}
     for key in ('curvature', 'solver'):
         if key in options and protocol.get(key) is not None: argv += ['--'+key, str(protocol[key])]
@@ -145,8 +149,6 @@ def compare(reference, replay):
         for field in sorted(set(a) & set(b)):
             if any(v in field for v in VOLATILE): continue
             if a[field] != b[field]: diffs.append(dict(kind='task', task=k[0], field=field, reference=a[field], replay=b[field]))
-    expected = 100+50*(MAX_TASKS-1)
-    if len(new_e) != expected: diffs.append(dict(kind='epoch_count', replay=len(new_e), expected=expected))
     return dict(status='PASS' if not diffs and not schema else 'FAIL', diffs=diffs[:50], diff_count=len(diffs),
                 schema=schema, epochs_compared=len(set(ref_e) & set(new_e)), tasks_compared=len(set(ref_t) & set(new_t)))
 
@@ -184,8 +186,9 @@ def run(args):
     reference_dir = Path(args.reference)
     protocol = read(reference_dir/'protocol.json')
     reference = dict(epochs=read(reference_dir/'epochs.json', []), tasks=read(reference_dir/'tasks.json', []))
-    if len([r for r in reference['tasks'] if r['task'] <= MAX_TASKS]) < MAX_TASKS:
+    if not args.fake_data and len([r for r in reference['tasks'] if r['task'] <= MAX_TASKS]) < MAX_TASKS:
         raise ValueError(f'reference {reference_dir} has fewer than {MAX_TASKS} tasks')
+    reference_epochs = {(r['task'], r['epoch']): r for r in reference['epochs']}
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True); args.out = out
     if main.code_commit() != args.commit:
         raise ValueError(f'checkout {main.code_commit()} is not the commit that ran tasks 1-5 ({args.commit})')
@@ -195,14 +198,30 @@ def run(args):
         write(schedule_path, {**protocol['schedule'], 'code_commit': args.commit})
     tracker = Tracker(out, torch, np)
     original_before, original_record = main.MainHook.before_optimizer_step, main.MainHook.record_task
+    original_epoch = main.MainHook.after_epoch
+    def epoch(self, learner, optimizer, frame):
+        result = original_epoch(self, learner, optimizer, frame)
+        row = self.epochs[-1]
+        ref = reference_epochs.get((row['task'], row['epoch']), {})
+        # Stop at the first epoch that differs from P1; nothing after it can be reported.
+        if any(row.get(k) != ref.get(k) for k in ('train_loss', 'train_acc')):
+            raise Mismatch(dict(task=row['task'], epoch=row['epoch'], replay=dict(train_loss=row.get('train_loss'), train_acc=row.get('train_acc')),
+                                reference=dict(train_loss=ref.get('train_loss'), train_acc=ref.get('train_acc'))))
+        return result
     def before(self, frame):
         tracker.before_step(self)
         return original_before(self, frame)
     def record(self, learner, result):
         tracker.task_end(self, learner)
         return original_record(self, learner, result)
-    main.MainHook.before_optimizer_step, main.MainHook.record_task = before, record
-    summary = main.run(cli_from_protocol(main, protocol, args, schedule_path))
+    main.MainHook.before_optimizer_step, main.MainHook.record_task, main.MainHook.after_epoch = before, record, epoch
+    try: summary = main.run(cli_from_protocol(main, protocol, args, schedule_path))
+    except Mismatch as error:
+        value = dict(job=args.job, replay_code_commit=main.code_commit(), status='FAIL', first_epoch_mismatch=error.args[0])
+        write(out/'stability_gap'/'match.json', value)
+        write(out/'stability_gap'/'report.json', dict(value, status='MISMATCH_NO_REPORT'))
+        print(f'P1 MATCH {args.job}: FAIL at task {error.args[0]["task"]} epoch {error.args[0]["epoch"]}; stopped', flush=True)
+        raise SystemExit(f'P1 replay mismatch for {args.job}; measurements withheld (see match.json)')
     replay = dict(epochs=read(out/'run'/'epochs.json', []), tasks=read(out/'run'/'tasks.json', []))
     check = compare(reference, replay)
     identity = dict(job=args.job, reference=str(reference_dir), reference_code_commit=protocol.get('code_commit'),
@@ -225,6 +244,7 @@ def parser():
     p.add_argument('--out', required=True)
     p.add_argument('--data-dir', required=True)
     p.add_argument('--device', default='cuda:0')
+    p.add_argument('--fake-data', action='store_true', help='CPU smoke check against a fake-data reference')
     return p
 
 

@@ -1341,7 +1341,8 @@ in Output. No GPU PASS is inferred from CPU results.
   6be6543. The replayed schedule keeps the P1 K0 with `code_commit` set back to the replay commit.
   Command rebuilt from each P1 `protocol.json` with only `--max-tasks 5` added. Gate: epoch `train_loss`/`train_acc` (300
   epochs) and every non-timing `tasks.json` field for tasks 1-5 must equal the attached P1 run
-  exactly, otherwise no measurement is reported. Measurement (`diagnostics/stability_gap.py`):
+  exactly, otherwise no measurement is reported; each epoch is compared as soon as it ends and the
+  replay stops at the first differing epoch. Measurement (`diagnostics/stability_gap.py`):
   old/new-class CNN test accuracy at step r = SGD updates since the task switch, at every step
   for r = 0..10, every 5 steps for r <= 200, then at every epoch start, plus the end of the task,
   read inside
@@ -1353,15 +1354,22 @@ in Output. No GPU PASS is inferred from CPU results.
   Task-boundary checkpoints (end of tasks 1-4) are kept.
 - **GroupNorm V_O/h.** New backbone `resnet32_gn`: PyCIL ResNet-32 with every BatchNorm2d
   replaced by GroupNorm(8, C) (affine 1/0; the group count stays 8), lr 0.1 as BN. Baseline
-  iCaRL, seeds 0 and 1, trains task 1; in the first 200 steps of task 2, at every step for
-  r = 0..10 and every 5 steps to 200, a fresh engine (Gram/power10, icarl_full policy, VNA step
+  iCaRL, seeds 0 and 1, trains tasks 1-5; in tasks 2-5, at every step for r = 0..10 and every 5
+  steps to 200, old/new-class test accuracy is read with the replay's reader and a fresh engine (Gram/power10, icarl_full policy, VNA step
   only) runs one full T26 application on a deep copy of the network and optimizer for the current
   window and logs V, V_O, h, g.d, beta, rho, mu, Delta, s, s_F*, L/KD before and after, and the
   T26(f) decision `would_accept` (step tried and neither L nor L_KD increased); the copy is then
   discarded. The real network, optimizer state, RNG and modes are checked bitwise unchanged at
-  every point. BN is not measured.
-- **Definition choice (GroupNorm):** the virtual neuron bypasses GroupNorm, exactly as it bypasses
-  every normalization layer in `HookSite.virtual_features` (its feature is not normalized with the
-  real channels of its group). This is a definitional choice, not a derived result: it determines
-  J_E, hence K_E and every quantity built on it, including V_O and h. A virtual channel that joined
-  a GroupNorm group would change that group's statistics and give different values.
+  every point. The summary records the task-1 final accuracy and, per task, the gap depth
+  (previous task's `cnn_top1` minus the minimum old-class accuracy over r <= 200). In each GPU
+  lane the GroupNorm job runs first, then VNA, then baseline; its results are printed even if a
+  replay mismatches. BN is not measured.
+- **Definition choice (GroupNorm):** in the v3 engine (`methods/vna_v3.py`, `training_products`)
+  the virtual channel is normalized with its own batch statistics when it passes a BatchNorm
+  (T14), and every other module between the two convolutions is applied to it. Applying the real
+  GroupNorm(8) to a single virtual channel is undefined (it failed in the CPU smoke run), so the
+  registered definition is that the virtual channel bypasses GroupNorm: it joins no group and is
+  not normalized. This is a definitional choice, not a derived result: it determines J_E, hence
+  K_E and every quantity built on it, including V_O and h. A virtual channel that joined a group
+  would change that group's statistics and give different values. The change only affects
+  networks with GroupNorm; noBN and BN runs are unchanged.

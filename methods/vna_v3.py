@@ -37,6 +37,8 @@ def training_products(model, sites, proposals, inputs):
                     gamma = proposal.get('bn_weight', torch.ones(value.shape[1], device=value.device))
                     shift = proposal.get('bn_bias', torch.zeros(value.shape[1], device=value.device))
                     value = value*gamma.to(value).reshape(shape)+shift.to(value).reshape(shape)
+                elif isinstance(module, nn.GroupNorm):
+                    continue  # registered definition: the virtual channel bypasses GroupNorm (it joins no group)
                 else:
                     value = module(value)
             if site.kind == 'conv_linear': value = value.flatten(1)
