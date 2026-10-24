@@ -1215,3 +1215,41 @@ mid task2 epoch5 via the shared full-control mismatch marker; the other946 epoch
 losses were unavailable. Report incomplete coverage separately from differences
 between observed losses; neither incomplete coverage nor partial matches
 qualifies for selection or full-run reuse. See CLIP_AB_REPLAY_AUDIT.md.
+
+## 2026-10-24: user fixes tau=50 after A/B and before Phase C
+
+Explicit user instruction: choose tau=50 and proceed to Phase C. This is a
+post-A/B amendment, before any C outcomes. It supersedes both the smallest
+feasible grid rule and the safety condition tau>=2*G_max. It does not retroactively
+turn the original selection into a PASS.
+
+The completed A/B notebook pinned to3a6638846b612b29dcc8c4010ced759a46b151a2
+reports G_max=42.94707489013672, hence2*G_max=85.89414978027344. The original
+registered rule correctly returned NO_FEASIBLE_TAU. All four controls reproduced
+the registered failures and all four tau50 replays survived60 updates. The
+original grad_clip_selection.json and its30 A/B report hashes remain unchanged.
+The Phase C notebook independently verifies those source reports and creates
+fixed_tau50_selection.json with policy user_fixed_tau50_2026_10_24, the original
+decision and its SHA256, separate evidence/consumer commits, and explicit
+original_rule_satisfied=false. It writes this preregistration with the measured
+values and evidence hashes before launching any C job. A/B is not rerun merely
+because the consumer commit records this amendment.
+
+Every C method and seed uses the same fixed tau50. Original LR0.05, native
+schedules, epochs, head initialization, method defaults, frozen Gram/power10 K0,
+GIR policy, exact/no-clip reuse proofs and safe native resume remain unchanged.
+Baseline s0/s1 can reuse their full B replay only if all1050 losses match and
+max gradient norm<=50 (the reported aggregate42.947... satisfies this bound).
+If that no-clip bound is not met, train that baseline anew at50. No partial B
+replay or rounded notebook text can authorize reuse. The imported evidence
+producer identities are preserved; consumer identity is recorded separately.
+
+Late C divergence remains DIVERGED_WITH_CLIP at50: report it, keep the run
+incomplete, continue other queued jobs at50, and never retune from C outcomes.
+
+Local verification of the newly downloaded completed A/B Output: all30 report
+hashes match the original decision; all four controls PASS and each tau50 replay
+has60 successful updates. B s0/s1 each have1050 exact epoch matches and zero
+clipping. Their maxima are42.94707489013672 and15.826339721679688 respectively.
+Thus both are eligible for no-clip baseline reuse at50. This verification does
+not assert the superseded2*G_max rule passed. Related local checks:113 tests PASS.

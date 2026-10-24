@@ -417,3 +417,67 @@ def test_interrupted_B_reports_incomplete_not_loss_mismatch(monkeypatch,tmp_path
     assert report['status']=='PAUSED' and report['equivalent_under_clip'] is False
     assert report['loss_check']['status']=='INCOMPLETE'
     assert report['loss_check']['matched_epochs']==104 and report['loss_check']['mismatched_epochs']==[]
+
+
+def test_user_fixed_tau50_preserves_infeasible_original_and_evidence_commit(tmp_path):
+    from experiments.clip_study import authorize_fixed_tau,FIXED_SELECTION_POLICY
+    studies(tmp_path)
+    for seed in (0,1):
+        p=tmp_path/'B'/key('icarl',seed)/'study.json';d=json.loads(p.read_text())
+        d['grad_clip']['run']['max_preclip_norm']=42.94707489013672;write(p,d)
+    original=choose_tau(tmp_path,COMMIT)
+    assert original['status']=='NO_FEASIBLE_TAU'
+    decision=tmp_path/'grad_clip_selection.json';write(decision,original);raw=decision.read_bytes()
+    target=authorize_fixed_tau(tmp_path,'b'*40);amendment=load_selection(target)
+    assert amendment['selection_policy']==FIXED_SELECTION_POLICY and amendment['tau']==50.
+    assert amendment['code_commit']=='b'*40 and amendment['evidence_code_commit']==COMMIT
+    assert amendment['original_rule_satisfied'] is False and amendment['original_selection']==original
+    assert decision.read_bytes()==raw and choose_tau(tmp_path,COMMIT)==original
+    assert '42.94707489013672' in (tmp_path/'PREREGISTRATION_CHANGES.md').read_text()
+    assert authorize_fixed_tau(tmp_path,'b'*40)==target
+    with pytest.raises(ValueError,match='resume identity'):authorize_fixed_tau(tmp_path,'c'*40)
+
+
+@pytest.mark.parametrize('damage',['missing_A50','control_mismatch','incomplete_B','evidence_changed'])
+def test_fixed_tau50_cannot_skip_replay_or_baseline_proofs(tmp_path,damage):
+    from experiments.clip_study import authorize_fixed_tau
+    studies(tmp_path);write(tmp_path/'grad_clip_selection.json',choose_tau(tmp_path,COMMIT))
+    if damage=='missing_A50':(tmp_path/'A'/key(*A_CASES[0])/'tau50'/'study.json').unlink()
+    elif damage=='control_mismatch':
+        p=tmp_path/'A'/key(*A_CASES[0])/'none'/'study.json';d=json.loads(p.read_text())
+        d['outcome']['diverged']['step']+=1;write(p,d)
+    else:
+        p=tmp_path/'B'/key('icarl',0)/'study.json';d=json.loads(p.read_text())
+        if damage=='incomplete_B':d['status']='PAUSED'
+        else:d['extra_evidence']='changed'
+        write(p,d)
+    with pytest.raises(ValueError):authorize_fixed_tau(tmp_path,'b'*40)
+    assert not (tmp_path/'fixed_tau50_selection.json').exists()
+
+
+@pytest.mark.parametrize('damage',['tau','rule','original_hash','source_reports','G_max','original_result','survival','evidence_commit'])
+def test_fixed_tau50_validation_rejects_tampering(tmp_path,damage):
+    from experiments.clip_study import authorize_fixed_tau,canonical_sha
+    studies(tmp_path);write(tmp_path/'grad_clip_selection.json',choose_tau(tmp_path,COMMIT))
+    target=authorize_fixed_tau(tmp_path,'b'*40);d=json.loads(target.read_text())
+    if damage=='tau':d['tau']=20.
+    elif damage=='rule':d['rule']='accept arbitrary threshold'
+    elif damage=='original_hash':d['original_selection_sha256']='f'*64
+    elif damage=='source_reports':d['source_reports']={}
+    elif damage=='G_max':d['G_max']=0.
+    elif damage=='evidence_commit':d['evidence_code_commit']='c'*40
+    else:
+        if damage=='original_result':d['original_selection']['tau']=20.
+        else:
+            d['original_selection']['checks'][-1]['all_four_survive_60']=False
+            d['checks'][-1]['all_four_survive_60']=False
+        d['original_selection_sha256']=canonical_sha(d['original_selection'])
+    write(target,d)
+    with pytest.raises(ValueError):load_selection(target)
+
+
+def test_old_replay_mismatch_archive_cannot_authorize_fixed_tau(tmp_path):
+    from experiments.clip_study import authorize_fixed_tau
+    write(tmp_path/'grad_clip_selection.json',dict(status='REPLAY_MISMATCH',tau=None,grid=list(GRID),code_commit=COMMIT))
+    with pytest.raises(ValueError,match='completed, verified A/B Output'):
+        authorize_fixed_tau(tmp_path,'b'*40)

@@ -701,16 +701,18 @@ if archive_errors:raise RuntimeError(archive_errors)
 '''
 
 
-CLIP_STUDY_RUNNER = r'''from experiments.clip_study import load_selection
+CLIP_STUDY_RUNNER = r'''from experiments.clip_study import authorize_fixed_tau, load_selection
 from experiments.vna_resume import launch_logged
 study_root = STAGE_B/'clip_study'
 study_root.mkdir(parents=True,exist_ok=True)
 selection = study_root/'grad_clip_selection.json'
 try:
     if PHASE == 'C':
+        authorize_fixed_tau(study_root,REPO_COMMIT)
+        selection=study_root/'fixed_tau50_selection.json'
         chosen=load_selection(selection)
         if chosen['code_commit'] != REPO_COMMIT:
-            raise ValueError('Phase C requires the exact A/B source commit')
+            raise ValueError('Phase C authorization must match the current source commit')
         if not (study_root/'PREREGISTRATION_CHANGES.md').exists():
             raise FileNotFoundError('Attach A/B output with selection evidence and its written preregistration')
         print('Phase C authorized threshold:',chosen['tau'],'G_max:',chosen['G_max'],flush=True)
@@ -761,7 +763,7 @@ def build_clip_study(commit, phase, source_digest=None):
     inputs+='Reattach all four original archives on EVERY resumed session; imported _sources are deliberately excluded from output archives. '
     inputs+='Attach the matching source ZIP. ' if source_digest else 'The pinned source must include experiments/clip_study.py; regenerate from the published study commit before running. '
     detail=('GPU0 runs all 28 task-2 replays (four cases × no clip and six fixed thresholds). GPU1 runs the complete baseline s0 then s1 norm/loss replay. The selected tau is written only after complete A/B evidence; an infeasible grid does not launch C.' if phase=='AB' else
-        'Also attach the A/B output archive containing all A/B reports, grad_clip_selection.json and PREREGISTRATION_CHANGES.md. The selection is recomputed and checked before any Phase C job starts. Both GPUs process the authorized 30 cases. No manual tau override is accepted.')
+        'Attach the original A/B output with all 30 reports and grad_clip_selection.json. The explicit user amendment fixes tau=50 and supersedes the minimum-grid and 2*G_max rules; the original NO_FEASIBLE_TAU decision is retained. Before C starts, the notebook validates the original A/B evidence and writes fixed_tau50_selection.json, the measurement audit and the current preregistration. A/B is not rerun. Both GPUs process the authorized 30 C cases. Baseline s0/s1 are reused only when their complete Phase B loss checks pass and their maximum gradient norm is at most 50.')
     result['cells'][1]=cell('markdown','# Gradient clipping study — Phase '+phase+'\n'+inputs+detail+' The 11.5-hour deadline pauses safely; rerunning continues cached/native checkpoints. This notebook archives only clip_study results, checkpoints and logs; it does not copy other historical runs into the output archive.')
     bootstrap=''.join(result['cells'][2]['source']).replace('RUN_ROOT = Path("/kaggle/working/vna4_main")',f'RUN_ROOT = Path("/kaggle/working/vna4_clip_{phase}")')
     result['cells'][2]=cell('code',bootstrap)

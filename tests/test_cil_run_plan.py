@@ -170,6 +170,43 @@ def test_collector_rejects_tampered_clipping_reuse_source(tmp_path):
     with pytest.raises(ValueError,match='artifact hash mismatch'):collect([tmp_path])
 
 
+@pytest.mark.parametrize('baseline',[False,True])
+def test_collector_user_fixed_tau50_keeps_original_infeasible_evidence(tmp_path,baseline):
+    import copy
+    from scripts.collect_cil_main import canonical_hash
+    from experiments.clip_study import FIXED_SELECTION_POLICY,FIXED_SELECTION_RULE
+    package,destination=clip_package(tmp_path,baseline)
+    original=copy.deepcopy(package['selection'])
+    original.update(status='NO_FEASIBLE_TAU',tau=None,G_max=42.947,
+                    code_commit='3a6638846b612b29dcc8c4010ced759a46b151a2',source_digest=None)
+    for check in original['checks']:check['baseline_bound']=False
+    selection={**copy.deepcopy(original),'status':'SELECTED','tau':50.,'selection_policy':FIXED_SELECTION_POLICY,
+        'code_commit':package['consumer_commit'],'source_digest':package['consumer_source_digest'],
+        'evidence_code_commit':original['code_commit'],'original_selection':original,
+        'original_selection_sha256':canonical_hash(original),'original_rule_satisfied':False,
+        'rule':FIXED_SELECTION_RULE}
+    package.update(selection=selection,selection_sha256=canonical_hash(selection))
+    package['verification']['tau']=50.
+    package['study'].update(tau=None if baseline else 50.,
+        code_commit=original['code_commit'] if baseline else package['consumer_commit'],
+        source_digest=original['source_digest'] if baseline else package['consumer_source_digest'])
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    groups,_=collect([tmp_path]);run=next(iter(groups.values()))[0]
+    assert run['comparison_protocol']['grad_clip']==50.
+    assert run['protocol'].get('grad_clip') is None
+    assert run['clip_reuse']['selection_policy']==FIXED_SELECTION_POLICY
+    assert run['clip_reuse']['evidence_code_commit']==original['code_commit']
+    assert run['summary']['identity']==package['reference']['identity']
+    package['study']['code_commit']='f'*40
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError,match='replay scope'):collect([tmp_path])
+    package['study']['code_commit']=original['code_commit'] if baseline else package['consumer_commit']
+    package['selection']['original_selection']['G_max']=1.
+    package['selection_sha256']=canonical_hash(package['selection'])
+    (destination/'clip_reuse.json').write_text(json.dumps(package))
+    with pytest.raises(ValueError):collect([tmp_path])
+
+
 def test_clipping_certificate_upgrades_identical_attached_source_only(tmp_path):
     package,_=clip_package(tmp_path/'clip')
     native=tmp_path/'original';native.mkdir()

@@ -26,20 +26,27 @@ def canonical_hash(value):
 
 def clipping_reuse(package):
     """Validate the approved replay scope while retaining the native producer."""
-    from experiments.clip_study import GRID,A_CASES,C_CASES
+    from experiments.clip_study import GRID,A_CASES,C_CASES,FIXED_SELECTION_POLICY,validate_fixed_selection
     selection=package['selection'];tau=selection.get('tau');consumer=package.get('consumer_commit')
     if (selection.get('status')!='SELECTED' or selection.get('grid')!=list(GRID) or tau not in GRID or
             not re.fullmatch('[0-9a-f]{40}',str(consumer)) or selection.get('code_commit')!=consumer or
             canonical_hash(selection)!=package.get('selection_sha256')):
         raise ValueError('Invalid clipping reuse selection')
+    fixed=selection.get('selection_policy')==FIXED_SELECTION_POLICY
     checks=selection.get('checks',[]);G=selection.get('G_max')
-    if (not isinstance(G,(int,float)) or not math.isfinite(G) or G<0 or
-            [c.get('tau') for c in checks]!=list(GRID) or
-            any(c.get('baseline_bound') is not (c['tau']>=2*G) or
-                not isinstance(c.get('all_four_survive_60'),bool) for c in checks)):
-        raise ValueError('Invalid clipping reuse threshold rule')
-    eligible=[c['tau'] for c in checks if c['baseline_bound'] and c['all_four_survive_60']]
-    if not eligible or min(eligible)!=tau:raise ValueError('Invalid clipping reuse chosen threshold')
+    if fixed:
+        validate_fixed_selection(selection)
+        if selection.get('source_digest')!=package.get('consumer_source_digest'):
+            raise ValueError('Fixed clipping reuse consumer source digest mismatch')
+    else:
+        if selection.get('selection_policy') is not None:raise ValueError('Unknown clipping selection policy')
+        if (not isinstance(G,(int,float)) or not math.isfinite(G) or G<0 or
+                [c.get('tau') for c in checks]!=list(GRID) or
+                any(c.get('baseline_bound') is not (c['tau']>=2*G) or
+                    not isinstance(c.get('all_four_survive_60'),bool) for c in checks)):
+            raise ValueError('Invalid clipping reuse threshold rule')
+        eligible=[c['tau'] for c in checks if c['baseline_bound'] and c['all_four_survive_60']]
+        if not eligible or min(eligible)!=tau:raise ValueError('Invalid clipping reuse chosen threshold')
     reports=selection.get('source_reports',{})
     expected_reports={f'A/{arm}__s{seed}/{label}/study.json' for arm,seed in A_CASES
                       for label in ('none',*(f'tau{t:g}' for t in GRID))}|{f'B/icarl__s{s}/study.json' for s in (0,1)}
@@ -72,6 +79,9 @@ def clipping_reuse(package):
             p.get('nobn_lr_scale')!=.5 or p.get('class_order_kind',p.get('order'))!='superclass'):
         raise ValueError('Clipping reuse requires the native no-clip noBN setup')
     baseline=arm=='icarl' and seed in (0,1)
+    study_commit=selection['evidence_code_commit'] if fixed and baseline else consumer
+    if fixed and study.get('source_digest')!=(selection['original_selection'].get('source_digest') if baseline else package.get('consumer_source_digest')):
+        raise ValueError('Fixed clipping reuse replay source digest mismatch')
     scope='all 20 tasks; full norm replay in B' if baseline else dict(task=4,epoch=None)
     epochs=1050 if baseline else 250
     if (proof.get('status')!='EQUIVALENT_PREFIX' or proof.get('tau')!=tau or proof.get('scope')!=scope or
@@ -79,7 +89,7 @@ def clipping_reuse(package):
             study.get('tasks')!=(20 if baseline else 4) or study.get('epoch') is not None or
             study.get('status') not in ('COMPLETED','PREFIX_COMPLETED') or
             study.get('diagnostic_only') is not True or study.get('equivalent_under_clip') is not True or
-            (study.get('arm'),study.get('seed'),study.get('code_commit'))!=(arm,seed,consumer) or
+            (study.get('arm'),study.get('seed'),study.get('code_commit'))!=(arm,seed,study_commit) or
             study.get('tau')!=(None if baseline else tau)):
         raise ValueError('Invalid clipping reuse replay scope')
     loss=study.get('loss_check',{});norms=(study.get('grad_clip') or {}).get('run',{})
@@ -101,6 +111,8 @@ def clipping_reuse(package):
     metadata=dict(tau=tau,consumer_commit=consumer,consumer_source_digest=package.get('consumer_source_digest'),
         scope=scope,epochs_compared=epochs,source_summary_sha256=digest,
         claim='full loss/norm replay' if baseline else 'approved four-task prefix replay; no full-run bitwise identity claim')
+    if fixed:metadata.update(selection_policy=FIXED_SELECTION_POLICY,evidence_code_commit=selection['evidence_code_commit'],
+                             original_selection_sha256=selection['original_selection_sha256'])
     return artifacts,comparison,metadata
 
 

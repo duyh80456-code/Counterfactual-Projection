@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path,PurePosixPath
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from experiments.vna_provenance import code_commit
 from scripts.collect_parallel import files
 
 GRID=(1.,2.,5.,10.,20.,50.)
+FIXED_SELECTION_POLICY='user_fixed_tau50_2026_10_24'
+FIXED_SELECTION_RULE='user-fixed tau=50 supersedes smallest-feasible and tau>=2*G_max rules; no Phase-C retuning'
 A_CASES=(('icarl',2),('icarl_full',2),('icarl_cbp',1),('icarl_redo',1))
 C_CASES=tuple((arm,seed) for arm in ('icarl','icarl_full','icarl_cbp','icarl_redo','icarl_snp','icarl_upgd','gem','wa','podnet','icarl_cflat') for seed in range(3))
 ARTIFACTS={'summary.json','protocol.json','epochs.json','tasks.json','diagnostics.json','continual_eval.csv',
@@ -132,10 +135,11 @@ def control_check(report):
         expected=expected,observed=observed,intervention_check=intervention)
 
 
-def choose_tau(root,commit):
+def choose_tau(root,commit,source_digest=...):
     root=Path(root);B={};missing=[]
+    if source_digest is ...:source_digest=os.environ.get('VNA_SOURCE_DIGEST')
     def binding(report,mode,arm,seed,tau):
-        if report and any(report.get(k)!=v for k,v in dict(mode=mode,arm=arm,seed=seed,tau=tau,code_commit=commit,source_digest=os.environ.get('VNA_SOURCE_DIGEST')).items()):
+        if report and any(report.get(k)!=v for k,v in dict(mode=mode,arm=arm,seed=seed,tau=tau,code_commit=commit,source_digest=source_digest).items()):
             raise ValueError('study report identity mismatch')
     mismatches=[]
     for arm,seed in A_CASES:
@@ -190,12 +194,66 @@ def choose_tau(root,commit):
         if tau>=2*G and survived:eligible.append(tau)
     hashes={str(p.relative_to(root)):sha(p) for p in root.glob('[AB]/**/study.json')}
     return dict(status='SELECTED' if eligible else 'NO_FEASIBLE_TAU',tau=min(eligible) if eligible else None,
-        G_max=G,grid=list(GRID),checks=checks,code_commit=commit,source_digest=os.environ.get('VNA_SOURCE_DIGEST'),source_reports=hashes,
+        G_max=G,grid=list(GRID),checks=checks,code_commit=commit,source_digest=source_digest,source_reports=hashes,
         rule='min grid tau such that tau >= 2*G_max and all four A runs survive 60 steps; no grid expansion')
+
+
+def validate_fixed_selection(value):
+    original=value.get('original_selection',{})
+    if (value.get('selection_policy')!=FIXED_SELECTION_POLICY or value.get('status')!='SELECTED' or value.get('tau')!=50. or
+        value.get('grid')!=list(GRID) or value.get('rule')!=FIXED_SELECTION_RULE or
+        not re.fullmatch('[0-9a-f]{40}',str(value.get('code_commit'))) or
+        original.get('status') not in ('NO_FEASIBLE_TAU','SELECTED') or original.get('grid')!=list(GRID) or
+        value.get('original_selection_sha256')!=canonical_sha(original) or
+        value.get('evidence_code_commit')!=original.get('code_commit') or
+        not re.fullmatch('[0-9a-f]{40}',str(value.get('evidence_code_commit'))) or
+        any(value.get(k)!=original.get(k) for k in ('G_max','checks','source_reports'))):
+        raise ValueError('Invalid fixed tau50 amendment')
+    G=original.get('G_max');checks=original.get('checks',[])
+    if (not isinstance(G,(int,float)) or not math.isfinite(G) or G<0 or
+        [c.get('tau') for c in checks]!=list(GRID) or
+        any(c.get('baseline_bound') is not (c['tau']>=2*G) or not isinstance(c.get('all_four_survive_60'),bool) for c in checks)):
+        raise ValueError('Invalid original clipping audit')
+    eligible=[c['tau'] for c in checks if c['baseline_bound'] and c['all_four_survive_60']]
+    if (original.get('status')!=('SELECTED' if eligible else 'NO_FEASIBLE_TAU') or
+        original.get('tau')!=(min(eligible) if eligible else None) or
+        not checks[-1]['all_four_survive_60'] or
+        value.get('original_rule_satisfied') is not (checks[-1]['baseline_bound'] and checks[-1]['all_four_survive_60'])):
+        raise ValueError('Fixed tau50 needs verified A survival and an unchanged original decision')
+
+
+def authorize_fixed_tau(root,commit):
+    root=Path(root);source=root/'grad_clip_selection.json'
+    original=json.loads(source.read_text())
+    if original.get('status') not in ('NO_FEASIBLE_TAU','SELECTED'):
+        raise ValueError('Attach completed, verified A/B Output; an incomplete or REPLAY_MISMATCH run cannot authorize fixed tau50')
+    if choose_tau(root,original['code_commit'],original.get('source_digest'))!=original:
+        raise ValueError('Original A/B evidence changed or is incomplete; fixed tau50 is not authorized')
+    value=dict(status='SELECTED',tau=50.,grid=list(GRID),selection_policy=FIXED_SELECTION_POLICY,
+        code_commit=commit,source_digest=os.environ.get('VNA_SOURCE_DIGEST'),
+        evidence_code_commit=original['code_commit'],G_max=original['G_max'],checks=original['checks'],
+        source_reports=original['source_reports'],original_selection=original,original_selection_sha256=canonical_sha(original),
+        original_rule_satisfied=original['checks'][-1]['baseline_bound'] and original['checks'][-1]['all_four_survive_60'],
+        rule=FIXED_SELECTION_RULE)
+    validate_fixed_selection(value)
+    target=root/'fixed_tau50_selection.json'
+    if target.exists() and json.loads(target.read_text())!=value:raise ValueError('Fixed tau50 resume identity mismatch')
+    prereg=(Path(__file__).resolve().parents[1]/'docs/vna/PREREGISTRATION_CHANGES.md').read_text()
+    prereg+=f"\n## Measured fixed-tau50 authority before Phase C\nPolicy: {FIXED_SELECTION_POLICY}. G_max={value['G_max']!r}; 2*G_max={2*value['G_max']!r}; tau=50.0.\nOriginal status: {original['status']}; original rule satisfied at50: {value['original_rule_satisfied']}.\nEvidence commit: {value['evidence_code_commit']}; consumer commit: {commit}.\nOriginal decision SHA256: {value['original_selection_sha256']}.\nEvidence SHA256: {json.dumps(value['source_reports'],sort_keys=True)}\n"
+    temporary=root/'PREREGISTRATION_CHANGES.md.tmp';temporary.write_text(prereg);temporary.replace(root/'PREREGISTRATION_CHANGES.md')
+    atomic_json_save(value,target)
+    return target
 
 
 def load_selection(path):
     path=Path(path);value=json.loads(path.read_text())
+    if value.get('selection_policy')==FIXED_SELECTION_POLICY:
+        validate_fixed_selection(value)
+        original=value['original_selection']
+        if (value.get('source_digest')!=os.environ.get('VNA_SOURCE_DIGEST') or
+            choose_tau(path.parent,value['evidence_code_commit'],original.get('source_digest'))!=original):
+            raise ValueError('Fixed tau50 A/B evidence changed or is incomplete')
+        return value
     if value.get('status')!='SELECTED' or value.get('grid')!=list(GRID) or value.get('tau') not in GRID:
         raise ValueError('No preregistered feasible gradient clipping threshold')
     checks=value.get('checks',[]);valid=[c['tau'] for c in checks if c.get('baseline_bound') and c.get('all_four_survive_60')]
@@ -289,8 +347,9 @@ def run(args):
             (root/'PREREGISTRATION_CHANGES.md').write_text(text)
         print(json.dumps(selection,indent=2));write_report(root)
     else:
-        selection=load_selection(args.selection or root/'grad_clip_selection.json');tau=selection['tau']
-        prereg=Path(args.selection or root/'grad_clip_selection.json').with_name('PREREGISTRATION_CHANGES.md')
+        selected_path=Path(args.selection) if args.selection else authorize_fixed_tau(root,code_commit())
+        selection=load_selection(selected_path);tau=selection['tau']
+        prereg=selected_path.with_name('PREREGISTRATION_CHANGES.md')
         if not prereg.exists():raise ValueError('Phase C requires the written preregistration generated with selection')
         if selection['code_commit']!=code_commit():raise ValueError('Phase C must use the A/B source commit')
         records={};lock=threading.Lock()
@@ -300,11 +359,13 @@ def run(args):
             path,ref=reference(arm,seed);status=None;proof=None
             if arm=='icarl' and seed in (0,1):
                 b=read_study(root/'B'/key(arm,seed))
-                if not b or not b.get('equivalent_under_clip') or b['grad_clip']['run']['max_preclip_norm']>tau:
+                if not b or not b.get('equivalent_under_clip'):
                     raise ValueError('missing full baseline equivalence from B')
-                status='REUSED';equivalence=dict(status='EQUIVALENT_PREFIX',tau=tau,loss_check=b['loss_check'],
-                    n_clipped=0,n_steps_checked=b['grad_clip']['run']['n_steps'],scope='all 20 tasks; full norm replay in B',reference=ref)
-                atomic_json_save(equivalence,destination/'equivalence.json')
+                if b['grad_clip']['run']['max_preclip_norm']>tau:status='TRAIN'
+                else:
+                    status='REUSED';equivalence=dict(status='EQUIVALENT_PREFIX',tau=tau,loss_check=b['loss_check'],
+                        n_clipped=0,n_steps_checked=b['grad_clip']['run']['n_steps'],scope='all 20 tasks; full norm replay in B',reference=ref)
+                    atomic_json_save(equivalence,destination/'equivalence.json')
             elif arm in ('wa','podnet','icarl_cflat') or arm=='gem' and seed in (1,2):
                 status='TRAIN'
             elif ref is None:
@@ -409,7 +470,8 @@ def write_report(root):
         if missing:
             first=missing[0]
             lines.append(f"  - First unavailable epoch: task={first['task']} epoch={first['epoch']}; old={first['reference']!r}; new=unavailable; run status={r['status']}. See loss_check.missing_current_epochs for the full list.")
-    if (root/'grad_clip_selection.json').exists():lines+=['','```json',(root/'grad_clip_selection.json').read_text(),'```']
+    if (root/'grad_clip_selection.json').exists():lines+=['','### Original A/B decision','','```json',(root/'grad_clip_selection.json').read_text(),'```']
+    if (root/'fixed_tau50_selection.json').exists():lines+=['','### User amendment: fixed tau50','','```json',(root/'fixed_tau50_selection.json').read_text(),'```']
     lines+=['','## Phase C','']
     for path in sorted(root.glob('C/*/result.json')):lines.append('- '+path.read_text())
     (root/'CLIP_STUDY_REPORT.md').write_text('\n'.join(lines)+'\n')

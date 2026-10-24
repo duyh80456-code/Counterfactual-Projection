@@ -115,3 +115,23 @@ parameter edit. All completed full A replays need this trace.
 Phase C late divergence is `DIVERGED_WITH_CLIP`, retaining native failure
 coordinates and the selected tau. It is not a final score. Other queued runs
 continue with the same tau; the workflow never retunes tau from C outcomes.
+
+## Current Phase C decision: fixed tau50
+
+The user fixed tau=50 after the completed A/B results and before C. The original
+rule returned NO_FEASIBLE_TAU: G_max42.94707489013672 implies2*G_max85.89414978027344.
+This amendment explicitly removes the minimum-grid and2*G_max requirements;
+it does not claim those old conditions passed. See the dated preregistration.
+
+Use the updated `vna4_clip_C.ipynb` with the completed A/B Output, the original
+four historical Outputs and CIFAR-100 (the combined original dataset is fine).
+It validates all30 original A/B reports, preserves grad_clip_selection.json,
+writes fixed_tau50_selection.json plus the amended preregistration, and then
+runs C on two T4 lanes without rerunning A/B. Evidence and consumer commits are
+separate because the consumer contains this amendment. Both baseline B replays
+must be complete; each reused baseline still needs exact losses and maxnorm<=50.
+The incomplete older A/B archive that stopped at full step2010 cannot authorize C.
+
+Use a fresh C session, attach the completed A/B Output, enable Internet and the
+existing github_token Secret, and select T4x2. Native C checkpoints resume under
+the same published C source pin. No source ZIP is needed for a published pin.
