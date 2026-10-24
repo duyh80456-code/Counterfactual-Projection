@@ -1335,9 +1335,9 @@ in Output. No GPU PASS is inferred from CPU results.
 - **Stability gap (P1, tasks 1-5).** Four jobs: baseline `icarl` and VNA-GIR `icarl_full`
   (Gram/power10, policy `schur_gamma_bound_rho25_v2`), seeds 0 and 1, each replayed with the same
   K0 on the commit that ran its tasks 1-5, one checkout per commit: VNA uses
-  `schedule.calibration_code_commit`, else `metric_trace_repair.json` `source_commit` (a
-  metric-trace repair overwrites `schedule.code_commit`), else `schedule.code_commit`, and stops if
-  the first two disagree; each baseline uses its seed's VNA commit. Expected: s0 on 29cc735, s1 on
+  `metric_trace_repair.json` `source_commit` when that file exists (a metric-trace repair relabels
+  `schedule.code_commit`), else `schedule.code_commit`; `calibration_code_commit` names the K0
+  calibration source, not the run, and is not used. Each baseline uses its seed's VNA checkout. Expected: s0 on 29cc735, s1 on
   6be6543. The replayed schedule keeps the P1 K0 with `code_commit` set back to the replay commit.
   Command rebuilt from each P1 `protocol.json` with only `--max-tasks 5` added. Gate: epoch `train_loss`/`train_acc` (300
   epochs) and every non-timing `tasks.json` field for tasks 1-5 must equal the attached P1 run
@@ -1353,7 +1353,13 @@ in Output. No GPU PASS is inferred from CPU results.
   (and half of the gap). VNA interventions are reported with L, KD, V_O, h at their step.
   Task-boundary checkpoints (end of tasks 1-4) are kept.
 - **GroupNorm V_O/h.** New backbone `resnet32_gn`: PyCIL ResNet-32 with every BatchNorm2d
-  replaced by GroupNorm(8, C) (affine 1/0; the group count stays 8), lr 0.1 as BN. Baseline
+  replaced by GroupNorm(8, C) (8 groups; affine bias 0, weight 1 except gamma = 0 for the last
+  GroupNorm of every residual block, the standard zero-init of GN ResNets, Goyal et al. 2017,
+  Wu & He 2018), lr 0.05 (lr scale 0.5, shared with P1) after task 1 collapsed to ln 5 at lr 0.1.
+  Two gates precede tasks 2-5: (1) after 10 epochs of task 1 the epoch loss must not increase
+  from one epoch to the next and must stay below 1.60 (ln 5 = 1.609) after epoch 1; (2) the
+  final task-1 CNN accuracy must reach the noBN level (76); otherwise the job stops, reports and
+  tasks 2-5 are not run. Baseline
   iCaRL, seeds 0 and 1, trains tasks 1-5; in tasks 2-5, at every step for r = 0..10 and every 5
   steps to 200, old/new-class test accuracy is read with the replay's reader and a fresh engine (Gram/power10, icarl_full policy, VNA step
   only) runs one full T26 application on a deep copy of the network and optimizer for the current
@@ -1362,8 +1368,8 @@ in Output. No GPU PASS is inferred from CPU results.
   discarded. The real network, optimizer state, RNG and modes are checked bitwise unchanged at
   every point. The summary records the task-1 final accuracy and, per task, the gap depth
   (previous task's `cnn_top1` minus the minimum old-class accuracy over r <= 200). In each GPU
-  lane the GroupNorm job runs first, then VNA, then baseline; its results are printed even if a
-  replay mismatches. BN is not measured.
+  lane the VNA replay runs first, then baseline, then GroupNorm; GroupNorm results are printed
+  even if a replay mismatches. BN is not measured.
 - **Definition choice (GroupNorm):** in the v3 engine (`methods/vna_v3.py`, `training_products`)
   the virtual channel is normalized with its own batch statistics when it passes a BatchNorm
   (T14), and every other module between the two convolutions is applied to it. Applying the real

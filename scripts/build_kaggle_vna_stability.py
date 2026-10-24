@@ -73,12 +73,10 @@ def p1_references():
     for seed in (0,1):
         directory=jobs[f'icarl_full__s{seed}']
         schedule=read(directory/'protocol.json')['schedule']
+        # A metric-trace repair relabels the run; its source_commit is the commit that ran it.
+        # calibration_code_commit only names the K0 calibration source and is not used.
         repair=read(directory/'metric_trace_repair.json',{}).get('source_commit')
-        original=schedule.get('calibration_code_commit')
-        # A metric-trace repair overwrites schedule.code_commit; tasks 1-5 ran on the original source.
-        if original and repair and original!=repair:
-            raise ValueError(f'icarl_full__s{seed}: calibration_code_commit {original} != metric_trace_repair source {repair}')
-        commit=original or repair or schedule['code_commit']
+        commit=repair or schedule['code_commit']
         commits[f'icarl_full__s{seed}']=commits[f'icarl__s{seed}']=commit  # baseline replays on its VNA seed's source
     return jobs,commits
 
@@ -114,9 +112,9 @@ def groupnorm(gpu,seed):
     return launch(cmd,gpu,f'groupnorm__s{seed}',RUN_ROOT/f'groupnorm__s{seed}.log')
 
 def lane(gpu,seed):
-    for name,work in ((f'groupnorm__s{seed}',lambda:groupnorm(gpu,seed)),
-                      (f'icarl_full__s{seed}',lambda:replay(gpu,f'icarl_full__s{seed}')),
-                      (f'icarl__s{seed}',lambda:replay(gpu,f'icarl__s{seed}'))):
+    for name,work in ((f'icarl_full__s{seed}',lambda:replay(gpu,f'icarl_full__s{seed}')),
+                      (f'icarl__s{seed}',lambda:replay(gpu,f'icarl__s{seed}')),
+                      (f'groupnorm__s{seed}',lambda:groupnorm(gpu,seed))):
         if pause_due():return
         try:
             if not work():
@@ -188,9 +186,9 @@ DISK_CAP_BYTES = 20_000_000_000
     markdown=cell('markdown','''# Stability gap (P1 replay, tasks 1-5) and GroupNorm V_O/h
 Enable Internet, T4x2 and the `github_token` secret. Attach CIFAR-100 (`cifar-100-python/{train,test,meta}`) and the P1 output(s) containing `icarl` and `icarl_full` (Gram/power10) seeds 0 and 1, noBN, superclass. Attach this notebook's own output to resume.
 
-Each P1 job is replayed through task 5 with the same K0 on the commit that ran its tasks 1-5 (VNA: schedule.calibration_code_commit, else metric_trace_repair.json source_commit, else schedule.code_commit; baseline: its seed's VNA commit), one checkout per commit; the commit of every job is printed before launch. Old/new-class test accuracy is read at every SGD step for r = 0-10, every 5 steps to 200 in tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
+Each P1 job is replayed through task 5 with the same K0 on the commit that ran its tasks 1-5 (VNA: metric_trace_repair.json source_commit if present, else schedule.code_commit; baseline: its seed's VNA commit), one checkout per commit; the commit of every job is printed before launch. Old/new-class test accuracy is read at every SGD step for r = 0-10, every 5 steps to 200 in tasks 2-5, then every epoch, under no_grad with all RNG and module modes restored. Task-boundary checkpoints (end of tasks 1-4) are kept. Epoch losses and tasks.json for tasks 1-5 must equal P1 exactly; otherwise no measurement is reported.
 
-GroupNorm (run first in each lane): baseline iCaRL on ResNet-32 with GroupNorm(8) trains tasks 1-5; in tasks 2-5 (every step for r = 0-10, every 5 steps to 200) old/new test accuracy is read as in the replay and a VNA engine (Gram/power10) applies one full T26 application to a discarded copy of the network and logs V_O, h, L/KD before/after, s, Delta and would_accept (T26f); the real model is checked bitwise unchanged. The virtual neuron bypasses GroupNorm (a definition choice, see preregistration). Output: `outputs/vna_stability_gap/`.
+GroupNorm (run last in each lane): baseline iCaRL on ResNet-32 with GroupNorm(8) (lr 0.05, zero-init gamma of each block's last GroupNorm) trains task 1 behind two gates (epoch-10 loss, task-1 accuracy >= 76) and then tasks 2-5; in tasks 2-5 (every step for r = 0-10, every 5 steps to 200) old/new test accuracy is read as in the replay and a VNA engine (Gram/power10) applies one full T26 application to a discarded copy of the network and logs V_O, h, L/KD before/after, s, Delta and would_accept (T26f); the real model is checked bitwise unchanged. The virtual neuron bypasses GroupNorm (a definition choice, see preregistration). Output: `outputs/vna_stability_gap/`.
 ''')
     bootstrap=''.join(cells[2]['source']).replace('/kaggle/working/vna4_main','/kaggle/working/vna_stability_gap')+OVERLAY
     runtime=''.join(cells[4]['source'])

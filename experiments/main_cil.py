@@ -72,7 +72,7 @@ def runtime(args, order):
         replace(data_manager, '_get_idata', data)
         replace(inc_net, 'get_convnet', convnet)
         for key, value in dict(training_settings(args.fake_data or getattr(args, 'preflight_only', False), nobn_lr_scale=
-                args.nobn_lr_scale if args.backbone.endswith('nobn') else 1.),
+                args.nobn_lr_scale if args.backbone in ('resnet32_nobn', 'resnet32_gn') else 1.),
                 num_workers=args.workers).items():
             replace(icarl, key, value)
         yield
@@ -324,7 +324,7 @@ def run(args):
     if not callable(getattr(vna_v3, 'diagnose', None)):
         raise RuntimeError('Merge Phase 2 first: methods.vna_v3.diagnose(model, batch) is required')
     if args.grad_clip is not None and args.backbone!='resnet32_nobn':raise ValueError('grad-clip requires noBN')
-    if args.backbone in ('resnet32','resnet32_gn'):args.nobn_lr_scale=1.
+    if args.backbone == 'resnet32':args.nobn_lr_scale=1.
     elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
     increment=getattr(args,'increment',5)

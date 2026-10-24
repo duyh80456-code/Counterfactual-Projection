@@ -83,7 +83,10 @@ def resnet32_gn():
     for module in list(model.modules()):
         for name, child in list(module.named_children()):
             if isinstance(child, nn.BatchNorm2d):
-                setattr(module, name, nn.GroupNorm(GN_GROUPS, child.num_features).to(child.weight))
+                norm = nn.GroupNorm(GN_GROUPS, child.num_features).to(child.weight)
+                # Zero-init gamma of each residual block's last norm (Goyal et al. 2017; Wu & He 2018).
+                if name == 'bn_b': nn.init.zeros_(norm.weight)
+                setattr(module, name, norm)
     return model
 
 

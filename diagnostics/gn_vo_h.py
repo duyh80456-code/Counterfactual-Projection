@@ -17,6 +17,10 @@ import random
 from diagnostics.stability_gap import Tracker
 
 DENSE, STEP_EVERY, STEP_WINDOW, MAX_TASKS = 10, 5, 200, 5
+COLLAPSE_LOSS, CHECK_EPOCH, MIN_TASK1_ACC = 1.60, 10, 76.  # ln 5 = 1.609; noBN task-1 accuracy is 76
+
+
+class GateFailed(Exception): pass
 FIELDS = ('V', 'V_O', 'h_dot_d', 'g_dot_d', 'beta', 'beta_branch', 'leak', 'epsilon_star', 'chi2',
           'skipped', 'skip_reason', 'rho_tr', 'mu', 'Delta', 's', 's_F_star', 'rejected',
           'L_before', 'L_after', 'KD_before', 'KD_after')
@@ -37,6 +41,23 @@ def run(args):
     reader = Tracker(out, torch, np)  # same isolated old/new accuracy reader as the P1 replay
     rows, offset = [], {}
     original_before = main.MainHook.before_optimizer_step
+    original_epoch, original_record = main.MainHook.after_epoch, main.MainHook.record_task
+
+    def epoch(self, learner, optimizer, frame):
+        result = original_epoch(self, learner, optimizer, frame)
+        losses = [e['train_loss'] for e in self.epochs if e['task'] == 1]
+        if learner._cur_task == 0 and len(losses) == CHECK_EPOCH:
+            # Gate 1: task-1 loss falls through epoch 10 and never returns to the 5-class chance level.
+            if any(b > a for a, b in zip(losses, losses[1:])) or max(losses[1:]) >= COLLAPSE_LOSS:
+                raise GateFailed(dict(gate='task1_epoch10_loss', losses=losses))
+        return result
+
+    def record(self, learner, result):
+        value = original_record(self, learner, result)
+        if learner._cur_task == 0 and not args.fake_data and self.tasks[-1]['cnn_top1'] < MIN_TASK1_ACC:
+            # Gate 2: a GroupNorm net below the noBN task-1 level is not evaluated on tasks 2-5.
+            raise GateFailed(dict(gate='task1_accuracy', cnn_top1=self.tasks[-1]['cnn_top1'], minimum=MIN_TASK1_ACC))
+        return value
 
     def snapshot(learner, optimizer):
         return (copy.deepcopy(learner._network.state_dict()), copy.deepcopy(optimizer.state_dict()),
@@ -89,11 +110,15 @@ def run(args):
                 if not unchanged: raise RuntimeError('copy application changed the real training state')
         return original_before(self, frame)
 
-    main.MainHook.before_optimizer_step = before
+    main.MainHook.before_optimizer_step, main.MainHook.after_epoch, main.MainHook.record_task = before, epoch, record
     argv = ['--arm', 'icarl', '--backbone', 'resnet32_gn', '--class-order', 'superclass', '--seed', str(args.seed),
-            '--max-tasks', str(MAX_TASKS), '--device', args.device, '--data-dir', args.data_dir, '--out', str(out/'run')]
+            '--nobn-lr-scale', '0.5', '--max-tasks', str(MAX_TASKS), '--device', args.device, '--data-dir', args.data_dir, '--out', str(out/'run')]
     if args.fake_data: argv.append('--fake-data')  # CPU smoke check only
-    main.run(main.parser().parse_args(argv))
+    try: main.run(main.parser().parse_args(argv))
+    except GateFailed as error:
+        write(out/'gn_vo_h_summary.json', dict(seed=args.seed, status='STOPPED_AT_GATE', **error.args[0]))
+        print('GN STOPPED:', json.dumps(error.args[0]), flush=True)
+        raise SystemExit(f'GroupNorm gate failed: {error.args[0]["gate"]}')
     tasks = json.loads((out/'run'/'tasks.json').read_text())
     final = {t['task']: t for t in tasks}
     gaps = []
@@ -105,7 +130,7 @@ def run(args):
                          min_old_step=low['step'], gap_depth=None if pre is None else pre-low['old_acc'],
                          end_old_step200=points[-1]['old_acc'], end_task_cnn=final.get(task, {}).get('cnn_top1')))
     measured = [r for r in rows if r.get('skip_reason') not in ('cg_z', 'nonfinite')]
-    summary = dict(seed=args.seed, applications=len(rows), task1_end_cnn_top1=final.get(1, {}).get('cnn_top1'),
+    summary = dict(seed=args.seed, status='OK', applications=len(rows), task1_end_cnn_top1=final.get(1, {}).get('cnn_top1'),
         task1_end_nme_top1=final.get(1, {}).get('nme_top1'), gap_by_task=gaps,
         V_O_positive=sum((r.get('V_O') or 0) > 0 for r in measured),
         h_nonnegative=sum((r.get('h_dot_d') is not None) and r['h_dot_d'] >= 0 for r in measured),
