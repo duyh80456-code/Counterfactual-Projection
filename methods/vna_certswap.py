@@ -71,14 +71,14 @@ def certify(forward, size, reference, before, spec, ctx, *, mu0=None, budget=20)
     """Functional trial: rejection cannot mutate model parameters or optimizer state."""
     started = time.perf_counter()
     zero = reference.new_zeros(size, requires_grad=True)
-    output = forward(zero)
+    with torch.no_grad(): output = forward(zero)
     swapped = losses(output, spec, ctx)
     jL, jKD = swapped[0]-before[0], swapped[1]-before[1]
     record = dict(jL=jL, jKD=jKD, lm_trials=[], jump_seconds=time.perf_counter()-started)
     if not math.isfinite(jL) or jL > 0: return None, dict(record, reason='jL_pos')
     if not math.isfinite(jKD) or jKD > 0: return None, dict(record, reason='jKD_pos')
     started = time.perf_counter()
-    ce = nn.functional.cross_entropy(output, ctx['targets'])
+    ce = nn.functional.cross_entropy(forward(zero), ctx['targets'])
     gradient = torch.autograd.grad(ce, zero)[0].detach().double()
     record['gradient_seconds'] = time.perf_counter()-started
     if not bool(torch.isfinite(gradient).all()) or not bool(gradient.ne(0).any()):
@@ -136,9 +136,9 @@ def run(engine, model, sites, proposals, batch, spec, ctx, optimizer, iteration,
         return report
     sites = [s for s in sites if s.module_name in proposals]
     cache = values.get('certswap_cache') or PrefixCache(model, sites, batch[0])
-    current = cache.logits
     accepted_diagnostics = []
     for site in sorted(sites, key=lambda s: cache.indices[s.module_name], reverse=True):
+        with torch.no_grad(): current = cache.forward(site, None)
         first, second = site.first_layer.layer, site.second_layer.layer
         x = cache.inputs[site.module_name]
         with torch.no_grad():

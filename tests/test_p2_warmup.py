@@ -1,4 +1,4 @@
-"""Opt-in P2 warmup and Inc10; written without executing tests or training."""
+"""Opt-in P2 warmup, Inc10, and shared native-loop integration."""
 import copy
 from contextlib import nullcontext
 import pytest
@@ -105,3 +105,65 @@ def test_main_resume_warmup_uses_completed_epoch_and_current_batch_index():
         step=completed_epoch*4+current_batch
         with task_warmup(opt,1,4,step,2):records.append(opt.param_groups[0]['lr'])
     assert records==[.05/4,.05,.05]
+
+
+def test_actual_icarl_hook_and_competitor_loader_share_warmup_at_task_boundaries(monkeypatch):
+    from types import SimpleNamespace
+    from torch.utils.data import TensorDataset
+    from adapters.icarl_hooks import ICaRLHook
+    main.cil.upstream_imports()
+    from models import icarl
+    data=TensorDataset(torch.arange(3),torch.ones(3,2),torch.zeros(3,1))
+    main_trace=[];intervention_lrs=[]
+    class Recorder(ICaRLHook):
+        warmup_epochs=1
+        def before_optimizer_step(self,frame):
+            main_trace.append((self.learner._cur_task+1,self.current_epoch*3+self.epoch_step,
+                               self.optimizer.param_groups[0]['lr']))
+        def after_epoch(self,learner,optimizer,frame):self.current_epoch=int(frame.f_locals['epoch'])+1
+    intervention=SimpleNamespace(engine=SimpleNamespace(events=[]),iteration_times=[],
+        start_task=lambda learner:None,
+        after_step=lambda hook,learner,opt:intervention_lrs.append(opt.param_groups[0]['lr']))
+    def incremental(self,manager):
+        self._cur_task+=1
+        self.train_loader=icarl.DataLoader(data,batch_size=1,shuffle=False,num_workers=0)
+        self.test_loader=icarl.DataLoader(data,batch_size=1,shuffle=False,num_workers=0)
+        self._train(self.train_loader,self.test_loader)
+    def train(self,train_loader,test_loader):
+        optimizer=torch.optim.SGD(self._network.parameters(),lr=.05)
+        scheduler=torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[1],gamma=.1)
+        for epoch in icarl.tqdm(range(2)):
+            for _,x,y in train_loader:
+                optimizer.zero_grad();(self._network(x)-y).square().mean().backward();optimizer.step()
+            scheduler.step()
+    monkeypatch.setattr(icarl.iCaRL,'incremental_train',incremental)
+    monkeypatch.setattr(icarl.iCaRL,'_train',train)
+    learner=object.__new__(icarl.iCaRL)
+    learner._network=torch.nn.Linear(2,1)
+    learner._old_network=None;learner._cur_task=-1;learner._device=torch.device('cpu')
+    with Recorder(intervention=intervention).install():
+        learner.incremental_train(None);learner.incremental_train(None)
+    assert intervention_lrs==[.05]*3+[.05*.1]*3+[.05]*3+[.05*.1]*3
+    competitor_trace=[]
+    args=competitors.parser().parse_args(['--method','icarl_cbp','--out','unused','--fake-data',
+        '--increment','10','--warmup-epochs','1','--device','cpu'])
+    cfg,_,_=competitors.recipe('icarl_cbp','nobn',0,'cpu',increment=10)
+    with competitors.runtime(args,'icarl_cbp',cfg,lambda:None,lambda:None) as (module,_):
+        loader=module.DataLoader(data,batch_size=1,shuffle=False,num_workers=0);loader._v4_training=True
+        class Native:
+            _cur_task=0
+            def train(self,train_loader):
+                model=torch.nn.Linear(2,1)
+                optimizer=torch.optim.SGD(model.parameters(),lr=.05)
+                scheduler=torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[1],gamma=.1)
+                optimizer.register_step_pre_hook(lambda opt,a,kw:competitor_trace.append(
+                    (self._cur_task+1,len([r for r in competitor_trace if r[0]==self._cur_task+1])+1,opt.param_groups[0]['lr'])) and None)
+                for epoch in range(2):
+                    for _,x,y in train_loader:
+                        optimizer.zero_grad();(model(x.to(model.weight))-y).square().mean().backward();optimizer.step()
+                    scheduler.step()
+        native=Native()
+        for task in range(2):native._cur_task=task;native.train(loader)
+    assert competitor_trace==main_trace
+    assert [row for row in main_trace if row[1] in (1,3,4)]==[
+        (task,step,lr) for task in (1,2) for step,lr in ((1,.05/3),(3,.05),(4,.05*.1))]

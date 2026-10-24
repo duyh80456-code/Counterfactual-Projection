@@ -39,5 +39,13 @@ have been reproduced.
 Task-2/task-10 reporting is observational and does not gate full training.
 `P2_PILOT_REPORT.json` retains metrics, per-application VNA/CertSwap timing,
 CertSwap rejection reasons and per-site task diagnostic fractions. Preflight
-prints and archives its actual K0/timing data; no real-data timing is available
-at this code-only handoff. No tests or training are run during this handoff.
+prints and archives its actual K0/timing data; no pilot training or real-data
+performance measurement has been run locally.
+
+The first code cell installs the pinned source, checks T4 availability and
+runs tests/test_certswap_cuda.py against real CIFAR images. All three tests must
+PASS with zero skips before the queue is enabled. Failure leaves the GPU gate
+closed; do not proceed to preflight or training. The gate XML and log are saved
+as certswap_gpu_gate.xml and certswap_gpu_gate.log in the notebook Output.
+The local CPU verification results are recorded separately; they do not claim
+to establish CUDA bitwise equality or reproducibility.

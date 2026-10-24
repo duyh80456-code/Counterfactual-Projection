@@ -24,71 +24,52 @@ def isolated():
     torch.set_num_threads(threads)
 
 
-class Block(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv_a=nn.Conv2d(1,2,1,bias=True)
-        self.relu=nn.ReLU()
-        self.conv_b=nn.Conv2d(2,1,1,bias=True)
-
-    def forward(self,x):
-        return self.relu(x+self.conv_b(self.relu(self.conv_a(x))))
-
-
-class Backbone(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.stage_1=nn.Sequential(Block())
-        self.stage_2=nn.Sequential(Block())
-        self.stage_3=nn.Sequential(Block())
-        self.avgpool=nn.AdaptiveAvgPool2d(1)
-
-    def forward(self,x):
-        return self.avgpool(self.stage_3(self.stage_2(self.stage_1(x)))).flatten(1)
-
-
 class Native(nn.Module):
     def __init__(self):
         super().__init__()
-        self.convnet=Backbone()
-        self.fc=nn.Linear(1,3)
+        from adapters.cil_setup import resnet32_nobn
+        self.convnet=resnet32_nobn()
+        del self.convnet.fc
+        self.fc=nn.Linear(self.convnet.out_dim,3)
 
     def forward(self,x):
-        return self.fc(self.convnet(x))
+        return {'logits':self.fc(self.convnet(x)['features'])}
 
 
-class TinyCIFAR(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.native=Native()
-
-    def forward(self,x):
-        return self.native(x)
-
-
-def problem():
-    model=TinyCIFAR().double().train()
+def problem(device='cpu',dtype=torch.float64):
+    from experiments.runners.pycil import upstream_imports
+    from adapters.icarl_hooks import Prediction,sites_for
+    from adapters.cil_setup import SkipScale
+    upstream_imports()
+    model=Prediction(Native()).to(device=device,dtype=dtype).train()
+    assert len(sites_for(model))==15
+    assert sum(isinstance(module,nn.Conv2d) for module in model.modules())==31
+    assert sum(p.numel() for p in model.parameters())>460000
     with torch.no_grad():
-        for block in model.native.convnet.modules():
-            if isinstance(block,Block):
-                block.conv_a.weight.zero_()
-                block.conv_a.bias.copy_(torch.tensor([-1.,1.],dtype=torch.float64))
-                block.conv_b.weight.zero_();block.conv_b.bias.zero_()
-        model.native.fc.weight.copy_(torch.tensor([[1.],[-1.],[0.]],dtype=torch.float64))
+        for module in model.modules():
+            if isinstance(module,nn.Conv2d):
+                module.weight.zero_();module.bias.zero_()
+            elif isinstance(module,SkipScale):module.alpha.fill_(1.)
+        model.native.convnet.conv_1_3x3.weight[0,0,1,1]=1.
+        for site in sites_for(model):
+            site.first_layer.layer.bias[0]=-1.
+            site.first_layer.layer.bias[1:]=1.
+        model.native.fc.weight.zero_()
+        model.native.fc.weight[:,0]=torch.tensor([1.,-1.,0.],device=device,dtype=dtype)
         model.native.fc.bias.zero_()
-    sites=[HookSite(model,f'native.convnet.stage_{stage}.0.conv_a',
-        f'native.convnet.stage_{stage}.0.conv_b','conv',
-        between=(f'native.convnet.stage_{stage}.0.relu',)) for stage in (1,2,3)]
-    inputs=torch.tensor([.25,.75,1.25,1.75],dtype=torch.float64).reshape(4,1,1,1)
-    targets=torch.ones(4,dtype=torch.long)
-    ctx=dict(targets=targets,known_classes=2,teacher_logits=torch.zeros(4,2,dtype=torch.float64))
+    sites=[site for site in sites_for(model) if '.4.conv_a' in site.first]
+    values=torch.tensor([.25,.75,1.25,1.75],device=device,dtype=dtype)
+    inputs=values[:,None,None,None].expand(-1,3,32,32).clone()
+    targets=torch.ones(4,device=device,dtype=torch.long)
+    ctx=dict(targets=targets,known_classes=2,teacher_logits=torch.zeros(4,2,device=device,dtype=dtype))
     optimizer=torch.optim.SGD(model.parameters(),lr=.01,momentum=.9)
     for parameter in model.parameters():
         optimizer.state[parameter].update(momentum_buffer=torch.ones_like(parameter),
             exp_avg=torch.full_like(parameter,2.),step=torch.tensor(7.))
-    proposals={site.module_name:dict(weight=torch.ones(1,1,1,1,dtype=torch.float64),
-                                    bias=torch.tensor([-.5],dtype=torch.float64))
-               for site in sites}
+    proposals={}
+    for site in sites:
+        weight=torch.zeros_like(site.first_layer.layer.weight[:1]);weight[0,0,1,1]=1.
+        proposals[site.module_name]=dict(weight=weight,bias=weight.new_tensor([-.5]))
     proposals[sites[1].module_name]['weight'].neg_()
     proposals[sites[1].module_name]['bias'].fill_(.9)
     return model,sites,(inputs,targets),ICaRLPyCIL(T=2,known_classes=2),ctx,optimizer,proposals
@@ -112,11 +93,12 @@ def test_t32_dead_slot_exact_zero_jump_and_functional_trials_do_not_mutate():
     model,sites,batch,spec,ctx,opt,proposals=problem()
     cache,forward,reference=slot_forward(model,sites[-1],batch[0],proposals[sites[-1].module_name])
     state=deepcopy((model.state_dict(),opt.state_dict(),rng_state()))
-    swapped=forward(torch.zeros(1,dtype=torch.float64))
+    size=reference[:,0].numel()
+    swapped=forward(reference.new_zeros(size))
     assert torch.equal(swapped,cache.logits)
-    before=certswap.losses(cache.logits,spec,ctx)
+    before=certswap.losses(cache.forward(sites[-1],None),spec,ctx)
     assert certswap.losses(swapped,spec,ctx)==before
-    result,record=certswap.certify(forward,1,reference,before,spec,ctx,mu0=10.,budget=20)
+    result,record=certswap.certify(forward,size,reference,before,spec,ctx,mu0=10.,budget=20)
     assert record['jL']==record['jKD']==0.
     assert result is not None and record['rho']>=.25 and record['pred_B']>0
     assert len(record['lm_trials'])<=20
@@ -126,15 +108,17 @@ def test_t32_dead_slot_exact_zero_jump_and_functional_trials_do_not_mutate():
 
 def test_cached_suffix_matches_full_forward_after_deep_then_shallow_edit():
     model,sites,batch,_,_,_,_=problem()
+    from adapters.icarl_hooks import sites_for
+    sites=sites_for(model)
     cache=certswap.PrefixCache(model,sites,batch[0])
     for site in sites:
-        torch.testing.assert_close(cache.forward(site),model(batch[0]),rtol=0,atol=1e-12)
+        assert torch.equal(cache.forward(site),model(batch[0]))
     shallow,deep=sites[0],sites[-1]
     block_path=deep.first.rsplit('.',1)[0]
     replacement=deep.second_layer.layer.weight.detach().clone();replacement[:,1]=.125
     predicted=cache.forward(deep,{'conv_b.weight':replacement})
     full=functional_call(model,{f'{block_path}.conv_b.weight':replacement},(batch[0],),strict=False)
-    torch.testing.assert_close(predicted,full,rtol=0,atol=1e-12)
+    assert torch.equal(predicted,full)
     with torch.no_grad():deep.second_layer.layer.weight.copy_(replacement)
     captured=[]
     handle=model.get_submodule(shallow.first.rsplit('.',1)[0]).register_forward_pre_hook(
@@ -142,7 +126,7 @@ def test_cached_suffix_matches_full_forward_after_deep_then_shallow_edit():
     try:current=model(batch[0])
     finally:handle.remove()
     assert torch.equal(captured[0],cache.inputs[shallow.module_name])
-    torch.testing.assert_close(cache.forward(shallow),current,rtol=0,atol=1e-12)
+    assert torch.equal(cache.forward(shallow),current)
 
 
 def test_t32_certified_sequence_measures_current_ce_and_preswap_kd():
@@ -298,3 +282,45 @@ def test_optin_engine_calls_certswap_on_post_vna_network(monkeypatch):
     assert not row['skipped'] and observed==pytest.approx([row['L_after']],abs=1e-13)
     assert row['certswap']['accepted']==[] and row['certswap_seconds']==0.
     assert 'vna_seconds' in row and engine.policy_version=='certswap_t32_v1'
+
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='requires a CUDA GPU; CPU is not a substitute')
+def test_cuda_real_resnet32_dead_jump_and_suffix_are_bitwise(dtype):
+    model,sites,batch,spec,ctx,opt,proposals=problem('cuda:0',dtype)
+    from adapters.icarl_hooks import sites_for
+    assert len(sites_for(model))==15
+    previous=torch.backends.cudnn.deterministic,torch.backends.cudnn.benchmark
+    torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
+    try:
+        cache=certswap.PrefixCache(model,sites,batch[0])
+        with torch.no_grad():
+            full=model(batch[0]).double()
+            for site in sites:
+                before=cache.forward(site,None)
+                assert torch.equal(before,full)
+                _,forward,reference=slot_forward(model,site,batch[0],proposals[site.module_name])
+                swapped=forward(reference.new_zeros(reference[:,0].numel()))
+                assert torch.equal(before,swapped)
+                old=certswap.losses(before,spec,ctx);new=certswap.losses(swapped,spec,ctx)
+                assert new[0]-old[0]==0. and new[1]-old[1]==0.
+    finally:
+        torch.backends.cudnn.deterministic,torch.backends.cudnn.benchmark=previous
+
+
+def test_each_site_measures_before_on_its_own_suffix_even_with_cached_full_logits(monkeypatch):
+    model,sites,batch,spec,ctx,opt,proposals=problem()
+    cache=certswap.PrefixCache(model,sites,batch[0])
+    cache.logits=torch.full_like(cache.logits,123.)
+    engine=V3Engine('vna_gir',gir_rule='certswap',certswap_topk=1,certswap_log_schur=False)
+    engine.begin_task(2)
+    seen=[]
+    def observe(forward,size,reference,before,spec,ctx,**kwargs):
+        site=sites[len(sites)-1-len(seen)]
+        with torch.no_grad():expected=certswap.losses(cache.forward(site,None),spec,ctx)
+        assert before==expected
+        seen.append(site.module_name)
+        return None,dict(reason='g_zero',lm_trials=[])
+    monkeypatch.setattr(certswap,'certify',observe)
+    certswap.run(engine,model,sites,proposals,batch,spec,ctx,opt,1,{'certswap_cache':cache})
+    assert seen==[site.module_name for site in reversed(sites)]

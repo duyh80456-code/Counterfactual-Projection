@@ -11,9 +11,29 @@ from scripts.build_kaggle_vna_parallel import OVERLAY,source_bundle
 
 ARMS=('icarl_full','icarl','icarl_cbp','icarl_redo')
 
+GPU_GATE=r'''
+print('CERTSWAP GPU GATE: real CIFAR / native ResNet32 / exact jumps and reproducibility',flush=True)
+gate_xml=RUN_ROOT/'certswap_gpu_gate.xml'
+gate_log=RUN_ROOT/'certswap_gpu_gate.log'
+gate_env={**test_env,'CUDA_VISIBLE_DEVICES':'0','VNA_CERTSWAP_CIFAR_ROOT':str(DATA_ROOT)}
+gate=subprocess.run([sys.executable,'-m','pytest','tests/test_certswap_cuda.py','-ra',
+    '--junitxml='+str(gate_xml)],cwd=REPO,env=gate_env,capture_output=True,text=True)
+gate_log.write_text(gate.stdout+gate.stderr)
+print(gate.stdout+gate.stderr,flush=True)
+if gate.returncode:raise RuntimeError('CERTSWAP GPU GATE FAIL: preflight and training are blocked; see '+str(gate_log))
+import xml.etree.ElementTree as ET
+cases=list(ET.parse(gate_xml).getroot().iter('testcase'))
+if len(cases)!=3 or any(c.find(tag) is not None for c in cases for tag in ('skipped','failure','error')):
+    raise RuntimeError('CERTSWAP GPU GATE FAIL: all three CUDA tests must PASS, with no skips')
+GPU_GATE_PASSED=True
+print('CERTSWAP GPU GATE PASS: all 3 checks passed; preflight/training may start.',flush=True)
+'''
+
 RUNNER=r'''import queue
 from concurrent.futures import ThreadPoolExecutor
 from experiments.io_utils import atomic_json_save
+if not globals().get('GPU_GATE_PASSED',False):
+    raise RuntimeError('Run the first code cell and PASS the CertSwap GPU gate before launching jobs')
 SCHEDULE=ROOT/'_schedules'/'inc10_p2_certswap.json'
 errors=[]
 report_stop=threading.Event()
@@ -24,6 +44,7 @@ def read(path,default):
     except FileNotFoundError:return default
 
 def identity(value,arm):
+    value=value.get('identity',value)
     cfg=value.get('cfg',{})
     if (value.get('code_commit')!=REPO_COMMIT or value.get('source_digest')!=SOURCE_DIGEST
             or value.get('arm')!=arm or value.get('seed')!=0
@@ -139,7 +160,7 @@ def lane(gpu,first):
         directory=ROOT/job_name(arm)
         summary=read(directory/'summary.json',{})
         if summary:
-            identity(summary.get('identity',{}),arm)
+            identity(summary,arm)
             if summary.get('status')=='COMPLETED':
                 if len(summary.get('tasks',[]))!=10:raise ValueError('Completed P2 run must contain all ten tasks')
                 continue
@@ -181,6 +202,7 @@ def build(commit,source_digest=None):
     cells=result['cells']
     cells[0]=cell('code',f'''REPO_COMMIT = {commit!r}
 SOURCE_DIGEST = {source_digest!r}
+GPU_GATE_PASSED = False
 RUN_TAG = 'vna_v5_inc10_p2'
 ARMS = {ARMS!r}
 JOBS_GPU0 = ['icarl_full__nobn__superclass__inc10__p2__s0']
@@ -196,6 +218,8 @@ Enable Internet, T4×2 and the `github_token` secret. Attach CIFAR-100 with `cif
 
 All four arms use ResNet32 noBN/SkipInit, superclass order, memory 2000, native 100/50 epochs, lr scale 0.5 and one epoch of linear warmup at EVERY task; clipping stays off. GPU0 runs a fresh Inc10/P2 CertSwap authority preflight and then full seed 0 (Gram/power10). GPU1 starts baseline seed 0; available GPUs then draw CBP/ReDo from the shared queue, using their registered original defaults. No seeds 1–2 or other competitors are launched.
 
+The first code cell loads the pinned source and runs the mandatory CUDA gate on real CIFAR images: exact zero dead-slot CE/KD jumps, bitwise suffix/full equality, and identical j/rho for repeated candidates. FAIL or SKIP blocks preflight and every training job. GPU gate XML and logs remain in Output.
+
 Task-2 and task-10 reports appear as soon as each arm reaches them and do not stop training. The report retains CertSwap acceptance/rejection counts, separate VNA/CertSwap timing and per-site dead/dormant fractions on the native fixed 256-sample probe. Output: `outputs/vna_v5_inc10_p2/`. P1, clipping studies and all old notebook outputs are kept separate.
 ''')
     bootstrap=''.join(cells[2]['source']).replace('/kaggle/working/vna4_main','/kaggle/working/vna5_inc10_p2_pilot')+OVERLAY
@@ -205,6 +229,8 @@ Task-2 and task-10 reports appear as soon as each arm reaches them and do not st
     runtime=runtime.replace('folders=("outputs",)', 'folders=("outputs/vna_v5_inc10_p2",)')
     cells[4]=cell('code',runtime)
     cells[5]=cell('code',RUNNER)
+    result['cells']=[cells[1],cell('code',''.join(cells[0]['source'])+'\n'+bootstrap+'\n'+
+        ''.join(cells[3]['source'])+'\n'+GPU_GATE),cells[4],cells[5]]
     return result
 
 

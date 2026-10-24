@@ -1306,3 +1306,26 @@ swaps by task, per-application VNA and CertSwap seconds, and each arm's per-site
 dead/dormant fractions by task on the fixed 256-sample probe (ReDo tau=0.025).
 P1 (Inc5/no warmup) remains a separate reported protocol; never pool P1 and P2.
 This implementation-only handoff does not run tests, preflight or training.
+
+### 2026-10-24 follow-up: correctness gates before the P2 pilot
+
+Measure the pre-swap CE/KD anew at each site through cache.forward(site, None),
+the same suffix used by structural trials. Measure both jump forwards without
+autograd before building the VJP. The scientific acceptance inequalities and
+candidate rule are unchanged.
+
+CPU verification must pass before committing the follow-up or rebuilding its
+notebook: native resnet32_nobn T32 fixture, exact suffix comparisons, actual
+icarl_full dispatch, shared-hook warmup traces, actual runner identity schemas,
+and bitwise comparison against a separate unmodified 3584b04 worktree. Timing,
+source commit and source digest provenance are excluded from the historical
+numeric-log comparison; weights, optimizer, RNG and scientific logs are exact.
+
+Every pilot session's first code cell loads the pinned source and runs three
+mandatory tests on T4 using real CIFAR-100 first-task images and the native
+ResNet32 noBN backbone: dead-slot jL=jKD=0 exactly, suffix/full output bitwise
+equality (including shallow cache validity after a deep edit), and identical
+j/rho for two trials of the same candidate. A failure, error, skip, or missing
+test blocks all preflight and training. Tests run in a separate process and
+do not affect training initialization or RNG. GPU log and JUnit XML remain
+in Output. No GPU PASS is inferred from CPU results.
