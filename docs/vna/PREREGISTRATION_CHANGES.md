@@ -1356,10 +1356,11 @@ in Output. No GPU PASS is inferred from CPU results.
   replaced by GroupNorm(8, C) (8 groups; affine bias 0, weight 1 except gamma = 0 for the last
   GroupNorm of every residual block, the standard zero-init of GN ResNets, Goyal et al. 2017,
   Wu & He 2018), lr 0.05 (lr scale 0.5, shared with P1) after task 1 collapsed to ln 5 at lr 0.1.
-  Two gates precede tasks 2-5: (1) after 10 epochs of task 1 the epoch loss must not increase
-  from one epoch to the next and must stay below 1.60 (ln 5 = 1.609) after epoch 1; (2) the
-  final task-1 CNN accuracy must reach the noBN level (76); otherwise the job stops, reports and
-  tasks 2-5 are not run. Baseline
+  One gate precedes tasks 2-5: the final task-1 CNN accuracy must be >= 72, the noBN task-1 level
+  (76) minus about two standard errors of the 500 task-1 test images (+-1.9); otherwise the job
+  stops, reports and tasks 2-5 are not run. This gate also catches a collapse to ln 5. No
+  per-epoch loss gate is used: SGD with augmentation does not decrease the loss at every epoch
+  (noBN P1 has epoch-2 loss 1.591). Baseline
   iCaRL, seeds 0 and 1, trains tasks 1-5; in tasks 2-5, at every step for r = 0..10 and every 5
   steps to 200, old/new-class test accuracy is read with the replay's reader and a fresh engine (Gram/power10, icarl_full policy, VNA step
   only) runs one full T26 application on a deep copy of the network and optimizer for the current
