@@ -3,25 +3,17 @@
 This is a separate four-arm pilot. Existing notebooks and P1 outputs remain
 historical records. The new namespace is `outputs/vna_v5_inc10_p2/`.
 
-The local handoff uses the existing immutable base commit
-`3584b04d2ce14b6d8723eaf17a2800917a53b960` plus a mandatory source ZIP. The
-base pin alone does not contain this uncommitted implementation. After all
-source edits are integrated, generate both the source snapshot and notebook:
+The notebook pins the complete source commit
+`c2499f306c41d143db75e8135ab79d7f3f51e325` directly from GitHub.
+No source ZIP is needed. Regenerate the notebook with:
 
 ```bash
 .venv/bin/python -m scripts.build_kaggle_vna5_inc10_p2 \
-  --commit 3584b04d2ce14b6d8723eaf17a2800917a53b960 \
-  --source-bundle outputs/vna5_inc10_p2_handoff/vna_v3_source.zip
+  --commit c2499f306c41d143db75e8135ab79d7f3f51e325
 ```
 
-Attach that exact `vna_v3_source.zip` to Kaggle. Its SHA256 is embedded in
-`SOURCE_DIGEST`; the notebook verifies the ZIP before installing the local
-source overlay, and the run identity records both base commit and source
-digest.
-No commit or push is performed by this handoff.
-
 Kaggle inputs: CIFAR-100 containing `cifar-100-python/{train,test,meta}`; only
-this pilot's prior output archive for resume; and the exact source ZIP matching SOURCE_DIGEST.
+this pilot's prior output archive for resume (optional for the first session).
 Enable Internet, T4×2, and the existing `github_token` secret. No P1 or clipping
 study result/checkpoint is needed or reused.
 
