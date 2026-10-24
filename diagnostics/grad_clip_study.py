@@ -30,13 +30,20 @@ def compare_epochs(reference,current,task,epoch=None):
     observed={(r['task'],r['epoch']):r['train_loss'] for r in new}
     differences=[dict(task=k[0],epoch=k[1],reference=expected.get(k),current=observed.get(k))
         for k in sorted(expected.keys()|observed.keys()) if k not in expected or k not in observed or expected[k]!=observed[k]]
+    mismatches=[r for r in differences if (r['task'],r['epoch']) in expected.keys()&observed.keys()]
+    missing_current=[r for r in differences if (r['task'],r['epoch']) not in observed]
+    missing_reference=[r for r in differences if (r['task'],r['epoch']) not in expected]
     count=100+50*(task-1) if epoch is None else (100+50*(task-2)+epoch if task>1 else epoch)
     coverage={(t,e) for t in range(1,task+1) for e in range(1,
         (epoch if t==task and epoch is not None else 100 if t==1 else 50)+1)}
     passed=(len(old)==len(new)==count and set(expected)==set(observed)==coverage and not differences and
         all(isinstance(v,(int,float)) and math.isfinite(v) for v in (*expected.values(),*observed.values())))
     return dict(status='PASS' if passed else 'FAIL',epochs_compared=len(new),expected_epochs=count,
-        absolute_tolerance=0.,relative_tolerance=0.,differences=differences)
+        absolute_tolerance=0.,relative_tolerance=0.,differences=differences,
+        matched_epochs=sum(expected[k]==observed[k] and isinstance(expected[k],(int,float)) and math.isfinite(expected[k]) for k in expected.keys()&observed.keys()),
+        mismatched_epochs=mismatches,missing_current_epochs=missing_current,missing_reference_epochs=missing_reference,
+        reference_complete=len(old)==count and set(expected)==coverage and all(isinstance(v,(int,float)) and math.isfinite(v) for v in expected.values()),
+        observed_unique=len(new)==len(observed))
 
 
 def mathematical_identity(identity):
@@ -219,6 +226,9 @@ def run(args):
             selected+=copy.deepcopy([r for r in clip.steps if r['task']==2 and r['step'] not in existing])
         rows=sorted(selected,key=lambda r:r['step'])
     check=compare_epochs(reference_epochs,epochs,args.tasks,args.epoch) if reference_epochs else dict(status='MISSING_REFERENCE')
+    if (status in ('PAUSED','STOPPED_REPLAY_MISMATCH') and check.get('reference_complete') and check.get('observed_unique') and
+        not check.get('mismatched_epochs') and not check.get('missing_reference_epochs') and check.get('missing_current_epochs')):
+        check['status']='INCOMPLETE'
     passed=status in ('COMPLETED','PREFIX_COMPLETED') and check['status']=='PASS' and clip_report is not None and clip_report['run']['n_clipped']==0
     intervention=getattr(holder.get('hook'),'intervention',None)
     trace=[{**{k:r.get(k) for k in ('kind','task','iteration','step','K','K_next','skipped','s','swaps','reason')},

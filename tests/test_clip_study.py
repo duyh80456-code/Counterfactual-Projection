@@ -376,3 +376,44 @@ def test_tau_selection_requires_full_trace_even_at_largest_grid_threshold(tmp_pa
     report=json.loads(path.read_text());report['intervention_trace']=[];write(path,report)
     result=choose_tau(tmp_path,COMMIT)
     assert result['status']=='REPLAY_MISMATCH' and result.get('tau') is None
+
+
+def test_epoch_audit_separates_unrun_tail_from_value_mismatch():
+    original=epochs(20);current=copy.deepcopy(original[:104])
+    report=compare_epochs(original,current,20)
+    assert report['status']=='FAIL'  # Incomplete coverage still cannot certify reuse.
+    assert report['matched_epochs']==104 and report['mismatched_epochs']==[]
+    assert len(report['missing_current_epochs'])==946 and report['missing_reference_epochs']==[]
+    assert report['missing_current_epochs'][0]['task']==2 and report['missing_current_epochs'][0]['epoch']==5
+    current[-1]['train_loss']+=1.
+    report=compare_epochs(original,current,20)
+    assert report['matched_epochs']==103 and len(report['mismatched_epochs'])==1
+    row=report['mismatched_epochs'][0]
+    assert (row['task'],row['epoch'])==(2,4) and row['current']!=row['reference']
+
+
+def test_interrupted_B_reports_incomplete_not_loss_mismatch(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    import diagnostics.grad_clip_study as worker
+    from experiments import main_cil,vna_provenance
+    from experiments.grad_clip import GradClip
+    from experiments.runners import pycil
+    repo=Path(__file__).resolve().parents[1]
+    reference=tmp_path/'reference.json'
+    write(reference,dict(identity=dict(arm='icarl',seed=0,code_commit=COMMIT),epochs=epochs(20),summary_sha256='c'*64))
+    args=worker.parser().parse_args(['--repo',str(repo),'--support-repo',str(repo),'--mode','B','--arm','icarl',
+        '--seed','0','--out',str(tmp_path),'--data-dir',str(tmp_path),'--reference',str(reference)])
+    class Parser:
+        def parse_args(self,cli):return SimpleNamespace(out=str(tmp_path))
+    def init(hook,*a,**kw):hook.epochs=epochs(20)[:104];hook.clipper=GradClip(None)
+    def interrupted(parsed):main_cil.MainHook();raise SystemExit(75)
+    monkeypatch.setattr(pycil,'upstream_imports',lambda:None)
+    monkeypatch.setattr(main_cil,'parser',lambda:Parser())
+    monkeypatch.setattr(main_cil.MainHook,'__init__',init)
+    monkeypatch.setattr(main_cil,'run',interrupted)
+    monkeypatch.setattr(vna_provenance,'code_commit',lambda:COMMIT)
+    with pytest.raises(SystemExit):worker.run(args)
+    report=json.loads((tmp_path/'study.json').read_text())
+    assert report['status']=='PAUSED' and report['equivalent_under_clip'] is False
+    assert report['loss_check']['status']=='INCOMPLETE'
+    assert report['loss_check']['matched_epochs']==104 and report['loss_check']['mismatched_epochs']==[]

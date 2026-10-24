@@ -1199,3 +1199,19 @@ and native failure coordinates. Keep the run incomplete, continue other queued
 jobs at the same selected tau, and report the failure. No tau retuning,
 replacement threshold, grid expansion or automatic retry at a different tau is
 permitted after observing Phase C outcomes.
+
+## 2026-10-24: restore native None-control stopping criteria
+
+The first strict A/B archive showed full s2 stopped at2010 on the newly added
+nonfinite norm guard, while the registered source stopped at2011 on nonfinite
+loss. Baseline s2 matched2008 and the full correction at2001/K0=512 passed.
+For tau=None, norms remain measured but the newly added gradient/loss/parameter
+safeguards no longer create extra stopping conditions: retain each runner's
+original native checks. Non-None clipping keeps the new guards. Do not alter
+training arithmetic, LR, RNG, VNA/GIR or relax the registered failure steps.
+
+B s0 had104 exact epoch matches and zero observed numeric mismatches. It stopped
+mid task2 epoch5 via the shared full-control mismatch marker; the other946 epoch
+losses were unavailable. Report incomplete coverage separately from differences
+between observed losses; neither incomplete coverage nor partial matches
+qualifies for selection or full-run reuse. See CLIP_AB_REPLAY_AUDIT.md.

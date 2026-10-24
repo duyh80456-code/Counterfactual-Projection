@@ -240,13 +240,13 @@ def run(args):
         values=frame.f_locals if frame else {}
         loss=values.get('loss');losses=values.get('loss_list')
         if losses is not None:loss=sum(losses)
-        if isinstance(loss,torch.Tensor) and not bool(torch.isfinite(loss).all()):
+        if clipper.tau is not None and isinstance(loss,torch.Tensor) and not bool(torch.isfinite(loss).all()):
             raise TrainingDiverged(dict(task=task,epoch=epoch,step=step,tensor='loss'))
-        if row['nonfinite_norm']:raise TrainingDiverged(dict(task=task,epoch=epoch,step=step,tensor='gradient'))
+        if clipper.tau is not None and row['nonfinite_norm']:raise TrainingDiverged(dict(task=task,epoch=epoch,step=step,tensor='gradient'))
     def step_done():
         if clipper is None or 'row' not in pending:return
         row=pending['row'];row['resets']=hook.last_resets if hook else 0
-        check_parameters(learner,task=row['task'],epoch=row['epoch'],step=row['step'])
+        if clipper.tau is not None:check_parameters(learner,task=row['task'],epoch=row['epoch'],step=row['step'])
         if step_observer:step_observer(row,learner)
     def boundary():
         def paused():

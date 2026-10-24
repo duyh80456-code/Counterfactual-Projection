@@ -270,16 +270,17 @@ class MainHook(ICaRLHook):
                 self.pending_clip.update(step_details(self.learner,self.optimizer,frame))
                 self.clipper.steps.append(self.pending_clip)
         if isinstance(loss,torch.Tensor) and not bool(torch.isfinite(loss).all()):
-            self.diverged=dict(task=self.learner._cur_task+1,epoch=int(frame.f_locals.get('epoch',0))+1,
+            self.diverged=dict(task=self.learner._cur_task+1,epoch=int(frame.f_locals.get('epoch',self.current_epoch))+1,
                                step=self.steps,tensor='loss')
             raise Diverged('nonfinite training loss')
-        if self.clipper is not None and self.pending_clip['nonfinite_norm']:
+        if self.clipper is not None and self.clipper.tau is not None and self.pending_clip['nonfinite_norm']:
             raise TrainingDiverged(dict(task=self.learner._cur_task+1,epoch=self.pending_clip['epoch'],step=self.steps,tensor='gradient'))
 
     def after_optimizer_step(self,frame):
         if self.clipper is None:return
         row=self.pending_clip
-        check_parameters(self.learner,task=row['task'],epoch=row['epoch'],step=self.steps)
+        # None is a measuring control: retain the native failure boundary.
+        if self.clipper.tau is not None:check_parameters(self.learner,task=row['task'],epoch=row['epoch'],step=self.steps)
         if self.step_observer:self.step_observer(row,self.learner)
 
     def after_epoch(self, learner, optimizer, frame):

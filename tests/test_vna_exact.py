@@ -258,6 +258,7 @@ def test_divergence_guard_stops_before_sgd_and_records_location():
     from experiments.main_cil import MainHook, Diverged
     hook=object.__new__(MainHook);hook.learner=SimpleNamespace(_cur_task=1)
     hook.current_epoch=2;hook.steps=2051;hook.diverged=None
+    hook.clipper=None
     def native_frame():
         loss=torch.tensor(float('nan'))
         hook.before_optimizer_step(inspect.currentframe())

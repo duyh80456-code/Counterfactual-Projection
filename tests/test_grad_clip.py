@@ -142,3 +142,53 @@ def test_archive_retains_previous_when_temporary_space_is_insufficient(tmp_path,
     with pytest.raises(RuntimeError,match='ARCHIVE STALE'):
         vna_kaggle.archive_outputs(root,folders=('outputs',))
     assert old.read_bytes()==b'previous archive'
+
+
+@pytest.mark.parametrize('gradient',[float('inf'),1e20])
+def test_main_unclipped_control_logs_bad_norm_without_early_stop(gradient):
+    from experiments.main_cil import MainHook,Diverged
+    model=torch.nn.Linear(1,1,bias=False)
+    model.weight.grad=torch.full_like(model.weight,gradient)
+    hook=MainHook.__new__(MainHook)
+    hook.learner=SimpleNamespace(_network=model,_cur_task=1)
+    hook.intervention=None;hook.clipper=GradClip(None);hook.steps=2010;hook.current_epoch=0
+    hook.step_observer=None;hook.diverged=None
+    frame=SimpleNamespace(f_locals={'epoch':0,'loss':torch.tensor(2.667e9)})
+    raw=model.weight.grad.clone();version=model.weight.grad._version
+    MainHook.before_optimizer_step(hook,frame)
+    assert hook.pending_clip['nonfinite_norm']
+    assert torch.equal(model.weight.grad,raw) and model.weight.grad._version==version
+    torch.optim.SGD(model.parameters(),lr=.05).step()
+    MainHook.after_optimizer_step(hook,frame)
+    hook.steps=2011;frame.f_locals['loss']=torch.tensor(float('nan'))
+    with pytest.raises(Diverged,match='nonfinite training loss'):MainHook.before_optimizer_step(hook,frame)
+    assert hook.diverged==dict(task=2,epoch=1,step=2011,tensor='loss')
+
+
+def test_main_clipped_training_retains_gradient_guard():
+    from experiments.main_cil import MainHook
+    from experiments.grad_clip import TrainingDiverged
+    model=torch.nn.Linear(1,1,bias=False);model.weight.grad=torch.full_like(model.weight,1e20)
+    hook=MainHook.__new__(MainHook)
+    hook.learner=SimpleNamespace(_network=model,_cur_task=1)
+    hook.intervention=None;hook.clipper=GradClip(5.);hook.steps=2010;hook.current_epoch=0
+    hook.step_observer=None;hook.diverged=None
+    with pytest.raises(TrainingDiverged) as caught:
+        MainHook.before_optimizer_step(hook,SimpleNamespace(f_locals={'epoch':0,'loss':torch.tensor(1.)}))
+    assert caught.value.detail['tensor']=='gradient' and caught.value.detail['step']==2010
+
+
+@pytest.mark.parametrize('method',['icarl_cbp','gem'])
+@pytest.mark.parametrize('tau',[None,5.])
+def test_competitor_control_does_not_use_new_norm_guard(tmp_path,monkeypatch,method,tau):
+    from experiments import v4_competitors as v4
+    original=GradClip.apply
+    def flagged(self,*args,**kwargs):
+        row=original(self,*args,**kwargs);row['nonfinite_norm']=True
+        return row
+    monkeypatch.setattr(GradClip,'apply',flagged)
+    cli=['--method',method,'--out',str(tmp_path),'--fake-data','--device','cpu']
+    if tau is not None:cli+=['--grad-clip',str(tau)]
+    result=v4.run(v4.parser().parse_args(cli))
+    assert result['status']==('COMPLETED' if tau is None else 'DIVERGED')
+    if tau is not None:assert result['diverged']['tensor']=='gradient'

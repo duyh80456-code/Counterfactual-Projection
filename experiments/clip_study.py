@@ -401,7 +401,14 @@ def write_report(root):
         lines.append(f"| {key(r['arm'],r['seed'])} | {r['tau']} | {r['status']} | {failed} | {max(norms,default=None)} | {sum(p['clipped'] for p in rows)} |")
     lines+=['','## Phase B and selection','']
     for path in sorted(root.glob('B/**/study.json')):
-        r=json.loads(path.read_text());lines.append(f"- {key(r['arm'],r['seed'])}: {r['status']}; exact loss {r['loss_check']['status']}; grad stats {r['grad_clip']['run'] if r.get('grad_clip') else None}")
+        r=json.loads(path.read_text());check=r['loss_check']
+        lines.append(f"- {key(r['arm'],r['seed'])}: {r['status']}; exact loss {check['status']}; matched={check.get('matched_epochs')}; numeric mismatches={len(check.get('mismatched_epochs',[]))}; missing completed epochs={len(check.get('missing_current_epochs',[]))}; grad stats {r['grad_clip']['run'] if r.get('grad_clip') else None}")
+        for difference in check.get('mismatched_epochs',[]):
+            lines.append(f"  - LOSS_MISMATCH task={difference['task']} epoch={difference['epoch']}: old={difference['reference']!r}; new={difference['current']!r}")
+        missing=check.get('missing_current_epochs',[])
+        if missing:
+            first=missing[0]
+            lines.append(f"  - First unavailable epoch: task={first['task']} epoch={first['epoch']}; old={first['reference']!r}; new=unavailable; run status={r['status']}. See loss_check.missing_current_epochs for the full list.")
     if (root/'grad_clip_selection.json').exists():lines+=['','```json',(root/'grad_clip_selection.json').read_text(),'```']
     lines+=['','## Phase C','']
     for path in sorted(root.glob('C/*/result.json')):lines.append('- '+path.read_text())
