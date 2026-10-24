@@ -24,13 +24,20 @@ def p1_references():
     for path in Path('/kaggle/input').rglob('protocol.json'):
         p=read(path,{})
         arm,seed=p.get('arm'),p.get('seed')
+        if arm in ('icarl','icarl_full') and seed in (0,1) and p.get('backbone')=='resnet32_nobn':
+            print(f'FOUND {arm}__s{seed} {path.parent}: commit={p.get("code_commit","")[:7]} order={p.get("class_order_kind")} '
+                  f'lr={p.get("nobn_lr_scale")} solver={p.get("solver")} curvature={p.get("curvature")} '
+                  f'max_tasks={p.get("comparison_protocol",{}).get("max_tasks")}',flush=True)
         if (p.get('setting')!='icarl' or p.get('algorithm_version')!='v4' or arm not in ('icarl','icarl_full')
                 or seed not in (0,1) or p.get('backbone')!='resnet32_nobn' or p.get('class_order_kind')!='superclass'
                 or p.get('nobn_lr_scale')!=.5 or 'max_tasks' in p.get('comparison_protocol',{})
                 or p.get('fake_data') or p.get('preflight_only')):continue
         if arm=='icarl_full' and (p.get('solver'),p.get('curvature'),p.get('policy_version'))!=('gram','power10',POLICY):continue
         tasks=read(path.parent/'tasks.json',[]);epochs=read(path.parent/'epochs.json',[])
-        if len([t for t in tasks if t.get('task',99)<=5])<5 or len([e for e in epochs if e.get('task',99)<=5])<300:continue
+        if len([t for t in tasks if t.get('task',99)<=5])<5 or len([e for e in epochs if e.get('task',99)<=5])<300:
+            print(f'SKIP {arm}__s{seed} {path.parent}: tasks={len(tasks)} epochs={len(epochs)} commit={p.get("code_commit","")[:7]} '
+                  f'status={read(path.parent/"summary.json",{}).get("status")}',flush=True)
+            continue
         prefix=json.dumps(dict(e=[e['train_loss'] for e in epochs if e['task']<=5],t=[t for t in tasks if t['task']<=5]),sort_keys=True)
         found.setdefault(f'{arm}__s{seed}',{}).setdefault(prefix,path.parent)
     jobs={}
