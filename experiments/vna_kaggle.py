@@ -4,6 +4,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 import zipfile
 
 
@@ -20,7 +21,14 @@ def archive_outputs(output, budget=5_000_000_000, *, folders=("recipe", "signal"
                         and not set(path.relative_to(output).parts).intersection(exclude_parts)):
                     dest = snapshot/path.relative_to(output)
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    os.link(path, dest)
+                    for attempt in range(3):
+                        try:
+                            os.link(path, dest)
+                            break
+                        except FileNotFoundError:
+                            if attempt == 2:
+                                raise
+                            time.sleep(.01*(attempt+1))
         for log in output.glob("*.log"):
             shutil.copy2(log, snapshot/log.name)
         raw = sum(p.stat().st_size for p in snapshot.rglob("*") if p.is_file())
@@ -48,7 +56,16 @@ def archive_outputs(output, budget=5_000_000_000, *, folders=("recipe", "signal"
 def restore_stage_archives(input_root, output, stage, *, exclude_parts=()):
     """Expanded files win over their own older archive; other conflicts refuse."""
     input_root, output = Path(input_root), Path(output)
-    paths = sorted(p for p in input_root.rglob('*') if p.is_file())
+    paths, visited = [], set()
+    for directory, dirs, files in os.walk(input_root, followlinks=True):
+        resolved = Path(directory).resolve()
+        if resolved in visited:
+            dirs[:] = []
+            continue
+        visited.add(resolved)
+        dirs[:] = [name for name in dirs if name != '.git']
+        paths.extend(Path(directory)/name for name in files if (Path(directory)/name).is_file())
+    paths.sort()
     loose = {}
     for path in paths:
         if stage in path.parts and not set(path.parts[path.parts.index(stage)+1:]).intersection(exclude_parts):

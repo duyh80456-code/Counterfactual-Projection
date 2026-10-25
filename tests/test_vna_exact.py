@@ -370,3 +370,26 @@ def test_power10_matches_b97d25c_generators_iterations_and_scores(monkeypatch,dt
         torch.testing.assert_close(a['A']['weight'],b['A']['weight'],rtol=1e-5,atol=0)
         assert a['score']==pytest.approx(b['score'],rel=1e-5,abs=0)
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))
+
+
+def test_gram_retries_cuda_oom_without_changing_columns(monkeypatch):
+    from types import SimpleNamespace
+    J=torch.randn(9,5,dtype=torch.float64)
+    original=torch.vmap
+    widths=[]
+    def limited(action, **kwargs):
+        width=kwargs.get('chunk_size',1)
+        mapped=original(action, **kwargs)
+        def call(batch):
+            widths.append(width)
+            if width>2:raise torch.cuda.OutOfMemoryError('simulated derivative allocation')
+            return mapped(batch)
+        return call
+    monkeypatch.setattr(torch,'vmap',limited)
+    monkeypatch.setattr(torch.cuda,'empty_cache',lambda:None)
+    p=SimpleNamespace(_call=lambda _:torch.zeros(9,dtype=J.dtype),
+        parameter_refs=(('weights',torch.zeros(5,dtype=J.dtype)),),Jv=lambda v:J@v,JT=lambda v:J.T@v)
+    G,info=gram(p,chunk=3)
+    torch.testing.assert_close(G,J@J.T,rtol=1e-12,atol=1e-12)
+    assert widths[:4]==[16,8,4,2]
+    assert info['gram_vjp_chunk']==info['gram_jvp_chunk']==2

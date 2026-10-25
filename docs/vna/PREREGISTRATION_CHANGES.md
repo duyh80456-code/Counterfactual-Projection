@@ -1402,3 +1402,169 @@ in Output. No GPU PASS is inferred from CPU results.
   200, then every epoch start and the task end, RNG/modes isolated) and every VNA intervention
   with V_O, h, L/KD before and after, accepted (step applied and not rejected) or rejected, and
   the skip reason. Lanes: one seed per GPU, baseline first, VNA second.
+
+### 2026-10-25: P1 full versus baseline, Inc20/Inc10, BN/noBN
+
+Registered before new runs: four notebooks, seeds 0 and 1, one seed per GPU;
+each lane runs icarl, the pair's locked authority preflight, then icarl_full.
+NB1/2 use PyCIL ResNet32 noBN/SkipInit, lr scale .5, Inc20/Inc10 respectively.
+NB3/4 use native BN and Inc20/Inc10, with first/later LR read from an attached
+C-Flat BN protocol.json, hashed and printed before launch; no inferred LR.
+P1 retains no warmup or clipping, memory 2000, final-epoch models, 100/50 epochs,
+first milestones [30,60,85] and later [24,35]. Superclass permutation by seed
+is grouped into four or two consecutive complete superclasses per task,
+covering exactly 100 fine labels. Full means all 5 or 10 tasks.
+
+icarl_full uses Gram/power10, schur_gamma_bound_rho25_v2, GIR schur_dead, no live
+ablation. Each backbone/increment pair has its own K0 authority; no schedules
+from another pair or protocol are reused. Preflight remains read-only.
+
+Both arms record final-task CNN/NME total/old/new accuracy, incremental means,
+and final-task feature accuracy. Tracker covers every task: r=0..10, every 5
+steps through 200, then each epoch and task end. GGN lambda_max uses power10
+on a fixed private 128-example current-task training window at r=0,1,2,5,10,
+20,50,100,200, on a model copy; real parameters, buffers, gradients, optimizer,
+modes and RNG must remain bitwise identical. Unreached steps remain missing.
+Every full intervention retains V_O, h, s, CE/KD before/after, acceptance and
+swaps. T29e dead-slot checks apply to both BN and noBN. Nonfinite training is
+FAILED_DIVERGED; retain coordinates, do not clip or substitute seeds, continue
+the next job. Deadline/exit-75 resume is preserved. CPU fake-data smoke and
+affected tests precede GPU work. Timing projections include baseline/full,
+preflight and diagnostic overhead; >11h is warned, never silently truncated.
+
+#### P1_COMPARE review amendment, before GPU runs (2026-10-25)
+
+The GGN window above is superseded: use the exact current native training
+minibatch consumed by VNA (normally 128; new+exemplar dataset, no extra sampling
+or forced balance), not a fixed private subset. Use the engine's _stability
+function, CE+KD loss and identical stability-ggn task/global-iteration RNG
+seed. r=0 is before the first SGD update; r>0 is after that SGD update and
+before any VNA/GIR intervention. Record the actual window size, old-sample
+count, iteration and generator seed. Copy isolation remains bitwise checked.
+Comparisons to prior engine values require matching model state, batch and
+iteration; a different run or increment is not expected to have equal values.
+
+Run timing is estimated separately for each seed: measured instrumented
+baseline + measured shared preflight reservation + a baseline-sized full
+training/measurement term + per-task intervention count times estimated cost
+at that task's number of classes. Gram cost is extrapolated quadratically and
+cubically from measured preflight points, including engine stability overhead.
+Session counts use 11 usable hours. Ranges are planning scenarios, not bounds;
+missing real timing inputs produce PENDING rather than an invented duration.
+All new real-run protocol artifacts must carry the verified ZIP source_digest;
+missing digest blocks the run. C-Flat BN LR remains mandatory, hashed and logged.
+# 2026-10-26 — icarl_full revision after NB1 log analysis
+
+This is a post-log amendment, not an original preregistration. The user reports
+NB1 s0 had 27 dead channels and zero swaps because VNA skipped, NB1 s1 retained
+GGN sharpness 118 while its baseline fell to 11 before divergence, and NB1 s0
+task 3 had a scale of 2.4e10. No revised GPU results are available at registration.
+
+For `icarl_full` only, default Schur GIR policy becomes
+`schur_t32_sharpness_trust_v3`. Other scientific arms retain their policies.
+When VNA skips with `no_positive_directions`, `chol_fail` or
+`negative_certificate`, independent T32 CertSwap trials run on dead slots.
+Proposal generation reuses tiny_V with the raw full-loss logit gradient rather
+than an LM inverse; missing/failed site proposals use the existing native seed
+proposal. Up to eight dead slots per site are tried in native index order.
+No positive VNA direction or Cholesky certificate is required for these trials.
+Reuse T32's outgoing-slot CE refit, measure actual CE and KD on the same full
+window before and after each install, and accept only finite, non-increasing
+values of both. A zero-gradient neutral replacement may be accepted when both
+direct losses do not increase. BN trials evaluate the full network in train
+mode on isolated buffer copies; no suffix-separability assumption is used.
+
+Before committing a loss-accepted VNA step and before GIR, require the same
+power10 full-loss GGN estimate after VNA to be no larger than
+`max(lambda_max_ggn_before, 2/eta)`, using the largest active optimizer LR when
+there are multiple parameter groups. Nonfinite/missing estimates reject.
+Rejection restores native parameters bitwise; optimizer, gradients, buffers,
+modes and RNG must remain unchanged. Log the candidate sharpness, limit and LR
+even on rejection. Final post-GIR sharpness remains a separate measurement.
+
+The trust-region bound uses the norm of the materialized parameter direction,
+not the cancellation-prone output-Gram quadratic. Log direction and scaled-step
+norms; a step exceeding Delta or with nonfinite norm is never applied, including
+when the unconstrained scale is very large. This numerical bound repair also
+applies to the shared step calculation used by the other VNA arms.
+
+Rerun only NB1 `icarl_full` seeds 0 and 1 from initialization, with fresh locked
+preflight under the new policy. Keep original baseline outputs and provenance
+unchanged; validate their complete configuration/dataset/measurement protocol
+before comparison. Preserve old full runs separately. Do not clip, truncate the
+task chain or replace failed seeds. CPU tests precede GPU submission.
+Baseline reuse is narrowly limited to registered pre-amendment ZIP digests
+`cb902d3e3a4f475672398d24f228fd9307f8e8d9098642ea4b8fb89473bfd9f8`
+and `5e78fd3c7d62f86ef1d0cd3df67b2e0085feb75934bd739652305d361fc6e6f7`,
+at commit `ccf60af0909afa8853357c660f8760c98cc1b828`. Validation checks the
+actual dataset fingerprint, class order, full config, epochs/milestones,
+no warmup/clipping, final-epoch measurement protocol, five completed tasks,
+finite CNN/NME metrics and summary/protocol agreement. Baseline files are
+never rewritten; a separate reuse manifest records hashes and original source.
+
+Baseline restore follow-up (2026-10-26): both baseline outer summaries were
+reported missing on Kaggle. This is an I/O repair, with no change to the amended
+algorithm, source allowlist or acceptance thresholds. Follow dataset/notebook
+mount symlinks with cycle detection; allow the identical completed native
+`run/summary.json` when its outer copy is absent, validating all other provenance
+and protocol fields as before. Never synthesize completion or relabel source.
+
+Baseline protocol shape follow-up (2026-10-26): native persist() adds observed
+`parameter_count` and `mu0` to protocol.json but not summary.identity. Compare
+the full immutable identity plus these exact producer fields, checking final
+task parameter count and null mu0 for baseline. This fixes validation only;
+no scientific criterion, historical baseline or training behavior is changed.
+
+## P1 Inc5 seed 2 with the amended policy (2026-10-26)
+
+Replace the old-commit M1s2 notebook at the user's request. Train only
+`icarl_full` seed 2 under `schur_t32_sharpness_trust_v3`, using a digest-verified
+overlay and a new `p1_inc5_full_v3_s2` output namespace. Preserve P1 noBN/SkipInit,
+Inc5 (20 tasks), superclass order, memory 2000, LR scale .5, 100/50 epochs,
+scaled milestones, no warmup/clipping, final-epoch selection and failure reporting.
+Tracker covers all 20 tasks. Same-window CE+KD GGN power10 is measured at
+r=0,1,2,5,10,20,50,100,200 on isolated copies, with bitwise live-state checks;
+the native VNA/GIR intervention log and independent CertSwap logs are retained.
+
+Calibrate a fresh seed-0 noBN/Inc5 preflight; archive its locked, policy/source-
+matched authority at `p1_inc5_full_v3_authority/resnet32_nobn_inc5_seed0.json`.
+This is the authority for future amended-policy Inc5 seeds, using the same
+source bundle and attached authority Output. Do not read or convert the old
+`gram_power10.json`. Record explicit init_cls/increment/calibration_seed in the
+new authority. GPU0 runs preflight then full seed 2; GPU1 has no training job.
+
+Reuse only the completed legacy P1 baseline seed 2. In addition to the already
+registered overlay sources, accept immutable commit
+`84f833db7b152264003c26b236c5c628c64b8773` with source_digest null for this
+20-task baseline only. Its producer/config was inspected at that commit.
+Validate the actual dataset hashes, class order, upstream/config, epochs,
+no warmup/clipping, all 20 tasks, finite accuracies, and the exact persisted
+protocol contract. Preserve all baseline bytes and original provenance; record
+separate file-hash reuse metadata. Legacy runs lacking Tracker/GGN measurements
+remain explicitly unmeasured; do not fabricate retrospective trajectories.
+The new notebook does not train any baseline or import an old full checkpoint.
+CPU validation precedes delivery; T4 time estimates remain unverified until the
+new preflight, and legacy baseline timings omit unmeasured instrumentation cost.
+
+### M1 seed-2 failed-reference outcome amendment (2026-10-26)
+
+At the user's request after the legacy result was identified, accept
+`FAILED_DIVERGED` as a valid reference outcome for noBN/Inc5 baseline seed 2,
+not as a completed accuracy run. Require the same exact protocol, dataset,
+seed-2 class order and registered provenance, plus the recorded divergence at
+task 2, epoch 1, step 8 and a nonempty tensor identifier. Require the completed
+task prefix before divergence, not all 20 tasks or post-divergence finite metrics.
+Record `outcome: FAILED_DIVERGED` and the original `diverged` mapping in
+`baseline_reuse__s2.json`. Do not synthesize coordinates, rerun or rewrite the
+baseline, or estimate full training time from its truncated runtime. Original
+M1 commit 84f833db7b152264003c26b236c5c628c64b8773 without an overlay remains
+registered for this 20-task reference. NB1 remains completed-only with its
+existing source/configuration rules. Tests are added as code only; no tests,
+training, preflight or notebook execution is authorized for this amendment.
+
+Delivery update (2026-10-26): at the user's request, publish the code changes
+and pin new notebooks directly to that immutable Git commit, without requiring
+a ZIP overlay. Verify Git HEAD against the pin; record source_digest as SHA-256
+of `git:<pinned-commit>` and provenance method `git_commit_sha256`. This changes
+source delivery only; policy, baseline outcome/provenance checks and scientific
+criteria remain unchanged. No tests or training are run for the push.

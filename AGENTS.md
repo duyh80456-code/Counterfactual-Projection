@@ -22,9 +22,14 @@ Resume bitwise-exactness, λ=0 / baseline bitwise identity, RNG isolation, deadl
 validation of results, anything in the task spec or PREREGISTRATION_CHANGES.md.
 
 ## Tests
-New non-trivial logic gets one small focused test. Run only the tests the spec names plus the affected
-test files; run the full suite once at most, and only when the spec asks. Do not commit.
-Env: `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+Only implement the requested code. Do not add or run tests, smoke runs, fake-data training,
+preflight or benchmarks unless the user explicitly requests them for the current task.
+When requested, use `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+
+## Delivery
+- Update repository code directly. Do not create or update source ZIP overlays unless explicitly requested.
+- New notebooks should use repository code pinned to a real commit, not an uncommitted ZIP overlay.
+- Commit and push when the user requests them; there is no blanket prohibition on commits.
 
 ## Current layout
 - Main runs: `experiments/{pilot_v3,main_cil,v4_competitors,v4_b5_width}.py`.

@@ -85,17 +85,59 @@ DISK_CAP_BYTES = 5_000_000_000
 
 OVERLAY = r'''
 if SOURCE_DIGEST:
-    bundles = [p for p in Path('/kaggle/input').rglob('vna_v3_source.zip')
+    source_files = []
+    visited = set()
+    # Kaggle dataset mounts can be directory symlinks, which Path.rglob skips.
+    for directory, dirs, files in os.walk('/kaggle/input', followlinks=True):
+        resolved = Path(directory).resolve()
+        if resolved in visited:
+            dirs[:] = []
+            continue
+        visited.add(resolved)
+        dirs[:] = [name for name in dirs if name != '.git']
+        source_files.extend(Path(directory)/name for name in files
+                            if name in ('vna_v3_source.zip', 'pyproject.toml'))
+    bundles = [p for p in source_files if p.name == 'vna_v3_source.zip'
                if hashlib.sha256(p.read_bytes()).hexdigest() == SOURCE_DIGEST]
-    if not bundles: raise FileNotFoundError('Attach vna_v3_source.zip matching SOURCE_DIGEST; this notebook uses uncommitted source')
-    with zipfile.ZipFile(bundles[0]) as archive:
-        for name in archive.namelist():
-            target = (REPO/name).resolve()
-            if not target.is_relative_to(REPO.resolve()): raise ValueError('unsafe source bundle member')
-        archive.extractall(REPO)
+    verification = 'zip_sha256'
+    if bundles:
+        with zipfile.ZipFile(bundles[0]) as archive:
+            for name in archive.namelist():
+                target = (REPO/name).resolve()
+                if not target.is_relative_to(REPO.resolve()): raise ValueError('unsafe source bundle member')
+            archive.extractall(REPO)
+        shutil.copy2(bundles[0], RUN_ROOT/'vna_v3_source.zip')
+    else:
+        # Kaggle extracts uploaded ZIPs; the notebook pins their member hashes.
+        manifest = globals().get('SOURCE_FILE_HASHES', {})
+        matches = []
+        if manifest:
+            for marker in (p for p in source_files if p.name == 'pyproject.toml'):
+                root = marker.parent.resolve()
+                payload = {}
+                for name, digest in manifest.items():
+                    source = (root/name).resolve()
+                    target = (REPO/name).resolve()
+                    if not source.is_relative_to(root) or not target.is_relative_to(REPO.resolve()):
+                        raise ValueError('unsafe source manifest member')
+                    if not source.is_file(): break
+                    data = source.read_bytes()
+                    if hashlib.sha256(data).hexdigest() != digest: break
+                    payload[name] = data
+                else: matches.append((root,payload))
+        if not matches:
+            raise FileNotFoundError('Attach the matching source ZIP or its extracted files; every file must match the notebook source manifest')
+        root,payload = matches[0]
+        for name,data in payload.items():
+            target = REPO/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(data)
+        verification = 'extracted_member_sha256'
+        print('Verified Kaggle extracted source:',root,'files:',len(payload),'source_digest:',SOURCE_DIGEST)
     os.environ['VNA_SOURCE_DIGEST'] = SOURCE_DIGEST
-    shutil.copy2(bundles[0], RUN_ROOT/'vna_v3_source.zip')
-    (RUN_ROOT/'source_manifest.json').write_text(json.dumps(dict(code_commit=REPO_COMMIT, source_digest=SOURCE_DIGEST)))
+    (RUN_ROOT/'source_manifest.json').write_text(json.dumps(dict(code_commit=REPO_COMMIT,
+        source_digest=SOURCE_DIGEST,verification=verification,
+        source_file_hashes=globals().get('SOURCE_FILE_HASHES', {}))))
 '''
 
 RUNNER = r'''if PRESET == 'M1s0':

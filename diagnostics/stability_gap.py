@@ -49,11 +49,12 @@ def cli_from_protocol(main, protocol, args, schedule_path):
 
 
 class Tracker:
-    def __init__(self, out, torch, np):
+    def __init__(self, out, torch, np, min_task=2, max_tasks=MAX_TASKS):
         self.torch, self.np = torch, np
         self.path = out/'stability_gap'/'measurements.json'
         self.state = read(self.path, dict(tasks={}))  # survives an exit-75 resume
         self.out, self.data = out, None
+        self.min_task, self.max_tasks = min_task, max_tasks
 
     @contextmanager
     def isolated(self, net):
@@ -85,7 +86,7 @@ class Tracker:
             predictions.append(logits.argmax(1).cpu())
         correct = (torch.cat(predictions) == y).double()
         old, new = y < known, y >= known
-        return dict(old=float(100*correct[old].mean()), new=float(100*correct[new].mean()),
+        return dict(old=float(100*correct[old].mean()) if old.any() else None, new=float(100*correct[new].mean()),
                     all=float(100*correct.mean()))
 
     def begin(self, hook, learner, task):
@@ -116,7 +117,7 @@ class Tracker:
     def before_step(self, hook):
         learner = hook.learner
         task = learner._cur_task+1
-        if not 2 <= task <= MAX_TASKS: return
+        if not self.min_task <= task <= self.max_tasks: return
         if self.data is None or getattr(self, 'task', None) != task: self.begin(hook, learner, task)
         r = hook.steps-1-self.state['tasks'][str(task)]['offset']  # SGD updates already applied in this task
         # Every step for r <= 10, every 5 steps to 200, then at every epoch start.
@@ -125,7 +126,7 @@ class Tracker:
 
     def task_end(self, hook, learner):
         task = learner._cur_task+1
-        if not 2 <= task <= MAX_TASKS or getattr(self, 'task', None) != task: return
+        if not self.min_task <= task <= self.max_tasks or getattr(self, 'task', None) != task: return
         r = hook.steps-self.state['tasks'][str(task)]['offset']
         self.measure(hook, learner, r, 'task_end')
 

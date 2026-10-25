@@ -1,5 +1,6 @@
 """T32: certify each structural swap against actual window CE and KD."""
 from contextlib import ExitStack
+from copy import copy, deepcopy
 import math
 import time
 import torch
@@ -8,6 +9,79 @@ from torch.func import functional_call, jvp
 from diagnostics.vna_align import _global_state
 from methods.vna_losses import CE
 from methods.vna_downstream import separable
+
+
+@_global_state()
+def fallback(engine, model, sites, batch, spec, ctx, optimizer, iteration):
+    """Independent T32 dead-slot trials; no LM/Schur solve is needed to propose a swap."""
+    from methods.vna_v3 import training_products, seed_proposals
+    from methods.vna_sites import HookSite
+    started = time.perf_counter()
+    sites = [s for s in sites if engine.valid_slot(s)]
+    report = dict(accepted=[], trials=[], proposal_rule='tiny_V_raw_loss_gradient_then_native_seed')
+    with training_products(model, [], {}, batch[0]) as products:
+        gradient = spec.residual(products._call({}).reshape(len(batch[0]), -1), ctx).flatten()
+    try:
+        proposals = engine._select(model, sites, batch, dict(z=gradient))
+    except torch.linalg.LinAlgError:
+        proposals = {}
+        report['selection_fallback'] = 'chol_fail'
+    seeds = seed_proposals(sites)
+    scratch = deepcopy(model).train()
+    scratch_optimizer = torch.optim.SGD(scratch.parameters(), lr=1.)
+    trial_engine = copy(engine)
+    trial_engine.install_ages = {}
+    def measure():
+        with training_products(model, [], {}, batch[0]) as products:
+            return losses(products._call({}).reshape(len(batch[0]), -1).double(), spec, ctx)
+    for site in sites:
+        dead = engine.dead_slots(model, [site], batch)[site.module_name]
+        A = proposals.get(site.module_name, seeds[site.module_name])
+        for rank, unit in enumerate(dead[:8]):
+            proposal = {k: None if v is None else v[rank % len(A['weight']):rank % len(A['weight'])+1]
+                        for k, v in A.items()}
+            scratch.load_state_dict(model.state_dict())
+            fixed = HookSite(scratch, site.first, site.second, site.kind, between=site.between,
+                             o_params=site.parameter_names)
+            trial_engine.install_gir(scratch, fixed, [dict(A=proposal)], [unit], scratch_optimizer)
+            outgoing = fixed.second_layer.layer.weight.detach()
+            index = torch.tensor([unit], device=outgoing.device)
+            parameters = {n: p.detach() for n, p in scratch.named_parameters()}
+            def forward(vector):
+                replacement = outgoing.index_copy(1, index,
+                    vector.reshape(outgoing.shape[0], 1, *outgoing.shape[2:]))
+                buffers = {n: b.detach().clone() for n, b in scratch.named_buffers()}
+                result = functional_call(scratch, ({**parameters, site.second+'.weight': replacement}, buffers), (batch[0],))
+                if isinstance(result, dict): result = result['logits']
+                return result.reshape(len(batch[0]), -1).double()
+            before = measure()
+            result, record = certify(forward, outgoing[:, unit].numel(), outgoing, before, spec, ctx)
+            if result is None and record['reason'] == 'g_zero':
+                vector = outgoing[:, unit].new_zeros(outgoing[:, unit].numel())
+                result = (vector, forward(vector).detach())
+                record.update(reason=None, neutral_swap=True)
+            record.update(site=site.module_name, unit=int(unit), task=engine.task, iteration=iteration,
+                          slot_kind='certswap', ell_beta=None, accepted=False,
+                          L_before=before[0], KD_before=before[1])
+            report['trials'].append(record)
+            if result is None: continue
+            saved = engine._training_state(model, optimizer)
+            ages = deepcopy(engine.install_ages)
+            engine.install_gir(model, site, [dict(A=proposal)], [unit], optimizer)
+            with torch.no_grad():
+                site.second_layer.layer.weight[:, unit].copy_(result[0].reshape_as(outgoing[:, unit]))
+            after = measure()
+            record.update(L_after=after[0], KD_after=after[1])
+            if any(not math.isfinite(v) or v > b for v, b in zip(after, before)):
+                engine._restore_training_state(model, optimizer, saved)
+                engine.install_ages = ages
+                record.update(reason='actual_loss_increase', rejected=True)
+                continue
+            record.update(L_before=before[0], L_after=after[0], KD_before=before[1], KD_after=after[1],
+                          accepted=True, was_dead=True)
+            report['accepted'].append(record)
+    report['seconds'] = time.perf_counter()-started
+    return report
 
 
 class PrefixCache:

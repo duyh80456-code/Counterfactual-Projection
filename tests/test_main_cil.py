@@ -252,11 +252,15 @@ def test_main_authority_preflight_real_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(icarl, 'batch_size', 8)
     args = main.parser().parse_args(['--arm','icarl_full','--fake-data','--workers','0',
         '--device','cpu','--preflight-only','--schedule-output',str(tmp_path/'schedule.json'),
+        '--solver','gram','--curvature','power10',
         '--out',str(tmp_path/'calibration')])
     result = main.run(args)
     schedule = json.loads((tmp_path/'schedule.json').read_text())
     assert result['status'] == 'PREFLIGHT'
     assert schedule['authoritative'] and schedule['K0'] >= 1
+    assert schedule['init_cls']==schedule['increment']==5 and schedule['calibration_seed']==args.seed
+    assert schedule['dataset_fingerprint'] is None and schedule['class_order_kind']=='superclass'
+    assert schedule['solver']=='gram' and schedule['curvature']=='power10'
     assert [p['task'] for p in schedule['calibration']] == [2]*3
     assert schedule['t_vna_task1']==[] and len(schedule['t_vna_task2'])==3
     assert schedule['seconds_per_application'] > 0

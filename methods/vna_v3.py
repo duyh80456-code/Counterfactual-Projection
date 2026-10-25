@@ -190,7 +190,7 @@ def trust_region_step(g, d, Fd, mu, delta):
     gain = float(g @ d)
     if gain <= 0:
         return 0., 0., 'none'
-    norm_d = float(d.norm())
+    norm_d = float(d.double().norm())
     if norm_d == 0:
         return 0., 0., 'none'
     denom = float(d @ Fd)
@@ -198,6 +198,16 @@ def trust_region_step(g, d, Fd, mu, delta):
     s_delta = float(delta) / norm_d
     s = min(s_f, s_delta)
     return s, s_f, 's_F' if s_f <= s_delta else 'Delta'
+
+
+def bounded_scale(optimum, direction, radius):
+    norm = float(direction.double().norm())
+    scale = min(optimum, radius/norm) if norm > 0 and math.isfinite(norm) else 0.
+    step_norm = float((direction.double()*scale).norm())
+    if step_norm > radius:
+        scale = math.nextafter(scale*radius/step_norm, 0.)
+        step_norm = float((direction.double()*scale).norm())
+    return scale, norm, step_norm
 
 
 def net_gain(e_beta, H_beta, J, J_prime, f_u, mu):
@@ -323,14 +333,19 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 POLICY_VERSION='schur_gamma_bound_rho25_v2'
+FULL_POLICY_VERSION='schur_t32_sharpness_trust_v3'
 
 
 class V3Engine:
     def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False,
-                 gir_rule='schur_dead', certswap_topk=8, certswap_lm_budget=20, certswap_log_schur=True):
+                 gir_rule='schur_dead', certswap_topk=8, certswap_lm_budget=20, certswap_log_schur=True,
+                 full_revision=False):
         if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
         if solver not in ('gram','cg_ir'): raise ValueError('solver must be gram or cg_ir')
         self.policy_version,self.gir_live=POLICY_VERSION,bool(gir_live)
+        if full_revision:
+            if arm != 'vna_gir' or gir_rule != 'schur_dead': raise ValueError('full revision requires vna_gir/schur_dead')
+            self.policy_version = FULL_POLICY_VERSION
         if gir_rule not in ('schur_dead', 'certswap'): raise ValueError('invalid GIR rule')
         if gir_rule == 'certswap':
             if certswap_topk < 1 or certswap_lm_budget < 1: raise ValueError('CertSwap budgets must be positive')
@@ -708,7 +723,19 @@ class V3Engine:
                 stability_before=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
                 diagnostic_seconds=time.perf_counter()-diagnostic_start
                 try:
-                    row = self._apply(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+                    args = (model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+                    revised = self.policy_version == FULL_POLICY_VERSION and isinstance(spec, CE)
+                    def vna_check():
+                        started = time.perf_counter()
+                        value = self._stability(model, [], batch, spec, ctx, iteration, None)
+                        eta = max(float(group['lr']) for group in optimizer.param_groups)
+                        initial = stability_before['lambda_max_ggn']
+                        limit = max(initial, 2./eta) if initial is not None and eta > 0 else None
+                        after = value['lambda_max_ggn']
+                        return dict(sharpness_rejected=limit is None or after is None or after > limit,
+                            sharpness_limit=limit, eta=eta, lambda_max_ggn_vna_after=after,
+                            vna_stability_seconds=time.perf_counter()-started)
+                    row = self._apply(*args, vna_check) if revised else self._apply(*args)
                 except CGConvergenceError as error:
                     self._restore_training_state(model, optimizer, training)
                     self.load_state_dict(saved)
@@ -717,6 +744,12 @@ class V3Engine:
                     self._restore_training_state(model, optimizer, training)
                     self.load_state_dict(saved)
                     row = dict(skipped=True, skip_reason='chol_fail', chol_fail=True, swaps=0, swap_records=[])
+                if (apply and self.policy_version == FULL_POLICY_VERSION and isinstance(spec, CE)
+                        and row.get('skip_reason') in ('no_positive_directions','chol_fail','negative_certificate')):
+                    from methods.vna_certswap import fallback
+                    report = fallback(self, model, sites, batch, spec, ctx, optimizer, iteration)
+                    row.update(certswap=report, gir_independent=True, swaps=len(report['accepted']),
+                        swap_records=report['accepted'], gir_seconds=report['seconds'])
                 after_norms = self._norms(model, sites)
                 row.update(before=before, after=after_norms, **after_norms)
                 if not self._finite(model, optimizer):
@@ -726,7 +759,7 @@ class V3Engine:
                                swaps=0, swap_records=[], after_restore=self._norms(model, sites))
                 diagnostic_start=time.perf_counter()
                 stability_after=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
-                diagnostic_seconds+=time.perf_counter()-diagnostic_start
+                diagnostic_seconds+=time.perf_counter()-diagnostic_start+row.get('vna_stability_seconds',0.)
                 row.update(stability_before=stability_before,stability_after=stability_after,
                     lambda_max_ggn_before=stability_before['lambda_max_ggn'],
                     lambda_max_ggn_after=stability_after['lambda_max_ggn'],stability_seconds=diagnostic_seconds)
@@ -1025,7 +1058,8 @@ class V3Engine:
         if guard: row['K_next'] = 2*row['K_next']
         return row['K_next']
 
-    def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
+    def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True,
+               vna_check=None):
         sites = [site for site in sites if self.valid_slot(site)]
         frozen = deepcopy(model)
         frozen_sites = [HookSite(frozen, s.first, s.second, s.kind, between=s.between,
@@ -1082,10 +1116,15 @@ class V3Engine:
             if self.gir_only: reason = None
             if reason:
                 row.update(skipped=True, skip_reason=reason, g_dot_d=gh, h_dot_d=hh, s=0.); return row
-            normd = math.sqrt(max(solve_norm2(G,dy),0.))
+            # The output Gram quadratic can cancel near a dead network; bound the actual parameter direction.
+            delta = dy if isinstance(G,FrozenGram) else p.JT(dy)
             curvature = float(image@op.H(image))
             optimum = gh/curvature if curvature > 0 else float('inf')
-            scale = min(optimum, Delta/normd) if normd and gh > 0 and not self.gir_only else 0.
+            scale, normd, step_norm = bounded_scale(optimum if gh > 0 and not self.gir_only else 0., delta, Delta)
+            if not math.isfinite(step_norm) or step_norm > Delta:
+                row.update(skipped=True,skip_reason='trust_region_violation',s=0.,Delta=Delta,
+                           direction_norm=normd,step_norm=step_norm)
+                return row
             e_beta, beta = op.g, 0. if self.gir_only else values['beta']
             if beta:
                 delta_old = torch.zeros_like(op.logits)
@@ -1108,9 +1147,8 @@ class V3Engine:
                 g_dot_d=gh, h_dot_d=hh, Delta=Delta, beta=beta, beta_branch=values['beta_branch'],
                 leak=values['leak'], epsilon_star=values['epsilon_star'], chi2=values['chi2'],
                 beta_leaks=values['beta_leaks'], leak_monotonicity_violation=values['leak_monotonicity_violation'],
-                s=scale, s_F_star=optimum, gradient_norm=gradient_norm,
+                s=scale, s_F_star=optimum, direction_norm=normd, step_norm=step_norm, gradient_norm=gradient_norm,
                 solves=lm['records']+preliminary['records']+([] if self.gir_only else values['records']))
-            delta = (dy if isinstance(G,FrozenGram) else p.JT(dy)) if scale > 0 else None
         row['certificate_seconds'] = time.perf_counter()-start
         before = {n: v.detach().clone() for n, v in model.named_parameters()}
         rejected, after = False, lm['before']
@@ -1129,6 +1167,9 @@ class V3Engine:
                 after = self._evaluate_current(model, batch, spec, ctx)
             rejected = (not math.isfinite(after[0]) or after[0] > lm['before'][0] or
                         (after[1] is not None and (not math.isfinite(after[1]) or after[1] > lm['before'][1])))
+            if not rejected and vna_check is not None:
+                row.update(vna_check())
+                rejected = row['sharpness_rejected']
             if rejected:
                 self._restore_params(model, before)
                 values.pop('certswap_cache', None)

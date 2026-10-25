@@ -240,8 +240,20 @@ def gram(products, chunk=64, vjp_chunk=16, jvp_chunk=16):
         ids = torch.arange(lo, min(lo+chunk, m), device=ref.device)
         E = torch.nn.functional.one_hot(ids, m).to(ref)
         # Bound backward activation memory separately from the stored vector block.
-        tangents = torch.vmap(products.JT, chunk_size=vjp_chunk)(E)
-        G[:, lo:lo+len(ids)] = torch.vmap(products.Jv, chunk_size=jvp_chunk)(tangents).double().T
+        while True:
+            tangents = None
+            try:
+                tangents = torch.vmap(products.JT, chunk_size=vjp_chunk)(E)
+                G[:, lo:lo+len(ids)] = torch.vmap(products.Jv, chunk_size=jvp_chunk)(tangents).double().T
+                break
+            except torch.cuda.OutOfMemoryError:
+                if vjp_chunk == jvp_chunk == 1:
+                    raise
+                vjp_chunk = max(1, vjp_chunk//2)
+                jvp_chunk = max(1, jvp_chunk//2)
+            # Release failed derivative temporaries before retrying the same columns.
+            tangents = None
+            torch.cuda.empty_cache()
         del tangents
         if m >= 12800 and G.is_cuda: torch.cuda.synchronize(G.device)
     G = (G+G.T)*.5

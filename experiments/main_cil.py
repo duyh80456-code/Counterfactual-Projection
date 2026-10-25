@@ -53,6 +53,7 @@ def training_settings(fake=False, reproduction=False, nobn_lr_scale=1.):
 @contextmanager
 def runtime(args, order):
     from models import icarl
+    from models import base
     from utils import data_manager, inc_net
     saved = []
     def replace(obj, name, value):
@@ -69,11 +70,15 @@ def runtime(args, order):
         if hasattr(net, 'fc'): del net.fc
         return net
     try:
+        if getattr(args,'increment',5)>10:
+            from functools import partial
+            replace(base,'accuracy',partial(base.accuracy,increment=args.increment))
         replace(data_manager, '_get_idata', data)
         replace(inc_net, 'get_convnet', convnet)
-        for key, value in dict(training_settings(args.fake_data or getattr(args, 'preflight_only', False), nobn_lr_scale=
-                args.nobn_lr_scale if args.backbone in ('resnet32_nobn', 'resnet32_gn') else 1.),
-                num_workers=args.workers).items():
+        settings = training_settings(args.fake_data or getattr(args, 'preflight_only', False), nobn_lr_scale=
+                args.nobn_lr_scale if args.backbone in ('resnet32_nobn', 'resnet32_gn') else 1.)
+        settings = dict(settings, **getattr(args, '_bn_learning_rates', {}), num_workers=args.workers)
+        for key, value in settings.items():
             replace(icarl, key, value)
         yield
     finally:
@@ -142,7 +147,7 @@ class Intervention:
         self.last_iteration = hook.steps
         if event is not None:
             self.events.append(event)
-            if not event.get('skipped') and (event.get('s',0)>0 or event.get('swaps',0)>0):
+            if event.get('swaps',0)>0 or (not event.get('skipped') and event.get('s',0)>0):
                 self.followups.append(dict(task=self.task,iteration=hook.steps,status='RUNNING',samples=[]))
 
 
@@ -328,13 +333,27 @@ def run(args):
     elif args.nobn_lr_scale!=.5:raise ValueError('noBN requires nobn_lr_scale=0.5')
     if not 1 <= args.max_tasks <= 20: raise ValueError('max_tasks must be between 1 and 20')
     increment=getattr(args,'increment',5)
+    bn_source = None
+    if getattr(args, 'bn_lr_protocol', None):
+        if args.backbone != 'resnet32': raise ValueError('BN LR protocol requires native BN')
+        data = Path(args.bn_lr_protocol).read_bytes()
+        source = json.loads(data)
+        if source.get('arm') != 'icarl_cflat' or source.get('backbone') != 'bn' or source.get('fake_data'):
+            raise ValueError('expected a real C-Flat BN protocol.json')
+        args._bn_learning_rates = {key: float(source['training'][key]) for key in ('init_lr','lrate')}
+        if any(not np.isfinite(v) or v <= 0 for v in args._bn_learning_rates.values()):
+            raise ValueError('invalid C-Flat BN learning rates')
+        bn_source = dict(sha256=hashlib.sha256(data).hexdigest(), learning_rates=args._bn_learning_rates)
+        log(f'BN C-Flat protocol {args.bn_lr_protocol}: {json.dumps(bn_source)}')
     warmup_epochs=getattr(args,'warmup_epochs',0)
     gir_rule=getattr(args,'gir_rule','schur_dead')
     if gir_rule=='certswap' and args.backbone!='resnet32_nobn':
         raise ValueError('CertSwap suffix cache requires the noBN SkipInit backbone')
-    policy_version='certswap_t32_v1' if gir_rule=='certswap' else vna_v3.POLICY_VERSION
+    policy_version=('certswap_t32_v1' if gir_rule=='certswap' else
+                    vna_v3.FULL_POLICY_VERSION if args.arm=='icarl_full' else vna_v3.POLICY_VERSION)
     setup={}
     if increment!=5:setup.update(init_cls=increment,increment=increment)
+    if bn_source: setup['bn_lr_source'] = bn_source
     if warmup_epochs:setup['warmup_epochs']=warmup_epochs
     if gir_rule!='schur_dead':
         setup.update(gir_rule=gir_rule,certswap_topk=args.certswap_topk,
@@ -361,7 +380,7 @@ def run(args):
     params['shuffle'] = False
     if args.fake_data:
         torch.set_num_threads(1)
-        params.update(memory_size=20, memory_per_class=2)
+        params.update(memory_size=max(20,4*increment), memory_per_class=2)
     out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     from experiments.parallel_validity import dataset_fingerprint
     protocol = dict(setting='icarl', algorithm_version='v4', solver=args.solver,
@@ -387,6 +406,7 @@ def run(args):
         if warmup_epochs:protocol['training']['warmup_epochs']=warmup_epochs
         if increment==10 and warmup_epochs==1:protocol['training_protocol']='P2'
         protocol['comparison_protocol'].update(setup)
+    if bn_source: protocol['training'].update(args._bn_learning_rates)
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
     if args.grad_clip is not None:protocol['grad_clip']=args.grad_clip
     baseline_reference=None
@@ -404,6 +424,7 @@ def run(args):
         if previous['status'] in ('COMPLETED','REUSED_BASELINE'): return previous
     status = Status(out, args.arm)
     engine_options={k:setup[k] for k in ('gir_rule','certswap_topk','certswap_lm_budget','certswap_log_schur') if k in setup}
+    if args.arm=='icarl_full' and gir_rule=='schur_dead':engine_options['full_revision']=True
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
         curvature=args.curvature,solver=args.solver,gir_live=args.gir_live,**engine_options), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
@@ -453,6 +474,8 @@ def run(args):
             nobn_lr_scale=args.nobn_lr_scale, code_commit=code_commit(), curvature=args.curvature,solver=args.solver,policy_version=policy_version,gir_live=args.gir_live,
             source_digest=os.environ.get('VNA_SOURCE_DIGEST'), synthetic=args.fake_data,
             schedule_source=args.schedule_source, r=16,**setup)
+        schedule.update(init_cls=increment,increment=increment,calibration_seed=args.seed,
+                        dataset_fingerprint=protocol['dataset_fingerprint'],class_order_kind=args.class_order)
         write_json(Path(args.schedule_output), schedule)
         run_status = 'PREFLIGHT'
     except BaselineReused:
@@ -501,7 +524,8 @@ def parser():
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--grad-clip',type=positive_tau,default=None)
-    p.add_argument('--increment',type=int,choices=(5,10),default=5)
+    p.add_argument('--increment',type=int,choices=(5,10,20),default=5)
+    p.add_argument('--bn-lr-protocol',help='Read BN initial/later LR from the real C-Flat BN protocol')
     p.add_argument('--warmup-epochs',type=nonnegative_epochs,default=0)
     p.add_argument('--gir-rule',choices=('schur_dead','certswap'),default='schur_dead')
     p.add_argument('--certswap-topk',type=int,default=8)
