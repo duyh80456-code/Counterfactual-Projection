@@ -20,6 +20,7 @@ Solve the whole task with the least new code. End with one or two lines: what yo
 ## Never cut
 Resume bitwise-exactness, λ=0 / baseline bitwise identity, RNG isolation, deadline/exit-75 handling,
 validation of results, anything in the task spec or PREREGISTRATION_CHANGES.md.
+- The final `icarl_full` policy is `schur_t32_sharpness_trust_v3` for P1 seed 2 and subsequent runs. The kappa proposal was withdrawn.
 
 ## Tests
 Only implement the requested code. Do not add or run tests, smoke runs, fake-data training,

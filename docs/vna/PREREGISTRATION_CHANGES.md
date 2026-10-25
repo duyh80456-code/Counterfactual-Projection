@@ -1577,3 +1577,23 @@ preserve the original divergence mapping without synthesizing local coordinates.
 All source, protocol, dataset, class-order and pre-divergence task checks remain.
 Errors now include the saved coordinates to distinguish missing data from a
 counter mismatch. No tests or training are run for this correction.
+
+Restore/validation audit and final policy decision (2026-10-26): the user
+withdrew the kappa contraction proposal before publication or any run. Keep
+`schur_t32_sharpness_trust_v3` and its original max(lambda_before, 2/eta) rule
+unchanged for P1 seed 2 and subsequent full runs. No kappa code, sensitivity
+script or additional NB1 rerun is retained from the withdrawn request.
+
+The M1 seed-2 audit changes only reference I/O and validation diagnostics.
+Restore reference metadata only, without loading/copying baseline weights;
+distinguish separate Kaggle notebook/dataset attachments when preferring loose
+files over their own archives. Do not combine the two legacy naming layouts
+after a complete reference is restored, and still reject conflicting versions.
+Use native run/summary.json for M1 when its outer wrapper copy is stale.
+Compare serialized task records so matching NaN diagnostics do not fail by
+Python NaN inequality; completed-task CNN/NME must remain finite. Aggregate
+all configuration/provenance/protocol/task mismatches into one diagnostic.
+Keep the failed-reference outcome and recorded global divergence coordinates
+without demanding later task metrics. Preserve source bytes and record hashes
+of summary, protocol and tasks. NB1 remains completed-only. No tests or GPU
+jobs are run for this audit.

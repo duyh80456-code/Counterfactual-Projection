@@ -193,8 +193,19 @@ for seed in (0,1):
     if case=='M1s2':
         runtime += """
 BASELINE_ROOT=STAGE_B/'_p1_inc5_baseline'
+baseline=BASELINE_ROOT/'icarl__s2'
 for stage in ('icarl__nobn__superclass__s2','icarl__s2'):
-    restore_stage_archives(Path('/kaggle/input'),BASELINE_ROOT/'icarl__s2',stage)
+    restored=restore_stage_archives(Path('/kaggle/input'),baseline,stage,
+        include_names=('summary.json','protocol.json','tasks.json','measurement_protocol.json'))
+    print('BASELINE RESTORE:',stage,'metadata files:',len(restored),flush=True)
+    native=baseline/'run' if (baseline/'run'/'protocol.json').is_file() else baseline
+    ready=any(p.is_file() for p in (baseline/'summary.json',baseline/'run'/'summary.json')) and all(
+        (native/name).is_file() for name in ('protocol.json','tasks.json'))
+    if ready:break
+if not ready:
+    raise FileNotFoundError('Incomplete M1 seed-2 baseline metadata at '+str(baseline)+
+        '; need summary.json, protocol.json and tasks.json from original P1/M1 Output. Visible inputs: '+
+        ', '.join(str(p) for p in sorted(Path('/kaggle/input').iterdir())))
 AUTHORITY_ROOT=STAGE_B/'p1_inc5_full_v3_authority'
 AUTHORITY_ROOT.mkdir(parents=True,exist_ok=True)
 restore_stage_archives(Path('/kaggle/input'),AUTHORITY_ROOT,'p1_inc5_full_v3_authority')

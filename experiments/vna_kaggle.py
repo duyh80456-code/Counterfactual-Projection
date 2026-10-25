@@ -53,7 +53,7 @@ def archive_outputs(output, budget=5_000_000_000, *, folders=("recipe", "signal"
     return target
 
 
-def restore_stage_archives(input_root, output, stage, *, exclude_parts=()):
+def restore_stage_archives(input_root, output, stage, *, exclude_parts=(), include_names=()):
     """Expanded files win over their own older archive; other conflicts refuse."""
     input_root, output = Path(input_root), Path(output)
     paths, visited = [], set()
@@ -66,38 +66,49 @@ def restore_stage_archives(input_root, output, stage, *, exclude_parts=()):
         dirs[:] = [name for name in dirs if name != '.git']
         paths.extend(Path(directory)/name for name in files if (Path(directory)/name).is_file())
     paths.sort()
+    def attachment(path):
+        parts=path.relative_to(input_root).parts
+        return '/'.join(parts[:3] if parts[0] in ('notebooks','datasets') else parts[:1])
+    def relative(name):
+        parts=Path(name).parts
+        if '..' in parts: raise ValueError('unsafe archive member')
+        if stage not in parts:return None
+        result=Path(*parts[parts.index(stage)+1:])
+        if (not result.parts or result.name.endswith('.tmp') or set(result.parts).intersection(exclude_parts)
+                or (include_names and result.name not in include_names)):return None
+        return result
     loose = {}
     for path in paths:
-        if stage in path.parts and not set(path.parts[path.parts.index(stage)+1:]).intersection(exclude_parts):
-            relative = Path(*path.parts[path.parts.index(stage)+1:])
-            attachment = path.relative_to(input_root).parts[0]
-            loose[(attachment, relative)] = path
-    def save(name, data, attachment, archived=False):
-        parts = Path(name).parts
-        if '..' in parts or Path(name).is_absolute(): raise ValueError('unsafe archive member')
-        if stage not in parts: return
-        relative = Path(*parts[parts.index(stage)+1:])
-        if not relative.parts or relative.name.endswith('.tmp') or set(relative.parts).intersection(exclude_parts): return
-        if archived and (attachment, relative) in loose: return
-        target = output/relative
+        name=relative(path)
+        if name is not None:loose[(attachment(path),name)]=path
+    restored=[]
+    def save(name, read_data, source, archived=False):
+        if archived and Path(name).is_absolute():raise ValueError('unsafe archive member')
+        name=relative(name)
+        if name is None or (archived and (source,name) in loose):return
+        data=read_data()
+        target = output/name
         if target.exists() and target.read_bytes() != data:
-            raise ValueError(f'conflicting {stage} restore: {relative}')
+            raise ValueError(f'conflicting {stage} restore: {target}; incoming source={source}:{name}')
+        restored.append(str(target))
+        if target.exists():return
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(target.name+'.tmp')
         temporary.write_bytes(data); temporary.replace(target)
     for path in paths:
-        attachment = path.relative_to(input_root).parts[0]
-        if stage in path.parts and not set(path.parts[path.parts.index(stage)+1:]).intersection(exclude_parts):
-            save('/'.join(path.parts[path.parts.index(stage):]), path.read_bytes(), attachment)
+        source=attachment(path)
+        if stage in path.parts:
+            save('/'.join(path.parts[path.parts.index(stage):]), path.read_bytes, source)
         elif path.name.endswith(('.tar.gz', '.tar', '.tgz')):
             with tarfile.open(path) as archive:
                 for member in archive:
                     if (member.isfile() and stage in Path(member.name).parts and
                         not set(Path(member.name).parts[Path(member.name).parts.index(stage)+1:]).intersection(exclude_parts)):
-                        save(member.name, archive.extractfile(member).read(), attachment, True)
+                        save(member.name, lambda:archive.extractfile(member).read(), source, True)
         elif path.suffix == '.zip':
             with zipfile.ZipFile(path) as archive:
                 for name in archive.namelist():
                     if (not name.endswith('/') and stage in Path(name).parts and
                         not set(Path(name).parts[Path(name).parts.index(stage)+1:]).intersection(exclude_parts)):
-                        save(name, archive.read(name), attachment, True)
+                        save(name, lambda:archive.read(name), source, True)
+    return restored

@@ -1,5 +1,13 @@
 # P1 seed 2 with the amended policy
 
+Final policy: `schur_t32_sharpness_trust_v3`; the kappa proposal was withdrawn.
+The restore/validate audit copies only reference JSON metadata, distinguishes
+separate attached notebooks, prefers the native M1 summary over a stale wrapper
+copy, and reports all validation mismatches together. It does not relax source,
+dataset, protocol or completed-task accuracy requirements. No tests were run
+for this audit. A failed baseline remains a failed reference outcome, not a
+completed accuracy run or a full-runtime calibration.
+
 Current delivery uses repository code pinned to the published code commit,
 without a source ZIP input. `SOURCE_DIGEST` is SHA-256 of `git:<pinned-commit>`;
 bootstrap verifies HEAD against the pin before recording `git_commit_sha256`

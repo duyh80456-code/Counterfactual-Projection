@@ -31,28 +31,34 @@ def validate_p1_baseline(path, seed, data_dir, increment):
     label = 'NB1' if increment==20 else 'M1 seed2'
     path = Path(path)
     summary_path = path/'summary.json'
-    if not summary_path.is_file(): summary_path = path/'run'/'summary.json'
+    if not summary_path.is_file() or (increment==5 and (path/'run'/'summary.json').is_file()):
+        summary_path = path/'run'/'summary.json'
     if not summary_path.is_file():
         raise FileNotFoundError(f'{label} baseline summary not restored: {path}/summary.json or {summary_path}; attach original baseline Output')
     summary = read(summary_path, {})
+    if not isinstance(summary,dict):raise ValueError(f'{label} baseline summary must be an object: {summary_path}')
     p = summary.get('identity', {})
+    if not isinstance(p,dict):raise ValueError(f'{label} baseline identity must be an object: {summary_path}')
+    problems={}
     outcome = summary.get('status')
     failed_reference = increment==5 and seed==2 and outcome=='FAILED_DIVERGED'
     if outcome != 'COMPLETED' and not failed_reference:
-        raise ValueError(f'{label} baseline not completed: path={path}, status={summary.get("status")!r}, tasks={len(summary.get("tasks",[]))}')
+        task_count=len(summary['tasks']) if isinstance(summary.get('tasks'),list) else 'invalid/missing'
+        raise ValueError(f'{label} baseline not completed: path={path}, status={outcome!r}, tasks={task_count}')
     divergence = summary.get('diverged') if failed_reference else None
     if failed_reference and (not isinstance(divergence,dict)
             or any(type(divergence.get(k)) is not int or divergence[k]!=v
                    for k,v in (('task',2),('epoch',1)))
             or type(divergence.get('step')) is not int or divergence['step']<1
             or not isinstance(divergence.get('tensor'),str) or not divergence['tensor'].strip()):
-        raise ValueError(label+' baseline divergence requires task=2, epoch=1, positive recorded global step and tensor; saved='+json.dumps(divergence,sort_keys=True))
+        problems['diverged']=dict(saved=divergence,required='task=2, epoch=1, positive recorded global step, nonempty tensor')
     sources = {('ccf60af0909afa8853357c660f8760c98cc1b828', digest) for digest in (
                 'cb902d3e3a4f475672398d24f228fd9307f8e8d9098642ea4b8fb89473bfd9f8',
                 '5e78fd3c7d62f86ef1d0cd3df67b2e0085feb75934bd739652305d361fc6e6f7')}
     if increment==5:sources.add(('84f833db7b152264003c26b236c5c628c64b8773',None))
-    if (p.get('code_commit'),p.get('source_digest')) not in sources:
-        raise ValueError(f'{label} baseline unregistered source: path={path}, source_digest={p.get("source_digest")!r}, code_commit={p.get("code_commit")!r}')
+    if (('source_digest' not in p) or (p.get('code_commit'),p.get('source_digest')) not in sources):
+        problems['provenance']=dict(code_commit=p.get('code_commit'),source_digest=p.get('source_digest'),
+                                    required='registered immutable commit/source pair')
     expected = dict(arm='icarl', seed=seed, backbone='resnet32_nobn', class_order_kind='superclass',
         policy_version='schur_gamma_bound_rho25_v2', algorithm_version='v4',
         upstream_commit=main.cil.UPSTREAM_PIN, fake_data=False, expected_tasks=100//increment,
@@ -62,44 +68,69 @@ def validate_p1_baseline(path, seed, data_dir, increment):
         class_order=main.class_order(seed,'superclass',data_dir))
     if increment!=5:expected.update(init_cls=increment,increment=increment)
     for key, value in expected.items():
-        if p.get(key) != value: raise ValueError(label+' baseline mismatch: '+key)
+        if p.get(key) != value:problems[key]=dict(saved=p.get(key),required=value)
     cfg = main.recipe(seed,'cuda:0','resnet32_nobn',increment)
     cfg['shuffle'] = False
     if p.get('cfg') != json.loads(json.dumps(cfg)):
-        raise ValueError(label+' baseline mismatch: cfg')
+        actual=p.get('cfg')
+        problems['cfg']=({k:dict(saved=actual.get(k),required=cfg.get(k)) for k in actual.keys() | cfg.keys()
+            if actual.get(k)!=cfg.get(k) or (k in actual)!=(k in cfg)} if isinstance(actual,dict) else dict(saved=actual,required=cfg))
     training = p.get('training', {})
     if (training != dict(first_epochs=100,later_epochs=50,first_milestones=[30,60,85],later_milestones=[24,35])
             or p.get('warmup_epochs',0) != 0 or p.get('grad_clip') is not None):
-        raise ValueError(label+' baseline mismatch: training/warmup/clipping')
+        problems['training/warmup/clipping']=dict(training=training,warmup=p.get('warmup_epochs',0),grad_clip=p.get('grad_clip'),
+            required='100/50 epochs; milestones [30,60,85]/[24,35]; no warmup or clipping')
     native = path/'run' if (path/'run'/'protocol.json').is_file() else path
     saved_protocol = read(native/'protocol.json', {})
     tasks = summary.get('tasks', [])
+    if not isinstance(tasks,list) or any(not isinstance(row,dict) for row in tasks):
+        problems['tasks']='summary.tasks must be a list of task records'
+        tasks=[]
     count = tasks[-1].get('parameter_count') if tasks else None
     # persist() adds observed model size and baseline mu0 to the immutable identity.
     expected_protocol = {**p, 'parameter_count': count, 'mu0': None}
-    if not isinstance(count, int) or count <= 0 or saved_protocol != expected_protocol:
-        mismatches = {k:dict(saved=saved_protocol.get(k), required=expected_protocol.get(k))
+    if not isinstance(saved_protocol,dict):
+        problems['protocol']='protocol.json must be an object'
+        saved_protocol={}
+    if type(count) is not int or count <= 0:
+        problems['parameter_count']=dict(saved=count,required='positive integer size of the last completed task')
+    if saved_protocol != expected_protocol:
+        problems['summary/protocol'] = {k:dict(saved=saved_protocol.get(k), required=expected_protocol.get(k))
                       for k in saved_protocol.keys() | expected_protocol.keys()
                       if saved_protocol.get(k) != expected_protocol.get(k)
                       or (k in saved_protocol) != (k in expected_protocol)}
-        raise ValueError(label+' baseline summary/protocol mismatch: '+json.dumps(mismatches,sort_keys=True))
     measurement = read(path/'measurement_protocol.json', {})
+    if not isinstance(measurement,dict):
+        problems['measurement_protocol']='measurement_protocol.json must be an object'
+        measurement={}
+    ggn=measurement.get('ggn',{})
+    if not isinstance(ggn,dict):
+        problems['measurement_protocol']='measurement_protocol.ggn must be an object'
+        ggn={}
     if (measurement or increment==20) and (any(measurement.get(k) != p.get(k) for k in ('code_commit','source_digest','arm','seed','backbone'))
             or measurement.get('increment') != increment
             or measurement.get('selected_model') != 'final_epoch'
-            or measurement.get('ggn',{}).get('definition') != 'engine_stability_current_minibatch_v2'):
-        raise ValueError(label+' baseline measurement protocol mismatch')
-    completed_tasks = divergence['task']-1 if failed_reference else 100//increment
+            or ggn.get('definition') != 'engine_stability_current_minibatch_v2'):
+        problems['measurement_protocol']='measurement identity, increment or final-epoch/full-loss definition mismatch'
+    completed_tasks = 1 if failed_reference else 100//increment
+    saved_tasks=read(native/'tasks.json',None)
     if (len(tasks) != completed_tasks or [row.get('task') for row in tasks] != list(range(1,completed_tasks+1))
-            or read(native/'tasks.json', []) != tasks):
-        raise ValueError(label+' baseline is missing tasks')
+            or json.dumps(saved_tasks,sort_keys=True) != json.dumps(tasks,sort_keys=True)):
+        problems['task_prefix']=dict(saved_tasks=[row.get('task') for row in tasks],
+            required=list(range(1,completed_tasks+1)),tasks_file_matches=json.dumps(saved_tasks,sort_keys=True)==json.dumps(tasks,sort_keys=True))
+    for key,value in (('arm','icarl'),('seed',seed),('init_cls',increment),('increment',increment),('tasks_run',len(tasks))):
+        if key in summary and summary[key]!=value:problems['summary.'+key]=dict(saved=summary[key],required=value)
     for row in tasks:
-        if any(not math.isfinite(row.get(k,float('nan'))) for k in ('cnn_top1','nme_top1')):
-            raise ValueError(label+' baseline has nonfinite metrics')
+        for key in ('cnn_top1','nme_top1'):
+            value=row.get(key)
+            if not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value):
+                problems[f'task{row.get("task")}.{key}']=dict(saved=value,required='finite completed-task accuracy')
+    if problems:raise ValueError(f'{label} baseline validation failed ({summary_path}):\n'+json.dumps(problems,indent=2,sort_keys=True))
     return dict(path=str(path),source_digest=p['source_digest'],code_commit=p['code_commit'],
         seed=seed,status='VALIDATED_ORIGINAL_BASELINE',outcome=outcome,diverged=copy.deepcopy(divergence),
         summary_path=str(summary_path),summary_sha256=hashlib.sha256(summary_path.read_bytes()).hexdigest(),
         protocol_sha256=hashlib.sha256((native/'protocol.json').read_bytes()).hexdigest(),
+        tasks_sha256=hashlib.sha256((native/'tasks.json').read_bytes()).hexdigest(),
         dataset_fingerprint=p['dataset_fingerprint'],
         baseline_measurements='recorded' if measurement else 'not_recorded_in_legacy_run')
 
