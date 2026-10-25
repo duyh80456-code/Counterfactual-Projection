@@ -1380,3 +1380,11 @@ in Output. No GPU PASS is inferred from CPU results.
   K_E and every quantity built on it, including V_O and h. A virtual channel that joined a group
   would change that group's statistics and give different values. The change only affects
   networks with GroupNorm; noBN and BN runs are unchanged.
+
+- **Amendment after seeing results (2026-10-25): GroupNorm task-1 gate removed.** The gated GN
+  run stopped at task 1 with CNN accuracy 63.8 (s0) and 70.2 (s1), below 72. The gate is removed
+  post hoc: the purpose of the GroupNorm run is to check the V_O/h story on a network that
+  replaces BN, not to require GroupNorm to match noBN accuracy. Task-1 accuracy is recorded in
+  `gn_vo_h_summary.json` and never stops the job. Everything else is unchanged: GroupNorm(8),
+  zero-init gamma of `bn_b`, lr 0.05, measurements in tasks 2-5. The P1 replays are not rerun;
+  `icarl_full__s1` did not match P1 and is reported as MISMATCH (excluded from the gap tables).

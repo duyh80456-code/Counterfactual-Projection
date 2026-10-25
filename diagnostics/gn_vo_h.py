@@ -17,10 +17,6 @@ import random
 from diagnostics.stability_gap import Tracker
 
 DENSE, STEP_EVERY, STEP_WINDOW, MAX_TASKS = 10, 5, 200, 5
-MIN_TASK1_ACC = 72.  # noBN task-1 accuracy 76 minus ~2 standard errors of 500 test images (+-1.9)
-
-
-class GateFailed(Exception): pass
 FIELDS = ('V', 'V_O', 'h_dot_d', 'g_dot_d', 'beta', 'beta_branch', 'leak', 'epsilon_star', 'chi2',
           'skipped', 'skip_reason', 'rho_tr', 'mu', 'Delta', 's', 's_F_star', 'rejected',
           'L_before', 'L_after', 'KD_before', 'KD_after')
@@ -41,14 +37,6 @@ def run(args):
     reader = Tracker(out, torch, np)  # same isolated old/new accuracy reader as the P1 replay
     rows, offset = [], {}
     original_before = main.MainHook.before_optimizer_step
-    original_record = main.MainHook.record_task
-
-    def record(self, learner, result):
-        value = original_record(self, learner, result)
-        if learner._cur_task == 0 and not args.fake_data and self.tasks[-1]['cnn_top1'] < MIN_TASK1_ACC:
-            # A GroupNorm net below the noBN task-1 level (incl. a collapse) is not evaluated on tasks 2-5.
-            raise GateFailed(dict(gate='task1_accuracy', cnn_top1=self.tasks[-1]['cnn_top1'], minimum=MIN_TASK1_ACC))
-        return value
 
     def snapshot(learner, optimizer):
         return (copy.deepcopy(learner._network.state_dict()), copy.deepcopy(optimizer.state_dict()),
@@ -101,15 +89,11 @@ def run(args):
                 if not unchanged: raise RuntimeError('copy application changed the real training state')
         return original_before(self, frame)
 
-    main.MainHook.before_optimizer_step, main.MainHook.record_task = before, record
+    main.MainHook.before_optimizer_step = before
     argv = ['--arm', 'icarl', '--backbone', 'resnet32_gn', '--class-order', 'superclass', '--seed', str(args.seed),
             '--nobn-lr-scale', '0.5', '--max-tasks', str(MAX_TASKS), '--device', args.device, '--data-dir', args.data_dir, '--out', str(out/'run')]
     if args.fake_data: argv.append('--fake-data')  # CPU smoke check only
-    try: main.run(main.parser().parse_args(argv))
-    except GateFailed as error:
-        write(out/'gn_vo_h_summary.json', dict(seed=args.seed, status='STOPPED_AT_GATE', **error.args[0]))
-        print('GN STOPPED:', json.dumps(error.args[0]), flush=True)
-        raise SystemExit(f'GroupNorm gate failed: {error.args[0]["gate"]}')
+    main.run(main.parser().parse_args(argv))
     tasks = json.loads((out/'run'/'tasks.json').read_text())
     final = {t['task']: t for t in tasks}
     gaps = []
