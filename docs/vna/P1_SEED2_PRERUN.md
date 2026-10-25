@@ -28,7 +28,7 @@ directory. Validate source provenance, upstream/config, actual dataset hashes,
 class order, epochs/milestones, no warmup/clipping and persisted protocol fields.
 Completed references require 20 tasks with finite CNN/NME. The registered failed
 reference instead requires `FAILED_DIVERGED`, one completed task, and recorded
-task 2 / epoch 1 / step 8 with a nonempty tensor identifier. Metrics after
+task 2 / epoch 1 / a positive recorded global step with a nonempty tensor identifier. Metrics after
 divergence are not required. Store the original outcome and coordinates in
 `baseline_reuse__s2.json`; do not use this failed reference to estimate complete
 training time or imply that all 20 baseline tasks finished. The inspected original M1 commit

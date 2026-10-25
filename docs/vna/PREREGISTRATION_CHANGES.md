@@ -1568,3 +1568,12 @@ a ZIP overlay. Verify Git HEAD against the pin; record source_digest as SHA-256
 of `git:<pinned-commit>` and provenance method `git_commit_sha256`. This changes
 source delivery only; policy, baseline outcome/provenance checks and scientific
 criteria remain unchanged. No tests or training are run for the push.
+
+Failed-reference coordinate correction (2026-10-26): the native producer writes
+`step=self.steps`, the global training counter, not a task-relative update.
+Do not require that field to equal the reported task-local step 8. Require
+recorded task=2, epoch=1, a positive integer global step and a nonempty tensor;
+preserve the original divergence mapping without synthesizing local coordinates.
+All source, protocol, dataset, class-order and pre-divergence task checks remain.
+Errors now include the saved coordinates to distinguish missing data from a
+counter mismatch. No tests or training are run for this correction.

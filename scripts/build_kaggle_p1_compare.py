@@ -243,7 +243,7 @@ it never shortens the task sequence. Source changes are bundled because this tas
 
 Attach CIFAR-100, the matching new source ZIP/dataset, and original P1/M1 Output
 containing the seed-2 icarl baseline: completed, or the validated recorded
-FAILED_DIVERGED outcome at task 2, epoch 1, step 8 with tensor identified.
+FAILED_DIVERGED outcome at task 2, epoch 1 with its recorded global step and tensor identified.
 GPU0 runs fresh locked seed-0
 preflight, then only icarl_full seed 2; GPU1 has no training job. The new shared
 authority is `outputs/p1_inc5_full_v3_authority/resnet32_nobn_inc5_seed0.json`.

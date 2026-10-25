@@ -43,9 +43,10 @@ def validate_p1_baseline(path, seed, data_dir, increment):
     divergence = summary.get('diverged') if failed_reference else None
     if failed_reference and (not isinstance(divergence,dict)
             or any(type(divergence.get(k)) is not int or divergence[k]!=v
-                   for k,v in (('task',2),('epoch',1),('step',8)))
+                   for k,v in (('task',2),('epoch',1)))
+            or type(divergence.get('step')) is not int or divergence['step']<1
             or not isinstance(divergence.get('tensor'),str) or not divergence['tensor'].strip()):
-        raise ValueError(label+' baseline missing or mismatched divergence coordinates (task=2, epoch=1, step=8, tensor required)')
+        raise ValueError(label+' baseline divergence requires task=2, epoch=1, positive recorded global step and tensor; saved='+json.dumps(divergence,sort_keys=True))
     sources = {('ccf60af0909afa8853357c660f8760c98cc1b828', digest) for digest in (
                 'cb902d3e3a4f475672398d24f228fd9307f8e8d9098642ea4b8fb89473bfd9f8',
                 '5e78fd3c7d62f86ef1d0cd3df67b2e0085feb75934bd739652305d361fc6e6f7')}

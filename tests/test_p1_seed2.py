@@ -68,7 +68,7 @@ def test_diverged_seed2_baseline_requires_matching_protocol_and_recorded_failure
     summary=json.loads((root/'summary.json').read_text())
     p=summary['identity']
     summary.update(status='FAILED_DIVERGED',tasks=summary['tasks'][:1],
-        diverged=dict(task=2,epoch=1,step=8,tensor='loss'),cnn_last_accuracy=float('nan'))
+        diverged=dict(task=2,epoch=1,step=4008,tensor='loss'),cnn_last_accuracy=float('nan'))
     if corruption=='lr_scale':p['nobn_lr_scale']=1.
     if corruption=='epochs':p['training']['later_epochs']=49
     if corruption=='memory':p['cfg']['memory_size']=1999
@@ -77,7 +77,7 @@ def test_diverged_seed2_baseline_requires_matching_protocol_and_recorded_failure
     if corruption=='dataset':p['dataset_fingerprint']['train']='a'*64
     if corruption=='class_order':p['class_order'].reverse()
     if corruption=='coordinates':summary.pop('diverged')
-    if corruption=='step':summary['diverged']['step']=9
+    if corruption=='step':summary['diverged']['step']=-1
     if corruption=='tensor':summary['diverged']['tensor']=''
     (root/'summary.json').write_text(json.dumps(summary))
     (root/'tasks.json').write_text(json.dumps(summary['tasks']))
@@ -90,7 +90,7 @@ def test_diverged_seed2_baseline_requires_matching_protocol_and_recorded_failure
         reference=validate_p1_baseline(root,2,data,5)
         assert reference['status']=='VALIDATED_ORIGINAL_BASELINE'
         assert reference['outcome']=='FAILED_DIVERGED'
-        assert reference['diverged']==dict(task=2,epoch=1,step=8,tensor='loss')
+        assert reference['diverged']==dict(task=2,epoch=1,step=4008,tensor='loss')
         assert reference['code_commit']=='84f833db7b152264003c26b236c5c628c64b8773'
         assert reference['source_digest'] is None
     assert before=={str(f):f.read_bytes() for f in root.rglob('*') if f.is_file()}
