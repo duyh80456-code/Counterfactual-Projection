@@ -29,7 +29,7 @@ When requested, use `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYT
 ## Delivery
 - Update repository code directly. Do not create or update source ZIP overlays unless explicitly requested.
 - New notebooks should use repository code pinned to a real commit, not an uncommitted ZIP overlay.
-- Commit and push when the user requests them; there is no blanket prohibition on commits.
+- The user grants standing authorization: commit and push completed requested code changes to the current branch without asking again.
 
 ## Current layout
 - Main runs: `experiments/{pilot_v3,main_cil,v4_competitors,v4_b5_width}.py`.
