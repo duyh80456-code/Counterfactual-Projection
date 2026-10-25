@@ -346,7 +346,7 @@ def run(args):
     if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
         raise ValueError(f'{args.arm} requires the backbone authority --schedule (K0 preflight)')
     if args.preflight_only and not args.schedule_output: raise ValueError('preflight requires --schedule-output')
-    if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
+    if args.preflight_only and args.arm not in ENGINE_ARMS: raise ValueError('preflight requires an engine arm')
     if schedule:
         if (schedule.get('increment',5)!=increment or schedule.get('warmup_epochs',0)!=warmup_epochs or
                 schedule.get('gir_rule','schur_dead')!=gir_rule):

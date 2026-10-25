@@ -168,8 +168,11 @@ def summarize(state, events):
             recovery_step_to_pre_switch=recover, recovery_step_to_half_gap=half, end_old=points[-1]['old'] if points else None,
             end_new=points[-1]['new'] if points else None, curve=points,
             interventions=[dict(step=e['iteration']-entry['offset'], L=e.get('L_before'), KD=e.get('KD_before'),
-                V_O=e.get('V_O'), h=e.get('h_dot_d'), g_dot_d=e.get('g_dot_d'), s=e.get('s'), swaps=e.get('swaps'),
-                skipped=e.get('skipped'), skip_reason=e.get('skip_reason'), beta=e.get('beta')) for e in task_events]))
+                L_after=e.get('L_after'), KD_after=e.get('KD_after'), V_O=e.get('V_O'), h=e.get('h_dot_d'),
+                g_dot_d=e.get('g_dot_d'), s=e.get('s'), swaps=e.get('swaps'), skipped=e.get('skipped'),
+                skip_reason=e.get('skip_reason'), rejected=e.get('rejected'),
+                accepted=bool(not e.get('skipped') and not e.get('rejected') and (e.get('s') or 0) > 0),
+                beta=e.get('beta')) for e in task_events]))
     return report
 
 

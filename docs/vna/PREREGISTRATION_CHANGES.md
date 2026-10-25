@@ -1388,3 +1388,17 @@ in Output. No GPU PASS is inferred from CPU results.
   `gn_vo_h_summary.json` and never stops the job. Everything else is unchanged: GroupNorm(8),
   zero-init gamma of `bn_b`, lr 0.05, measurements in tasks 2-5. The P1 replays are not rerun;
   `icarl_full__s1` did not match P1 and is reported as MISMATCH (excluded from the gap tables).
+
+- **GroupNorm pilot replaces the copy measurement (registered before running, 2026-10-25).** The
+  read-only/copy V_O-h measurement (`diagnostics/gn_vo_h.py`) is dropped. Instead a real pilot on
+  `resnet32_gn` under the P1 protocol (Inc5, superclass, lr 0.05 = lr scale 0.5, no warmup,
+  native 100/50 epochs, memory 2000), tasks 1-5, seeds 0 and 1, two arms: baseline `icarl` and
+  `icarl_vna` (VNA, Gram/power10, policy `schur_gamma_bound_rho25_v2`, GIR off because T29e does
+  not hold under GroupNorm). GroupNorm keeps 8 groups (not C/16, which would give one group in the
+  16-channel blocks), zero-init gamma of `bn_b`, and no task-1 accuracy gate (recorded only).
+  The VNA arm uses its own GroupNorm K0 authority (one preflight, `--schedule-source self`; the
+  noBN K0 cannot be reused across backbones); preflight is now allowed for every engine arm.
+  Measurement: the replay's `Tracker` (old/new-class test accuracy at r = 0..10, every 5 steps to
+  200, then every epoch start and the task end, RNG/modes isolated) and every VNA intervention
+  with V_O, h, L/KD before and after, accepted (step applied and not rejected) or rejected, and
+  the skip reason. Lanes: one seed per GPU, baseline first, VNA second.
