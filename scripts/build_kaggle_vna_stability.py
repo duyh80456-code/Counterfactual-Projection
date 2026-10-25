@@ -19,25 +19,30 @@ errors=[]
 
 GN_SCHEDULE=ROOT/'_schedules'/'gn_vna.json'
 schedule_lock=threading.Lock()
+schedule_failed=[]
 
-def gn_schedule():
-    # GroupNorm K0 authority for the VNA arm (P1 protocol, Gram/power10), built once.
+def gn_schedule(gpu):
+    # GroupNorm K0 authority for the VNA arm, built once on the calling lane's GPU; a failure blocks VNA.
     with schedule_lock:
-        if GN_SCHEDULE.exists():return True
-        cmd=[sys.executable,'-u','-m','experiments.main_cil','--arm','icarl_vna','--backbone','resnet32_gn',
-             '--class-order','superclass','--seed','0','--nobn-lr-scale','0.5','--solver','gram','--curvature','power10',
-             '--device','cuda:0','--data-dir',str(DATA_ROOT),'--out',str(ROOT/'_preflight'/'gn'),'--preflight-only',
-             '--schedule-output',str(GN_SCHEDULE),'--schedule-source','self']
-        ok=launch(cmd,0,'gn_preflight',RUN_ROOT/'gn_preflight.log')
-        if GN_SCHEDULE.exists():print('GN PREFLIGHT:',GN_SCHEDULE.read_text(),flush=True)
-        return ok and GN_SCHEDULE.exists()
+        if not GN_SCHEDULE.exists() and not schedule_failed:
+            cmd=[sys.executable,'-u','-m','experiments.main_cil','--arm','icarl_vna','--backbone','resnet32_gn',
+                 '--class-order','superclass','--seed','0','--nobn-lr-scale','0.5','--solver','gram','--curvature','power10',
+                 '--device','cuda:0','--data-dir',str(DATA_ROOT),'--out',str(ROOT/'_preflight'/'gn'),'--preflight-only',
+                 '--schedule-output',str(GN_SCHEDULE),'--schedule-source','self']
+            launch(cmd,gpu,'gn_preflight',RUN_ROOT/'gn_preflight.log')
+            if not GN_SCHEDULE.exists():schedule_failed.append('GN preflight produced no schedule; see gn_preflight.log')
+        if schedule_failed:
+            print('GN PREFLIGHT FAILED: VNA arm not run:',schedule_failed[0],flush=True);return False
+        value=read(GN_SCHEDULE,{})
+        print(f"GN K0 = {value.get('K0')} (seconds/application {value.get('seconds_per_application')}, code {value.get('code_commit','')[:7]})",flush=True)
+        return True
 
 def gn_pilot(gpu,arm,seed):
     out=ROOT/f'{arm}__gn__s{seed}'
     if read(out/'stability_gap'/'report.json',{}).get('status')=='OK':return True
     cmd=[sys.executable,'-u','-m','diagnostics.gn_pilot','--arm',arm,'--seed',str(seed),'--out',str(out),'--data-dir',str(DATA_ROOT)]
     if arm=='icarl_vna':
-        if not gn_schedule():return False
+        if not gn_schedule(gpu):return False
         cmd+=['--schedule',str(GN_SCHEDULE)]
     return launch(cmd,gpu,f'{arm}__gn__s{seed}',RUN_ROOT/f'{arm}__gn__s{seed}.log')
 
