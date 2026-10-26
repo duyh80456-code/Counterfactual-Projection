@@ -73,3 +73,23 @@ resume identity and the enabled hook's budget/cadence behavior.
 See the adjacent pytest log for the final result. No GPU training or timing was
 run; task-1 actual-candidate Gram recomputation can be expensive. Historical
 29-swap counts are motivation supplied by the user, not a newly verified result.
+
+Final focused run: **51 passed**, 36 upstream Torch/Python deprecation warnings,
+247.32 seconds. Command (original workspace `.venv/bin/python`, with this
+worktree on PYTHONPATH):
+
+```
+REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python PYTHONPATH=. \
+  .venv/bin/python -m pytest tests/test_gir_live_task1.py \
+  tests/test_dead_schur_policy.py tests/test_vna_exact.py \
+  -o addopts='' -q -p no:cacheprovider
+```
+
+The final comparison-signature assertion was separately rechecked with
+`test_flag_resume_identity_and_default_task1_hook`: **1 passed**. Every code
+cell in the generated notebook compiles; no notebook cell was executed.
+Notebook `vna4_M1_gir_live_task1_s01.ipynb` pins source
+`c6a81f3eed937a1f88a1b391d940ae58bb3096c0` (a direct child of 6be6543).
+GPU0 runs full s0; GPU1 runs full s1. Required data: CIFAR-100. The existing
+GitHub Secret is still required to clone the private repository. No Gram input
+or source overlay is needed for the registered fixed-K0 variant.

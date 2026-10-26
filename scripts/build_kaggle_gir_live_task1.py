@@ -96,7 +96,8 @@ def build(commit):
         'Task-1 candidate Gram solves may be expensive; T4 runtime has not been measured. '
         'Deadline pauses preserve the complete task chain for a later session.')
     source=''.join(result['cells'][2]['source'])
-    result['cells'][2]=cell('code',source.replace('/kaggle/working/vna4_main','/kaggle/working/'+TAG))
+    result['cells'][2]=cell('code',source.replace('/kaggle/working/vna4_main','/kaggle/working/'+TAG)+
+        "\nos.environ.pop('VNA_SOURCE_DIGEST', None)\n")
     result['cells'][-2]=cell('code',RUN)
     result['cells'][-1]=cell('code',REPORT)
     for item in result['cells']:
