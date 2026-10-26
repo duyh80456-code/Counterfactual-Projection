@@ -27,11 +27,14 @@ with `git show`, including the training hook, proposal search and apply wrapper.
 Base is exactly 6be6543 on branch `codex/gir-live-task1`, separate from later
 paper-policy amendments. `--gir-live-task1` enables task 1 and ports the old
 dead/live slot and CE/Gamma acceptance rule to actual-candidate Gram solves.
-The CE Hessian/residual is captured before VNA, as in the old application;
+Amended 2026-10-27: task 1 runs GIR only, with no VNA step or LM search.
+The native Gram and CE Hessian/split residual are still computed for GIR;
 current and candidate q use their actual native Jacobians. All candidate trials
 restore parameters, buffers, optimizer, gradients, modes, RNG and install ages.
 Task 2 onward takes the original 6be6543 path. Default off has the original
 engine state shape and is checked against the historical source, bitwise.
+Rationale: original s0 had no accepted VNA step in task 1. A separate policy
+identity and output tag prevent resuming the preceding VNA-attempt variant.
 
 Fixed K0=512, power10, existing geometric cadence and compute-budget guard;
 the first native SGD timing initializes that guard. Intervention logs contain
@@ -88,8 +91,22 @@ REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python PYTHONPATH=. \
 The final comparison-signature assertion was separately rechecked with
 `test_flag_resume_identity_and_default_task1_hook`: **1 passed**. Every code
 cell in the generated notebook compiles; no notebook cell was executed.
-Notebook `vna4_M1_gir_live_task1_s01.ipynb` pins source
+The pre-amendment notebook `vna4_M1_gir_live_task1_s01.ipynb` pinned source
 `c6a81f3eed937a1f88a1b391d940ae58bb3096c0` (a direct child of 6be6543).
 GPU0 runs full s0; GPU1 runs full s1. Required data: CIFAR-100. The existing
 GitHub Secret is still required to clone the private repository. No Gram input
 or source overlay is needed for the registered fixed-K0 variant.
+
+## 2026-10-27 GIR-only amendment
+
+The notebook is regenerated with the new GIR-only source pin and output tag
+`vna4_m1_gir_only_task1_s01`. Task 1 never calls the VNA/LM path; native
+Gram and CE residual remain available to GIR. Damping is initialized for GIR
+without a VNA trust-ratio search. Task 2 onward remains the original full path.
+Old live-task1 checkpoints are rejected by the explicit task-1 policy identity.
+
+Focused validation: 11 task-1 GIR tests pass, including both swap/no-swap cases,
+read-only restoration, forbidden VNA/LM calls, damping initialization, legacy
+checkpoint rejection and bitwise comparison of default/task-2 behavior with
+6be6543. Actual output is in `GIR_TASK1_ONLY_PYTEST.log`. The 51-test result
+above is historical validation of the preceding variant. No GPU run was made.

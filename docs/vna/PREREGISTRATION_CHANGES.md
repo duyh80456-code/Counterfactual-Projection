@@ -1145,3 +1145,20 @@ Loss NaN/Inf is reported FAILED_DIVERGED without replacing seeds.
 New output tag; record elapsed GPU-hours and per-event task-1 live/dead counts.
 No source overlay. CPU tests only for the new selection, isolation and defaults;
 GPU performance and the historical 29-swap observation are not validated here.
+
+## 2026-10-27 — task-1 GIR only for --gir-live-task1
+
+Supersedes the task-1 VNA attempt in the preceding pilot amendment. Historical
+rationale: original s0 had no accepted VNA step in task 1 (cg_z/untrusted),
+but did accept live GIR swaps. This observation motivates the design; it is
+not a claim that the new Gram run reproduces its exact trajectory.
+
+With --gir-live-task1, task 1 performs GIR only. Compute its native Gram,
+CE split/residual and damping, but do not run the VNA LM search, selection,
+certificate or parameter update. Log s=0 and vna_applied=false. Preserve the
+historical live/dead GIR rule and Gram candidate solves. Task 2 onward keeps
+the existing full VNA+GIR path unchanged; the flag-off path is also unchanged.
+K0=512, power10, compute-budget guard and planned seeds remain unchanged.
+Record task1_gir_policy=d88abc4_T28_gir_only_gram and use a new output tag
+vna4_m1_gir_only_task1_s01. Do not resume pre-amendment live-GIR checkpoints:
+they may contain an accepted task-1 VNA step. Baselines/competitors are reused.

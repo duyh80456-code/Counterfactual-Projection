@@ -7,7 +7,7 @@ from scripts.build_kaggle_vna_parallel import build as build_m1, config
 from scripts.build_kaggle_pilot_common import cell
 
 ROOT = Path(__file__).resolve().parents[1]
-TAG = 'vna4_m1_gir_live_task1_s01'
+TAG = 'vna4_m1_gir_only_task1_s01'
 
 RUN = r'''from scripts.collect_parallel import validate_result
 ROOT = STAGE_B / REPO_COMMIT[:12] / RUN_TAG
@@ -23,7 +23,7 @@ def terminal(job):
     identity = summary['identity']
     seed = int(job.rsplit('__s',1)[1])
     expected = dict(code_commit=REPO_COMMIT, source_digest=None, arm='icarl_full',
-        seed=seed, gir_live_task1=True, backbone='resnet32_nobn',
+        seed=seed, gir_live_task1=True, task1_gir_policy='d88abc4_T28_gir_only_gram', backbone='resnet32_nobn',
         class_order_kind='superclass', K0=512, solver='gram', curvature='power10',
         intervention_start_task=1, nobn_lr_scale=.5, expected_tasks=20)
     if (any(identity.get(k)!=v for k,v in expected.items())
@@ -46,7 +46,7 @@ def lane(gpu,jobs):
             '--nobn-lr-scale','0.5','--solver','gram','--curvature','power10',
             '--gir-live-task1','--max-tasks','20','--workers','2',
             '--device','cuda:0','--data-dir',str(DATA_ROOT),'--out',str(ROOT/job)]
-        print('K0=512 (fixed); GPU',gpu,'seed',seed,'task1 GIR=d88abc4 live/dead; task2+=6be6543',flush=True)
+        print('K0=512 (fixed); GPU',gpu,'seed',seed,'task1 GIR ONLY (VNA off), d88abc4 live/dead; task2+=6be6543 full',flush=True)
         if not launch(cmd,gpu,job,RUN_ROOT/f'{RUN_TAG}_{job}.log'): return
         terminal(job)
         archive_outputs()
@@ -80,18 +80,21 @@ if archive_errors: raise RuntimeError(archive_errors)
 
 def build(commit):
     subprocess.run(['git','cat-file','-e',commit+'^{commit}'],cwd=ROOT,check=True)
-    source=subprocess.check_output(['git','show',commit+':experiments/main_cil.py'],cwd=ROOT,text=True)
-    if '--gir-live-task1' not in source: raise ValueError('Pinned commit lacks the task-1 live GIR flag')
+    source=subprocess.check_output(['git','show',commit+':methods/vna_v3.py'],cwd=ROOT,text=True)
+    if "TASK1_GIR_POLICY='d88abc4_T28_gir_only_gram'" not in source:
+        raise ValueError('Pinned commit lacks the task-1 GIR-only policy')
     result=build_m1(commit,'M1',TAG,None)
     jobs=([f'icarl_full__nobn__superclass__s0'],[f'icarl_full__nobn__superclass__s1'],[])
     result['cells'][0]=cell('code',config(commit,jobs,TAG,'M1_GIR_LIVE_TASK1_S01',None)+
         '\nGRAD_CLIP = None\nK0 = 512\nPLANNED_SEEDS = list(range(8))\n')
-    result['cells'][1]=cell('markdown','# M1 task-1 live GIR: seeds 0 and 1\n'
+    result['cells'][1]=cell('markdown','# M1 task-1 GIR-only: seeds 0 and 1\n'
         'Fork of vna4_M1 on base 6be6543. T4×2: GPU0=s0, GPU1=s1. '
         'Same CIFAR-100 input and github_token Secret; Internet on. '
         'No source ZIP. K0 is the preregistered constant 512; no Gram authority or preflight is needed. '
         'Attach this pilot Output only when resuming it. Baselines and competitors are reused externally; '
         'this notebook trains only icarl_full with --gir-live-task1. Full 20 tasks, no clipping. '
+        'Task 1 runs GIR only (live/dead); VNA is disabled while its native Gram/split is retained for GIR. '
+        'Task 2 onward runs unchanged VNA+GIR from 6be6543. '
         'GPU-hours and task-1 live/dead swap counts are printed at the end. '
         'Task-1 candidate Gram solves may be expensive; T4 runtime has not been measured. '
         'Deadline pauses preserve the complete task chain for a later session.')

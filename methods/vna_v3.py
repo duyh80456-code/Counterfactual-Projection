@@ -321,6 +321,7 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 POLICY_VERSION='schur_gamma_bound_rho25_v2'
+TASK1_GIR_POLICY='d88abc4_T28_gir_only_gram'
 
 
 class V3Engine:
@@ -332,6 +333,7 @@ class V3Engine:
             if solver != 'gram' or curvature != 'power10' or gir_live or arm != 'vna_gir':
                 raise ValueError('task-1 live GIR requires vna_gir, gram/power10 and no global live ablation')
             self.gir_live_task1 = True
+            self.task1_gir_policy = TASK1_GIR_POLICY
         self.solver,self.curvature = solver,curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
@@ -356,6 +358,8 @@ class V3Engine:
     def load_state_dict(self, state):
         if state.get('gir_live_task1',False)!=getattr(self,'gir_live_task1',False):
             raise ValueError('checkpoint task-1 live GIR mismatch')
+        if state.get('task1_gir_policy')!=getattr(self,'task1_gir_policy',None):
+            raise ValueError('checkpoint task-1 GIR policy mismatch')
         if state.get('policy_version')!=self.policy_version:raise ValueError('checkpoint correction policy mismatch')
         if state.get('gir_live',False)!=self.gir_live:raise ValueError('checkpoint live-slot ablation mismatch')
         if state.get('solver',self.solver)!=self.solver: raise ValueError('checkpoint solver mismatch')
@@ -713,7 +717,9 @@ class V3Engine:
                                swaps=0, swap_records=[], after_restore=self._norms(model, sites))
                 if getattr(self, 'gir_live_task1', False) and self.task == 1:
                     swaps = row.get('swap_records', [])
-                    row.update(gir_live_task1=True, swaps_live=sum(r['slot_kind']=='live' for r in swaps),
+                    row.update(gir_live_task1=True, task1_gir_policy=self.task1_gir_policy,
+                        vna_applied=False, vna_skip_reason='task1_gir_only',
+                        swaps_live=sum(r['slot_kind']=='live' for r in swaps),
                         swaps_dead=sum(r['slot_kind']=='dead' for r in swaps))
                 diagnostic_start=time.perf_counter()
                 stability_after=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
@@ -1023,18 +1029,26 @@ class V3Engine:
         sites = [s for s in sites if self.valid_slot(s)]
         with training_products(model, [], {}, batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
-            G, _ = gram(p)
+            G, timing = gram(p)
             mu = self.mu if self.mu is not None else max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
             blocks = spec.metric_blocks(op.logits, op.ctx)
             factor = OutputSolve(G, blocks, mu)
             e = op.g.clone()
             residual = e-factor.metric(G@factor.solve(e))
-        row = self._apply_current(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+        if self.mu is None:
+            self.mu = mu
+            self.protocol['mu0'] = mu
+        before = self._evaluate_current(model, batch, spec, ctx)
         start = time.perf_counter()
         trials = []
         swaps = self._run_gir_task1(model, sites, batch, spec, ctx, optimizer, iteration,
             e, residual, blocks, mu, trials) if apply else []
-        row.update(swaps=len(swaps), swap_records=swaps, gir_trials=trials,
+        after = self._evaluate_current(model, batch, spec, ctx)
+        row = dict(**timing, solver='gram', skipped=not bool(swaps),
+            skip_reason=None if swaps else 'no_gir_swap', s=0., vna_applied=False,
+            vna_skip_reason='task1_gir_only', task1_gir_policy=self.task1_gir_policy,
+            mu=mu, L_before=before[0], L_after=after[0], KD_before=before[1], KD_after=after[1],
+            swaps=len(swaps), swap_records=swaps, gir_trials=trials,
             gir_seconds=time.perf_counter()-start, gir_live_task1=True,
             swaps_live=sum(r['slot_kind']=='live' for r in swaps),
             swaps_dead=sum(r['slot_kind']=='dead' for r in swaps))
@@ -1206,7 +1220,7 @@ class V3Engine:
         start = time.perf_counter()
         units = {s.module_name: list(range(s.second_layer.layer.weight.shape[1])) for s in sites}
         swaps = self._run_gir(model, sites, frozen, frozen_sites, batch, spec, ctx, optimizer,
-                             units, iteration, values, mu) if apply and not (getattr(self,'gir_live_task1',False) and self.task==1) else []
+                             units, iteration, values, mu) if apply else []
         row.update(swaps=len(swaps), swap_records=swaps, ell=[r['ell_beta'] for r in swaps],
                    gir_seconds=time.perf_counter()-start, gir_trials=values.get('gir_trials', []),
                    gir_solves=values.get('gir_solves', []), downstream=values.get('downstream',[]), systems_solved=len(row['solves'])+factor.solves)

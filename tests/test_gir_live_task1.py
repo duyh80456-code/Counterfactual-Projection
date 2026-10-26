@@ -115,16 +115,26 @@ def test_dead_then_four_smallest_live_slots(monkeypatch):
     assert order==[1,2,3,4]
 
 
-def test_task1_dispatch_after_vna_skip_and_read_only(monkeypatch):
+@pytest.mark.parametrize('with_swap',[False,True])
+def test_task1_is_gir_only_and_preserves_read_only_state(monkeypatch,with_swap):
     engine,model,site,batch,opt,proposal=problem()
-    monkeypatch.setattr(engine,'_apply_current',lambda *a,**kw:dict(skipped=True,skip_reason='no_positive_directions',swaps=0))
-    monkeypatch.setattr(engine,'prepare_gir',lambda *a,**kw:[proposal])
+    if not with_swap: engine.mu=None
+    def forbidden(*a,**kw): pytest.fail('Task 1 must not run a VNA step or LM search')
+    monkeypatch.setattr(engine,'_apply_current',forbidden)
+    monkeypatch.setattr(engine,'_lm',forbidden)
+    monkeypatch.setattr(engine,'prepare_gir',lambda *a,**kw:[proposal] if with_swap else [])
     monkeypatch.setattr(engine,'_stability',lambda *a,**kw:dict(lambda_max_ggn=1.))
     before=engine._training_state(model,opt);state=engine.state_dict()
     engine.apply(model,[site],batch,CE(),dict(targets=batch[1]),opt,1,force=True,apply=False)
     _assert_bitwise(before,engine._training_state(model,opt));_assert_bitwise(state,engine.state_dict())
     row=engine.apply(model,[site],batch,CE(),dict(targets=batch[1]),opt,1,force=True)
-    assert row['skipped'] and row['swaps_live']==1 and row['swaps_dead']==0
+    assert row['skipped']==(not with_swap) and row['swaps_live']==int(with_swap) and row['swaps_dead']==0
+    assert row['s']==0 and not row['vna_applied'] and row['vna_skip_reason']=='task1_gir_only'
+    assert engine.A==state['A']
+    if with_swap: assert engine.mu==state['mu']
+    else:
+        assert engine.mu>0 and engine.protocol['mu0']==engine.mu
+        _assert_bitwise(before,engine._training_state(model,opt))
 
 
 @pytest.mark.parametrize('task,enabled',[(1,False),(2,False),(2,True)])
@@ -143,7 +153,8 @@ def test_default_and_task2_match_original_6be_bitwise(monkeypatch,task,enabled):
     actual=engine.apply(model,[site],batch,CE(),dict(targets=batch[1]),opt,1,force=True)
     _assert_bitwise(expected,actual);_assert_bitwise(expected_state,engine._training_state(model,opt))
     state=engine.state_dict()
-    if enabled: state.pop('gir_live_task1')
+    if enabled:
+        state.pop('gir_live_task1');state.pop('task1_gir_policy')
     _assert_bitwise(base.state_dict(),state)
 
 
@@ -155,6 +166,8 @@ def test_flag_resume_identity_and_default_task1_hook():
     variant=vna.V3Engine('vna_gir',solver='gram',curvature='power10',gir_live_task1=True)
     with pytest.raises(ValueError,match='task-1'):default.load_state_dict(variant.state_dict())
     with pytest.raises(ValueError,match='task-1'):variant.load_state_dict(default.state_dict())
+    legacy=variant.state_dict();legacy.pop('task1_gir_policy')
+    with pytest.raises(ValueError,match='task-1 GIR policy'):variant.load_state_dict(legacy)
     assert not parser().parse_args(['--out','unused']).gir_live_task1
     hook=Intervention(default,512);hook.task=1
     hook.after_step(SimpleNamespace(steps=1),None,None)

@@ -350,7 +350,7 @@ def run(args):
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
     if args.gir_live_task1:
         protocol.update(gir_live_task1=True, intervention_start_task=1,
-            task1_gir_policy='d88abc4_T28_actual_gram', K0_source='preregistered_fixed_512',
+            task1_gir_policy=vna_v3.TASK1_GIR_POLICY, K0_source='preregistered_fixed_512',
             planned_seeds=list(range(8)))
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
     baseline_reference=None
