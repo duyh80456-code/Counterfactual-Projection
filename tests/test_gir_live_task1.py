@@ -50,17 +50,22 @@ def metric(model,batch):
 
 @pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
 @pytest.mark.parametrize('dead',[False,True])
-def test_real_power10_gir_proposals_with_native_model_dtype(dtype,dead):
+def test_real_power10_gir_proposals_with_native_model_dtype(dtype,dead,monkeypatch):
     engine,model,site,batch,_,_=problem(dead)
     model.to(dtype=dtype)
     batch=(batch[0].to(dtype=dtype),batch[1])
     opt=torch.optim.SGD(model.parameters(),lr=.05,momentum=.9)
+    prepare=engine.prepare_gir;scored=[]
+    def actual_proposals(*a,**kw):
+        result=prepare(*a,**kw);scored.extend(result);return result
+    monkeypatch.setattr(engine,'prepare_gir',actual_proposals)
     before_rng=rng_state()
     row=engine.apply(model,[site],batch,CE(),dict(targets=batch[1],known_classes=0),opt,1,force=True)
-    assert row['gir_live_task1'] and not row['vna_applied'] and row['s']==0
-    assert row['solver']=='gram' and row['L_after']<=row['L_before']
+    assert row['gir_live_task1'] and row['vna_status'] in ('ACCEPTED','REJECTED','SKIPPED')
+    assert row['vna_applied']==(row['vna_status']=='ACCEPTED')
+    assert row['solver']=='gram' and row['GIR_L_after']<=row['GIR_L_before']
     assert all(p.dtype==dtype and bool(torch.isfinite(p).all()) for p in model.parameters())
-    if dead: assert row['swaps_dead']==1
+    assert any(p['curvature_method']=='power10' for p in scored)
     _assert_bitwise(before_rng,rng_state())
 
 
@@ -131,21 +136,31 @@ def test_dead_then_four_smallest_live_slots(monkeypatch):
     assert order==[1,2,3,4]
 
 
+@pytest.mark.parametrize('vna_row,status,reason',[
+    (dict(skipped=False,rejected=False,s=.1,rho_tr=.5),'ACCEPTED',None),
+    (dict(skipped=True,skip_reason='cg_z',s=0.),'SKIPPED','cg_z'),
+    (dict(skipped=True,skip_reason='untrusted',s=0.,rho_tr=-23.9),'REJECTED','untrusted'),
+    (dict(skipped=True,skip_reason='lm_budget',s=0.,rho_trajectory=[-.1,-23.9]),'REJECTED','lm_budget'),
+    (dict(skipped=False,rejected=True,s=0.,rho_tr=.5),'REJECTED','loss_increased'),
+])
 @pytest.mark.parametrize('with_swap',[False,True])
-def test_task1_is_gir_only_and_preserves_read_only_state(monkeypatch,with_swap):
+def test_task1_certified_vna_logging_and_read_only_state(monkeypatch,with_swap,vna_row,status,reason):
     engine,model,site,batch,opt,proposal=problem()
     if not with_swap: engine.mu=None
-    def forbidden(*a,**kw): pytest.fail('Task 1 must not run a VNA step or LM search')
-    monkeypatch.setattr(engine,'_apply_current',forbidden)
-    monkeypatch.setattr(engine,'_lm',forbidden)
+    calls=[]
+    def certified(*a,**kw):
+        calls.append(1);return deepcopy(vna_row)
+    monkeypatch.setattr(engine,'_apply_current',certified)
     monkeypatch.setattr(engine,'prepare_gir',lambda *a,**kw:[proposal] if with_swap else [])
     monkeypatch.setattr(engine,'_stability',lambda *a,**kw:dict(lambda_max_ggn=1.))
     before=engine._training_state(model,opt);state=engine.state_dict()
     engine.apply(model,[site],batch,CE(),dict(targets=batch[1]),opt,1,force=True,apply=False)
     _assert_bitwise(before,engine._training_state(model,opt));_assert_bitwise(state,engine.state_dict())
     row=engine.apply(model,[site],batch,CE(),dict(targets=batch[1]),opt,1,force=True)
-    assert row['skipped']==(not with_swap) and row['swaps_live']==int(with_swap) and row['swaps_dead']==0
-    assert row['s']==0 and not row['vna_applied'] and row['vna_skip_reason']=='task1_gir_only'
+    assert len(calls)==2 and row['swaps_live']==int(with_swap) and row['swaps_dead']==0
+    assert row['s']==vna_row['s'] and row['vna_status']==status
+    assert row['vna_applied']==(status=='ACCEPTED') and row['vna_skip_reason']==reason
+    assert row['vna_rho']==vna_row.get('rho_tr',(vna_row.get('rho_trajectory') or [None])[-1])
     assert engine.A==state['A']
     if with_swap: assert engine.mu==state['mu']
     else:

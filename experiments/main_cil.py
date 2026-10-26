@@ -144,6 +144,10 @@ class Intervention:
         self.last_iteration = hook.steps
         if event is not None:
             self.events.append(event)
+            if task1_live:
+                log(f"task=1 iteration={hook.steps} VNA={event.get('vna_status')} "
+                    f"reason={event.get('vna_skip_reason')} rho={event.get('vna_rho')} "
+                    f"s={event.get('s',0)} GIR_live={event.get('swaps_live',0)} GIR_dead={event.get('swaps_dead',0)}")
             if (not event.get('skipped') or task1_live) and (event.get('s',0)>0 or event.get('swaps',0)>0):
                 self.followups.append(dict(task=self.task,iteration=hook.steps,status='RUNNING',samples=[]))
 

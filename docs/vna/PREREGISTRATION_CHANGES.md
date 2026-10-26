@@ -1171,3 +1171,19 @@ metric blocks' dtype/device before contraction, as OutputSolve.metric does.
 No change to the CE metric, power10 iterations, slot acceptance, scheduling or
 task-2+ policy. Focused regression tests use real, unmocked proposal generation
 with float32/float64 native models and both live and dead slots.
+
+## 2026-10-27 — permit normally certified task-1 VNA again
+
+Supersedes the GIR-only amendment. With --gir-live-task1, task 1 attempts VNA
+under the normal 6be6543 certificate, then runs the historical live/dead GIR
+search. Keep the float32 metric repair, Gram/power10, fixed K0=512 and budget
+guard. Task 2 onward and flag-off behavior remain unchanged.
+
+Historical motivation supplied by the user: original s0 it1 skipped VNA for
+cg_z; it1025 rejected VNA as untrusted, rho=-23.9. These observed rejections
+do not imply VNA must be disabled or that a new Gram run must repeat them.
+Log each task-1 VNA decision as ACCEPTED, REJECTED or SKIPPED, its reason,
+rho (including the last attempted rho on LM failure) and scale separately
+from GIR live/dead swaps, in interventions.json and the console.
+Record task1_gir_policy=d88abc4_T28_vna_certified_gram and new output tags
+vna4_m1_vna_certified_task1_s01/s23; do not reuse GIR-only checkpoints.

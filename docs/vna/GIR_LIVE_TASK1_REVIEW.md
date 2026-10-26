@@ -27,14 +27,15 @@ with `git show`, including the training hook, proposal search and apply wrapper.
 Base is exactly 6be6543 on branch `codex/gir-live-task1`, separate from later
 paper-policy amendments. `--gir-live-task1` enables task 1 and ports the old
 dead/live slot and CE/Gamma acceptance rule to actual-candidate Gram solves.
-Amended 2026-10-27: task 1 runs GIR only, with no VNA step or LM search.
-The native Gram and CE Hessian/split residual are still computed for GIR;
+Latest amendment 2026-10-27: task 1 permits normally certified VNA, followed
+by historical live/dead GIR. The native Gram and CE residual are retained for GIR;
 current and candidate q use their actual native Jacobians. All candidate trials
 restore parameters, buffers, optimizer, gradients, modes, RNG and install ages.
 Task 2 onward takes the original 6be6543 path. Default off has the original
 engine state shape and is checked against the historical source, bitwise.
-Rationale: original s0 had no accepted VNA step in task 1. A separate policy
-identity and output tag prevent resuming the preceding VNA-attempt variant.
+Original s0 had no accepted VNA step in task 1; these observed rejections do
+not disable VNA in the new run. A separate policy identity/output tag rejects
+checkpoints from the superseded GIR-only experiment.
 
 Fixed K0=512, power10, existing geometric cadence and compute-budget guard;
 the first native SGD timing initializes that guard. Intervention logs contain
@@ -125,3 +126,26 @@ callback without changing its definition. Latest focused rerun: **15 passed**,
 36 upstream deprecation warnings, 6.99 seconds. The refreshed actual log is
 `GIR_TASK1_ONLY_PYTEST.log`. Both s0/s1 and s2/s3 notebooks are repinned to
 the repaired source. No GPU training was performed locally.
+
+## Latest: normally certified task-1 VNA — 2026-10-27
+
+The GIR-only amendment is superseded. The task-1 VNA attempt uses the unchanged
+normal VNA certificate; historical live/dead GIR runs afterward, including when
+VNA was skipped/rejected. Its swaps do not overwrite the separate VNA decision.
+Each task-1 event logs vna_status=ACCEPTED/REJECTED/SKIPPED, vna_applied,
+vna_skip_reason, vna_rho and s. The console prints the same decision and GIR
+counts; the final notebook report lists each task-1 VNA outcome. Failed LM
+attempts retain the last rho even when there is no accepted rho_tr.
+
+The user reports original s0 it1 skipped for cg_z and it1025 rejected as
+untrusted at rho=-23.9. These are historical observations, not forced outcomes
+for the new Gram run. Task 2 onward and default-off behavior remain unchanged.
+New identity: d88abc4_T28_vna_certified_gram; output tags:
+vna4_m1_vna_certified_task1_s01/s23. Do not resume GIR-only checkpoints.
+
+Focused validation: **40 passed**, 36 upstream deprecation warnings, 11.50s,
+in test_gir_live_task1.py and test_dead_schur_policy.py. Covers accepted VNA,
+cg_z skip, untrusted rejection at rho=-23.9, exact-loss rejection and failed-LM
+rho logging, with/without GIR swaps, read-only isolation, native float32
+proposal generation, and bitwise equality with original 6be6543 for task 2 and
+flag-off. Actual output: GIR_TASK1_CERTIFIED_PYTEST.log. No GPU run performed.

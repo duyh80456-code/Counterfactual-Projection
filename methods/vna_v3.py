@@ -321,7 +321,7 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 
 POLICY_VERSION='schur_gamma_bound_rho25_v2'
-TASK1_GIR_POLICY='d88abc4_T28_gir_only_gram'
+TASK1_GIR_POLICY='d88abc4_T28_vna_certified_gram'
 
 
 class V3Engine:
@@ -717,8 +717,14 @@ class V3Engine:
                                swaps=0, swap_records=[], after_restore=self._norms(model, sites))
                 if getattr(self, 'gir_live_task1', False) and self.task == 1:
                     swaps = row.get('swap_records', [])
+                    accepted = apply and not row.get('skipped') and not row.get('rejected') and row.get('s',0)>0
+                    reason = row.get('skip_reason') or ('loss_increased' if row.get('rejected') else None)
+                    rejected = row.get('rejected') or reason in ('untrusted','negative_certificate','invalid_beta','lm_budget')
+                    rho = row.get('rho_tr')
+                    if rho is None: rho = next(iter(reversed(row.get('rho_trajectory',[]))),None)
                     row.update(gir_live_task1=True, task1_gir_policy=self.task1_gir_policy,
-                        vna_applied=False, vna_skip_reason='task1_gir_only',
+                        vna_applied=bool(accepted), vna_status='ACCEPTED' if accepted else 'REJECTED' if rejected else 'SKIPPED',
+                        vna_skip_reason=reason if not accepted else None, vna_rho=rho,
                         swaps_live=sum(r['slot_kind']=='live' for r in swaps),
                         swaps_dead=sum(r['slot_kind']=='dead' for r in swaps))
                 diagnostic_start=time.perf_counter()
@@ -1029,7 +1035,7 @@ class V3Engine:
         sites = [s for s in sites if self.valid_slot(s)]
         with training_products(model, [], {}, batch[0]) as p:
             op = GGNProducts(p, batch[1], spec, ctx)
-            G, timing = gram(p)
+            G, _ = gram(p)
             mu = self.mu if self.mu is not None else max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
             blocks = spec.metric_blocks(op.logits, op.ctx)
             factor = OutputSolve(G, blocks, mu)
@@ -1038,16 +1044,15 @@ class V3Engine:
         if self.mu is None:
             self.mu = mu
             self.protocol['mu0'] = mu
+        row = self._apply_current(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
         before = self._evaluate_current(model, batch, spec, ctx)
         start = time.perf_counter()
         trials = []
         swaps = self._run_gir_task1(model, sites, batch, spec, ctx, optimizer, iteration,
             e, residual, blocks, mu, trials) if apply else []
         after = self._evaluate_current(model, batch, spec, ctx)
-        row = dict(**timing, solver='gram', skipped=not bool(swaps),
-            skip_reason=None if swaps else 'no_gir_swap', s=0., vna_applied=False,
-            vna_skip_reason='task1_gir_only', task1_gir_policy=self.task1_gir_policy,
-            mu=mu, L_before=before[0], L_after=after[0], KD_before=before[1], KD_after=after[1],
+        row.update(task1_gir_policy=self.task1_gir_policy, gir_mu=mu,
+            GIR_L_before=before[0], GIR_L_after=after[0],
             swaps=len(swaps), swap_records=swaps, gir_trials=trials,
             gir_seconds=time.perf_counter()-start, gir_live_task1=True,
             swaps_live=sum(r['slot_kind']=='live' for r in swaps),
@@ -1220,7 +1225,7 @@ class V3Engine:
         start = time.perf_counter()
         units = {s.module_name: list(range(s.second_layer.layer.weight.shape[1])) for s in sites}
         swaps = self._run_gir(model, sites, frozen, frozen_sites, batch, spec, ctx, optimizer,
-                             units, iteration, values, mu) if apply else []
+                             units, iteration, values, mu) if apply and not (getattr(self,'gir_live_task1',False) and self.task==1) else []
         row.update(swaps=len(swaps), swap_records=swaps, ell=[r['ell_beta'] for r in swaps],
                    gir_seconds=time.perf_counter()-start, gir_trials=values.get('gir_trials', []),
                    gir_solves=values.get('gir_solves', []), downstream=values.get('downstream',[]), systems_solved=len(row['solves'])+factor.solves)
