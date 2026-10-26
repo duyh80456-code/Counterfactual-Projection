@@ -1056,7 +1056,7 @@ class V3Engine:
 
     def _run_gir_task1(self, model, sites, batch, spec, ctx, optimizer, iteration,
                        e, residual, blocks, mu, trials):
-        H = lambda v: torch.einsum('nij,nj->ni', blocks, v.reshape(blocks.shape[:2])).flatten()
+        H = lambda v: torch.einsum('nij,nj->ni', blocks, v.to(blocks).reshape(blocks.shape[:2])).flatten()
         def gain(c):
             with training_products(model, [], {}, batch[0]) as p:
                 G, _ = gram(p)

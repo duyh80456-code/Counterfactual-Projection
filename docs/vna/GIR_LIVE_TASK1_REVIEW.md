@@ -110,3 +110,18 @@ read-only restoration, forbidden VNA/LM calls, damping initialization, legacy
 checkpoint rejection and bitwise comparison of default/task-2 behavior with
 6be6543. Actual output is in `GIR_TASK1_ONLY_PYTEST.log`. The 51-test result
 above is historical validation of the preceding variant. No GPU run was made.
+
+### Native float32 proposal repair — 2026-10-27
+
+Real s0/s1 task-1 runs stopped at the first GIR power10 proposal with a
+float64-Hessian/float32-JEv contraction error. This was a code exception,
+not nonfinite-loss divergence. The local tests had previously mocked the
+proposal search or used float64 native models and missed this path.
+
+An unmocked proposal regression reproduces both live/dead float32 failures
+before the fix; the corresponding float64 cases pass. Converting the metric
+input to the Hessian blocks' dtype/device fixes the shared task-1 metric
+callback without changing its definition. Latest focused rerun: **15 passed**,
+36 upstream deprecation warnings, 6.99 seconds. The refreshed actual log is
+`GIR_TASK1_ONLY_PYTEST.log`. Both s0/s1 and s2/s3 notebooks are repinned to
+the repaired source. No GPU training was performed locally.

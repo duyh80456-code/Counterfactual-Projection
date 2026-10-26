@@ -1162,3 +1162,12 @@ K0=512, power10, compute-budget guard and planned seeds remain unchanged.
 Record task1_gir_policy=d88abc4_T28_gir_only_gram and use a new output tag
 vna4_m1_gir_only_task1_s01. Do not resume pre-amendment live-GIR checkpoints:
 they may contain an accepted task-1 VNA step. Baselines/competitors are reused.
+
+### 2026-10-27 — task-1 GIR metric dtype repair
+
+The first real task-1 proposal failed because native float32 JEv output was
+passed to a float64 CE Hessian without conversion. Convert that vector to the
+metric blocks' dtype/device before contraction, as OutputSolve.metric does.
+No change to the CE metric, power10 iterations, slot acceptance, scheduling or
+task-2+ policy. Focused regression tests use real, unmocked proposal generation
+with float32/float64 native models and both live and dead slots.

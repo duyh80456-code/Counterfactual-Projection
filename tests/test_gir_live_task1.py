@@ -48,6 +48,22 @@ def metric(model,batch):
     return ctx,op.g,blocks,J
 
 
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
+@pytest.mark.parametrize('dead',[False,True])
+def test_real_power10_gir_proposals_with_native_model_dtype(dtype,dead):
+    engine,model,site,batch,_,_=problem(dead)
+    model.to(dtype=dtype)
+    batch=(batch[0].to(dtype=dtype),batch[1])
+    opt=torch.optim.SGD(model.parameters(),lr=.05,momentum=.9)
+    before_rng=rng_state()
+    row=engine.apply(model,[site],batch,CE(),dict(targets=batch[1],known_classes=0),opt,1,force=True)
+    assert row['gir_live_task1'] and not row['vna_applied'] and row['s']==0
+    assert row['solver']=='gram' and row['L_after']<=row['L_before']
+    assert all(p.dtype==dtype and bool(torch.isfinite(p).all()) for p in model.parameters())
+    if dead: assert row['swaps_dead']==1
+    _assert_bitwise(before_rng,rng_state())
+
+
 @pytest.mark.parametrize('dead',[False,True])
 def test_live_gamma_matches_dense_parameter_solve_and_dead_shortcut(monkeypatch,dead):
     engine,model,site,batch,opt,proposal=problem(dead)

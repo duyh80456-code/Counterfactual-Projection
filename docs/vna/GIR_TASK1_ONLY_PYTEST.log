@@ -1,4 +1,4 @@
-...........                                                              [100%]
+...............                                                          [100%]
 =============================== warnings summary ===============================
 ../../../../expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: 17 warnings
   /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
@@ -15,4 +15,4 @@
     elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-11 passed, 36 warnings in 5.91s
+15 passed, 36 warnings in 6.99s
