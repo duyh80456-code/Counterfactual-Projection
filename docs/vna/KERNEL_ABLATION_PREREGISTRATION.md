@@ -1,0 +1,55 @@
+# Fixed-checkpoint kernel ablation — 2026-10-27
+
+Registered before any experiment execution. Exploratory seeds: 0,1 only.
+Seeds 2–7 are reserved for subsequent confirmation; do not use them for tuning.
+
+Resume the original P1 noBN/superclass/Inc5 checkpoint at the end of task 1
+(100 epochs, 2000 SGD steps), or its native task-2 epoch-0 checkpoint. Take
+the original first task-2 SGD step and capture it2001 immediately before the
+intervention. Preserve learner, teacher, exemplars, optimizer, scheduler,
+window, gradients, modes and RNG. A baseline checkpoint is admissible directly;
+a full-arm checkpoint requires bitwise comparison with the matching baseline.
+Require original protocol, dataset fingerprint and class order, and reject
+task-1 live-GIR/GIR-only amendments. No baseline retraining.
+
+Use the 6be6543 normal policy (the inherited default-off path is separately
+checked against that source). Three arms differ only in projection kernel:
+tiny_V K_E; native K; random A with the same per-site tr(K_E) as tiny_V.
+All use the same rank-16 site proposals, seed, native Gram solver, power10,
+mu/LM rule, original Gram trust radius, certificate and acceptance checks.
+Native K is not artificially truncated to rank 16. Actual update norm is an
+observation only; do not clamp it or install a different sharpness policy.
+
+On copies of the same it2001 state, attempt k=1..8 with GIR disabled. Recompute
+each direction. Rejections keep the current state; do not stop merely because
+lambda falls below 40. Record k=0 and every attempt: s, norm of the actual
+parameter difference before/after VNA, Delta, window CE+KD parts, independent
+held-out CE+KD parts, V_O, native lambda_max GGN (power10), full seen-test
+old/new/total accuracy. The independent loss batch is a fixed balanced batch
+of up to 128 official test examples, disjoint from the training window; it
+never affects acceptance, selection, LM or hyperparameters. Measurements
+must leave model/optimizer/engine/RNG bitwise unchanged.
+
+Save the state after attempt 1, including a rejected/no-op first attempt. After
+finishing the copied chain, restore that first-attempt state and continue the
+native training loop to task 5. Subsequent interventions use VNA–GIR with the
+same arm's kernel and original schedule. Keep teacher/exemplars/SGD intact.
+Report old/new CNN/NME and average incremental accuracy after each task.
+Mark nonfinite-loss divergence honestly; do not replace seeds or shorten tasks.
+
+Before interpreting s1, replay its original full arm through task 2 epoch 43.
+Compare all interventions (s, mu, iteration, accepted/rejected and swaps) and
+full-precision epoch losses against original artifacts; report the first
+discrepancy. Record deterministic-algorithm, CuDNN, TF32, CUDA/PyTorch/device
+and CUBLAS workspace settings. Missing original flags are 'unrecorded', not
+assumed matching. Replay mismatch blocks conclusions; it does not justify
+silently changing GPU flags or the algorithm. No causal attribution without
+supporting evidence.
+
+Notebook: T4x2, GPU0 seed0, GPU1 seed1; each lane runs vna, kernel_self,
+vna_rand sequentially (s1 replay gate first). Native epoch checkpoints handle
+continuation resume. Chain state is saved between attempts; deadline exit 75
+preserves the last safe native epoch and copied-chain progress. Artifacts
+record source/checkpoint hashes, identity and measurement protocol. No ZIP
+overlay, no new preflight, no seed search. GPU runtime is not yet measured;
+no claim that all work fits in a single Kaggle session.

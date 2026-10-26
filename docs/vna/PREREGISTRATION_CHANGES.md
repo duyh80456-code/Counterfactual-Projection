@@ -1187,3 +1187,15 @@ rho (including the last attempted rho on LM failure) and scale separately
 from GIR live/dead swaps, in interventions.json and the console.
 Record task1_gir_policy=d88abc4_T28_vna_certified_gram and new output tags
 vna4_m1_vna_certified_task1_s01/s23; do not reuse GIR-only checkpoints.
+
+## 2026-10-27 — fixed-checkpoint kernel ablation (P1 s0/s1)
+
+Preregistered in KERNEL_ABLATION_PREREGISTRATION.md before experimental runs.
+Only projection kernel changes: tiny_V K_E, native K, or random A normalized
+to the same per-site kernel trace. Keep original 6be6543 certificate/LM/Gram
+trust region; actual step norm is measured, not clamped. Eight VNA-only copied
+attempts, then native VNA–GIR continuation from attempt 1 through task 5.
+Independent loss probes never affect acceptance. Source/anchor/measurement
+bitwise checks and an original s1 epoch43 replay audit gate interpretation.
+Seeds 2–7 remain untouched. KERNEL_ABLATION_INPUT_AUDIT.md records missing or
+incompatible checkpoints in the supplied archives; no substitute is accepted.
