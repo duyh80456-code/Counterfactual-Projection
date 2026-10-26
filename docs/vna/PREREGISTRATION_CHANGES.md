@@ -1116,3 +1116,32 @@ creation remain unchanged. No RNG draws are added. CPU execution is unaffected.
 No DataLoader worker change is included. Gram seed0 source336dded is also
 registered for the existing strict native continuation, with lr0.05 and frozen
 K0; this S&P-only fix does not change Gram training or solver formulas.
+
+# 2026-10-26 — task-1 live GIR pilot (registered before execution)
+
+Base: 6be654310c2e4123391fd7d8d31716d25c89c6fb. Exploratory amendment motivated
+by the reported d88abc4 seed-0 log: VNA skipped (cg_z/untrusted), 29 live swaps
+at iteration 1025, and subsequent Gram continuation from that task-1 checkpoint.
+This is a new run, not a reproduction of that checkpoint or its swap count.
+
+Flag `--gir-live-task1` defaults off. Task 1 alone enables interventions and the
+d88abc4 T28 selection: zero function-contribution slots first, then the four
+smallest nonzero H-norm contributions; exact CE removal must not increase loss;
+test the two highest ell proposals and accept strictly positive Gamma. Dead
+slots retain the old positive-ell lower-bound shortcut (Gamma is not measured).
+There is no KD in task 1. Live Gamma uses the actual candidate network Jacobian
+and the same pre-VNA CE metric/residual, solved with Gram rather than old CG.
+GIR can run after a skipped VNA when that separate Gram system is finite and
+solvable; a failed GIR factorization is logged and does not install its trial.
+Task 2 onward retains 6be6543 policy schur_gamma_bound_rho25_v2 unchanged.
+
+Fixed K0=512 each task, geometric cadence and compute-budget guard remain.
+The guard uses measured native SGD iteration time, excluding intervention time.
+Backbone noBN SkipInit ResNet32, superclass Inc5, memory 2000, LR .05,
+100/50 epochs, milestones 30/60/85 and 24/35, no warmup, no clipping.
+N=8 planned seeds 0..7; this separate pilot notebook runs only 0 and 1,
+one full arm per GPU. No baseline/competitor reruns or new K0 preflight.
+Loss NaN/Inf is reported FAILED_DIVERGED without replacing seeds.
+New output tag; record elapsed GPU-hours and per-event task-1 live/dead counts.
+No source overlay. CPU tests only for the new selection, isolation and defaults;
+GPU performance and the historical 29-swap observation are not validated here.

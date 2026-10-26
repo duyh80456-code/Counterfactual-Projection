@@ -112,11 +112,16 @@ class Intervention:
             if len(row['samples'])==20:row['status']='COMPLETED'
 
     def after_step(self, hook, learner, optimizer):
-        if self.engine.coefficient == 0 or self.task<2: return
+        task1_live = getattr(self.engine, 'gir_live_task1', False) and self.task == 1
+        if self.engine.coefficient == 0 or (self.task<2 and not task1_live): return
         if self.preflight and self.counts.get(self.task, 0) >= 3: return
         if not self.preflight and self.last_iteration is not None and hook.steps-self.last_iteration < self.interval: return
         if self.preflight and learner._device.type == 'cuda': torch.cuda.synchronize(learner._device)
         iteration_seconds = max(time.monotonic()-hook.iteration_started, 1e-9) if self.preflight else None
+        if task1_live and not self.preflight and 'baseline_iteration_seconds' not in self.engine.protocol:
+            if learner._device.type == 'cuda': torch.cuda.synchronize(learner._device)
+            self.engine.protocol['baseline_iteration_seconds'] = max(time.monotonic()-hook.iteration_started, 1e-9)
+            self.engine.protocol['budget'] = 1.
         batch = tuple(t.to(learner._device) for t in hook.current_batch)
         spec, ctx = loss_context(learner, batch)
         ctx.update(classes=learner._total_classes, task=self.task)
@@ -139,7 +144,7 @@ class Intervention:
         self.last_iteration = hook.steps
         if event is not None:
             self.events.append(event)
-            if not event.get('skipped') and (event.get('s',0)>0 or event.get('swaps',0)>0):
+            if (not event.get('skipped') or task1_live) and (event.get('s',0)>0 or event.get('swaps',0)>0):
                 self.followups.append(dict(task=self.task,iteration=hook.steps,status='RUNNING',samples=[]))
 
 
@@ -303,7 +308,11 @@ def run(args):
     tasks = min(args.max_tasks, 2 if args.fake_data else 20)
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None
-    if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule:
+    if args.gir_live_task1 and (args.arm!='icarl_full' or args.solver!='gram' or args.curvature!='power10'
+            or args.gir_live or args.backbone!='resnet32_nobn' or args.class_order!='superclass'
+            or args.preflight_only or schedule):
+        raise ValueError('--gir-live-task1 requires full/noBN/superclass/gram/power10 and fixed K0 (no schedule/preflight)')
+    if args.arm in ENGINE_ARMS and args.coefficient != 0 and not args.fake_data and not args.preflight_only and not schedule and not args.gir_live_task1:
         raise ValueError(f'{args.arm} requires the backbone authority --schedule (K0 preflight)')
     if args.preflight_only and not args.schedule_output: raise ValueError('preflight requires --schedule-output')
     if args.preflight_only and args.arm != 'icarl_full': raise ValueError('preflight requires icarl_full')
@@ -312,7 +321,7 @@ def run(args):
                         backbone=args.backbone, nobn_lr_scale=args.nobn_lr_scale, curvature=args.curvature,solver=args.solver,policy_version=vna_v3.POLICY_VERSION,gir_live=args.gir_live)
         if any(schedule.get(k) != v for k,v in expected.items()): raise ValueError('authority schedule identity mismatch')
         if schedule.get('synthetic',False) and not args.fake_data: raise ValueError('synthetic schedule')
-    K0 = int(schedule['K0']) if schedule else 1
+    K0 = 512 if args.gir_live_task1 else int(schedule['K0']) if schedule else 1
     if K0 < 1: raise ValueError('K0 must be positive')
     params = recipe(args.seed, args.device, args.backbone)
     params['shuffle'] = False
@@ -339,6 +348,10 @@ def run(args):
         comparison_protocol=dict(init_cls=5, increment=5, memory_size=params['memory_size'], fixed_memory=False,
             backbone=args.backbone, class_order=args.class_order, nobn_lr_scale=args.nobn_lr_scale,
             first_epochs=1 if args.fake_data else 100, later_epochs=1 if args.fake_data else 50))
+    if args.gir_live_task1:
+        protocol.update(gir_live_task1=True, intervention_start_task=1,
+            task1_gir_policy='d88abc4_T28_actual_gram', K0_source='preregistered_fixed_512',
+            planned_seeds=list(range(8)))
     if args.max_tasks != 20: protocol['comparison_protocol']['max_tasks']=args.max_tasks
     baseline_reference=None
     if args.baseline_reference:
@@ -355,7 +368,7 @@ def run(args):
         if previous['status'] in ('COMPLETED','REUSED_BASELINE'): return previous
     status = Status(out, args.arm)
     intervention = Intervention(V3Engine(ENGINE_ARMS[args.arm], seed=args.seed, coefficient=args.coefficient, K0=K0,
-        curvature=args.curvature,solver=args.solver,gir_live=args.gir_live), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
+        curvature=args.curvature,solver=args.solver,gir_live=args.gir_live,gir_live_task1=args.gir_live_task1), K0, args.preflight_only) if args.arm in ENGINE_ARMS else None
     if intervention is not None and schedule: intervention.engine.configure_schedule(schedule)
     def persist(hook):
         write_json(out/'tasks.json', hook.tasks)
@@ -443,6 +456,7 @@ def parser():
     p.add_argument('--nobn-lr-scale', type=float, choices=(1.,*NOBN_LR_SCALES), default=.5)
     p.add_argument('--coefficient', type=float, default=1.)
     p.add_argument('--gir-live',action='store_true',help='Ablation: allow live-slot GIR')
+    p.add_argument('--gir-live-task1',action='store_true',help='Pilot: d88abc4 live/dead GIR in task 1 only, fixed K0=512')
     p.add_argument('--solver',choices=('gram','cg_ir'),default='cg_ir')
     p.add_argument('--baseline-reference',help='Completed old baseline + 150 full-precision epoch losses')
     p.add_argument('--curvature', choices=('power10','exact'), default='exact')

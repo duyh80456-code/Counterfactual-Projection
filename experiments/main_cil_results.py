@@ -20,6 +20,7 @@ def configuration_signature(p):
         result.update(comparison=p.get('comparison_protocol'),cfg={k:v for k,v in p.get('cfg',{}).items() if k not in ('seed','device')})
         if p.get('arm')!='icarl':
             result.update({k:p.get(k) for k in ('solver','curvature','policy_version','gir_live','coefficient','r','compute_budget')})
+            if p.get('gir_live_task1'): result['gir_live_task1']=True
             authority=p.get('schedule') or {}
             result['K0']=authority.get('K0',p.get('K0'))
             result['calibration']=authority.get('calibration_code_commit',authority.get('code_commit'))

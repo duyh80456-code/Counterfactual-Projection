@@ -324,10 +324,14 @@ POLICY_VERSION='schur_gamma_bound_rho25_v2'
 
 
 class V3Engine:
-    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False):
+    def __init__(self, arm='vna', *, seed=0, coefficient=1., K0=100, curvature='exact', solver='cg_ir', gir_live=False, gir_live_task1=False):
         if curvature not in ('power10','exact'): raise ValueError('curvature must be power10 or exact')
         if solver not in ('gram','cg_ir'): raise ValueError('solver must be gram or cg_ir')
         self.policy_version,self.gir_live=POLICY_VERSION,bool(gir_live)
+        if gir_live_task1:
+            if solver != 'gram' or curvature != 'power10' or gir_live or arm != 'vna_gir':
+                raise ValueError('task-1 live GIR requires vna_gir, gram/power10 and no global live ablation')
+            self.gir_live_task1 = True
         self.solver,self.curvature = solver,curvature
         self.arm, self.seed, self.coefficient = arm, seed, coefficient
         self.preflight_only = False
@@ -350,6 +354,8 @@ class V3Engine:
 
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state):
+        if state.get('gir_live_task1',False)!=getattr(self,'gir_live_task1',False):
+            raise ValueError('checkpoint task-1 live GIR mismatch')
         if state.get('policy_version')!=self.policy_version:raise ValueError('checkpoint correction policy mismatch')
         if state.get('gir_live',False)!=self.gir_live:raise ValueError('checkpoint live-slot ablation mismatch')
         if state.get('solver',self.solver)!=self.solver: raise ValueError('checkpoint solver mismatch')
@@ -705,6 +711,10 @@ class V3Engine:
                     self.load_state_dict(saved)
                     row.update(nonfinite_after_apply=True, skipped=True, skip_reason='nonfinite_after_apply',
                                swaps=0, swap_records=[], after_restore=self._norms(model, sites))
+                if getattr(self, 'gir_live_task1', False) and self.task == 1:
+                    swaps = row.get('swap_records', [])
+                    row.update(gir_live_task1=True, swaps_live=sum(r['slot_kind']=='live' for r in swaps),
+                        swaps_dead=sum(r['slot_kind']=='dead' for r in swaps))
                 diagnostic_start=time.perf_counter()
                 stability_after=self._stability(model,sites,batch,spec,ctx,iteration,probe_batch)
                 diagnostic_seconds+=time.perf_counter()-diagnostic_start
@@ -1005,6 +1015,95 @@ class V3Engine:
         return row['K_next']
 
     def _apply(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
+        task1 = getattr(self, 'gir_live_task1', False) and self.task == 1
+        if not task1:
+            return self._apply_current(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+        if ctx.get('known_classes', 0):
+            raise ValueError('task-1 live GIR must have no KD')
+        sites = [s for s in sites if self.valid_slot(s)]
+        with training_products(model, [], {}, batch[0]) as p:
+            op = GGNProducts(p, batch[1], spec, ctx)
+            G, _ = gram(p)
+            mu = self.mu if self.mu is not None else max(1e-12, 1e-2*op.trace(self.cfg)/max(op.size, 1))
+            blocks = spec.metric_blocks(op.logits, op.ctx)
+            factor = OutputSolve(G, blocks, mu)
+            e = op.g.clone()
+            residual = e-factor.metric(G@factor.solve(e))
+        row = self._apply_current(model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
+        start = time.perf_counter()
+        trials = []
+        swaps = self._run_gir_task1(model, sites, batch, spec, ctx, optimizer, iteration,
+            e, residual, blocks, mu, trials) if apply else []
+        row.update(swaps=len(swaps), swap_records=swaps, gir_trials=trials,
+            gir_seconds=time.perf_counter()-start, gir_live_task1=True,
+            swaps_live=sum(r['slot_kind']=='live' for r in swaps),
+            swaps_dead=sum(r['slot_kind']=='dead' for r in swaps))
+        return row
+
+    def _run_gir_task1(self, model, sites, batch, spec, ctx, optimizer, iteration,
+                       e, residual, blocks, mu, trials):
+        H = lambda v: torch.einsum('nij,nj->ni', blocks, v.reshape(blocks.shape[:2])).flatten()
+        def gain(c):
+            with training_products(model, [], {}, batch[0]) as p:
+                G, _ = gram(p)
+            return OutputSolve(G, blocks, mu).q(c)
+        records, q0 = [], None
+        for site in sites:
+            units = list(range(site.second_layer.layer.weight.shape[1]))
+            used, cache = [], {}
+            def proposals():
+                return self.prepare_gir(model, site, batch, spec, ctx, optimizer, units, iteration,
+                    residual=residual, used_directions=used, H=H, cache=cache, mu=mu)
+            choices = proposals()
+            if not choices: continue
+            contributions = {u: self._slot_contribution(model, site, batch, spec, ctx, u) for u in units}
+            norms = {u: math.sqrt(max(float(f@H(f)), 0.)) for u,f in contributions.items()}
+            dead = [u for u in units if not bool(contributions[u].any())]
+            live = sorted((u for u in units if u not in dead), key=lambda u:norms[u])[:4]
+            for unit in dead+live:
+                if not choices: break
+                proposal, gamma, jump_L = choices[0], None, 0.
+                if unit in dead:
+                    if not math.isfinite(proposal['score']) or proposal['score'] <= 0: continue
+                else:
+                    jump_L, jump_KD = self._slot_jump(model, site, batch, spec, ctx, unit)
+                    if not math.isfinite(jump_L) or jump_L > 0 or jump_KD is not None: continue
+                    if q0 is None: q0 = gain(e)
+                    fu = contributions[unit]
+                    jump = -float(e@fu)+.5*float(fu@H(fu))
+                    best = None
+                    for candidate in choices[:2]:
+                        snapshot = self._training_state(model, optimizer)
+                        ages = deepcopy(self.install_ages)
+                        try:
+                            self.install_gir(model, site, [candidate], [unit], optimizer)
+                            candidate_gamma = -jump+q0-gain(e-H(fu))
+                            trials.append(dict(site=site.module_name, unit=unit, slot_kind='live',
+                                Gamma=candidate_gamma, accepted=math.isfinite(candidate_gamma) and candidate_gamma>0,
+                                solver='gram', gain_method='actual_candidate_q_difference'))
+                            if math.isfinite(candidate_gamma) and candidate_gamma>0 and (best is None or candidate_gamma>best[0]):
+                                best = candidate_gamma, candidate
+                        except torch.linalg.LinAlgError:
+                            trials.append(dict(site=site.module_name, unit=unit, slot_kind='live',
+                                accepted=False, reason='chol_fail', solver='gram'))
+                        finally:
+                            self._restore_training_state(model, optimizer, snapshot)
+                            self.install_ages = ages
+                    if best is None: continue
+                    gamma, proposal = best
+                self.install_gir(model, site, [proposal], [unit], optimizer)
+                used.append(proposal['direction'])
+                records.append(dict(site=site.module_name, unit=unit, task=1, iteration=iteration,
+                    slot_kind='dead' if unit in dead else 'live', Gamma=gamma,
+                    gain_lower_bound=proposal['score'] if unit in dead else None,
+                    ell_beta=proposal['score'], f_u_norm_Hb=norms[unit], j_L=jump_L, j_KD=None,
+                    solver='gram', contribution_norm={1:None,5:None,10:None}))
+                self.install_ages[(site.module_name, unit)].update(iteration=iteration)
+                q0 = None
+                choices = proposals()
+        return records
+
+    def _apply_current(self, model, sites, batch, spec, ctx, optimizer, iteration, remaining=None, force=False, apply=True):
         sites = [site for site in sites if self.valid_slot(site)]
         frozen = deepcopy(model)
         frozen_sites = [HookSite(frozen, s.first, s.second, s.kind, between=s.between,
@@ -1107,7 +1206,7 @@ class V3Engine:
         start = time.perf_counter()
         units = {s.module_name: list(range(s.second_layer.layer.weight.shape[1])) for s in sites}
         swaps = self._run_gir(model, sites, frozen, frozen_sites, batch, spec, ctx, optimizer,
-                             units, iteration, values, mu) if apply else []
+                             units, iteration, values, mu) if apply and not (getattr(self,'gir_live_task1',False) and self.task==1) else []
         row.update(swaps=len(swaps), swap_records=swaps, ell=[r['ell_beta'] for r in swaps],
                    gir_seconds=time.perf_counter()-start, gir_trials=values.get('gir_trials', []),
                    gir_solves=values.get('gir_solves', []), downstream=values.get('downstream',[]), systems_solved=len(row['solves'])+factor.solves)
