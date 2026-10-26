@@ -1,5 +1,17 @@
 # P1 seed 2 with the amended policy
 
+Current component revision: `sequential_gir_B_trust_v1`. VNA must be accepted
+before GIR; no independent GIR runs after a skipped/rejected VNA. In the selected
+CertSwap branch, each B refit has Delta_B=the VNA Delta and
+mu>=max(1e-12, .01*tr(F)/|B|), verified on the actual native-dtype step. Damping
+is increased for out-of-radius trials without clipping. The VNA sharpness rule
+and native-vector trust bound remain unchanged. The policy label stays
+`schur_t32_sharpness_trust_v3`; incompatible older engine states and authority
+revisions are rejected. Current seed-2 output is
+`outputs/p1_inc5_full_v3_sequential_s2/`; its fresh shared authority lives in
+`outputs/p1_inc5_full_v3_sequential_authority/`. Earlier namespace descriptions
+below are historical. No tests or training are run for this revision.
+
 Final policy: `schur_t32_sharpness_trust_v3`; the kappa proposal was withdrawn.
 The restore/validate audit copies only reference JSON metadata, distinguishes
 separate attached notebooks, prefers the native M1 summary over a stale wrapper

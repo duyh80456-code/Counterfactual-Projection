@@ -19,7 +19,7 @@ import fcntl
 import hashlib
 import math
 from experiments.p1_compare import estimate_lane
-from methods.vna_v3 import FULL_POLICY_VERSION, POLICY_VERSION
+from methods.vna_v3 import FULL_POLICY_VERSION, POLICY_VERSION, CORRECTION_REVISION
 
 def read(path,default=None):
     try:return json.loads(path.read_text())
@@ -65,7 +65,7 @@ def schedule(gpu):
             if not launch(cmd,gpu,'preflight',RUN_ROOT/'preflight.log'):return False
             archive_outputs()
         value=read(SCHEDULE,{})
-        expected=dict(authoritative=True,backbone=BACKBONE,init_cls=INCREMENT,increment=INCREMENT,
+        expected=dict(authoritative=True,backbone=BACKBONE,init_cls=INCREMENT,increment=INCREMENT,correction_revision=CORRECTION_REVISION,
             code_commit=REPO_COMMIT,source_digest=SOURCE_DIGEST,solver='gram',curvature='power10',
             policy_version=FULL_POLICY_VERSION,gir_live=False)
         if any(value.get(k)!=v for k,v in expected.items()) or value.get('synthetic'):
@@ -112,6 +112,7 @@ def lane(gpu,seed):
             expected=dict(code_commit=REPO_COMMIT,source_digest=SOURCE_DIGEST,arm=arm,seed=seed,
                 backbone=BACKBONE,solver='gram',curvature='power10',fake_data=False,
                 expected_tasks=100//INCREMENT,policy_version=FULL_POLICY_VERSION if arm=='icarl_full' else POLICY_VERSION,gir_live=False)
+            if arm=='icarl_full':expected['correction_revision']=CORRECTION_REVISION
             actual={k:p.get(k) for k in expected}
             expected.update(warmup_epochs=0,grad_clip=None,increment=INCREMENT,memory_size=2000)
             actual.update(warmup_epochs=p.get('warmup_epochs',0),grad_clip=p.get('grad_clip'),
@@ -149,8 +150,9 @@ def build(commit,case,source_digest=None,source_file_hashes=None):
     if not overlay:source_digest=hashlib.sha256(('git:'+commit).encode()).hexdigest()
     backbone,increment=CASES[case]
     result=notebook(commit);cells=result['cells'];tag='p1_compare_'+case.lower()
-    if case=='NB1':tag+='_logfix_v3'
-    if case=='M1s2':tag='p1_inc5_full_v3_s2'
+    if case=='NB1':tag+='_logfix_v3_sequential'
+    elif case=='M1s2':tag='p1_inc5_full_v3_sequential_s2'
+    else:tag+='_sequential_v3'
     config=f'''REPO_COMMIT={commit!r}
 SOURCE_DIGEST={source_digest!r}
 SOURCE_FILE_HASHES={source_file_hashes or {}!r}
@@ -206,12 +208,12 @@ if not ready:
     raise FileNotFoundError('Incomplete M1 seed-2 baseline metadata at '+str(baseline)+
         '; need summary.json, protocol.json and tasks.json from original P1/M1 Output. Visible inputs: '+
         ', '.join(str(p) for p in sorted(Path('/kaggle/input').iterdir())))
-AUTHORITY_ROOT=STAGE_B/'p1_inc5_full_v3_authority'
+AUTHORITY_ROOT=STAGE_B/'p1_inc5_full_v3_sequential_authority'
 AUTHORITY_ROOT.mkdir(parents=True,exist_ok=True)
-restore_stage_archives(Path('/kaggle/input'),AUTHORITY_ROOT,'p1_inc5_full_v3_authority')
+restore_stage_archives(Path('/kaggle/input'),AUTHORITY_ROOT,'p1_inc5_full_v3_sequential_authority')
 """
         runtime=runtime.replace(f'folders=("outputs/{tag}",)',
-            f'folders=("outputs/{tag}","outputs/p1_inc5_full_v3_authority")')
+            f'folders=("outputs/{tag}","outputs/p1_inc5_full_v3_sequential_authority")')
         validation="""from experiments.p1_compare import validate_p1_baseline
 reference=validate_p1_baseline(BASELINE_ROOT/'icarl__s2',2,DATA_ROOT,5)
 atomic_json_save(reference,ROOT/'baseline_reuse__s2.json')
@@ -257,13 +259,15 @@ containing the seed-2 icarl baseline: completed, or the validated recorded
 FAILED_DIVERGED outcome at task 2, epoch 1 with its recorded global step and tensor identified.
 GPU0 runs fresh locked seed-0
 preflight, then only icarl_full seed 2; GPU1 has no training job. The new shared
-authority is `outputs/p1_inc5_full_v3_authority/resnet32_nobn_inc5_seed0.json`.
+authority is `outputs/p1_inc5_full_v3_sequential_authority/resnet32_nobn_inc5_seed0.json`.
 It is archived for all future Inc5 seeds using this source/policy. Old
 gram_power10.json is never imported. Attach this notebook's previous Output
-to resume. New full output: `outputs/p1_inc5_full_v3_s2/icarl_full__s2/`.
+to resume. New full output: `outputs/p1_inc5_full_v3_sequential_s2/icarl_full__s2/`.
 
 Tracker covers all tasks; copy-only bitwise-checked full-loss GGN power10 at
 r=0,1,2,5,10,20,50,100,200. Intervention logs retain all VNA/GIR decisions.
+GIR runs only after an accepted VNA step. CertSwap refits, when selected,
+use Delta_B=Delta, damping floor 1e-2*trace(F)/|B| and the actual B-step norm.
 Legacy baseline measurements are not fabricated. Actual T4 runtime is unknown;
 class-dependent estimates warn above 11 hours without shortening any task.
 '''

@@ -10,7 +10,7 @@ from adapters.cil_setup import COARSE_NAMES,FINE_TO_COARSE
 from experiments import main_cil as main
 from experiments.p1_compare import validate_p1_baseline
 from experiments.parallel_validity import dataset_fingerprint
-from methods.vna_v3 import FULL_POLICY_VERSION
+from methods.vna_v3 import FULL_POLICY_VERSION, CORRECTION_REVISION
 from scripts.build_kaggle_p1_compare import build
 
 
@@ -113,7 +113,7 @@ def test_seed2_notebook_uses_fresh_locked_seed0_authority(legacy,tmp_path):
         if cell['cell_type']=='code':ast.parse(''.join(cell['source']))
     runtime=''.join(book['cells'][2]['source'])
     runner=''.join(book['cells'][3]['source'])
-    assert 'outputs/p1_inc5_full_v3_authority' in runtime
+    assert 'outputs/p1_inc5_full_v3_sequential_authority' in runtime
     assert "'icarl__nobn__superclass__s2'" in runtime
     assert "for arm in ('icarl_full',):" in runner
     assert 'jobs=[pool.submit(lane,0,2)]' in runner
@@ -129,7 +129,7 @@ def test_seed2_notebook_uses_fresh_locked_seed0_authority(legacy,tmp_path):
         schedule=Path(cmd[cmd.index('--schedule-output')+1])
         schedule.write_text(json.dumps(dict(authoritative=True,backbone='resnet32_nobn',init_cls=5,increment=5,
             code_commit='c'*40,source_digest='a'*64,solver='gram',curvature='power10',
-            policy_version=FULL_POLICY_VERSION,gir_live=False,calibration_seed=0,K0=100,
+            policy_version=FULL_POLICY_VERSION,correction_revision=CORRECTION_REVISION,gir_live=False,calibration_seed=0,K0=100,
             nobn_lr_scale=.5,class_order_kind='superclass',dataset_fingerprint=dataset_fingerprint(data))))
         return True
     scope=dict(ROOT=new,BASELINE_ROOT=root.parent,AUTHORITY_ROOT=authority,DATA_ROOT=data,

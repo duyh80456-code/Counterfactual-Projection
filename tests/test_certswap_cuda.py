@@ -94,7 +94,7 @@ def test_real_cifar_same_candidate_repeats_j_and_rho_exactly(native_window):
     with torch.no_grad():before=certswap.losses(cache.forward(site,None),spec,ctx)
     state=deepcopy(model.state_dict());records=[]
     for _ in range(2):
-        _,record=certswap.certify(forward,reference[:,0].numel(),reference,before,spec,ctx,mu0=1.,budget=4)
+        _,record=certswap.certify(forward,reference[:,0].numel(),reference,before,spec,ctx,delta_B=100.,mu0=1.,budget=4)
         assert record['jL']==record['jKD']==0.
         assert record['lm_trials'] and any(row['rho'] is not None for row in record['lm_trials'])
         records.append((record['jL'],record['jKD'],[(r['mu'],r['rho'],r['pred_B'],r['L'],r['KD']) for r in record['lm_trials']]))

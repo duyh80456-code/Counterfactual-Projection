@@ -334,6 +334,7 @@ def schedule_from_points(points, iterations_per_epoch, final_classes=100):
 
 POLICY_VERSION='schur_gamma_bound_rho25_v2'
 FULL_POLICY_VERSION='schur_t32_sharpness_trust_v3'
+CORRECTION_REVISION='sequential_gir_B_trust_v1'
 
 
 class V3Engine:
@@ -359,6 +360,7 @@ class V3Engine:
         self.K0 = self.K_next = K0
         self.mu, self.nu = None, 2.
         self.protocol = {'live_candidates': 4, 'gamma_candidates': 2, 'trust_region': True}
+        if full_revision or gir_rule=='certswap':self.protocol['correction_revision']=CORRECTION_REVISION
         self.task, self.last_iteration = None, None
         self.applications = 0
         self.A = {}
@@ -376,6 +378,9 @@ class V3Engine:
     def state_dict(self): return deepcopy(vars(self))
     def load_state_dict(self, state):
         if state.get('policy_version')!=self.policy_version:raise ValueError('checkpoint correction policy mismatch')
+        if ('correction_revision' in self.protocol and
+                state.get('protocol',{}).get('correction_revision')!=self.protocol['correction_revision']):
+            raise ValueError('checkpoint GIR/refit revision mismatch')
         if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
             for key in ('gir_rule', 'certswap_topk', 'certswap_lm_budget', 'certswap_log_schur'):
                 if state.get(key) != getattr(self, key): raise ValueError('checkpoint CertSwap configuration mismatch')
@@ -392,6 +397,9 @@ class V3Engine:
 
     def configure_schedule(self, schedule):
         if schedule.get('policy_version')!=self.policy_version:raise ValueError('schedule correction policy mismatch')
+        if ('correction_revision' in self.protocol and
+                schedule.get('correction_revision')!=self.protocol['correction_revision']):
+            raise ValueError('schedule GIR/refit revision mismatch')
         if getattr(self, 'gir_rule', 'schur_dead') == 'certswap':
             for key in ('gir_rule', 'certswap_topk', 'certswap_lm_budget', 'certswap_log_schur'):
                 if schedule.get(key) != getattr(self, key): raise ValueError('schedule CertSwap configuration mismatch')
@@ -724,7 +732,8 @@ class V3Engine:
                 diagnostic_seconds=time.perf_counter()-diagnostic_start
                 try:
                     args = (model, sites, batch, spec, ctx, optimizer, iteration, remaining, force, apply)
-                    revised = self.policy_version == FULL_POLICY_VERSION and isinstance(spec, CE)
+                    revised = (self.policy_version == FULL_POLICY_VERSION or
+                               getattr(self,'gir_rule','schur_dead')=='certswap') and not self.gir_only and isinstance(spec, CE)
                     def vna_check():
                         started = time.perf_counter()
                         value = self._stability(model, [], batch, spec, ctx, iteration, None)
@@ -744,12 +753,6 @@ class V3Engine:
                     self._restore_training_state(model, optimizer, training)
                     self.load_state_dict(saved)
                     row = dict(skipped=True, skip_reason='chol_fail', chol_fail=True, swaps=0, swap_records=[])
-                if (apply and self.policy_version == FULL_POLICY_VERSION and isinstance(spec, CE)
-                        and row.get('skip_reason') in ('no_positive_directions','chol_fail','negative_certificate')):
-                    from methods.vna_certswap import fallback
-                    report = fallback(self, model, sites, batch, spec, ctx, optimizer, iteration)
-                    row.update(certswap=report, gir_independent=True, swaps=len(report['accepted']),
-                        swap_records=report['accepted'], gir_seconds=report['seconds'])
                 after_norms = self._norms(model, sites)
                 row.update(before=before, after=after_norms, **after_norms)
                 if not self._finite(model, optimizer):
@@ -1134,7 +1137,7 @@ class V3Engine:
             Hb_blocks = values['blocks']+beta*values['old_blocks']
             factor = (OutputSolve if isinstance(G,torch.Tensor) else OutputCG)(G, Hb_blocks, mu)
             if isinstance(factor,OutputCG):factor._warm = lm['y']
-            values.update(e=op.g, e_beta=e_beta, H_beta=factor.metric, factor=factor)
+            values.update(e=op.g, e_beta=e_beta, H_beta=factor.metric, factor=factor, Delta_B=Delta)
             ne = sum(v.numel() for _, v in p.extension_refs)
             lam = power_lambda_max(lambda v: p.JET(op.H(p.JEv(v))), ne,
                 dedicated_generator(self.seed, f'v4-lambdaE:{self.task}:{self.applications}', batch[0].device),
@@ -1175,6 +1178,9 @@ class V3Engine:
                 values.pop('certswap_cache', None)
         row.update(rejected=rejected, s=0. if rejected else scale, L_before=lm['before'][0], L_after=after[0],
                    KD_before=lm['before'][1], KD_after=after[1])
+        if rejected:
+            row.update(skipped=True,skip_reason='vna_rejected',swaps=0,swap_records=[])
+            return row
         start = time.perf_counter()
         units = {s.module_name: list(range(s.second_layer.layer.weight.shape[1])) for s in sites}
         if getattr(self, 'gir_rule', 'schur_dead') == 'certswap' and apply:

@@ -98,7 +98,7 @@ def test_t32_dead_slot_exact_zero_jump_and_functional_trials_do_not_mutate():
     assert torch.equal(swapped,cache.logits)
     before=certswap.losses(cache.forward(sites[-1],None),spec,ctx)
     assert certswap.losses(swapped,spec,ctx)==before
-    result,record=certswap.certify(forward,size,reference,before,spec,ctx,mu0=10.,budget=20)
+    result,record=certswap.certify(forward,size,reference,before,spec,ctx,delta_B=100.,mu0=10.,budget=20)
     assert record['jL']==record['jKD']==0.
     assert result is not None and record['rho']>=.25 and record['pred_B']>0
     assert len(record['lm_trials'])<=20
@@ -135,7 +135,7 @@ def test_t32_certified_sequence_measures_current_ce_and_preswap_kd():
     engine.begin_task(2)
     initial=certswap.losses(model(batch[0]),spec,ctx)
     state=deepcopy(opt.state_dict())
-    report=certswap.run(engine,model,sites,proposals,batch,spec,ctx,opt,11,{})
+    report=certswap.run(engine,model,sites,proposals,batch,spec,ctx,opt,11,{'Delta_B':100.})
     assert len(report['accepted'])>=2
     indices={site.module_name:i for i,site in enumerate(sites)}
     assert [indices[r['site']] for r in report['sites']]==[2,1,0]
@@ -179,7 +179,7 @@ def test_t32_rejected_live_swap_preserves_model_optimizer_and_rng(monkeypatch):
     before=deepcopy((model.state_dict(),opt.state_dict(),rng_state()))
     def forbidden(*args,**kwargs):raise AssertionError('curvature computed after positive measured jump')
     monkeypatch.setattr(torch.linalg,'eigh',forbidden)
-    report=certswap.run(engine,model,[site],proposals,(inputs,targets),CE(),ctx,opt,1,{})
+    report=certswap.run(engine,model,[site],proposals,(inputs,targets),CE(),ctx,opt,1,{'Delta_B':100.})
     assert not report['accepted'] and report['rejections']['jL_pos']==1
     _assert_bitwise(before,(model.state_dict(),opt.state_dict(),rng_state()))
     assert not engine.install_ages
@@ -200,7 +200,7 @@ def test_t32_negative_control_positive_ce_prediction_can_increase_kd():
     before=certswap.losses(logits,spec,ctx)
     predicted_only=certswap.losses(forward(-step),spec,ctx)
     assert pred>0 and predicted_only[0]<before[0] and predicted_only[1]>before[1]
-    result,record=certswap.certify(forward,1,logits,before,spec,ctx,mu0=.1,budget=1)
+    result,record=certswap.certify(forward,1,logits,before,spec,ctx,delta_B=100.,mu0=.1,budget=1)
     assert result is None and record['reason']=='lm_budget' and record['kd_fail']
 
 
@@ -210,7 +210,7 @@ def test_t32_zero_gradient_rejects_before_curvature_and_eigen_matches_solve(monk
     with monkeypatch.context() as patch:
         patch.setattr(torch.linalg,'eigh',lambda *a,**k:pytest.fail('zero gradient computed eigendecomposition'))
         result,record=certswap.certify(lambda v:logits+0*v.sum(),1,logits,
-            certswap.losses(logits,CE(),ctx),CE(),ctx)
+            certswap.losses(logits,CE(),ctx),CE(),ctx,delta_B=100.)
     assert result is None and record['reason']=='g_zero'
     matrix=torch.randn(7,7,dtype=torch.float64)
     F=matrix.T@matrix
@@ -322,5 +322,5 @@ def test_each_site_measures_before_on_its_own_suffix_even_with_cached_full_logit
         seen.append(site.module_name)
         return None,dict(reason='g_zero',lm_trials=[])
     monkeypatch.setattr(certswap,'certify',observe)
-    certswap.run(engine,model,sites,proposals,batch,spec,ctx,opt,1,{'certswap_cache':cache})
+    certswap.run(engine,model,sites,proposals,batch,spec,ctx,opt,1,{'certswap_cache':cache,'Delta_B':100.})
     assert seen==[site.module_name for site in reversed(sites)]

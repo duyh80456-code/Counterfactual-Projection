@@ -352,13 +352,15 @@ def run(args):
     policy_version=('certswap_t32_v1' if gir_rule=='certswap' else
                     vna_v3.FULL_POLICY_VERSION if args.arm=='icarl_full' else vna_v3.POLICY_VERSION)
     setup={}
+    if args.arm=='icarl_full' or gir_rule=='certswap':setup['correction_revision']=vna_v3.CORRECTION_REVISION
     if increment!=5:setup.update(init_cls=increment,increment=increment)
     if bn_source: setup['bn_lr_source'] = bn_source
     if warmup_epochs:setup['warmup_epochs']=warmup_epochs
     if gir_rule!='schur_dead':
         setup.update(gir_rule=gir_rule,certswap_topk=args.certswap_topk,
             certswap_lm_budget=args.certswap_lm_budget,certswap_log_schur=args.certswap_log_schur,
-            certswap_candidate_rule='tiny_V_unchanged_no_median_no_sign')
+            certswap_candidate_rule='tiny_V_unchanged_no_median_no_sign',
+            certswap_B_radius='vna_Delta',certswap_mu_floor_relative=1e-2)
     tasks = min(args.max_tasks, 2 if args.fake_data else 100//increment)
     order = class_order(args.seed, args.class_order, None if args.fake_data else args.data_dir)
     schedule = json.loads(Path(args.schedule).read_text()) if args.schedule else None

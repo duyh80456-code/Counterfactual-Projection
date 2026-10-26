@@ -1597,3 +1597,31 @@ Keep the failed-reference outcome and recorded global divergence coordinates
 without demanding later task metrics. Preserve source bytes and record hashes
 of summary, protocol and tasks. NB1 remains completed-only. No tests or GPU
 jobs are run for this audit.
+
+Sequential GIR and bounded CertSwap B refit (2026-10-26): the user withdraws
+the independent-GIR amendment. Remove its raw-gradient proposal fallback and
+neutral-swap path. If VNA skips or its proposed step is rejected, return without
+GIR. Successful VNA is followed by the configured GIR rule; the explicit GIR-only
+ablation remains distinct. Do not silently switch Schur GIR to CertSwap.
+
+For the CertSwap branch, the outgoing-slot refit starts at zero B after the
+structural jump, so its delta_B is the refit vector. Use Delta_B=Delta of the
+current VNA application, per candidate refit, to avoid an additional radius
+hyperparameter. Use c=1e-2, the same trace-relative coefficient as VNA damping
+initialization, with mu_floor=max(1e-12, c*tr(F)/|B|). Clamp initial/warm damping
+to that floor for every candidate. Increase damping and retry within the existing
+LM budget whenever the actual native-dtype B step is nonfinite or its norm
+exceeds Delta_B; do not clip or rescale it. Compute model decrease from that same
+native step, then retain the existing CE-ratio and actual-KD certificates.
+Log Delta_B, native B-step norm, damping floor/coefficient, and each damping,
+trust-region rejection and CE/KD trial outcome. Rejected functional refits do not
+install parameters or reset optimizer state.
+
+Keep the VNA sharpness condition max(lambda_before, 2/eta) and the trust region
+on the materialized VNA parameter vector. Keep the final policy label
+schur_t32_sharpness_trust_v3; record component correction_revision
+sequential_gir_B_trust_v1 in protocols, authority schedules and engine state to
+reject incompatible old checkpoints/authorities. Use new sequential output and
+authority namespaces rather than continuing an old full trajectory under new
+logic. Baseline reference files and provenance are unchanged. No tests,
+preflight or GPU jobs are run for this revision.

@@ -43,49 +43,17 @@ def problem(bn=False, dead=False):
 
 @pytest.mark.parametrize('reason',['no_positive_directions','chol_fail','negative_certificate'])
 @pytest.mark.parametrize('bn',[False,True])
-def test_skipped_vna_runs_independent_t32_with_actual_losses(monkeypatch,reason,bn):
+def test_skipped_vna_does_not_run_gir(monkeypatch,reason,bn):
     model,site,batch,spec,ctx,opt,engine = problem(bn,dead=True)
     monkeypatch.setattr(engine,'_apply',lambda *a:dict(skipped=True,skip_reason=reason,swaps=0))
-    proposals = {site.module_name:dict(weight=torch.ones(1,2,dtype=torch.float64),
-        bias=torch.ones(1,dtype=torch.float64),bn_weight=torch.ones(1,dtype=torch.float64),
-        bn_bias=torch.ones(1,dtype=torch.float64))}
-    monkeypatch.setattr(engine,'_select',lambda *a,**k:proposals)
+    before=engine._training_state(model,opt)
+    monkeypatch.setattr(vna_certswap,'run',lambda *a,**k:pytest.fail('skipped VNA entered CertSwap'))
+    monkeypatch.setattr(engine,'_run_gir',lambda *a,**k:pytest.fail('skipped VNA entered GIR'))
     row = engine.apply(model,[site],batch,spec,ctx,opt,1,force=True)
     assert engine.policy_version == FULL_POLICY_VERSION
-    assert row['skip_reason'] == reason and row['gir_independent'] and row['swaps'] > 0
-    for record in row['swap_records']:
-        assert record['L_after'] <= record['L_before']
-        assert record['KD_after'] <= record['KD_before']
-        assert record['was_dead']
-
-
-@pytest.mark.parametrize('bn',[False,True])
-def test_rejected_t32_does_not_mutate_training_state(monkeypatch,bn):
-    model,site,batch,spec,ctx,opt,engine = problem(bn,dead=True)
-    before = engine._training_state(model,opt)
-    monkeypatch.setattr(vna_certswap,'certify',lambda *a,**k:(None,dict(reason='jKD_pos')))
-    report = vna_certswap.fallback(engine,model,[site],batch,spec,ctx,opt,1)
-    assert not report['accepted']
+    assert row['skip_reason'] == reason and row['swaps'] == 0 and 'gir_independent' not in row
     _assert_bitwise(before,engine._training_state(model,opt))
     assert not engine.install_ages
-
-
-def test_independent_t32_rejects_ce_gain_that_increases_actual_kd(monkeypatch):
-    model,site,batch,spec,ctx,opt,engine = problem(dead=True)
-    ctx.update(known_classes=2,teacher_logits=torch.zeros(4,2,dtype=torch.float64))
-    spec=ICaRLPyCIL(known_classes=2)
-    proposal={site.module_name:dict(weight=torch.ones(1,2,dtype=torch.float64),bias=torch.ones(1,dtype=torch.float64))}
-    monkeypatch.setattr(engine,'_select',lambda *a,**k:proposal)
-    original=vna_certswap.certify
-    def one_trial(*a,**k):
-        return original(*a,**dict(k,mu0=.01,budget=1))
-    monkeypatch.setattr(vna_certswap,'certify',one_trial)
-    before=engine._training_state(model,opt)
-    report=vna_certswap.fallback(engine,model,[site],batch,spec,ctx,opt,1)
-    assert not report['accepted']
-    assert any(t['KD']>r['KD_before'] and t['L']<r['L_before']
-               for r in report['trials'] for t in r['lm_trials'])
-    _assert_bitwise(before,engine._training_state(model,opt))
 
 
 @pytest.mark.parametrize('after,expected',[(39.,False),(40.,False),(118.,True),(None,True)])
@@ -136,10 +104,10 @@ def test_full_revision_resume_and_zero_coefficient_identity(monkeypatch):
     _assert_bitwise(expected,(engine._training_state(model,opt),engine.state_dict()))
 
 
-def test_independent_swap_keeps_post_intervention_followup(monkeypatch):
+def test_accepted_vna_swap_keeps_post_intervention_followup(monkeypatch):
     from experiments import main_cil as main
     model,site,batch,spec,ctx,opt,engine = problem(dead=True)
-    event=dict(skipped=True,skip_reason='no_positive_directions',swaps=1)
+    event=dict(skipped=False,skip_reason=None,s=.1,swaps=1)
     monkeypatch.setattr(engine,'apply',lambda *a,**k:event)
     monkeypatch.setattr(main,'loss_context',lambda *a:(spec,ctx))
     monkeypatch.setattr(main,'Prediction',lambda model:model)
