@@ -1211,3 +1211,18 @@ silently changing the reference update. Strict ablation resumes retain kernel
 identity; explicit legacy imports preserve old solver/adapter state. Diagnostic
 names distinguish pre/post state, native/virtual operators, and power10
 estimates from certified bounds. Details: KERNEL_ABLATION_PREREGISTRATION.md.
+
+### 2026-10-27 — kernel-ablation historical task1 recovery and s1 record exception
+
+Before execution, authorize make_task1 on unmodified s0 29cc735 / s1 6be6543
+when no compatible baseline checkpoint is attached. Reconstruct the native
+100-epoch baseline task1; export end_task1/task1.pt only after exact loss,
+accuracy and LR comparison against all original epochs when available.
+Preserve native deadline/resume. If original s1 protocol or epochs remain
+missing after input discovery, allow only the explicit no_replay_audit scope:
+verify original/reconstructed it2001 L=2.853116586477115 and
+KD=1.2374861653019964; do not claim absent epoch traces were verified.
+Missing protocol setup is derived transparently from the baseline and s0
+frozen schedule. No new K0, kernel or acceptance policy is introduced.
+Replay conclusion_allowed is not differences; original GPU flags are
+unrecorded, with current flags logged, rather than a missing-field veto.

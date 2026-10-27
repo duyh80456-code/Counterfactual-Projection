@@ -31,7 +31,7 @@ decisions and epoch losses; missing original flags remain explicitly unrecorded.
 Pinned upstream PyCIL sets cudnn.deterministic=True and benchmark=False, but
 that source statement alone does not prove the original runtime's full settings.
 
-Required to execute: matching original baseline end-task1 (or native task2
+Original prerequisites before the recovery amendment: matching baseline end-task1 (or native task2
 epoch0) checkpoint for each of s0 and s1, with learner/teacher/exemplars,
 optimizer/scheduler and RNG; original full s1 protocol.json and epochs.json.
 The existing s1 interventions.json can be reused. If a full-arm checkpoint is
@@ -40,3 +40,15 @@ The first task2 SGD step is reconstructed natively, its pre-intervention losses
 must equal the original it2001 event, and the complete resulting anchor/window
 is compared bitwise across all three arms. No substitute checkpoint or seed is
 selected when these gates fail.
+
+Recovery amendment (2026-10-27): missing baseline task1 states may now be
+reconstructed on the registered historical commits (s0 29cc735, s1 6be6543).
+All 100 original epoch loss/accuracy/LR values must match exactly if present.
+The s1 path requested under nlnk1607/adadad/vna4_main (2) was not present in
+local Downloads or vna4_main.tar.gz; the notebook also searches Kaggle inputs.
+If primary s1 protocol/epochs remain absent, the explicit no_replay_audit
+exception permits an anchor-checked ablation, not a claimed replay match.
+Provisional s1 reconstruction must pass it2001 L=2.853116586477115 and
+KD=1.2374861653019964 exactly before any copied intervention. Old live-GIR
+task1 states remain inadmissible. Missing original flags do not veto a replay
+whose measured events/epochs match; current flags remain recorded.

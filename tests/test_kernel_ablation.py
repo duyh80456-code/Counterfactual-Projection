@@ -190,13 +190,96 @@ def test_discovery_excludes_own_five_task_continuations(tmp_path):
     original=tmp_path/'original';original.mkdir()
     (original/'protocol.json').write_text(json.dumps(p))
     (original/'interventions.json').write_text('[]');(original/'epochs.json').write_text('[]')
-    checkpoint=tmp_path/'baseline'/'end_task1'/'latest.pt';checkpoint.parent.mkdir(parents=True)
+    checkpoint=tmp_path/'baseline'/'end_task1'/'task1.pt';checkpoint.parent.mkdir(parents=True)
     torch.save(state,checkpoint)
     own=tmp_path/'own';own.mkdir()
     (own/'protocol.json').write_text(json.dumps(dict(p,expected_tasks=5)))
     (own/'interventions.json').write_text('[]');(own/'epochs.json').write_text('[]')
     found=a.discover_inputs([tmp_path],0)
     assert found['original_run']==str(original) and found['checkpoint']==str(checkpoint)
+    raw=checkpoint.parent.parent/'run/latest.pt';raw.parent.mkdir()
+    torch.save(dict(state,task1_reconstruction={'epoch_trace_verified':True}),raw)
+    assert a.discover_inputs([tmp_path],0)['checkpoint']==str(checkpoint)
+
+
+def epoch_trace():
+    return [dict(task=1,epoch=i,train_loss=1./i,train_acc=i/100,lr=.05) for i in range(1,101)]
+
+
+@pytest.mark.parametrize('field',['train_loss','train_acc','lr'])
+def test_reconstruction_requires_exact_all_100_epochs(field):
+    original=epoch_trace();actual=deepcopy(original)
+    a.verify_task1_epochs(actual,original)
+    actual[55][field]+=1e-12
+    with pytest.raises(ValueError,match='epoch 56'):a.verify_task1_epochs(actual,original)
+    with pytest.raises(ValueError,match='100'):a.verify_task1_epochs(original[:-1],original)
+
+
+def test_discovery_allows_missing_checkpoint_and_s1_records(tmp_path):
+    root=tmp_path/'nlnk1607/adadad/vna4_main (2)/outputs/6be654310c2e/vna_v4_main/icarl_full__nobn__superclass__s1'
+    root.mkdir(parents=True)
+    events=[dict(task=2,iteration=2001,L_before=a.S1_ANCHOR[0],KD_before=a.S1_ANCHOR[1])]
+    (root/'interventions.json').write_text(json.dumps(events))
+    found=a.discover_inputs([tmp_path],1)
+    assert found==dict(original_run=str(root),checkpoint=None,replay_available=False)
+    events[0]['L_before']+=1e-8
+    (root/'interventions.json').write_text(json.dumps(events))
+    with pytest.raises(ValueError,match='original_run'):a.discover_inputs([tmp_path],1)
+
+
+def test_s1_no_replay_scope_never_invents_original_epoch_verification(tmp_path):
+    state,p=source_state();state['identity']['seed']=1;state['hook']['epochs']=epoch_trace()
+    p.update(solver='gram',curvature='power10',schedule=dict(K0=512))
+    template=tmp_path/'template.json';template.write_text(json.dumps(p))
+    (tmp_path/'interventions.json').write_text(json.dumps([
+        dict(task=2,iteration=2001,L_before=a.S1_ANCHOR[0],KD_before=a.S1_ANCHOR[1])]))
+    protocol,epochs,events,scope=a.reference_inputs(tmp_path,state,1,template)
+    assert scope=='no_replay_audit' and epochs==[]
+    assert protocol['reference_provenance']['original_protocol']=='missing'
+    assert protocol['seed']==1 and protocol['schedule']['K0']==512
+    a.validate_source(state,protocol,1)
+    (tmp_path/'epochs.json').write_text(json.dumps(epoch_trace()[:-1]))
+    with pytest.raises(ValueError,match='100'):a.reference_inputs(tmp_path,state,1,template)
+
+
+@pytest.mark.parametrize('seed',[0,1])
+def test_make_task1_uses_historical_commit_and_validates_before_publishing(tmp_path,monkeypatch,seed):
+    repo=tmp_path/'repo';repo.mkdir()
+    monkeypatch.setattr(a,'__file__',str(repo/'diagnostics/kernel_ablation.py'))
+    commit=a.TASK1_COMMITS[seed];historical=tmp_path/('kernel_source_'+commit[:12])
+    (historical/'third_party/PyCIL/models').mkdir(parents=True)
+    (historical/'third_party/PyCIL/models/icarl.py').touch()
+    monkeypatch.setattr(a.subprocess,'check_output',lambda cmd,**kw:commit if 'rev-parse' in cmd else '')
+    monkeypatch.setattr('experiments.runners.pycil.upstream_imports',lambda:None)
+    state,p=source_state();state['identity'].update(code_commit=commit,seed=seed);state['hook']['epochs']=epoch_trace()
+    original=tmp_path/'original';original.mkdir();(original/'epochs.json').write_text(json.dumps(epoch_trace()))
+    out=tmp_path/'make';calls=[]
+    def launch(cmd,**kw):
+        calls.append((cmd,kw))
+        a.atomic_json_save(dict(status='COMPLETED'),out/'run/summary.json')
+        a.atomic_torch_save(state,out/'run/latest.pt')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(a.subprocess,'run',launch)
+    args=SimpleNamespace(seed=seed,out=str(out),data_dir='/data',device='cuda:0',original_run=str(original))
+    a.make_task1(args)
+    assert a.load(out/'end_task1/task1.pt')['task1_reconstruction']['epoch_trace_verified']
+    cmd,kw=calls[0]
+    assert kw['cwd']==historical and cmd[cmd.index('--max-tasks')+1]=='1'
+    assert cmd[cmd.index('--arm')+1]=='icarl' and kw['env']['PYTHONPATH']==str(historical)
+    (out/'end_task1/task1.pt').unlink();state['hook']['epochs'][0]['train_acc']+=.001
+    with pytest.raises(ValueError,match='epoch 1'):a.make_task1(args)
+    assert not (out/'end_task1/task1.pt').exists()
+    if seed==1:
+        state['hook']['epochs']=epoch_trace();(original/'epochs.json').unlink()
+        (original/'interventions.json').write_text(json.dumps([
+            dict(task=2,iteration=2001,L_before=a.S1_ANCHOR[0],KD_before=a.S1_ANCHOR[1])]))
+        a.make_task1(args)
+        proof=a.load(out/'end_task1/task1.pt')['task1_reconstruction']
+        assert not proof['epoch_trace_verified'] and proof['pending_anchor_check']
+        assert proof['interpretation_scope']=='no_replay_audit'
+    monkeypatch.setattr(a.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=75))
+    with pytest.raises(SystemExit) as exit:a.make_task1(args)
+    assert exit.value.code==75
 
 
 def test_terminal_results_need_kernel_identity_and_complete_horizon():

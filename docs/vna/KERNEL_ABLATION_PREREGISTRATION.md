@@ -10,7 +10,8 @@ intervention. Preserve learner, teacher, exemplars, optimizer, scheduler,
 window, gradients, modes and RNG. A baseline checkpoint is admissible directly;
 a full-arm checkpoint requires bitwise comparison with the matching baseline.
 Require original protocol, dataset fingerprint and class order, and reject
-task-1 live-GIR/GIR-only amendments. No baseline retraining.
+task-1 live-GIR/GIR-only amendments. Missing baseline task1 checkpoints may
+be reconstructed under the recovery registration below.
 
 Use the 6be6543 normal policy (the inherited default-off path is separately
 checked against that source). Three arms differ only in projection kernel:
@@ -45,7 +46,8 @@ Compare all interventions (s, mu, iteration, accepted/rejected and swaps) and
 full-precision epoch losses against original artifacts; report the first
 discrepancy. Record deterministic-algorithm, CuDNN, TF32, CUDA/PyTorch/device
 and CUBLAS workspace settings. Missing original flags are 'unrecorded', not
-assumed matching. Replay mismatch blocks conclusions; it does not justify
+assumed matching. Missing flags do not veto an otherwise matching replay.
+Replay mismatch blocks conclusions; it does not justify
 silently changing GPU flags or the algorithm. No causal attribution without
 supporting evidence.
 
@@ -85,3 +87,32 @@ For virtual kernels lambda_E describes J_E.T H J_E before the update.
 Power10 is an estimate, not a certified upper bound: ratio_estimate is purely
 descriptive, bound_certified=false. Post-VNA and post-VNA+GIR measurements
 are labelled separately. No spectral-bound conclusion is inferred from them.
+
+## Checkpoint recovery and missing-record exception — 2026-10-27
+
+When discovery finds no admissible task1 checkpoint, run --mode make_task1
+on the same lane before replay/ablation. Train icarl task1 for 100 epochs on
+unmodified historical source 29cc735ab8770b3602c54c3c1f157649d02f807a (s0)
+or 6be654310c2e4123391fd7d8d31716d25c89c6fb (s1), in a separate process.
+Use the native noBN/superclass/Inc5/0.05 recipe, original PyCIL pin, exemplars,
+optimizer/scheduler/RNG and native epoch resume/deadline exit75. Export
+end_task1/task1.pt only after checking all 100 train_loss/train_acc/lr values
+for exact equality with original epochs.json; any mismatch rejects recovery.
+Retain reference epoch hashes and historical commit provenance.
+
+Search attached primary s1 records, including
+nlnk1607/adadad/vna4_main (2)/outputs/6be654310c2e/vna_v4_main/icarl_full__nobn__superclass__s1/.
+If protocol.json or epochs.json is still absent, allow s1 ablation without
+replay under interpretation_scope=no_replay_audit. This is an explicit
+exception to original-trace verification: do not claim equality for absent
+epochs. A recovered checkpoint is provisional until exact anchor validation.
+Require the original interventions record and reconstructed it2001 state to
+have L_before=2.853116586477115 and KD_before=1.2374861653019964. Available
+epoch traces remain mandatory checks; missing protocol setup is derived
+transparently from the validated baseline and frozen s0 schedule authority,
+not labelled as a recovered original protocol. No new K0 preflight is run.
+
+For an available replay, conclusion_allowed = not differences. Record
+original_flags='unrecorded' plus current flags(); do not compare current
+flags against a protocol field the original run did not record. Runtime
+flags must still match on subsequent resumes of the new experiment.

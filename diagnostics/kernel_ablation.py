@@ -5,6 +5,8 @@ import hashlib
 import json
 import math
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 import torch
@@ -17,6 +19,8 @@ from methods.vna_ggn import GGNProducts
 
 ARMS=('vna','kernel_self','vna_rand')
 REFERENCE='6be654310c2e4123391fd7d8d31716d25c89c6fb'
+TASK1_COMMITS={0:'29cc735ab8770b3602c54c3c1f157649d02f807a',1:REFERENCE}
+S1_ANCHOR=(2.853116586477115,1.2374861653019964)
 P1_SETUP=dict(backbone='resnet32_nobn',class_order_kind='superclass',nobn_lr_scale=.5)
 P1_CFG=dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False)
 BaseEngine=vna.V3Engine
@@ -162,7 +166,7 @@ def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def discover_inputs(roots,seed,requested=None):
-    result=dict(requested or {});runs={};checkpoints={}
+    result=dict(requested or {});runs={};checkpoints={};fallback={}
     for root in map(Path,roots):
         for path in root.rglob('protocol.json'):
             try:p=read(path)
@@ -176,8 +180,16 @@ def discover_inputs(roots,seed,requested=None):
                 signature=hashlib.sha256(path.read_bytes()+(path.parent/'interventions.json').read_bytes()+
                     (path.parent/'epochs.json').read_bytes()).hexdigest()
                 runs[signature]=str(path.parent)
+        if seed==1:
+            for path in root.rglob('interventions.json'):
+                if not any(n in ('s1_full','icarl_full__nobn__superclass__s1') for n in path.parts):continue
+                if (path.parent/'protocol.json').exists() and (path.parent/'epochs.json').exists():continue
+                try:verify_s1_anchor(read(path))
+                except (ValueError,OSError,TypeError):continue
+                fallback[digest(path)]=str(path.parent)
         for path in root.rglob('*.pt'):
             if 'end_task1' not in path.parts and path.name not in ('latest.pt','latest.previous.pt','task1.pt'):continue
+            if path.parent.name=='run' and (path.parent.parent/'end_task1/task1.pt').exists():continue
             try:state=load(path)
             except Exception:continue
             p=state.get('identity',{})
@@ -188,9 +200,77 @@ def discover_inputs(roots,seed,requested=None):
                 checkpoints[digest(path)]=str(path)
     for key,choices in (('original_run',runs),('checkpoint',checkpoints)):
         if result.get(key):continue
+        if key=='original_run' and not choices:choices=fallback
+        if key=='checkpoint' and not choices:
+            result[key]=None;continue
         if len(choices)!=1:raise ValueError(f'seed{seed}: set INPUTS[{seed}][{key!r}]; {len(choices)} unique compatible sources: {list(choices.values())}')
         result[key]=next(iter(choices.values()))
+    folder=Path(result['original_run'])
+    if (folder/'run/interventions.json').exists():folder=folder/'run'
+    result['original_run']=str(folder)
+    result['replay_available']=(folder/'protocol.json').is_file() and (folder/'epochs.json').is_file()
     return result
+
+
+def verify_s1_anchor(events):
+    row=next((e for e in events if e.get('task')==2 and e.get('iteration')==2001),{})
+    if (row.get('L_before'),row.get('KD_before'))!=S1_ANCHOR:
+        raise ValueError('s1 original it2001 anchor differs from registered L/KD')
+
+
+def verify_task1_epochs(actual,reference):
+    actual=[e for e in actual if e['task']==1];reference=[e for e in reference if e['task']==1]
+    if sorted(e['epoch'] for e in actual)!=list(range(1,101)) or sorted(e['epoch'] for e in reference)!=list(range(1,101)):
+        raise ValueError('requires all 100 original and reconstructed task-1 epochs')
+    lookup={e['epoch']:e for e in reference}
+    for e in actual:
+        if any(e.get(k) is None or e[k]!=lookup[e['epoch']].get(k) for k in ('train_loss','train_acc','lr')):
+            raise ValueError(f'task-1 epoch {e["epoch"]} loss/accuracy/lr mismatch')
+
+
+def make_task1(args):
+    """Run the unmodified historical baseline in a separate Python process."""
+    repo=Path(__file__).resolve().parents[1];commit=TASK1_COMMITS[args.seed]
+    historical=repo.parent/('kernel_source_'+commit[:12])
+    if not historical.exists():
+        subprocess.run(['git','clone','--shared','--no-checkout',str(repo),str(historical)],check=True)
+        subprocess.run(['git','-C',str(historical),'checkout','--detach',commit],check=True)
+    if subprocess.check_output(['git','-C',str(historical),'rev-parse','HEAD'],text=True).strip()!=commit:
+        raise ValueError('historical task-1 source commit mismatch')
+    if subprocess.check_output(['git','-C',str(historical),'status','--porcelain','--untracked-files=no'],text=True).strip():
+        raise ValueError('modified historical task-1 source')
+    upstream=historical/'third_party/PyCIL'
+    if not (upstream/'models/icarl.py').exists():
+        if upstream.exists():upstream.rmdir()
+        upstream.parent.mkdir(parents=True,exist_ok=True)
+        upstream.symlink_to(repo/'third_party/PyCIL',target_is_directory=True)
+    out=Path(args.out).resolve();out.mkdir(parents=True,exist_ok=True)
+    env=dict(os.environ,PYTHONPATH=str(historical));env.pop('VNA_SOURCE_DIGEST',None)
+    completed=subprocess.run([sys.executable,'-u','-m','experiments.main_cil','--arm','icarl','--seed',str(args.seed),
+        '--backbone','resnet32_nobn','--class-order','superclass','--nobn-lr-scale','.5',
+        '--solver','gram','--curvature','power10','--max-tasks','1','--data-dir',args.data_dir,
+        '--device',args.device,'--out',str(out/'run')],cwd=historical,env=env)
+    if completed.returncode:raise SystemExit(completed.returncode)
+    summary=read(out/'run/summary.json')
+    if summary.get('status')!='COMPLETED':raise ValueError('task-1 baseline did not complete')
+    from experiments.runners.pycil import upstream_imports
+    upstream_imports()
+    state=load(out/'run/latest.pt')
+    if state['identity']['code_commit']!=commit:raise ValueError('task-1 checkpoint source mismatch')
+    root=Path(args.original_run)
+    if (root/'run').is_dir():root=root/'run'
+    if (root/'epochs.json').exists():
+        verify_task1_epochs(state['hook']['epochs'],read(root/'epochs.json'));verified=True
+    elif args.seed==1:
+        verify_s1_anchor(read(root/'interventions.json'));verified=False
+    else:raise ValueError('s0 original epochs.json is required to accept reconstructed task 1')
+    if state.get('completed')!=1 or state.get('mid') or state.get('epoch')!=100 or state['hook']['steps']!=2000:
+        raise ValueError('reconstructed checkpoint is not end task1 step2000')
+    state['task1_reconstruction']=dict(source_commit=commit,epoch_trace_verified=verified,
+        original_epochs_sha256=digest(root/'epochs.json') if verified else None,
+        interpretation_scope='replay_audit' if verified else 'no_replay_audit',pending_anchor_check=not verified)
+    atomic_torch_save(state,out/'end_task1/task1.pt')
+    atomic_json_save(state['task1_reconstruction'],out/'task1_verification.json')
 
 
 def validate_source(state,protocol,seed,baseline=None):
@@ -304,36 +384,63 @@ def terminal_result(summary,identity):
     return True
 
 
+def reference_inputs(root,source,seed,template=None):
+    has_protocol=(root/'protocol.json').exists();has_epochs=(root/'epochs.json').exists()
+    events=read(root/'interventions.json')
+    if has_protocol and has_epochs:
+        protocol=read(root/'protocol.json');epochs=read(root/'epochs.json')
+        verify_task1_epochs(source['hook']['epochs'],epochs)
+        return protocol,epochs,events,'replay_audit'
+    if seed!=1:raise ValueError('s0 requires original protocol.json and epochs.json')
+    verify_s1_anchor(events)
+    epochs=read(root/'epochs.json') if has_epochs else []
+    if has_epochs:verify_task1_epochs(source['hook']['epochs'],epochs)
+    if has_protocol:protocol=read(root/'protocol.json')
+    else:
+        if not template:raise ValueError('s1 without original protocol requires s0 --protocol-template for frozen K0')
+        authority=read(template)
+        if (authority.get('seed')!=0 or authority.get('arm')!='icarl_full' or
+                authority.get('solver')!='gram' or authority.get('curvature')!='power10' or not authority.get('schedule') or
+                any(authority.get(k)!=v for k,v in P1_SETUP.items()) or
+                any(authority.get('cfg',{}).get(k)!=v for k,v in P1_CFG.items()) or
+                authority.get('policy_version')!=vna.POLICY_VERSION or authority.get('gir_live_task1')):
+            raise ValueError('invalid s0 frozen-schedule authority')
+        protocol=dict(deepcopy(source['identity']),arm='icarl_full',code_commit=REFERENCE,
+            solver='gram',curvature='power10',intervention_start_task=2,expected_tasks=20,
+            schedule=deepcopy(authority['schedule']),coefficient=authority.get('coefficient',1.))
+        protocol['reference_provenance']=dict(original_protocol='missing',
+            setup='baseline checkpoint',schedule_template_sha256=digest(template))
+    return protocol,epochs,events,'no_replay_audit'
+
+
 def run(args):
+    if args.mode=='make_task1':return make_task1(args)
+    if not args.checkpoint or not args.anchor_dir:raise ValueError('ablation/replay require --checkpoint and --anchor-dir')
     from experiments import main_cil as main
     from experiments.parallel_validity import dataset_fingerprint
     main.cil.upstream_imports()
-    root=Path(args.original_run);root=root/'run' if (root/'run'/'protocol.json').exists() else root
-    protocol=read(root/'protocol.json');source=load(args.checkpoint)
+    root=Path(args.original_run);root=root/'run' if (root/'run'/'interventions.json').exists() else root
+    source=load(args.checkpoint)
+    protocol,original_epochs,original_events,scope=reference_inputs(root,source,args.seed,args.protocol_template)
+    if args.mode=='replay' and scope=='no_replay_audit':raise ValueError('replay requires original protocol and epochs')
     proof=validate_source(source,protocol,args.seed,load(args.baseline_checkpoint) if args.baseline_checkpoint else None)
     if protocol['dataset_fingerprint']!=dataset_fingerprint(args.data_dir):raise ValueError('dataset fingerprint mismatch')
     if protocol['class_order']!=main.class_order(args.seed,'superclass',args.data_dir):raise ValueError('actual superclass order mismatch')
     if protocol.get('upstream_commit')!=main.cil.UPSTREAM_PIN:raise ValueError('upstream PyCIL pin mismatch')
-    original_epochs=read(root/'epochs.json');original_events=read(root/'interventions.json')
-    history={(e['task'],e['epoch']):e for e in original_epochs}
     if sorted(e['epoch'] for e in source['hook']['epochs'] if e['task']==1)!=list(range(1,101)):
         raise ValueError('incomplete task-1 epoch trace in checkpoint')
-    for e in source['hook']['epochs']:
-        if e['task']!=1:continue
-        ref=history.get((1,e['epoch']))
-        if ref is None or any(ref.get(k)!=e.get(k) for k in ('train_loss','train_acc','lr')):
-            raise ValueError('task-1 checkpoint trace does not match original full run')
-    proof['task1_epoch_trace_verified']=True
+    proof['task1_epoch_trace_verified']=bool(original_epochs)
     out=Path(args.out).resolve();out.mkdir(parents=True,exist_ok=True)
     replay_path=out.parent/'s1_replay'/'replay.json'
-    if args.seed==1 and args.mode=='ablation':
+    if args.seed==1 and args.mode=='ablation' and scope!='no_replay_audit':
         if not replay_path.exists() or read(replay_path).get('status') not in ('REPLAY_MATCHED','REPLAY_MISMATCH'):
             raise ValueError('s1 requires its original-run replay audit before ablation')
     identity=dict(experiment='fixed_kernel_it2001',seed=args.seed,kernel=args.arm,mode=args.mode,
         code_commit=main.code_commit(),policy_reference=REFERENCE,checkpoint_sha256=digest(args.checkpoint),
         original_protocol=protocol,proof=proof,max_tasks=5,chain_steps=8,
         reused_prefix_seconds=source.get('elapsed_seconds'),
-        replay_audit_sha256=digest(replay_path) if args.seed==1 and args.mode=='ablation' else None,
+        interpretation_scope=scope,
+        replay_audit_sha256=digest(replay_path) if args.seed==1 and args.mode=='ablation' and scope!='no_replay_audit' else None,
         measurement=dict(proposal_directions_per_site=16,empirical_kernel_rank=None,rank_matched=False,
             random_trajectory_replicates_per_seed=1,random_superiority_claim_allowed=False,L='CE+KD',KD='temperature2 old-class distillation',
             lambda_max='native GGN power10 on intervention window',independent_loss='balanced official-test batch',
@@ -463,7 +570,8 @@ def run(args):
             adapter.followups.append(dict(task=2,iteration=2001,status='RUNNING',samples=[]))
         # The eight copied attempts must not consume RNG from the continuing native loop.
         restore_rng(native['rng'])
-        audit.update(status='ANCHOR_VERIFIED',flags=flags(),anchor_sha256=digest(common))
+        audit.update(status='ANCHOR_VERIFIED',flags=flags(),anchor_sha256=digest(common),interpretation_scope=scope,
+            L_before=losses[0],KD_before=losses[1])
         atomic_json_save(audit,out/'anchor_audit.json')
     def epoch(hook,learner,opt,frame):
         original_epoch(hook,learner,opt,frame)
@@ -482,8 +590,8 @@ def run(args):
             audit.update(status='REPLAY_MATCHED' if not differences else 'REPLAY_MISMATCH',differences=differences,
                 first_intervention_mismatch=first_intervention,
                 first_epoch_mismatch=next((d for d in differences if d.get('reason')=='epoch_loss_or_lr_mismatch'),None),
-                flags=flags(),original_flags=protocol.get('determinism','unrecorded'),epoch=43,
-                conclusion_allowed=not differences and protocol.get('determinism')==flags())
+                flags=flags(),original_flags='unrecorded',epoch=43,
+                conclusion_allowed=not differences)
             atomic_json_save(audit,out/'replay.json');raise ReplayDone()
     def record(hook,learner,result):
         original_record(hook,learner,result)
@@ -502,8 +610,9 @@ def run(args):
         result['chain_completed']=[r['k'] for r in chain]==list(range(9))
         result['trust_region_audit']=dict(invalid=invalid,events=len(audits),
             checked_events=sum(bool(a['audit'] and a['audit'].get('checked')) for a in audits))
-        replay_ok=True if args.seed==0 else read(replay_path).get('conclusion_allowed',False)
+        replay_ok=True if args.seed==0 or scope=='no_replay_audit' else read(replay_path).get('conclusion_allowed',False)
         result['interpretation_allowed']=bool(replay_ok and not invalid and result['chain_completed'])
+        result['interpretation_scope']=scope
         result['random_superiority_claim_allowed']=False
         result['rank_matched']=False
         result['ablation_identity']=identity
@@ -520,9 +629,10 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--seed',type=int,choices=(0,1),required=True)
     p.add_argument('--arm',choices=ARMS,default='vna')
-    p.add_argument('--mode',choices=('ablation','replay'),default='ablation')
-    p.add_argument('--checkpoint',required=True);p.add_argument('--baseline-checkpoint')
-    p.add_argument('--original-run',required=True);p.add_argument('--anchor-dir',required=True)
+    p.add_argument('--mode',choices=('ablation','replay','make_task1'),default='ablation')
+    p.add_argument('--checkpoint');p.add_argument('--baseline-checkpoint')
+    p.add_argument('--original-run',required=True);p.add_argument('--anchor-dir')
+    p.add_argument('--protocol-template')
     p.add_argument('--data-dir',required=True);p.add_argument('--out',required=True)
     p.add_argument('--device',choices=('cpu','cuda:0'),default='cuda:0')
     return p

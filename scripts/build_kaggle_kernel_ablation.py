@@ -7,7 +7,7 @@ from scripts.build_kaggle_vna_parallel import build as base
 from scripts.build_kaggle_pilot_common import cell
 
 ROOT=Path(__file__).resolve().parents[1]
-RUNNER=r'''from diagnostics.kernel_ablation import discover_inputs
+RUNNER=r'''from diagnostics.kernel_ablation import discover_inputs, TASK1_COMMITS
 from experiments.runners.pycil import upstream_imports
 upstream_imports()
 ROOT=STAGE_B/REPO_COMMIT[:12]/RUN_TAG
@@ -15,16 +15,29 @@ ROOT.mkdir(parents=True,exist_ok=True)
 ENV.update(OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
 RESOLVED={seed:discover_inputs((Path('/kaggle/input'),STAGE_B),seed,INPUTS[seed]) for seed in (0,1)}
 print('INPUTS',json.dumps(RESOLVED,indent=2),flush=True)
+for seed in (0,1):
+    if not RESOLVED[seed].get('checkpoint'):
+        historical=REPO.parent/('kernel_source_'+TASK1_COMMITS[seed][:12])
+        if not historical.exists():private_clone(MAIN_URL,historical,TASK1_COMMITS[seed])
 
 def command(seed,arm,mode,out):
     cmd=[sys.executable,'-u','-m','diagnostics.kernel_ablation','--seed',str(seed),'--arm',arm,
-        '--mode',mode,'--checkpoint',RESOLVED[seed]['checkpoint'],'--original-run',RESOLVED[seed]['original_run'],
+        '--mode',mode,'--original-run',RESOLVED[seed]['original_run'],
         '--anchor-dir',str(ROOT/'anchors'),'--data-dir',str(DATA_ROOT),'--out',str(out),'--device','cuda:0']
+    if RESOLVED[seed].get('checkpoint'):cmd+=['--checkpoint',RESOLVED[seed]['checkpoint']]
+    if seed==1:cmd+=['--protocol-template',str(Path(RESOLVED[0]['original_run'])/'protocol.json')]
     if RESOLVED[seed].get('baseline_checkpoint'):cmd+=['--baseline-checkpoint',RESOLVED[seed]['baseline_checkpoint']]
     return cmd
 
 def lane(gpu,seed):
-    if seed==1:
+    if not RESOLVED[seed].get('checkpoint'):
+        if pause_due():return
+        name=f'make_task1__s{seed}';folder=ROOT/name
+        if not launch(command(seed,'vna','make_task1',folder),gpu,name,RUN_ROOT/(name+'.log')):return
+        RESOLVED[seed]['checkpoint']=str(folder/'end_task1/task1.pt')
+        print('TASK1 RECONSTRUCTION',seed,(folder/'task1_verification.json').read_text(),flush=True)
+        archive_outputs()
+    if seed==1 and RESOLVED[seed]['replay_available']:
         if pause_due():return
         folder=ROOT/'s1_replay'
         if not launch(command(1,'vna','replay',folder),gpu,'s1_replay',RUN_ROOT/'s1_replay.log'):return
@@ -32,6 +45,8 @@ def lane(gpu,seed):
         print('S1 REPLAY AUDIT',json.dumps(audit),flush=True)
         print('S1 conclusions gated:',not audit.get('conclusion_allowed',False),flush=True)
         archive_outputs()
+    elif seed==1:
+        print('S1 interpretation_scope=no_replay_audit; exact registered it2001 L/KD required',flush=True)
     for arm in ('vna','kernel_self','vna_rand'):
         if pause_due():return
         name=f'{arm}__s{seed}';folder=ROOT/name
@@ -48,7 +63,7 @@ finally:
 REPORT=r'''for seed in (0,1):
     if seed==1:
         path=ROOT/'s1_replay'/'replay.json'
-        print('S1 AUDIT:',path.read_text() if path.exists() else 'MISSING: no conclusions from s1')
+        print('S1 AUDIT:',path.read_text() if path.exists() else 'no_replay_audit: see anchor audit and summary scope')
     for arm in ('vna','kernel_self','vna_rand'):
         folder=ROOT/f'{arm}__s{seed}'
         print('\nSEED',seed,'KERNEL',arm)
@@ -86,10 +101,14 @@ DISK_CAP_BYTES = 20_000_000_000
 ''')
     nb['cells'][1]=cell('markdown','''# P1 fixed-checkpoint kernel ablation: s0/s1
 Enable T4x2, Internet and github_token. Attach CIFAR-100 and original P1 noBN Inc5
-outputs with baseline end-task1/native-task2-epoch0 checkpoints and original full
-protocol.json, epochs.json and interventions.json. The notebook locates compatible
+outputs with original full protocol.json, epochs.json and interventions.json.
+Baseline end-task1/native-task2-epoch0 checkpoints are reused when available;
+otherwise each lane reconstructs baseline task1 (100 epochs) on its historical
+source: s0=29cc735, s1=6be6543. All 100 losses/accuracies/LRs must match original
+epochs exactly. The s1 missing-record exception below defers proof to its anchor.
+The notebook locates compatible
 expanded files or restored output archives; use INPUTS paths to resolve ambiguity.
-No baseline training, task-1 GIR amendments or new preflight. Preserve the original
+No task-1 GIR amendments or new preflight. Preserve the original
 6be6543 certificate/Gram trust region; actual update norms are observations only.
 Radius violations block interpretation. Native K is an untruncated control, not
 a rank-matched arm; r=16 counts incoming directions per site for virtual kernels.
@@ -98,9 +117,12 @@ Each arm attempts all 8 copied VNA-only steps, then resumes training from step 1
 through task 5 with VNA–GIR and the same projection kernel. Independent losses use
 a fixed balanced official-test batch; they never select/accept steps. GPU1 audits
 the original s1 replay through task2 epoch43 before computing its ablations.
-Missing flags or mismatches block conclusions from s1. Seeds 2–7 are held out.
-The currently supplied p1_ablation_bundle.zip has no checkpoints and lacks primary
-s1 protocol/epoch records; add those before launching. See KERNEL_ABLATION_INPUT_AUDIT.md.
+Replay conclusion_allowed depends only on differences; original GPU flags are
+unrecorded and current flags are logged. If s1 protocol/epochs remain missing
+(including the attached nlnk1607/adadad/vna4_main (2) output), skip replay and
+require it2001 L_before=2.853116586477115, KD_before=1.2374861653019964 exactly.
+Those results carry interpretation_scope=no_replay_audit; historical task1 trace
+equality is not claimed without the original epochs. Seeds 2–7 are held out.
 Runtime is unmeasured; multiple sessions may be necessary. Resume with this Output,
 the same source pin and original inputs. No source ZIP is required.
 ''')
