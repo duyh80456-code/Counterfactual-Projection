@@ -169,9 +169,11 @@ def discover_inputs(roots,seed,requested=None):
     result=dict(requested or {});runs={};checkpoints={};fallback={}
     for root in map(Path,roots):
         for path in root.rglob('protocol.json'):
+            if set(path.relative_to(root).parts).intersection(('profiles','_preflight')):continue
             try:p=read(path)
             except (OSError,ValueError):continue
-            if (p.get('seed')==seed and p.get('arm')=='icarl_full' and all(p.get(k)==v for k,v in P1_SETUP.items())
+            if (p.get('code_commit')==TASK1_COMMITS[seed] and not p.get('preflight_only') and not p.get('fake_data')
+                    and p.get('seed')==seed and p.get('arm')=='icarl_full' and all(p.get(k)==v for k,v in P1_SETUP.items())
                     and all(p.get('cfg',{}).get(k)==v for k,v in P1_CFG.items()) and p.get('policy_version')==vna.POLICY_VERSION
                     and p.get('grad_clip') is None and not p.get('warmup_epochs',0) and not p.get('gir_live')
                     and p.get('solver')=='gram' and p.get('curvature')=='power10'
@@ -275,6 +277,7 @@ def make_task1(args):
 
 def validate_source(state,protocol,seed,baseline=None):
     p=state['identity']
+    if protocol.get('code_commit')!=TASK1_COMMITS[seed]:raise ValueError('original run commit does not match seed authority')
     expected=dict(seed=seed,**P1_SETUP)
     for source in (p,protocol):
         if any(source.get(k)!=v for k,v in expected.items()):raise ValueError('P1 checkpoint setup mismatch')

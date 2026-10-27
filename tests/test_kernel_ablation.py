@@ -129,7 +129,7 @@ def test_measurement_preserves_network_teacher_optimizer_engine_and_rng(kernel):
 def source_state():
     protocol=dict(seed=0,arm='icarl_full',backbone='resnet32_nobn',class_order_kind='superclass',nobn_lr_scale=.5,
         policy_version=vna.POLICY_VERSION,gir_live=False,intervention_start_task=2,dataset_fingerprint={'train':'a','test':'b','meta':'c'},
-        class_order=list(range(100)),code_commit=a.REFERENCE,cfg=dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False),
+        class_order=list(range(100)),code_commit=a.TASK1_COMMITS[0],cfg=dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False),
         training=dict(first_epochs=100,later_epochs=50,first_milestones=[30,60,85],later_milestones=[24,35]))
     identity=dict(protocol,arm='icarl')
     state=dict(identity=identity,completed=1,mid=False,epoch=100,hook=dict(steps=2000),
@@ -204,6 +204,22 @@ def test_discovery_excludes_own_five_task_continuations(tmp_path):
 
 def epoch_trace():
     return [dict(task=1,epoch=i,train_loss=1./i,train_acc=i/100,lr=.05) for i in range(1,101)]
+
+
+def test_discovery_selects_seed_authority_and_excludes_profiles_and_preflight(tmp_path):
+    state,p=source_state();p.update(expected_tasks=20,solver='gram',curvature='power10')
+    paths=[('29cc735ab877/icarl_full',{}),('29cc735ab877/profiles/gram_current/run',{}),
+        ('29cc735ab877/_preflight/gram',{}),('336ddedae63f/icarl_full',{'code_commit':'336ddedae63f'}),
+        ('336ddedae63f/profiles/gram_current/run',{'code_commit':'336ddedae63f'}),
+        ('preflight_elsewhere',{'preflight_only':True}),('synthetic',{'fake_data':True})]
+    for name,overrides in paths:
+        folder=tmp_path/name;folder.mkdir(parents=True)
+        (folder/'protocol.json').write_text(json.dumps(dict(p,**overrides)))
+        (folder/'epochs.json').write_text(json.dumps(epoch_trace()))
+        (folder/'interventions.json').write_text('[]')
+    assert a.discover_inputs([tmp_path],0)['original_run']==str(tmp_path/paths[0][0])
+    with pytest.raises(ValueError,match='commit'):
+        a.validate_source(state,dict(p,code_commit='336ddedae63f'),0)
 
 
 @pytest.mark.parametrize('field',['train_loss','train_acc','lr'])

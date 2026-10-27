@@ -47,8 +47,8 @@ Notebook: vna5_kernel_ablation_s01.ipynb; GPU0=s0, GPU1=s1 (replay first),
 each lane vna -> kernel_self -> vna_rand. Seeds 2–7 are not accepted by this
 runner. The notebook uses a real immutable source commit and no overlay.
 
-Focused local validation: **38 passed**, 36 upstream deprecation warnings,
-7.11 seconds, tests/test_kernel_ablation.py and tests/test_vna_kaggle_restore.py.
+Focused local validation: **39 passed**, 36 upstream deprecation warnings,
+46.58 seconds, tests/test_kernel_ablation.py and tests/test_vna_kaggle_restore.py.
 Includes original-6be fixed
 system bitwise comparison on float32/64; native-kernel substitution; per-site
 random trace/rank; complete first-step restoration; observation isolation;
@@ -104,3 +104,14 @@ the existing strict merge and loose-file-over-own-stale-archive behavior.
 Focused tests cover separate loose/archive sources, unread unrelated prefix
 files, strict resume conflicts, stale tar precedence, unsafe archive members
 and notebook wiring. No experimental acceptance or kernel logic changes.
+
+Discovery correction: original full-run provenance must match the registered
+historical commit for its seed (s0 29cc735, s1 6be6543). Exclude profiles,
+_preflight, preflight_only and synthetic runs before source selection. Exact
+copies remain deduplicated by artifact hashes; genuinely different admissible
+records still require an explicit INPUTS choice. Manual original-run references
+also fail validation on a wrong seed-authority commit. A regression reproduces
+the five reported candidates plus synthetic/preflight flag variants and selects
+only the canonical original run. Discovery on the actual local
+p1_ablation_bundle.zip selects s0_full with replay records and s1_full with the
+registered no_replay_audit exception; both correctly require task1 recovery.
