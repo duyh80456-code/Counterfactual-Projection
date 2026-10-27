@@ -89,7 +89,7 @@ def flags():
         warn_only=torch.is_deterministic_algorithms_warn_only_enabled(),
         cudnn_deterministic=torch.backends.cudnn.deterministic,cudnn_benchmark=torch.backends.cudnn.benchmark,
         cudnn_tf32=torch.backends.cudnn.allow_tf32,matmul_tf32=torch.backends.cuda.matmul.allow_tf32,
-        cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),torch_version=torch.__version__,
+        cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),torch_version=str(torch.__version__),
         cuda_version=torch.version.cuda,device=torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')
 
 
@@ -229,6 +229,16 @@ def compare_events(original,replayed):
     return differences
 
 
+def terminal_result(summary,identity):
+    status=summary.get('status')
+    if status not in ('COMPLETED','FAILED_DIVERGED'):return False
+    if summary.get('ablation_identity')!=identity:raise ValueError('terminal ablation identity mismatch')
+    if status=='COMPLETED' and [r.get('task') for r in summary.get('tasks',[])]!=list(range(1,6)):
+        raise ValueError('incomplete five-task result')
+    if status=='FAILED_DIVERGED' and not summary.get('diverged'):raise ValueError('missing divergence coordinates')
+    return True
+
+
 def run(args):
     from experiments import main_cil as main
     from experiments.parallel_validity import dataset_fingerprint
@@ -265,7 +275,7 @@ def run(args):
     manifest=out/'protocol.json'
     if manifest.exists() and read(manifest)!=identity:raise ValueError('ablation identity mismatch')
     atomic_json_save(identity,manifest)
-    if (out/'summary.json').exists() and read(out/'summary.json').get('status') in ('COMPLETED','FAILED_DIVERGED'):
+    if (out/'summary.json').exists() and terminal_result(read(out/'summary.json'),identity):
         return
     if args.mode=='replay' and (out/'replay.json').exists() and read(out/'replay.json')['status'] in ('REPLAY_MATCHED','REPLAY_MISMATCH'):
         return
@@ -298,16 +308,25 @@ def run(args):
                     adapter.task=2;engine.begin_task(2)
                 self.state['hook']['intervention_state']=adapter.state_dict()
                 self.state['artifacts']={}
-        def save(self,state):super().save(dict(state,ablation_identity=identity))
+        def save(self,state):super().save(dict(state,ablation_identity=identity,ablation_flags=flags()))
     main.Progress=BorrowProgress
     original_after=main.Intervention.after_step
     original_epoch=main.MainHook.after_epoch
     original_record=main.MainHook.record_task
+    original_before=main.MainHook.before_optimizer_step
     reference_events=original_events
     reference_epochs=original_epochs
     audit=read(out/'replay.json') if (out/'replay.json').exists() else dict(status='RUNNING',differences=[])
     rows=[]
     class ReplayDone(Exception):pass
+    checked_flags=False
+    def before_step(hook,frame):
+        nonlocal checked_flags
+        if not checked_flags:
+            expected=hook.progress.state.get('ablation_flags')
+            if expected is not None and expected!=flags():raise ValueError('GPU/runtime deterministic flags changed since checkpoint')
+            checked_flags=True
+        original_before(hook,frame)
     def after_step(adapter,hook,learner,opt):
         if args.mode=='replay':
             original_after(adapter,hook,learner,opt)
@@ -395,15 +414,19 @@ def run(args):
         original_record(hook,learner,result)
         atomic_json_save(hook.tasks,out/'tasks.json')
     main.Intervention.after_step=after_step;main.MainHook.after_epoch=epoch;main.MainHook.record_task=record
+    main.MainHook.before_optimizer_step=before_step
     try:
         result=main.run(cli)
         if args.mode=='replay':raise RuntimeError('replay did not reach task2 epoch43')
         result['interpretation_allowed']=True if args.seed==0 else read(replay_path).get('conclusion_allowed',False)
+        result['ablation_identity']=identity
+        if not terminal_result(result,identity):raise ValueError('non-terminal native result')
         atomic_json_save(result,out/'summary.json')
     except ReplayDone:pass
     finally:
         vna.V3Engine=BaseEngine;main.Progress=Progress
         main.Intervention.after_step=original_after;main.MainHook.after_epoch=original_epoch;main.MainHook.record_task=original_record
+        main.MainHook.before_optimizer_step=original_before
 
 
 def parser():

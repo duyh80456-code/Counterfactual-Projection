@@ -39,12 +39,14 @@ Notebook: vna5_kernel_ablation_s01.ipynb; GPU0=s0, GPU1=s1 (replay first),
 each lane vna -> kernel_self -> vna_rand. Seeds 2–7 are not accepted by this
 runner. The notebook uses a real immutable source commit and no overlay.
 
-Focused local validation: **16 passed**, 36 upstream deprecation warnings,
-6.53 seconds, tests/test_kernel_ablation.py only. Includes original-6be fixed
+Focused local validation: **17 passed**, 36 upstream deprecation warnings,
+5.81 seconds, tests/test_kernel_ablation.py only. Includes original-6be fixed
 system bitwise comparison on float32/64; native-kernel substitution; per-site
 random trace/rank; complete first-step restoration; observation isolation;
 source/resume rejection; discovery excluding own continuation outputs; and
-algorithmic replay comparisons. Actual log: KERNEL_ABLATION_PYTEST.log.
+algorithmic replay comparisons and terminal-result identity/horizon validation.
+Native checkpoints also record runtime/GPU flags; a changed resume configuration
+is rejected before its next SGD update. Actual log: KERNEL_ABLATION_PYTEST.log.
 
 The generated notebook cells are syntax-checked without execution. Full native
 checkpoint replay/continuation and T4 timings are not tested: supplied inputs

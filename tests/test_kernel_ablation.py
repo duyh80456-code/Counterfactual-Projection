@@ -197,3 +197,14 @@ def test_discovery_excludes_own_five_task_continuations(tmp_path):
     (own/'interventions.json').write_text('[]');(own/'epochs.json').write_text('[]')
     found=a.discover_inputs([tmp_path],0)
     assert found['original_run']==str(original) and found['checkpoint']==str(checkpoint)
+
+
+def test_terminal_results_need_kernel_identity_and_complete_horizon():
+    identity=dict(kernel='vna',seed=0)
+    result=dict(status='COMPLETED',ablation_identity=identity,tasks=[dict(task=t) for t in range(1,6)])
+    assert a.terminal_result(result,identity)
+    with pytest.raises(ValueError,match='identity'):a.terminal_result(result,dict(identity,kernel='vna_rand'))
+    result['tasks'].pop()
+    with pytest.raises(ValueError,match='five-task'):a.terminal_result(result,identity)
+    result.update(status='FAILED_DIVERGED',diverged=dict(task=4,epoch=1,step=5601,tensor='loss'))
+    assert a.terminal_result(result,identity)
