@@ -2,7 +2,7 @@
 
 Starting local/remote HEAD: `6bf844ee51642f72a0eeac8256f923231f4cdfbf`.
 Branch: `codex/gir-live-task1`; remote HEAD was verified again before commit.
-Final implementation commit: `IMPLEMENTATION_COMMIT_TO_RECORD`.
+Final implementation commit: `7aa40e8292d05341b5f71e9216e9e08beb6783d9`.
 The final delivery commit adds the recorded implementation SHA to this report;
 its exact SHA is the latest commit touching this report (`git log -1 --format=%H
 -- docs/vna/STANDARD_CL_COMPLETION_REPORT.md`) and is supplied with the delivery.
