@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import dataclass,asdict
 from contextlib import contextmanager
+from contextvars import ContextVar
 import math
 import time
 import torch
@@ -12,6 +13,12 @@ from methods.vna_losses import CE,ICaRLPyCIL
 from methods.vna_ggn import GGNConfig,GGNProducts
 from methods.vna_v3 import training_products,V3Engine
 from experiments.vna_resume import deadline_due
+
+_compute_deadline=ContextVar('cl_diagnostic_compute_deadline',default=None)
+
+
+class ComputeBudgetExhausted(RuntimeError):
+    pass
 
 
 @dataclass
@@ -49,9 +56,9 @@ class ReplayLoss:
         if kind=='er' and reference=='kd':raise ValueError('ER has no KD reference')
         if known and kind=='icarl' and teacher is None:raise ValueError('old-class teacher logits required')
         self.targets,self.replay=targets,replay.bool()
-        self.kind,self.known,self.teacher,self.reference,self.temperature=kind,known,teacher,reference,temperature
+        self.kind,self.known,self.teacher,self.reference,self.temperature=kind,known,None if teacher is None else teacher.detach().clone(),reference,temperature
         self.spec=_ReplayMetric(T=temperature,known_classes=known) if kind=='icarl' else CE()
-        self.ctx=dict(targets=targets,known_classes=known,teacher_logits=teacher)
+        self.ctx=dict(targets=targets,known_classes=known,teacher_logits=self.teacher)
         self.incoming=LossComponent('all_ce' if reference=='kd' else 'incoming_ce',self.new_loss)
         self.reference_loss=LossComponent('old_kd' if reference=='kd' else ('replay_ce_plus_old_kd' if kind=='icarl' else 'replay_ce'),self.old_loss)
         self.components=(self.incoming,self.reference_loss)
@@ -135,19 +142,21 @@ class ReplayCorrection:
     @staticmethod
     def boundary():
         if deadline_due():raise SystemExit(75)
+        limit=_compute_deadline.get()
+        if limit is not None and time.perf_counter()>=limit:raise ComputeBudgetExhausted('diagnostic wall-time budget exhausted')
 
-    def _operator(self,p,op,penalty=None):
+    def _operator(self,p,op,penalty=None,damping=None):
         cfg=GGNConfig(hutchinson_probes=self.config.trace_probes,seed=self.config.seed,damping_norm='params')
-        mu=max(self.config.damping_relative*op.trace(cfg)/max(op.size,1),1e-12)
+        mu=max(self.config.damping_relative*op.trace(cfg)/max(op.size,1),1e-12) if damping is None else float(damping)
         return ProjectionOperator(lambda x:p.Jv(x).double(),lambda x:p.JT(x).double(),op.H,mu,
             tolerance=self.config.cg_tolerance,max_iterations=self.config.cg_iterations,
             penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
 
-    def propose(self,model,inputs,losses,sites,optimizer_candidate=None,penalty=None):
+    def propose(self,model,inputs,losses,sites,optimizer_candidate=None,penalty=None,*,damping=None):
         config=self.config;started=time.perf_counter();construction=0.;counts=dict(jvp=0,vjp=0)
         with training_products(model,[],{},inputs) as p:
             op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
-            A=self._operator(p,op,penalty)
+            A=self._operator(p,op,penalty,damping)
             residuals=[torch.autograd.functional.jacobian(lambda z:component(z),op.logits).detach().flatten()
                        for component in losses.components]
             gradients=torch.stack([p.JT(e).double() for e in residuals]);g=gradients.sum(0)
@@ -161,6 +170,7 @@ class ReplayCorrection:
             original=vna_v3.training_products
             @contextmanager
             def counted(*args,**kwargs):
+                self.boundary()
                 with original(*args,**kwargs) as product:
                     try:yield product
                     finally:
@@ -213,25 +223,38 @@ class ReplayCorrection:
             # A is valid only inside this products context; retain the needed scalar diagnostics.
             return CandidateUpdate(d.detach(),gradients.detach(),None,diagnostic)
 
-    def step(self,model,optimizer,inputs,losses,sites,step_size,*,penalty=None):
+    def step(self,model,optimizer,inputs,losses,sites,step_size,*,penalty=None,damping=None,update_norm=None,compute_seconds=None):
         if not math.isfinite(step_size) or step_size<=0:raise ValueError('positive finite physical step required')
+        for name,value in (('damping',damping),('update_norm',update_norm),('compute_seconds',compute_seconds)):
+            if value is not None and (not math.isfinite(value) or value<=0):raise ValueError(f'{name} must be positive finite or None')
         if any(isinstance(m,torch.nn.modules.dropout._DropoutNd) and m.p for m in model.modules()):
             raise ValueError('stochastic dropout is not certified by this BN pilot')
+        device=next(model.parameters()).device
+        if device.type=='cuda':torch.cuda.synchronize(device)
         started=time.perf_counter();state=State(model,optimizer);initial=vector(model);staged_optimizer=None
         row=dict(application=self.applications,mode=self.config.mode,kernel=self.config.kernel,
-            constrained=self.config.constrained,loss_components=[c.name for c in losses.components])
+            constrained=self.config.constrained,loss_components=[c.name for c in losses.components],
+            damping_source='shared_diagnostic_lock' if damping is not None else 'window_trace',
+            update_norm_budget=update_norm,compute_budget_seconds=compute_seconds,
+            acceptance='componentwise_nonincrease' if self.config.constrained else 'total_nonincrease')
+        token=_compute_deadline.set(started+compute_seconds if compute_seconds is not None else _compute_deadline.get())
         try:
+            self.boundary()
             eval_before=predict(model,inputs);eval_losses_before=evaluate(model,inputs,losses.components,'eval')
             base=None
             if self.config.mode=='unified':
                 if any(group['lr']!=step_size for group in optimizer.param_groups):raise ValueError('unified mode requires a common optimizer LR')
                 optimizer.step();base=(initial-vector(model))/step_size
                 staged_optimizer=deepcopy(optimizer.state_dict());state.restore()
-            proposal=self.propose(model,inputs,losses,sites,base,penalty)
+            proposal=self.propose(model,inputs,losses,sites,base,penalty,damping=damping)
             row.update(proposal.diagnostics)
             before=evaluate(model,inputs,losses.components);trials=[];accepted=False;after=before;norm=0.;used=0.
+            direction_norm=float(proposal.direction.norm())
+            maximum_step=min(step_size,update_norm/direction_norm) if update_norm is not None and direction_norm>0 else step_size
+            row.update(maximum_step=maximum_step,proposed_direction_norm=direction_norm,
+                first_order_gain_per_unit_norm=sum(row.get('first_order_gains',[0.]))/direction_norm if direction_norm else None)
             for trial in range(self.config.max_trials):
-                self.boundary();state.restore();s=step_size*(.5**trial)
+                self.boundary();state.restore();s=maximum_step*(.5**trial)
                 subtract(model,proposal.direction,s)
                 physical=(initial-vector(model))/s
                 gains=proposal.gradients@physical
@@ -240,8 +263,11 @@ class ReplayCorrection:
                 after=evaluate(model,inputs,losses.components)
                 finite=all(math.isfinite(x) for x in (*before,*after))
                 nonincrease=all(a<=b for a,b in zip(after,before)) if self.config.constrained else sum(after)<=sum(before)
-                trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible))
-                if finite and feasible and nonincrease:
+                physical_norm=float((initial-vector(model)).norm())
+                in_budget=update_norm is None or physical_norm<=update_norm
+                trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
+                    physical_norm=physical_norm,in_update_budget=in_budget))
+                if finite and feasible and nonincrease and in_budget:
                     accepted=True;norm=float((initial-vector(model)).norm());used=s;break
             if not accepted:state.restore()
             elif staged_optimizer is not None:optimizer.load_state_dict(staged_optimizer)
@@ -257,16 +283,27 @@ class ReplayCorrection:
                 prediction_scope='nominal direction at the pre-update linearization; physical gains separately logged')
             row.update(eval_losses_before=eval_losses_before,eval_losses_after=evaluate(model,inputs,losses.components,'eval'),
                 eval_functional_drift=float((predict(model,inputs).double()-eval_before.double()).norm()),
-                bn_buffer_drift=float(sum((b.double()-state.values[n].double()).square().sum() for n,b in model.named_buffers()).sqrt())
+                bn_buffer_drift=float(sum((b.double()-state.buffers[n].double()).square().sum() for n,b in model.named_buffers()).sqrt())
                     if any(True for _ in model.buffers()) else 0.)
+            if initial.is_cuda:torch.cuda.synchronize(initial.device)
+            self.boundary()
+        except ComputeBudgetExhausted as exc:
+            state.restore();row.update(accepted=False,status='SKIPPED_RESOURCE_BUDGET',reason=str(exc),step=0.,step_norm=0.,
+                first_order_predicted_gain=0.,quadratic_predicted_gain=0.,constraint_violation=0.)
+            if 'before' in row:row.update(after=row['before'],actual_loss_change=[0.]*len(row['before']))
+            if 'eval_losses_before' in row:
+                row.update(candidate_eval_losses_after=row.get('eval_losses_after'),eval_losses_after=row['eval_losses_before'],
+                    eval_functional_drift=0.,bn_buffer_drift=0.)
         except Uncertified as exc:
             state.restore();row.update(accepted=False,status='UNCERTIFIED',reason=str(exc),solver_failure=exc.diagnostics)
         except BaseException:
             state.restore();raise
         finally:
             self.applications+=1
+            _compute_deadline.reset(token)
         if initial.is_cuda:torch.cuda.synchronize(initial.device)
         row.update(seconds=time.perf_counter()-started,peak_vram_bytes=torch.cuda.max_memory_allocated(initial.device) if initial.is_cuda else 0,
             peak_vram_scope='process high-water mark; reset by experiment runner, not per candidate')
+        row['compute_overshoot_seconds']=max(0.,row['seconds']-compute_seconds) if compute_seconds is not None else None
         self.events.append(row)
         return row

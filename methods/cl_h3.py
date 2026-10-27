@@ -36,7 +36,7 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
     output_before=predict(model,inputs,'train')
     shapes={n:tuple(p.shape) for n,p in model.named_parameters()}
     identities={n:id(p) for n,p in model.named_parameters()}
-    count=sum(p.numel() for p in model.parameters());rows=[];winner=None
+    count=sum(p.numel() for p in model.parameters());rows=[];winner=None;winner_state=None
     def score(losses):
         if surrogate is None:return sum(losses)
         with isolated(model,optimizer):return float(surrogate(model))
@@ -60,9 +60,11 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
                 objective=objective,output_jump_norm=float(jump.double().norm()),
                 window_output_preserved=not bool(jump.any())))
             rows[-1]['seconds']=time.perf_counter()-started
-            if admissible and math.isfinite(objective) and objective<best:winner=candidate;best=objective
+            if admissible and math.isfinite(objective) and objective<best:
+                winner=candidate;best=objective;winner_state=State(model,optimizer)
         state.restore()
-        if winner is not None:winner.apply(model);winner.reset_optimizer(optimizer,model)
+        # Commit the tested state; a callback may consume external RNG or have side effects.
+        if winner_state is not None:winner_state.restore()
     except BaseException:
         state.restore();raise
     return dict(choice='identity' if winner is None else winner.name,trials=rows,

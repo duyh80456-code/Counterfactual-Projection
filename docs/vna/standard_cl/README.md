@@ -1,10 +1,12 @@
-# Standard CL VNA: code-only implementation, 2026-10-28
+# Standard CL VNA implementation, 2026-10-28
 
 This is a separate research path. Historical methods, training runners,
-notebooks and source pins are unchanged. No test, toy experiment, benchmark,
-GPU profiling or scientific evaluation was executed for this delivery.
-All research hypotheses remain **INCONCLUSIVE**. Written tests are not passed
-tests; the pilot is not implementation-validated or ready for paper claims.
+notebooks and source pins are unchanged. The original b68a936 delivery was
+code-only. A subsequent [focused CPU audit](CPU_AUDIT.md) fixes a real QP
+interface error, verifies toy numerical/BN contracts and separates matched
+kernel controls from raw native optimizer references. Real-data benchmarks,
+ResNet32 execution and GPU profiling have not run. All research hypotheses
+remain **INCONCLUSIVE**; the pilot is not validated for paper claims.
 
 Read [audit](AUDIT.md), [mathematics](MATHEMATICS.md),
 [protocol](PROTOCOL.md) and [status](STATUS.md) before launching anything.
@@ -102,10 +104,12 @@ to select an inference classifier.
 
 ## Validation to perform later
 
-The written checks are `tests/test_standard_cl_math.py` and
-`tests/test_standard_cl_pipeline.py`. They include direct systems, generalized
+The focused checks are `tests/test_standard_cl_math.py`,
+`tests/test_standard_cl_pipeline.py` and `tests/test_standard_cl_audit.py`.
+They include direct systems, generalized
 metrics, numerical QP reference, rank-deficient gradients, KD invariance,
 BN rollback, float32/float64 paths, state resume, Schur/derivative identities,
 dead/live effects, chunked trace, domain replay and collector integrity.
 The SciPy QP reference is explicitly skipped if SciPy is absent; a skip is
-not a numerical verification. None of these checks was executed here.
+not a numerical verification. See CPU_AUDIT.md and its actual pytest log for
+the executed CPU scope; no dataset-training/GPU readiness is implied.

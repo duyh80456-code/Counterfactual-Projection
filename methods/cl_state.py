@@ -10,20 +10,30 @@ class State:
     def __init__(self,model,optimizer=None):
         self.model,self.optimizer=model,optimizer
         self.values=deepcopy(model.state_dict());self.modes={n:m.training for n,m in model.named_modules()}
-        self.registrations=[(m,dict(m._parameters),dict(m._buffers),dict(m._modules)) for m in model.modules()]
+        self.buffers={n:b.detach().clone() for n,b in model.named_buffers()}
+        self.requires_grad={n:p.requires_grad for n,p in model.named_parameters()}
+        self.registrations=[(m,dict(m._parameters),dict(m._buffers),dict(m._modules),set(m._non_persistent_buffers_set)) for m in model.modules()]
         self.gradients={n:None if p.grad is None else p.grad.detach().clone() for n,p in model.named_parameters()}
         self.opt=deepcopy(optimizer.state_dict()) if optimizer is not None else None
         self.rng=rng_state()
 
     def restore(self):
-        for module,params,buffers,children in self.registrations:
+        for module,params,buffers,children,nonpersistent in self.registrations:
             module._parameters.clear();module._parameters.update(params)
             module._buffers.clear();module._buffers.update(buffers)
             module._modules.clear();module._modules.update(children)
+            module._non_persistent_buffers_set.clear();module._non_persistent_buffers_set.update(nonpersistent)
         with torch.no_grad():
             for n,p in self.model.named_parameters():
-                if p.shape!=self.values[n].shape:p.data=self.values[n].clone()
+                ref=self.values[n]
+                if p.shape!=ref.shape or p.dtype!=ref.dtype or p.device!=ref.device:p.data=ref.clone()
+                p.requires_grad_(self.requires_grad[n])
+            for n,b in self.model.named_buffers():
+                ref=self.buffers[n]
+                if b.shape!=ref.shape or b.dtype!=ref.dtype or b.device!=ref.device:b.data=ref.clone()
         self.model.load_state_dict(self.values)
+        with torch.no_grad():
+            for n,b in self.model.named_buffers():b.copy_(self.buffers[n])
         for n,m in self.model.named_modules():m.training=self.modes[n]
         for n,p in self.model.named_parameters():p.grad=None if self.gradients[n] is None else self.gradients[n].clone()
         if self.optimizer is not None:self.optimizer.load_state_dict(self.opt)

@@ -1,4 +1,4 @@
-"""Specified mathematical checks. Written only; no results are asserted."""
+"""Direct mathematical checks and a numerical two-halfspace QP reference."""
 from copy import deepcopy
 from types import SimpleNamespace
 import numpy as np

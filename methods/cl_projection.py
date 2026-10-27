@@ -83,7 +83,10 @@ class ConstraintSolver:
 
     def solve(self,candidate,gradients):
         if len(gradients)!=2:raise ValueError('exactly two halfspaces are supported; no trust-ball constraint')
-        d0=candidate.detach().double();C=torch.stack(gradients).double()
+        d0=candidate.detach().double()
+        C=(gradients if isinstance(gradients,torch.Tensor) else torch.stack(tuple(gradients))).detach().double()
+        if C.shape!=(2,d0.numel()) or not torch.isfinite(C).all() or not torch.isfinite(d0).all():
+            raise ValueError('finite two-row gradients and aligned candidate required')
         norms=C.norm(dim=1);scales=torch.where(norms>0,norms,torch.ones_like(norms))
         U=C/scales[:,None]
         inverse=torch.stack([self.operator.solve(row) for row in U],1)

@@ -113,5 +113,7 @@ Existing tests include `test_vna_v3*`, `test_vna_exact`, `test_theory_v3`,
 `test_dead_schur_policy`, `test_kernel_ablation` and restore/discovery tests.
 Their historical pass reports do not validate the new code. New tests are
 written in `test_standard_cl_math.py` and `test_standard_cl_pipeline.py`.
-The user explicitly requested **no execution**; no test pass or phase gate
-is asserted for this implementation.
+The initial delivery followed the user's **no execution** instruction.
+The later requested focused review executes CPU tests only; see
+CPU_AUDIT.md for findings and the actual log. No real-data/GPU phase gate
+is asserted by those toy checks.

@@ -97,7 +97,7 @@ def run(args):
         runtime_flags=flags(),
         dataset_fingerprint=fingerprint,raw_upstream_config=raw,evaluation='final epoch; CNN primary; NME separate',
         acceptance='same train-mode window; parameter certificate only; BN buffer effects reported separately',
-        evidence_status='INCONCLUSIVE',test_gates='NOT_RUN; user requested code only',
+        evidence_status='INCONCLUSIVE',test_gates='focused toy CPU audit only; CIFAR/ResNet32/GPU execution NOT_RUN',
         budget_comparison=args.budget,compute_budget_ratio=cfg['compute_budget_ratio'])
     manifest=out/'protocol.json'
     if manifest.exists() and json.loads(manifest.read_text())!=protocol:raise ValueError('experiment protocol mismatch')

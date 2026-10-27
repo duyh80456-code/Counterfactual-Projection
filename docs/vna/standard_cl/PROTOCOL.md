@@ -77,12 +77,35 @@ no rerun with a different seed and no clipping occurs automatically.
 
 ## H0, H2, H3 and H4
 
-H0's `compare_local` uses an unchanged supplied checkpoint/window and fixed
-metric seed. Controls are tiny_V, native K, GN, actual optimizer and at least
-two random draws (default five). Random draw index changes A, not damping
-probe seed. Normalize random trace per site against tiny_V with the same
-virtual dimensions. These are exploratory draws, not a significance test.
-No automatic old-checkpoint validation/conversion into a BN learner exists.
+H0's `compare_local` checks model/optimizer/BN/gradients/modes/freeze flags/RNG
+and window/teacher state at each arm, computes damping once and passes that
+same mu into every correction. Tiny_V, native K and random form the kernel
+group; GN is a separate candidate control. The unfiltered optimizer has two
+explicit references: true standard-BN forward and private/frozen buffers.
+Neither is eligible for kernel attribution or reported as a matched arm.
+
+For direction quality, pass `update_norm` as a common physical norm budget.
+Initial s is capped by both the declared LR and radius/||d||; every rounded
+trial displacement must fit the budget. Acceptance can reduce actual norms,
+so actual norms are not claimed equal. Per-unit-norm first-order gains are
+also reported. With no norm budget, kernel-attribution eligibility is false.
+This is a constraint on trial steps along the direction, not a trust-ball
+QP/KKT solution and not a change to the default H1 training algorithm.
+
+Optional `compute_seconds` gives each correction the same wall-time allowance.
+Checks occur at operation boundaries; an indivisible operation may overrun.
+Overrun restores the state, logs SKIPPED_RESOURCE_BUDGET and is censored from
+matched-compute conclusions rather than counted as method rejection. Actual
+overshoot remains recorded. All arms report full-arm seconds_total; correction
+seconds includes snapshots, kernel construction, projection, acceptance and
+diagnostics. Native update_seconds measures forward/backward/optimizer only,
+and its total includes reference diagnostics. Shared damping/preparation time
+is a separate one-time cost, not a per-arm speed advantage or equal-time claim.
+
+There are at least two random draws (default five), changing draw index but
+not metric seed/damping. Random trace is normalized per site against tiny_V
+with the same virtual dimensions. These are exploratory draws, not a
+significance test. No automatic old-checkpoint conversion into BN exists.
 
 H2 is a penalty variant with an explicitly supplied nonnegative feature
 weight. Both solves change consistently, and feature drift/cosine is

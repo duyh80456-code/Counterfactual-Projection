@@ -55,7 +55,7 @@ def run(args):
     protocol=dict(branch='H4',code_commit=code_commit(),config={k:v for k,v in vars(args).items() if k!='out'},runtime_flags=flags(),
         dataset_hashes=hashes,correction=asdict(config),classifier_classes=10,head_expansion=False,
         memory='reservoir of previously observed transformed samples, including current-domain prefix',
-        evidence_status='INCONCLUSIVE',test_gates='NOT_RUN; code-only request')
+        evidence_status='INCONCLUSIVE',test_gates='focused toy CPU audit only; real MNIST training/GPU execution NOT_RUN')
     if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('domain protocol mismatch')
     logger.save('protocol',protocol)
     if (out/'summary.json').exists():

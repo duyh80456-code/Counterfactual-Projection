@@ -1,21 +1,23 @@
 # Delivery and evidence status — 2026-10-28
 
-User instruction: implement code, **do not run**, push authorized.
+Original delivery: code only, no execution. Follow-up review: focused CPU
+tests authorized and executed; no dataset training or GPU run. See
+[CPU audit](CPU_AUDIT.md) and its actual pytest log.
 
 | Deliverable | Status |
 |---|---|
 | Repository/theory/old-code audit | Read-only audit documented |
-| Shared generalized matrix-free projection | Implemented, NOT RUN |
-| Two-halfspace QP and residual/KKT checks | Implemented, NOT RUN |
-| BN/optimizer/RNG transactions | Implemented, NOT RUN |
+| Shared generalized matrix-free projection | Focused CPU toy checks passed |
+| Two-halfspace QP and residual/KKT checks | Tensor interface fixed; CPU/SciPy reference checks passed |
+| BN/optimizer/RNG transactions | CPU rollback tests include momentum, freeze flags and nonpersistent buffers |
 | ER with herding / iCaRL-style H1 pilot runner | Implemented, NOT RUN |
-| Intervention and unified modes | Implemented, NOT RUN |
-| H0 fixed-state local controls | Implemented API, NOT RUN |
-| H2 consistent feature penalty | Independent API, NOT RUN |
-| H3 derivative/Schur/finite-candidate search | Independent API, NOT RUN |
+| Intervention and unified modes | CPU toy/resume/rejection scope tested |
+| H0 fixed-state local controls | Shared damping/window/norm-budget checks; native BN references separated |
+| H2 consistent feature penalty | Same penalty in both operators verified on CPU toy |
+| H3 derivative/Schur/finite-candidate search | Small-system and in-place finite-candidate API checks passed; no generator/benchmark claim |
 | H4 fixed-head Domain-IL runner | Implemented, NOT RUN |
-| New mathematical/integration tests | Written, NOT RUN |
-| Numerical verification results | NOT RUN, no invented residuals or pass count |
+| New mathematical/integration tests | Three focused files executed; see actual log |
+| Numerical verification results | CPU toy verification only; not a full-model certificate |
 | CIFAR/MNIST benchmark metrics | NOT RUN |
 | GPU memory/runtime profiling | NOT RUN; only instrumentation provided |
 | Strong compatible CL benchmark comparison | Pending; no adapted baseline/result claimed |
@@ -23,8 +25,8 @@ User instruction: implement code, **do not run**, push authorized.
 | General virtual GroupNorm / dropout support | Explicitly unsupported |
 
 All H0–H4 research conclusions are **INCONCLUSIVE**. Source formulas are
-conditional algebraic statements, not evidence that these new implementations
-passed tests. Old OOM and incomplete replay are not classified as negative
+conditional algebraic statements, distinct from the bounded scope of executed
+tests. Old OOM and incomplete replay are not classified as negative
 method results. No test set selects hyperparameters or acceptance.
 
 ## Research questions, by branch
@@ -47,18 +49,18 @@ method results. No test set selects hyperparameters or acceptance.
   do not protect BN running-statistic effects on eval outputs. Generality,
   forgetting and cost-benefit remain unmeasured.
 
-## Next validation sequence (not executed)
+## Next validation sequence
 
-1. Run only the new focused mathematical/integration test files. Resolve
-   float32 failures, missing reference-QP dependencies and resume mismatches.
+1. The focused CPU files have run, including the numerical QP reference.
+   Preserve these checks as regressions; they do not validate a full PyCIL run.
 2. Profile a real small BN intervention; record resource failures as such.
 3. Run the paired three-task H1 pilot and compatible native/GN/random
    controls, keeping the held-out seeds untouched.
 4. Only with those gates passed, consider full tasks/strong comparisons
    and evidence-based independent H2/H4/H3 experiments.
 
-No phase gate is represented as passed in this report.
+No CIFAR/MNIST-training, ResNet32 or GPU phase gate is represented as passed.
 
-Static-only review: Python sources were parsed/compiled as syntax trees and
+The original static-only review parsed/compiled Python syntax trees and
 the JSON config parsed without importing the new modules or executing their
 code. This is not a test, mathematical verification or runtime validation.

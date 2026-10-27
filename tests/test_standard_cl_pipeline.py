@@ -1,4 +1,4 @@
-"""Small integration/resume contracts; deliberately not executed for code-only delivery."""
+"""Focused CPU integration/resume contracts; no real-data training."""
 from copy import deepcopy
 import json
 from types import SimpleNamespace

@@ -1246,3 +1246,25 @@ its exact per-site objective. User explicitly requested no execution:
 mathematical tests, pilot, runtime/VRAM and research conclusions are NOT RUN /
 INCONCLUSIVE. No phase gate, strong-baseline superiority or completed H3
 benchmark is asserted. Original P1/noBN results retain their own protocol.
+
+### 2026-10-28 — focused standard-CL audit and comparison integrity
+
+Fix the two-halfspace solver's Tensor input contract and complete rollback
+for nonpersistent buffers/freeze flags/dtype and buffer-registration state.
+Freeze supplied teacher logits and commit the exact tested H3 candidate
+state instead of invoking a stateful proposal callback a second time.
+The H1 objective, loss partition, default damping, cadence, optimizer and
+finite-step acceptance are unchanged. No real-data pilot is launched.
+
+H0 now locks one damping value across verified identical checkpoint/window
+states. Diagnostic-only optional norm and wall budgets are logged explicitly;
+norm is a common physical trial budget, not claimed identical accepted norms
+or a new trust-ball QP optimum. Wall limits allow an indivisible operation
+to overrun; overruns are recorded, rolled back and censored. No kernel
+attribution eligibility is given without a matched norm budget.
+
+Report standard-BN and frozen-buffer native optimizer references separately,
+without the correction acceptance filter and without kernel-attribution
+eligibility. Use common full-arm cost accounting and report shared preparation
+once. Focused CPU mathematical/toy-BN tests are now run; research conclusions
+and real-data/GPU readiness remain INCONCLUSIVE / unapproved.

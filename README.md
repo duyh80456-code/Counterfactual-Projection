@@ -2,8 +2,10 @@
 
 The separate [standard continual-learning implementation](docs/vna/standard_cl/README.md)
 adds the H1 replay-aware numerical core and BN pilot runner, with isolated
-H2/H3/H4 research paths. This delivery is **code only, not executed or validated**;
-see its audit, mathematical specification, protocols and evidence status.
+H2/H3/H4 research paths. The [focused CPU audit](docs/vna/standard_cl/CPU_AUDIT.md)
+verifies toy mathematics and BN state/comparison contracts; real-data training,
+ResNet32 execution and GPU readiness remain unvalidated. See its protocols
+and evidence status before running a pilot.
 Historical runners and pinned notebooks below remain unchanged.
 
 VNA uses T26–T28 trust-region corrections and protected GIR swaps without
