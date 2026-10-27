@@ -1,5 +1,11 @@
 # Virtual-NTK Augmentation (VNA)
 
+The separate [standard continual-learning implementation](docs/vna/standard_cl/README.md)
+adds the H1 replay-aware numerical core and BN pilot runner, with isolated
+H2/H3/H4 research paths. This delivery is **code only, not executed or validated**;
+see its audit, mathematical specification, protocols and evidence status.
+Historical runners and pinned notebooks below remain unchanged.
+
 VNA uses T26–T28 trust-region corrections and protected GIR swaps without
 expanding the trained model. Main entrypoints are `experiments.main_cil`,
 `experiments.v4_competitors`, `experiments.v4_b5_width`, and

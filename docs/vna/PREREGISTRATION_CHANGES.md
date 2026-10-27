@@ -1226,3 +1226,23 @@ Missing protocol setup is derived transparently from the baseline and s0
 frozen schedule. No new K0, kernel or acceptance policy is introduced.
 Replay conclusion_allowed is not differences; original GPU flags are
 unrecorded, with current flags logged, rather than a missing-field veto.
+
+### 2026-10-28 — standard CL H1 research path (code-only registration)
+
+Add an independent BN CIFAR-100 replay-aware correction path with a shared
+matrix-free generalized projection and two-halfspace metric QP. Preserve
+native ER/iCaRL-style loss totals, herding/memory, teacher semantics and
+explicit training recipe. Register separate intervention/unified modes,
+native/GN/gradient/random/virtual controls, finite physical-step acceptance,
+and update-slot versus measured-compute accounting. H2's consistent feature
+penalty, H3's finite candidate/identity transactions and H4's fixed-head
+Domain-IL path remain independent; none is enabled in historical runs.
+
+See standard_cl/PROTOCOL.md for all defaults and scientific limitations.
+New float32-teacher KD metric accounts for the fixed teacher probability
+mass to match the evaluated loss; old metric/loss implementations are not
+modified. Random trace normalization is streamed serially without changing
+its exact per-site objective. User explicitly requested no execution:
+mathematical tests, pilot, runtime/VRAM and research conclusions are NOT RUN /
+INCONCLUSIVE. No phase gate, strong-baseline superiority or completed H3
+benchmark is asserted. Original P1/noBN results retain their own protocol.
