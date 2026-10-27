@@ -1199,3 +1199,15 @@ Independent loss probes never affect acceptance. Source/anchor/measurement
 bitwise checks and an original s1 epoch43 replay audit gate interpretation.
 Seeds 2–7 remain untouched. KERNEL_ABLATION_INPUT_AUDIT.md records missing or
 incompatible checkpoints in the supplied archives; no substitute is accepted.
+
+### 2026-10-27 — kernel-ablation review clarifications
+
+The native-K comparator is untruncated, not rank-matched. r=16 counts incoming
+directions/site, not the global matrix rank of K_E. Random-A has one seeded
+trajectory/seed, insufficient for a random-superiority claim. No extra repeats
+or reserved seeds are introduced. Actual VNA displacement is audited before
+GIR in chain and continuation; radius violations block interpretation without
+silently changing the reference update. Strict ablation resumes retain kernel
+identity; explicit legacy imports preserve old solver/adapter state. Diagnostic
+names distinguish pre/post state, native/virtual operators, and power10
+estimates from certified bounds. Details: KERNEL_ABLATION_PREREGISTRATION.md.

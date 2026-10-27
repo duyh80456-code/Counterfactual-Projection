@@ -91,6 +91,9 @@ protocol.json, epochs.json and interventions.json. The notebook locates compatib
 expanded files or restored output archives; use INPUTS paths to resolve ambiguity.
 No baseline training, task-1 GIR amendments or new preflight. Preserve the original
 6be6543 certificate/Gram trust region; actual update norms are observations only.
+Radius violations block interpretation. Native K is an untruncated control, not
+a rank-matched arm; r=16 counts incoming directions per site for virtual kernels.
+Random-A has one seeded trajectory per seed, with no statistical-superiority claim.
 Each arm attempts all 8 copied VNA-only steps, then resumes training from step 1
 through task 5 with VNA–GIR and the same projection kernel. Independent losses use
 a fixed balanced official-test batch; they never select/accept steps. GPU1 audits

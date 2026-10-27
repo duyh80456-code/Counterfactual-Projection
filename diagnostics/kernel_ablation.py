@@ -3,7 +3,9 @@ import argparse
 from copy import copy, deepcopy
 import hashlib
 import json
+import math
 import os
+import time
 from pathlib import Path
 import torch
 from torch import nn
@@ -30,6 +32,45 @@ class KernelEngine(BaseEngine):
         if state.get('kernel_variant')!=self.kernel_variant: raise ValueError('kernel resume mismatch')
         super().load_state_dict(state)
 
+    def state_dict(self):
+        return {k:v for k,v in super().state_dict().items() if k not in ('_audit_step_norm','_audit_seconds')}
+
+    def import_legacy_state(self,state):
+        if 'kernel_variant' in state:raise ValueError('use strict resume for an ablation checkpoint')
+        if state.get('arm')!=self.arm:raise ValueError('legacy engine arm mismatch')
+        converted=deepcopy(state);converted['kernel_variant']=self.kernel_variant
+        self.load_state_dict(converted)
+
+    def _run_gir(self,model,sites,frozen,*args,**kwargs):
+        parameter=next(model.parameters())
+        if parameter.is_cuda:torch.cuda.synchronize(parameter.device)
+        started=time.perf_counter()
+        with torch.no_grad():
+            self._audit_step_norm=float(sum((p.double()-q.double()).square().sum()
+                for p,q in zip(model.parameters(),frozen.parameters())).sqrt())
+        self._audit_seconds+=time.perf_counter()-started
+        return super()._run_gir(model,sites,frozen,*args,**kwargs)
+
+    def budget_guard(self,row,iteration):
+        row['trust_audit_seconds']=self._audit_seconds
+        row['seconds']=max(0.,row['seconds']-self._audit_seconds)
+        if 'gir_seconds' in row:row['gir_seconds']=max(0.,row['gir_seconds']-self._audit_seconds)
+        return super().budget_guard(row,iteration)
+
+    def apply(self,model,sites,batch,spec,ctx,optimizer,iteration,remaining=None,force=False,apply=True,probe_batch=None):
+        self._audit_step_norm=0.
+        self._audit_seconds=0.
+        try:
+            row=super().apply(model,sites,batch,spec,ctx,optimizer,iteration,remaining,force,apply,probe_batch)
+            if row is not None:
+                rolled_back=row.get('nonfinite_after_apply') or row.get('skip_reason') in ('chol_fail','cg_not_converged')
+                norm=0. if rolled_back else self._audit_step_norm
+                row['trust_region_audit']=trust_audit(norm,row.get('Delta'))
+                row['kernel_diagnostics']=kernel_diagnostics(row,self.kernel_variant,'gir' in self.arm)
+            return row
+        finally:
+            self.__dict__.pop('_audit_step_norm',None);self.__dict__.pop('_audit_seconds',None)
+
     def _select(self,model,sites,batch,values,**kw):
         reference=super()._select(model,sites,batch,values,**kw)
         if self.kernel_variant=='kernel_self' and not reference:
@@ -53,6 +94,28 @@ class KernelEngine(BaseEngine):
         finally:
             if owned:p.KE=previous
             else:del p.KE
+
+
+def trust_audit(norm,radius):
+    checked=radius is not None and math.isfinite(radius) and radius>=0 and math.isfinite(norm) and norm>=0
+    exceeds=norm>radius if checked else None
+    return dict(step_norm_actual=norm,Delta_legacy_gram=radius,checked=checked,exceeds=exceeds,
+        valid=math.isfinite(norm) and norm>=0 and (not norm or checked and not exceeds),stage='after_VNA_before_GIR')
+
+
+def kernel_diagnostics(event,kernel,gir):
+    lam=event.get('lambda_max_ggn_before') if kernel=='kernel_self' else event.get('lambda_E')
+    V,B=event.get('V'),event.get('B')
+    denominator=lam*B if all(isinstance(v,(int,float)) and math.isfinite(v) for v in (V,lam,B)) else None
+    ratio=V/denominator if denominator is not None and math.isfinite(denominator) and denominator>0 else None
+    return dict(V_pre=V,V_O_pre=event.get('V_O'),lambda_kernel_pre=lam,
+        lambda_kernel_operator='J.T H J' if kernel=='kernel_self' else 'J_E.T H J_E',
+        lambda_estimator='power10; not a certified upper bound',ratio_estimate=ratio,bound_certified=False,
+        legacy_lambda_E=event.get('lambda_E'),legacy_ratio=event.get('ratio'),
+        legacy_lambda_E_scope='virtual extension, not native K',legacy_ratio_matches_kernel=kernel!='kernel_self',
+        lambda_native_before=event.get('lambda_max_ggn_before'),lambda_native_after=event.get('lambda_max_ggn_after'),
+        after_stage='after_VNA_and_GIR' if gir else 'after_VNA',
+        rank_matched=False,rank_meaning='16 incoming feature directions/site; empirical kernel ranks unmeasured')
 
 
 def cpu(value):
@@ -155,6 +218,7 @@ def validate_source(state,protocol,seed,baseline=None):
             _assert_bitwise(cpu(state[key]),cpu(baseline[key]),'task1_baseline.'+key)
     if protocol.get('policy_version')!=vna.POLICY_VERSION or protocol.get('gir_live'):
         raise ValueError('requires original 6be6543 dead-slot policy')
+    if protocol.get('intervention_start_task')!=2:raise ValueError('requires original task-2 intervention start')
     return dict(task1_baseline_bitwise=True,source_commit=p['code_commit'])
 
 
@@ -235,6 +299,7 @@ def terminal_result(summary,identity):
     if summary.get('ablation_identity')!=identity:raise ValueError('terminal ablation identity mismatch')
     if status=='COMPLETED' and [r.get('task') for r in summary.get('tasks',[])]!=list(range(1,6)):
         raise ValueError('incomplete five-task result')
+    if status=='COMPLETED' and not summary.get('chain_completed'):raise ValueError('incomplete eight-step chain')
     if status=='FAILED_DIVERGED' and not summary.get('diverged'):raise ValueError('missing divergence coordinates')
     return True
 
@@ -269,7 +334,8 @@ def run(args):
         original_protocol=protocol,proof=proof,max_tasks=5,chain_steps=8,
         reused_prefix_seconds=source.get('elapsed_seconds'),
         replay_audit_sha256=digest(replay_path) if args.seed==1 and args.mode=='ablation' else None,
-        measurement=dict(rank=16,L='CE+KD',KD='temperature2 old-class distillation',
+        measurement=dict(proposal_directions_per_site=16,empirical_kernel_rank=None,rank_matched=False,
+            random_trajectory_replicates_per_seed=1,random_superiority_claim_allowed=False,L='CE+KD',KD='temperature2 old-class distillation',
             lambda_max='native GGN power10 on intervention window',independent_loss='balanced official-test batch',
             trust_region='original Gram quadratic; actual norm is measured only'))
     manifest=out/'protocol.json'
@@ -303,7 +369,15 @@ def run(args):
                 self.state['elapsed_seconds']=0.
                 engine=selected('vna_gir',seed=args.seed,K0=full_schedule['K0'],solver='gram',curvature='power10')
                 engine.configure_schedule(full_schedule)
+                legacy=self.state['hook'].get('intervention_state')
+                if legacy:
+                    if legacy['engine'].get('K0')!=full_schedule['K0']:raise ValueError('legacy K0 authority mismatch')
+                    if args.mode=='replay':
+                        if 'kernel_variant' in legacy['engine']:raise ValueError('replay source is already an ablation')
+                        engine.load_state_dict(legacy['engine'])
+                    else:engine.import_legacy_state(legacy['engine'])
                 adapter=main.Intervention(engine,full_schedule['K0'])
+                if legacy:adapter.load_state_dict(dict(deepcopy(legacy),engine=engine.state_dict()))
                 if self.state['mid']:
                     adapter.task=2;engine.begin_task(2)
                 self.state['hook']['intervention_state']=adapter.state_dict()
@@ -374,6 +448,7 @@ def run(args):
             norm=float(sum((p.detach().double()-q).square().sum() for p,q in zip(learner._network.parameters(),before)).sqrt())
             row=dict(k=k,s=event.get('s'),step_norm=norm,Delta=event.get('Delta'),V_O=event.get('V_O'),
                 trust_region_exceeds=norm>event['Delta'] if event.get('Delta') is not None else None,
+                kernel_diagnostics=event.get('kernel_diagnostics'),trust_region_audit=event.get('trust_region_audit'),
                 event=event,**observe(chain_engine,learner,opt,batch,spec,ctx,heldout,main))
             rows.append(row)
             last=dict(training_state(learner._network,opt),engine=cpu(chain_engine.state_dict()))
@@ -418,7 +493,19 @@ def run(args):
     try:
         result=main.run(cli)
         if args.mode=='replay':raise RuntimeError('replay did not reach task2 epoch43')
-        result['interpretation_allowed']=True if args.seed==0 else read(replay_path).get('conclusion_allowed',False)
+        chain=read(out/'chain.json') if (out/'chain.json').exists() else []
+        native_events=read(out/'run'/'interventions.json')
+        audits=[dict(phase='chain',step=r['k'],audit=r['event'].get('trust_region_audit')) for r in chain if r['k']>0]
+        audits += [dict(phase='continuation',step=e.get('iteration'),audit=e.get('trust_region_audit')) for e in native_events
+                   if (e.get('task'),e.get('iteration'))!=(2,2001)]
+        invalid=[a for a in audits if not a['audit'] or not a['audit'].get('valid')]
+        result['chain_completed']=[r['k'] for r in chain]==list(range(9))
+        result['trust_region_audit']=dict(invalid=invalid,events=len(audits),
+            checked_events=sum(bool(a['audit'] and a['audit'].get('checked')) for a in audits))
+        replay_ok=True if args.seed==0 else read(replay_path).get('conclusion_allowed',False)
+        result['interpretation_allowed']=bool(replay_ok and not invalid and result['chain_completed'])
+        result['random_superiority_claim_allowed']=False
+        result['rank_matched']=False
         result['ablation_identity']=identity
         if not terminal_result(result,identity):raise ValueError('non-terminal native result')
         atomic_json_save(result,out/'summary.json')

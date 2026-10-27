@@ -105,7 +105,7 @@ def test_vna_kernel_matches_original_6be_and_first_step_restore(monkeypatch,dtyp
     expected_state=a.training_state(learner._network,opt)
     a.restore(learner._network,opt,None,before)
     got=engine.apply(model,ss,batch,spec,ctx,opt,2001,force=True)
-    _assert_bitwise(a.cpu(got),a.cpu(expected))
+    _assert_bitwise(a.cpu({k:got[k] for k in expected}),a.cpu(expected))
     _assert_bitwise(expected_state,a.training_state(learner._network,opt))
     first=dict(a.training_state(learner._network,opt),engine=a.cpu(engine.state_dict()))
     for _ in range(2):engine.apply(model,ss,batch,spec,ctx,opt,2001,force=True)
@@ -128,7 +128,7 @@ def test_measurement_preserves_network_teacher_optimizer_engine_and_rng(kernel):
 
 def source_state():
     protocol=dict(seed=0,arm='icarl_full',backbone='resnet32_nobn',class_order_kind='superclass',nobn_lr_scale=.5,
-        policy_version=vna.POLICY_VERSION,gir_live=False,dataset_fingerprint={'train':'a','test':'b','meta':'c'},
+        policy_version=vna.POLICY_VERSION,gir_live=False,intervention_start_task=2,dataset_fingerprint={'train':'a','test':'b','meta':'c'},
         class_order=list(range(100)),code_commit=a.REFERENCE,cfg=dict(init_cls=5,increment=5,memory_size=2000,fixed_memory=False),
         training=dict(first_epochs=100,later_epochs=50,first_milestones=[30,60,85],later_milestones=[24,35]))
     identity=dict(protocol,arm='icarl')
@@ -201,10 +201,79 @@ def test_discovery_excludes_own_five_task_continuations(tmp_path):
 
 def test_terminal_results_need_kernel_identity_and_complete_horizon():
     identity=dict(kernel='vna',seed=0)
-    result=dict(status='COMPLETED',ablation_identity=identity,tasks=[dict(task=t) for t in range(1,6)])
+    result=dict(status='COMPLETED',ablation_identity=identity,chain_completed=True,tasks=[dict(task=t) for t in range(1,6)])
     assert a.terminal_result(result,identity)
     with pytest.raises(ValueError,match='identity'):a.terminal_result(result,dict(identity,kernel='vna_rand'))
+    result['chain_completed']=False
+    with pytest.raises(ValueError,match='eight-step'):a.terminal_result(result,identity)
+    result['chain_completed']=True
     result['tasks'].pop()
     with pytest.raises(ValueError,match='five-task'):a.terminal_result(result,identity)
     result.update(status='FAILED_DIVERGED',diverged=dict(task=4,epoch=1,step=5601,tensor='loss'))
     assert a.terminal_result(result,identity)
+
+
+def test_explicit_legacy_import_preserves_solver_state_and_strict_resume():
+    old=a.BaseEngine('vna',solver='gram',curvature='power10',K0=512)
+    old.mu=.4;old.nu=4.;old.A={'site':dict(weight=torch.ones(1,2))}
+    state=old.state_dict()
+    engine=a.KernelEngine('vna',kernel='kernel_self',solver='gram',curvature='power10',K0=512)
+    with pytest.raises(ValueError,match='kernel resume'):engine.load_state_dict(state)
+    engine.import_legacy_state(state)
+    imported=engine.state_dict();imported.pop('kernel_variant')
+    _assert_bitwise(a.cpu(imported),a.cpu(state))
+    with pytest.raises(ValueError,match='strict resume'):engine.import_legacy_state(engine.state_dict())
+
+
+@pytest.mark.parametrize('norm,radius,valid,exceeds',[(.2,.3,True,False),(.4,.3,False,True),(0.,None,True,None),(.1,None,False,None)])
+def test_trust_region_uses_actual_step_not_large_scalar(norm,radius,valid,exceeds):
+    got=a.trust_audit(norm,radius)
+    assert got['valid']==valid and got['exceeds']==exceeds
+
+
+def test_norm_audit_excludes_subsequent_gir_swaps(monkeypatch):
+    model=nn.Linear(1,1,bias=False).double()
+    with torch.no_grad():model.weight.zero_()
+    engine=a.KernelEngine('vna_gir',kernel='vna')
+    def gir(self,model,*args,**kwargs):
+        with torch.no_grad():model.weight.add_(10.)
+        return []
+    def apply(self,model,*args,**kwargs):
+        frozen=deepcopy(model)
+        with torch.no_grad():model.weight.add_(.1)
+        self._run_gir(model,[],frozen)
+        return dict(Delta=.2,s=1.)
+    monkeypatch.setattr(a.BaseEngine,'_run_gir',gir);monkeypatch.setattr(a.BaseEngine,'apply',apply)
+    event=engine.apply(model,[],None,None,{},torch.optim.SGD(model.parameters(),lr=.05),2001)
+    assert model.weight.item()==pytest.approx(10.1)
+    assert event['trust_region_audit']['step_norm_actual']==pytest.approx(.1)
+    assert event['trust_region_audit']['valid'] and '_audit_step_norm' not in vars(engine)
+
+
+def test_kernel_diagnostics_use_correct_operator_and_do_not_certify_power10():
+    event=dict(V=6.,V_O=2.,B=3.,lambda_E=2.,ratio=1.,lambda_max_ggn_before=4.,lambda_max_ggn_after=8.)
+    native=a.kernel_diagnostics(event,'kernel_self',True)
+    virtual=a.kernel_diagnostics(event,'vna',False)
+    assert native['lambda_kernel_pre']==4. and native['ratio_estimate']==.5
+    assert native['legacy_lambda_E']==2. and native['after_stage']=='after_VNA_and_GIR'
+    assert not native['legacy_ratio_matches_kernel'] and virtual['legacy_ratio_matches_kernel']
+    assert virtual['lambda_kernel_pre']==2. and virtual['ratio_estimate']==1.
+    assert not native['bound_certified'] and not virtual['bound_certified']
+    assert not native['rank_matched'] and native['V_pre']==event['V']
+
+
+def test_read_only_apply_leaves_no_audit_or_training_mutation():
+    learner,opt,batch,spec,ctx,main=problem();model=Prediction(learner._network)
+    engine=a.KernelEngine('vna',solver='gram',curvature='power10');engine.begin_task(2)
+    before=a.training_state(learner._network,opt);state=a.cpu(engine.state_dict())
+    engine.apply(model,sites(model),batch,spec,ctx,opt,2001,force=True,apply=False)
+    _assert_bitwise(before,a.training_state(learner._network,opt));_assert_bitwise(state,a.cpu(engine.state_dict()))
+    assert '_audit_step_norm' not in vars(engine) and '_audit_seconds' not in vars(engine)
+
+
+def test_norm_audit_overhead_is_excluded_from_budget_guard():
+    engine=a.KernelEngine();engine._audit_seconds=3.
+    engine.protocol.update(baseline_iteration_seconds=1.,budget=1.)
+    row=dict(seconds=12.,gir_seconds=5.,K_next=16)
+    assert engine.budget_guard(row,10)==16
+    assert row['seconds']==9. and row['gir_seconds']==2. and not row['budget_guard']

@@ -15,9 +15,12 @@ task-1 live-GIR/GIR-only amendments. No baseline retraining.
 Use the 6be6543 normal policy (the inherited default-off path is separately
 checked against that source). Three arms differ only in projection kernel:
 tiny_V K_E; native K; random A with the same per-site tr(K_E) as tiny_V.
-All use the same rank-16 site proposals, seed, native Gram solver, power10,
-mu/LM rule, original Gram trust radius, certificate and acceptance checks.
-Native K is not artificially truncated to rank 16. Actual update norm is an
+tiny_V and random use matching shapes with up to 16 incoming directions/site.
+This is NOT a rank-matched comparison with native K. Incoming feature count
+is not the matrix rank of K_E; empirical ranks of both kernels are unmeasured.
+All use the same seed, native Gram solver, power10, mu/LM rule, original Gram
+trust radius, certificate and acceptance checks. Native K is untruncated;
+do not claim its empirical matrix rank is necessarily full. Actual update norm is an
 observation only; do not clamp it or install a different sharpness policy.
 
 On copies of the same it2001 state, attempt k=1..8 with GIR disabled. Recompute
@@ -53,3 +56,32 @@ preserves the last safe native epoch and copied-chain progress. Artifacts
 record source/checkpoint hashes, identity and measurement protocol. No ZIP
 overlay, no new preflight, no seed search. GPU runtime is not yet measured;
 no claim that all work fits in a single Kaggle session.
+
+## Review clarifications — 2026-10-27, before GPU execution
+
+Check the actual VNA parameter displacement against logged Delta in both
+the copied chain and native continuation, before GIR changes any slots.
+Exclude this measurement time from algorithm compute-budget accounting.
+Do not clamp or change the 6be6543 update; preserve raw results, but set
+interpretation_allowed=false if an applied step exceeds Delta or its audit
+is missing. A no-op with an undefined radius is not a detected violation.
+This checks the logged legacy radius, not a proof that its Gram computation
+equals a separately reconstructed exact LM radius.
+
+Keep strict kernel_variant checking for ablation resumes. Old engine states
+are admitted only through explicit import after source validation, retaining
+mu/nu, warm data, counters and adapter state. Baseline sources without engine
+state use the normal fresh engine for the original task-2-only policy.
+
+Random-A is one seeded trajectory per seed, with new dedicated draws at
+each intervention. It is an exploratory comparator, not a repeated-random
+estimate. Do not claim tiny_V statistically dominates random-A. No extra
+random replicates or held-out seeds are run under this registration.
+
+Report V and V_O as pre-VNA quantities. For kernel_self, the corresponding
+kernel spectral estimate is native GGN before the update; the engine's legacy
+lambda_E instead describes virtual scaffolding and must not be substituted.
+For virtual kernels lambda_E describes J_E.T H J_E before the update.
+Power10 is an estimate, not a certified upper bound: ratio_estimate is purely
+descriptive, bound_certified=false. Post-VNA and post-VNA+GIR measurements
+are labelled separately. No spectral-bound conclusion is inferred from them.

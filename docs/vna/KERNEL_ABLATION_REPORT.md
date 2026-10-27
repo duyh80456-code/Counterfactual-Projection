@@ -39,8 +39,8 @@ Notebook: vna5_kernel_ablation_s01.ipynb; GPU0=s0, GPU1=s1 (replay first),
 each lane vna -> kernel_self -> vna_rand. Seeds 2–7 are not accepted by this
 runner. The notebook uses a real immutable source commit and no overlay.
 
-Focused local validation: **17 passed**, 36 upstream deprecation warnings,
-5.81 seconds, tests/test_kernel_ablation.py only. Includes original-6be fixed
+Focused local validation: **26 passed**, 36 upstream deprecation warnings,
+7.05 seconds, tests/test_kernel_ablation.py only. Includes original-6be fixed
 system bitwise comparison on float32/64; native-kernel substitution; per-site
 random trace/rank; complete first-step restoration; observation isolation;
 source/resume rejection; discovery excluding own continuation outputs; and
@@ -53,3 +53,27 @@ checkpoint replay/continuation and T4 timings are not tested: supplied inputs
 lack valid matching task1 baseline checkpoints and primary s1 protocol/epochs.
 These missing artifacts are an explicit execution blocker, not permission to
 infer s1's divergence cause or substitute the old live-GIR task1 checkpoint.
+
+## Review disposition — 2026-10-27
+
+| Finding | Disposition |
+|---|---|
+| P0 missing inputs | Still blocking; see the primary-file inventory. No replacement checkpoint/replay is inferred. |
+| P0 legacy Gram trust radius | Actual VNA displacement is measured before GIR in both chain and continuation; violations/missing nonzero-step audits block interpretation. The reference update is unchanged. Diagnostic timing is excluded from the algorithm budget. |
+| P1 rank matching | No rank-matched claim. Native K is untruncated, not empirically proved full-rank. r=16 is incoming directions/site, not the global rank of K_E. |
+| P1 legacy engine load | Strict kernel tags remain mandatory for ablation resumes. Explicit initial legacy imports retain solver/adapter state and add only the selected kernel tag; incompatible arm/policy/solver/K0 still refuse. |
+| P1 random comparator | One seeded trajectory/seed, not repeated-random evidence. random_superiority_claim_allowed=false; no extra draws/held-out seeds are added as experiments. |
+| P2 diagnostic meaning | Pre-VNA V/V_O, native versus virtual spectral operators, and post-VNA versus post-GIR stages are explicit. Legacy virtual lambda_E/ratio are labelled unsuitable for native K. Power10 ratios are descriptive; bound_certified=false. |
+
+The intended definitions are V=z.T K_projection z and V_O=z_O.T K_projection z_O
+before the update. Virtual lambda_E estimates lambda_max(J_E.T H J_E);
+native-K spectral diagnostics estimate lambda_max(J.T H J), not the virtual
+scaffolding eigenvalue. Both use the logit Hessian of the same window loss.
+An approximate eigenvalue is not a certified upper bound. None of these
+metadata corrections modifies the native acceptance filter.
+
+New focused checks cover actual norm before GIR (even when a later swap has a
+large displacement), audit-time exclusion from budget control, read-only apply
+without persistent scratch state, legacy import preserving mu/nu/A, strict
+cross-kernel resumes, and operator-correct diagnostic ratios. Adopted chain
+step1 is counted once in the combined audit. No GPU violation is claimed.
