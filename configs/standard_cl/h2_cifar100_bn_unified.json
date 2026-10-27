@@ -1,0 +1,57 @@
+{
+  "backbone": "resnet32",
+  "init_cls": 5,
+  "increment": 5,
+  "memory_size": 2000,
+  "first_epochs": 200,
+  "later_epochs": 170,
+  "first_milestones": [
+    60,
+    120,
+    170
+  ],
+  "later_milestones": [
+    80,
+    120
+  ],
+  "init_lr": 0.1,
+  "lr": 0.1,
+  "lr_decay": 0.1,
+  "momentum": 0.9,
+  "init_weight_decay": 0.0005,
+  "weight_decay": 0.0002,
+  "batch_size": 128,
+  "workers": 8,
+  "intervention_every": 1,
+  "compute_budget_ratio": 1.0,
+  "trajectory_steps": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    20,
+    50,
+    100,
+    200
+  ],
+  "correction": {
+    "damping_relative": 0.01,
+    "cg_tolerance": 1e-06,
+    "cg_iterations": 200,
+    "trace_probes": 8,
+    "max_trials": 12
+  },
+  "geometry": {
+    "layers": [
+      "features"
+    ],
+    "weight": 1.0
+  },
+  "mode": "unified"
+}

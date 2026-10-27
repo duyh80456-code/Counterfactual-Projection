@@ -113,3 +113,18 @@ The three focused files also include the earlier direct systems and linear
 resume/unified tests. Passing CPU checks permits further validation; it is
 not approval of GPU readiness, statistical superiority or the real-data
 pilot. No pilot is started automatically by this audit.
+
+
+## Subsequent completion task
+
+The historical 48-test result above is preserved. The completion task started
+from verified local/remote `6bf844e`, freshly reproduced 48 tests (11.03s), then
+ran the repository-wide snapshot once: **384 passed, 53 warnings, 407.00s**.
+After final changes, affected-file checks reported **75 passed** (183.12s),
+H2/H3/RNG/collector checks **17 passed** (65.59s), and baseline/unified checks
+**4 passed** (39.96s). These are separate runs, not counts to add together.
+Zero-penalty bitwise verification: **1 passed**, 40.38s.
+The final relevant test set includes cases added after the full-suite snapshot;
+no second full-suite run is claimed. Actual logs are saved as CPU_COMPLETION_*.log.
+See [completion report](../STANDARD_CL_COMPLETION_REPORT.md) for final source and
+scope. No benchmark dataset training or CUDA execution was performed.

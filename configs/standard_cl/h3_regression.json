@@ -1,0 +1,15 @@
+{
+  "steps": 1000000,
+  "task_steps": 10000,
+  "intervention_every": 10000,
+  "window": 128,
+  "replacement_rate": 0.0001,
+  "perturb_scale": 1e-06,
+  "correction": {
+    "damping_relative": 0.01,
+    "cg_tolerance": 1e-06,
+    "cg_iterations": 200,
+    "trace_probes": 8,
+    "max_trials": 12
+  }
+}

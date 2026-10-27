@@ -1,0 +1,313 @@
+.......FF.F
+=================================== FAILURES ===================================
+_________________ test_strong_controls_execute_two_tasks[agem] _________________
+
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-26/test_strong_controls_execute_t0')
+method = 'agem'
+
+    @pytest.mark.parametrize('method',['agem','er_ace'])
+    def test_strong_controls_execute_two_tasks(tmp_path,method):
+        from experiments.standard_cl import parser,run
+        args=parser().parse_args(['--data-dir',str(tmp_path),'--out',str(tmp_path/method),'--tasks','2',
+            '--device','cpu','--arm','baseline','--baseline',method,'--fake-data'])
+>       result=run(args);assert result['status']=='COMPLETED' and len(result['tasks'])==2
+               ^^^^^^^^^
+
+tests/test_standard_cl_completion.py:101: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+experiments/standard_cl.py:253: in run
+    learner.incremental_train(manager)
+third_party/PyCIL/models/icarl.py:71: in incremental_train
+    self._train(self.train_loader, self.test_loader)
+experiments/standard_cl.py:172: in _train
+    epoch_model=ICaRLHook.learner_state(self);epoch_opt=deepcopy(optimizer.state_dict());epoch_sched=deepcopy(scheduler.state_dict())
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+adapters/icarl_hooks.py:95: in learner_state
+    return copy.deepcopy({k: v for k, v in vars(learner).items()
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:136: in deepcopy
+    y = copier(x, memo)
+        ^^^^^^^^^^^^^^^
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:221: in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+                             ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+x = <torch._C.Generator object at 0x126264110>
+memo = {4935072064: {'args': {'prefix': 'reproduce', 'dataset': 'cifar100', 'memory_size': 20, 'memory_per_class': 20, ...}, ...'memory_size': 20, 'memory_per_class': 20, ...}, 4933399040: [device(type='cpu')], 4935014384: device(type='cpu'), ...}
+_nil = []
+
+    def deepcopy(x, memo=None, _nil=[]):
+        """Deep copy operation on arbitrary Python objects.
+    
+        See the module's __doc__ string for more info.
+        """
+    
+        if memo is None:
+            memo = {}
+    
+        d = id(x)
+        y = memo.get(d, _nil)
+        if y is not _nil:
+            return y
+    
+        cls = type(x)
+    
+        copier = _deepcopy_dispatch.get(cls)
+        if copier is not None:
+            y = copier(x, memo)
+        else:
+            if issubclass(cls, type):
+                y = _deepcopy_atomic(x, memo)
+            else:
+                copier = getattr(x, "__deepcopy__", None)
+                if copier is not None:
+                    y = copier(memo)
+                else:
+                    reductor = dispatch_table.get(cls)
+                    if reductor:
+                        rv = reductor(x)
+                    else:
+                        reductor = getattr(x, "__reduce_ex__", None)
+                        if reductor is not None:
+>                           rv = reductor(4)
+                                 ^^^^^^^^^^^
+E                           TypeError: cannot pickle 'torch._C.Generator' object
+
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:151: TypeError
+________________ test_strong_controls_execute_two_tasks[er_ace] ________________
+
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-26/test_strong_controls_execute_t1')
+method = 'er_ace'
+
+    @pytest.mark.parametrize('method',['agem','er_ace'])
+    def test_strong_controls_execute_two_tasks(tmp_path,method):
+        from experiments.standard_cl import parser,run
+        args=parser().parse_args(['--data-dir',str(tmp_path),'--out',str(tmp_path/method),'--tasks','2',
+            '--device','cpu','--arm','baseline','--baseline',method,'--fake-data'])
+>       result=run(args);assert result['status']=='COMPLETED' and len(result['tasks'])==2
+               ^^^^^^^^^
+
+tests/test_standard_cl_completion.py:101: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+experiments/standard_cl.py:253: in run
+    learner.incremental_train(manager)
+third_party/PyCIL/models/icarl.py:71: in incremental_train
+    self._train(self.train_loader, self.test_loader)
+experiments/standard_cl.py:172: in _train
+    epoch_model=ICaRLHook.learner_state(self);epoch_opt=deepcopy(optimizer.state_dict());epoch_sched=deepcopy(scheduler.state_dict())
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+adapters/icarl_hooks.py:95: in learner_state
+    return copy.deepcopy({k: v for k, v in vars(learner).items()
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:136: in deepcopy
+    y = copier(x, memo)
+        ^^^^^^^^^^^^^^^
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:221: in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+                             ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+x = <torch._C.Generator object at 0x126fab650>
+memo = {4950401728: {'args': {'prefix': 'reproduce', 'dataset': 'cifar100', 'memory_size': 20, 'memory_per_class': 20, ...}, ...'memory_size': 20, 'memory_per_class': 20, ...}, 4933472576: [device(type='cpu')], 4948930672: device(type='cpu'), ...}
+_nil = []
+
+    def deepcopy(x, memo=None, _nil=[]):
+        """Deep copy operation on arbitrary Python objects.
+    
+        See the module's __doc__ string for more info.
+        """
+    
+        if memo is None:
+            memo = {}
+    
+        d = id(x)
+        y = memo.get(d, _nil)
+        if y is not _nil:
+            return y
+    
+        cls = type(x)
+    
+        copier = _deepcopy_dispatch.get(cls)
+        if copier is not None:
+            y = copier(x, memo)
+        else:
+            if issubclass(cls, type):
+                y = _deepcopy_atomic(x, memo)
+            else:
+                copier = getattr(x, "__deepcopy__", None)
+                if copier is not None:
+                    y = copier(memo)
+                else:
+                    reductor = dispatch_table.get(cls)
+                    if reductor:
+                        rv = reductor(x)
+                    else:
+                        reductor = getattr(x, "__reduce_ex__", None)
+                        if reductor is not None:
+>                           rv = reductor(4)
+                                 ^^^^^^^^^^^
+E                           TypeError: cannot pickle 'torch._C.Generator' object
+
+../../../../.pyenv/versions/3.12.7/lib/python3.12/copy.py:151: TypeError
+____ test_domain_runner_two_domains_checkpoint_and_bn_diagnostics[rotated] _____
+
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-26/test_domain_runner_two_domains0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1262ac4a0>
+kind = 'rotated'
+
+    @pytest.mark.parametrize('kind',['rotated','permuted'])
+    def test_domain_runner_two_domains_checkpoint_and_bn_diagnostics(tmp_path,monkeypatch,kind):
+        from experiments import standard_domain as module
+        def args(out):return module.parse_args(['--data-dir',str(tmp_path),'--out',str(out),'--kind',kind,'--domains','2',
+            '--batch-size','4','--device','cpu','--arm','native','--fake-data'])
+        complete=tmp_path/'complete';paused=tmp_path/'paused'
+>       result=module.run(args(complete));assert result['status']=='COMPLETED'
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_standard_cl_completion.py:127: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+experiments/standard_domain.py:115: in run
+    loss.backward();steps+=1
+    ^^^^^^^^^^^^^^^
+../../../../expanding-guide model/.venv/lib/python3.12/site-packages/torch/_tensor.py:522: in backward
+    torch.autograd.backward(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tensors = (tensor(2.4993, grad_fn=<NllLossBackward0>),), grad_tensors = None
+retain_graph = False, create_graph = False, grad_variables = None, inputs = ()
+
+    def backward(
+        tensors: _TensorOrTensors,
+        grad_tensors: Optional[_TensorOrTensors] = None,
+        retain_graph: Optional[bool] = None,
+        create_graph: bool = False,
+        grad_variables: Optional[_TensorOrTensors] = None,
+        inputs: Optional[_TensorOrTensorsOrGradEdge] = None,
+    ) -> None:
+        r"""Computes the sum of gradients of given tensors with respect to graph
+        leaves.
+    
+        The graph is differentiated using the chain rule. If any of ``tensors``
+        are non-scalar (i.e. their data has more than one element) and require
+        gradient, then the Jacobian-vector product would be computed, in this
+        case the function additionally requires specifying ``grad_tensors``.
+        It should be a sequence of matching length, that contains the "vector"
+        in the Jacobian-vector product, usually the gradient of the differentiated
+        function w.r.t. corresponding tensors (``None`` is an acceptable value for
+        all tensors that don't need gradient tensors).
+    
+        This function accumulates gradients in the leaves - you might need to zero
+        ``.grad`` attributes or set them to ``None`` before calling it.
+        See :ref:`Default gradient layouts<default-grad-layouts>`
+        for details on the memory layout of accumulated gradients.
+    
+        .. note::
+            Using this method with ``create_graph=True`` will create a reference cycle
+            between the parameter and its gradient which can cause a memory leak.
+            We recommend using ``autograd.grad`` when creating the graph to avoid this.
+            If you have to use this function, make sure to reset the ``.grad`` fields of your
+            parameters to ``None`` after use to break the cycle and avoid the leak.
+    
+        .. note::
+    
+            If you run any forward ops, create ``grad_tensors``, and/or call ``backward``
+            in a user-specified CUDA stream context, see
+            :ref:`Stream semantics of backward passes<bwd-cuda-stream-semantics>`.
+    
+        .. note::
+    
+            When ``inputs`` are provided and a given input is not a leaf,
+            the current implementation will call its grad_fn (even though it is not strictly needed to get this gradients).
+            It is an implementation detail on which the user should not rely.
+            See https://github.com/pytorch/pytorch/pull/60521#issuecomment-867061780 for more details.
+    
+        Args:
+            tensors (Sequence[Tensor] or Tensor): Tensors of which the derivative will be
+                computed.
+            grad_tensors (Sequence[Tensor or None] or Tensor, optional): The "vector" in
+                the Jacobian-vector product, usually gradients w.r.t. each element of
+                corresponding tensors. None values can be specified for scalar Tensors or
+                ones that don't require grad. If a None value would be acceptable for all
+                grad_tensors, then this argument is optional.
+            retain_graph (bool, optional): If ``False``, the graph used to compute the grad
+                will be freed. Note that in nearly all cases setting this option to ``True``
+                is not needed and often can be worked around in a much more efficient
+                way. Defaults to the value of ``create_graph``.
+            create_graph (bool, optional): If ``True``, graph of the derivative will
+                be constructed, allowing to compute higher order derivative products.
+                Defaults to ``False``.
+            inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge], optional): Inputs w.r.t. which the gradient
+                be will accumulated into ``.grad``. All other Tensors will be ignored. If
+                not provided, the gradient is accumulated into all the leaf Tensors that
+                were used to compute the attr::tensors.
+        """
+        if torch._C._are_functorch_transforms_active():
+            raise RuntimeError(
+                "backward() called inside a functorch transform. This is not "
+                "supported, please use functorch.grad or functorch.vjp instead "
+                "or call backward() outside of functorch transforms."
+            )
+    
+        if grad_variables is not None:
+            warnings.warn("'grad_variables' is deprecated. Use 'grad_tensors' instead.")
+            if grad_tensors is None:
+                grad_tensors = grad_variables
+            else:
+                raise RuntimeError(
+                    "'grad_tensors' and 'grad_variables' (deprecated) "
+                    "arguments both passed to backward(). Please only "
+                    "use 'grad_tensors'."
+                )
+        if inputs is not None and len(inputs) == 0:
+            raise RuntimeError("'inputs' argument to backward() cannot be empty.")
+    
+        tensors = (tensors,) if isinstance(tensors, torch.Tensor) else tuple(tensors)
+        inputs = (
+            (inputs,)
+            if isinstance(inputs, (torch.Tensor, graph.GradientEdge))
+            else tuple(inputs)
+            if inputs is not None
+            else tuple()
+        )
+    
+        grad_tensors_ = _tensor_or_tensors_to_tuple(grad_tensors, len(tensors))
+        grad_tensors_ = _make_grads(tensors, grad_tensors_, is_grads_batched=False)
+        if retain_graph is None:
+            retain_graph = create_graph
+    
+        # The reason we repeat the same comment below is that
+        # some Python versions print out the first line of a multi-line function
+        # calls in the traceback and some print out the last line
+>       Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+            tensors,
+            grad_tensors_,
+            retain_graph,
+            create_graph,
+            inputs,
+            allow_unreachable=True,
+            accumulate_grad=True,
+        )  # Calls into the C++ engine to run the backward pass
+E       RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: [torch.FloatTensor [16, 10]], which is output 0 of AsStridedBackward0, is at version 3; expected version 1 instead. Hint: enable anomaly detection to find the operation that failed to compute its gradient, with torch.autograd.set_detect_anomaly(True).
+
+../../../../expanding-guide model/.venv/lib/python3.12/site-packages/torch/autograd/__init__.py:266: RuntimeError
+=============================== warnings summary ===============================
+tests/test_standard_cl_completion.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_standard_cl_completion.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_standard_cl_completion.py::test_strong_controls_execute_two_tasks[agem]
+FAILED tests/test_standard_cl_completion.py::test_strong_controls_execute_two_tasks[er_ace]
+FAILED tests/test_standard_cl_completion.py::test_domain_runner_two_domains_checkpoint_and_bn_diagnostics[rotated]
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 3 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+3 failed, 8 passed, 36 warnings in 13.68s

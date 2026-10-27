@@ -88,3 +88,26 @@ pretend the momentum buffer equals a projected gradient. Eval-mode losses
 and functional drift are measured separately on the realized parameters.
 Dropout correction currently refuses explicitly because a fixed stochastic
 linearization has not been implemented. The target BN ResNet32 has no dropout.
+
+
+## H2 penalty and constrained interpretation
+
+H2 uses A_lambda = J^T H J + lambda J_phi^T J_phi + mu I in **both**
+solves. For a specified convex drift constraint ||J_phi d||^2 <= epsilon^2,
+a KKT multiplier can yield such a penalty at its constrained optimum, with
+complementarity and feasibility additionally verified. A fixed configured
+lambda is only the penalized method; no epsilon or KKT multiplier is inferred
+from it. Noncommuting matrix tests compare the complete matrix-free solution
+and identity g^T d = z_lambda^T K_E z_lambda to direct dense solves. Feature
+JVPs use a frozen linearization, and actual finite drift is logged separately.
+
+## H3 fixed-capacity objective
+
+For each **actual post-swap** network c, recompute g_c, J_c and H_c at the
+training window and use Q_c = L_c - 0.5 g_c^T (J_c^T H_c J_c + mu I)^-1 g_c.
+The identity and all finite candidates share mu. Minimize Q_c only among swaps
+passing componentwise actual loss nonincrease. This accounts for removal and
+insertion by recomputation; it is not a nonnegative added-column gain theorem.
+The finite candidate GN objective can change nonmonotonically with its measured
+VNA diagnostic z_c^T K_E,c z_c. Choosing one objective does not prove improvement
+of the other. At most one validated slot replacement is installed per event.

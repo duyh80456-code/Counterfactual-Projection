@@ -20,8 +20,9 @@ from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
 from methods.cl_state import isolated
 from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
+from methods.cl_h2 import GeometryCorrection
 
-ARMS=dict(baseline=None,native='native',gn='gn',random='random',vna='tiny_V',h1='tiny_V',gradient='gradient')
+ARMS=dict(baseline=None,native='native',gn='gn',random='random',vna='tiny_V',h1='tiny_V',h2='tiny_V',gradient='gradient')
 
 
 class ExperimentLogger:
@@ -63,14 +64,21 @@ def matrix_metrics(matrix):
 
 def run(args):
     cfg=json.loads(Path(args.config).read_text());out=Path(args.out).resolve();logger=ExperimentLogger(out)
+    args.mode=args.mode or cfg.get('mode','intervention');cfg['mode']=args.mode
+    if args.fake_data:
+        cfg.update(first_epochs=1,later_epochs=1,first_milestones=[],later_milestones=[],memory_size=20,
+                   batch_size=10,workers=0,intervention_every=1 if args.mode=='unified' else 4,trajectory_steps=[1])
+        cfg['correction'].update(damping_relative=1.,cg_tolerance=1e-4,cg_iterations=100,trace_probes=2,max_trials=3)
     args.data_dir=str(Path(args.data_dir).resolve())
     pycil.upstream_imports()
     from utils.data_manager import DataManager
     from models.icarl import iCaRL
     from models import icarl
-    if cfg['backbone']!='resnet32' or cfg['memory_size']!=2000:raise ValueError('this pilot locks BN ResNet32 and 2000 herded exemplars')
-    if args.arm not in ARMS or args.baseline not in ('er','icarl'):raise ValueError('unknown arm/baseline')
-    if args.baseline=='er' and args.reference=='kd':raise ValueError('ER has no KD reference')
+    if cfg['backbone']!='resnet32' or (not args.fake_data and cfg['memory_size']!=2000):raise ValueError('this pilot locks BN ResNet32 and 2000 herded exemplars')
+    if args.arm not in ARMS or args.baseline not in ('er','icarl','agem','er_ace'):raise ValueError('unknown arm/baseline')
+    strong=args.baseline in ('agem','er_ace')
+    if strong and args.arm!='baseline':raise ValueError('A-GEM/ER-ACE adapters are standalone controls')
+    if args.baseline!='icarl' and args.reference=='kd':raise ValueError('only iCaRL has a KD reference')
     if not 1<=cfg['init_cls']<=100 or cfg['increment']<1:raise ValueError('invalid class increments')
     if min(cfg['first_epochs'],cfg['later_epochs'],cfg['batch_size'])<1 or cfg['workers']<0:
         raise ValueError('invalid epoch/batch/worker configuration')
@@ -86,15 +94,24 @@ def run(args):
     if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
     raw=json.loads((pycil.UPSTREAM/'exps/icarl.json').read_text())
     params=dict(raw,device=[torch.device(args.device)],seed=[args.seed],init_cls=cfg['init_cls'],increment=cfg['increment'],
-        convnet_type='resnet32',memory_size=2000,fixed_memory=False)
-    fingerprint=dataset_fingerprint(args.data_dir)
-    correction_cfg=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=args.arm not in ('vna',),
+        convnet_type='resnet32',memory_size=cfg['memory_size'],fixed_memory=False)
+    fingerprint=dataset_fingerprint(args.data_dir) if not args.fake_data else {'synthetic':True,'generator':'standard_smoke_v1_disjoint'}
+    branch=args.branch
+    if args.arm=='h2' and branch!='H2':raise ValueError('h2 arm requires H2 branch')
+    if branch=='H2' and args.arm=='h1':raise ValueError('use h2 for the independent feature-geometry branch')
+    if branch=='H2':
+        geometry=cfg.get('geometry',{})
+        if (not math.isfinite(geometry.get('weight',float('nan'))) or geometry['weight']<0
+                or not geometry.get('layers') or set(geometry['layers'])-{'features','stage_1','stage_2','stage_3'}):
+            raise ValueError('H2 requires fixed valid feature layers and finite nonnegative geometry weight')
+    correction_cfg=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=branch=='H1' and args.arm!='vna',
         mode=args.mode,seed=args.seed,**cfg['correction'])
     from diagnostics.kernel_ablation import flags
-    protocol=dict(benchmark='standard_cl_h1',branch='H1',code_commit=code_commit(),upstream_commit=pycil.UPSTREAM_PIN,
-        source_digest=None,baseline=args.baseline,baseline_implementation='PyCIL iCaRL-style' if args.baseline=='icarl' else 'ER with PyCIL herding',
+    protocol=dict(benchmark='standard_cl_'+branch.lower(),branch=branch,code_commit=code_commit(),upstream_commit=pycil.UPSTREAM_PIN,
+        source_digest=None,baseline=args.baseline,baseline_implementation=('A-GEM/ER-ACE update law adaptation; task-boundary PyCIL herding; expanding linear head' if strong else 'PyCIL iCaRL-style' if args.baseline=='icarl' else 'ER with PyCIL herding'),
         arm=args.arm,seed=args.seed,mode=args.mode,reference=args.reference,config=cfg,correction=asdict(correction_cfg),tasks=args.tasks,
-        runtime_flags=flags(),
+        runtime_flags=flags(),synthetic_smoke=args.fake_data,loss_reduction=args.loss_reduction,
+        geometry=cfg.get('geometry') if branch=='H2' else None,
         dataset_fingerprint=fingerprint,raw_upstream_config=raw,evaluation='final epoch; CNN primary; NME separate',
         acceptance='same train-mode window; parameter certificate only; BN buffer effects reported separately',
         evidence_status='INCONCLUSIVE',test_gates='focused toy CPU audit only; CIFAR/ResNet32/GPU execution NOT_RUN',
@@ -110,7 +127,7 @@ def run(args):
             return previous
     progress=Progress(out,protocol);resume=progress.state
     if resume:progress.restore_artifacts()
-    learner=None;manager=None;engine=ReplayCorrection(correction_cfg);failure_coordinates={}
+    learner=None;manager=None;engine=(GeometryCorrection if branch=='H2' else ReplayCorrection)(correction_cfg);failure_coordinates={}
     rows=[] if not resume else deepcopy(resume['rows']);epochs=[] if not resume else deepcopy(resume['epochs'])
     trajectory=[] if not resume else deepcopy(resume['trajectory']);steps=0 if not resume else resume['steps']
     last_event=0 if not resume else resume['last_event']
@@ -145,6 +162,15 @@ def run(args):
                 optimizer.load_state_dict(resume['optimizer']);scheduler.load_state_dict(resume['scheduler'])
                 restore_rng(resume['rng']);start=resume['epoch'];resume=None
             task=self._cur_task+1;task_start=task_origins.setdefault(task,steps)
+            if strong:
+                from methods.vna import dedicated_generator
+                if not hasattr(self,'_baseline_replay_rng'):
+                    self._baseline_replay_rng=dedicated_generator(args.seed,'standard-cl-replay').get_state()
+                    self._baseline_seen=torch.empty(0,dtype=torch.long)
+                    self._baseline_events=[]
+                incoming_dataset=manager.get_dataset(np.arange(self._known_classes,self._total_classes),source='train',mode='train')
+                train_loader=DataLoader(incoming_dataset,batch_size=cfg['batch_size'],shuffle=True,num_workers=cfg['workers'])
+                replay_dataset=manager.get_dataset(np.arange(0),source='train',mode='train',appendent=self._get_memory()) if self._known_classes else None
             if not any(r['task']==task for r in trajectory):trajectory.append(dict(task=task,step=0,**cnn_metrics(self,manager)))
             for epoch in range(start,count):
                 if deadline_due():save('train',epoch,optimizer,scheduler);raise SystemExit(75)
@@ -159,20 +185,40 @@ def run(args):
                         teacher=None
                         if args.baseline=='icarl' and self._known_classes:
                             with torch.no_grad():teacher=self._old_network(x)['logits'].detach()
-                        losses=ReplayLoss(y,y<self._known_classes,kind=args.baseline,known=self._known_classes,
-                            teacher=teacher,reference=args.reference)
-                        optimizer.zero_grad();z=self._network(x)['logits'];loss=losses.total(z)
+                        if strong:
+                            from methods.cl_baselines import backward
+                            replay=None
+                            if replay_dataset is not None:
+                                generator=torch.Generator();generator.set_state(self._baseline_replay_rng)
+                                indices=torch.randperm(len(replay_dataset),generator=generator)[:len(y)]
+                                self._baseline_replay_rng=generator.get_state()
+                                batch=[replay_dataset[int(i)] for i in indices]
+                                replay=(torch.stack([r[1] for r in batch]).to(self._device),torch.tensor([r[2] for r in batch],device=self._device))
+                            try:z,loss,self._baseline_seen,baseline_event=backward(self._network,optimizer,x,y,replay,args.baseline,self._baseline_seen,self._cur_task)
+                            except FloatingPointError as exc:
+                                failure_coordinates.update(task=task,epoch=epoch+1,step=steps+1,tensor=str(exc));raise
+                            self._baseline_events.append(dict(step=steps+1,task=task,**baseline_event))
+                        else:
+                            losses=ReplayLoss(y,y<self._known_classes,kind=args.baseline,known=self._known_classes,
+                                teacher=teacher,reference=args.reference,reduction=args.loss_reduction)
+                            optimizer.zero_grad();z=self._network(x)['logits'];loss=losses.total(z)
                         if not bool(torch.isfinite(loss)):
                             failure_coordinates.update(task=task,epoch=epoch+1,step=steps+1,tensor='loss')
                             raise FloatingPointError(f'nonfinite loss {failure_coordinates}')
-                        loss.backward();steps+=1
+                        if not strong:loss.backward()
+                        steps+=1
                         if args.mode=='intervention' or args.arm=='baseline':optimizer.step()
                         training_seconds+=time.monotonic()-batch_started
                         due=args.arm!='baseline' and steps-last_event>=cfg['intervention_every']
                         permitted=args.budget!='matched_compute' or correction_seconds<=cfg['compute_budget_ratio']*training_seconds
                         if due and permitted:
                             last_event=steps;model=Prediction(self._network)
-                            event=engine.step(model,optimizer,x,losses,sites_for(model),optimizer.param_groups[0]['lr'])
+                            geometry={}
+                            if branch=='H2':
+                                geometry=dict(replay_inputs=x[y<self._known_classes],geometry_weight=cfg['geometry']['weight'] if self._known_classes else 0.,
+                                              feature_layers=cfg['geometry']['layers'])
+                            sites=sites_for(model)
+                            event=engine.step(model,optimizer,x,losses,sites[:1] if args.fake_data else sites,optimizer.param_groups[0]['lr'],**geometry)
                             event.update(task=task,epoch=epoch+1,step=steps,task_step=steps-task_start)
                             event['native_bn_buffer_drift']=float(sum((b.double()-native_buffers[n].double()).square().sum()
                                 for n,b in self._network.named_buffers()).sqrt()) if native_buffers else 0.
@@ -184,12 +230,14 @@ def run(args):
                         loss_sum+=float(loss.detach());correct+=int((z.argmax(1)==y).sum());total+=len(y)
                         r=steps-task_start
                         if r in cfg['trajectory_steps']:trajectory.append(dict(task=task,step=r,**cnn_metrics(self,manager)))
+                        if deadline_due():raise SystemExit(75)
                     scheduler.step()
                     epochs.append(dict(task=task,epoch=epoch+1,train_loss=loss_sum/len(train_loader),train_acc=100*correct/total,
                         lr=scheduler.get_last_lr(),seconds=time.monotonic()-stamp))
                     trajectory.append(dict(task=task,step=steps-task_start,epoch=epoch+1,**cnn_metrics(self,manager)))
                     save('train',epoch+1,optimizer,scheduler)
-                    log(f'H1 {args.arm} task={task} epoch={epoch+1}/{count} loss={epochs[-1]["train_loss"]:.6f}')
+                    if strong:logger.save('baseline_updates',self._baseline_events)
+                    log(f'{branch} {args.arm} task={task} epoch={epoch+1}/{count} loss={epochs[-1]["train_loss"]:.6f}')
                 except SystemExit as exc:
                     if exc.code!=75:raise
                     vars(self).update(epoch_model);self._network.to(self._device)
@@ -202,7 +250,8 @@ def run(args):
 
     status='COMPLETED';failure=None;native_loader_settings=(icarl.batch_size,icarl.num_workers)
     try:
-        with working_directory(out),cil_runtime('icarl',data_dir=args.data_dir):
+        from experiments.standard_smoke import cifar_fixture
+        with working_directory(out),cil_runtime('icarl',fake=args.fake_data,data_dir=args.data_dir),cifar_fixture(args.fake_data):
             manager=DataManager('cifar100',True,args.seed,cfg['init_cls'],cfg['increment'])
             logger.save('class_order',list(map(int,manager._class_order)))
             learner=ContinualLearner(params)
@@ -241,16 +290,20 @@ def run(args):
             nme_average_incremental_accuracy=float(np.mean([r['nme_accuracy'] for r in rows])) if rows and all(r['nme_accuracy'] is not None for r in rows) else None,
             nme_final_accuracy=rows[-1]['nme_accuracy'] if rows else None,
             extra_updates_certified_only_at_intervention=args.mode=='intervention'))
+    return json.loads((out/'summary.json').read_text())
 
 
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='configs/standard_cl/h1_cifar100_bn.json');p.add_argument('--data-dir',required=True)
     p.add_argument('--out',required=True);p.add_argument('--arm',choices=ARMS,default='h1')
-    p.add_argument('--baseline',choices=('er','icarl'),default='icarl');p.add_argument('--seed',type=int,default=0)
+    p.add_argument('--baseline',choices=('er','icarl','agem','er_ace'),default='icarl');p.add_argument('--seed',type=int,default=0)
     p.add_argument('--reference',choices=('replay_ce_kd','kd'),default='replay_ce_kd')
-    p.add_argument('--mode',choices=('intervention','unified'),default='intervention')
+    p.add_argument('--mode',choices=('intervention','unified'),help='defaults to mode in config, otherwise intervention')
     p.add_argument('--budget',choices=('matched_update','matched_compute'),default='matched_update')
+    p.add_argument('--branch',choices=('H1','H2'),default='H1')
+    p.add_argument('--loss-reduction',choices=('pooled','separate_mean'),default='pooled')
+    p.add_argument('--fake-data',action='store_true',help='disjoint synthetic fixture, tiny BN backbone; never a benchmark result')
     p.add_argument('--tasks',type=int,default=3);p.add_argument('--device',default='cuda:0')
     return p
 

@@ -1,4 +1,5 @@
 {
+  "mode": "intervention",
   "backbone": "resnet32", "init_cls": 5, "increment": 5, "memory_size": 2000,
   "first_epochs": 200, "later_epochs": 170, "first_milestones": [60, 120, 170], "later_milestones": [80, 120],
   "init_lr": 0.1, "lr": 0.1, "lr_decay": 0.1, "momentum": 0.9,

@@ -29,8 +29,13 @@ class LossComponent:
 
 
 class _ReplayMetric(ICaRLPyCIL):
+    def loss(self,z,ctx):
+        if 'loss_fn' in ctx:return ctx['loss_fn'](z,ctx)
+        return super().loss(z,ctx)
+
     def metric_apply(self,z,v,ctx):
         result=CE.metric_apply(self,z,v,ctx)
+        if 'ce_weights' in ctx:result=result*ctx['ce_weights'].to(result)[:,None]*len(z)
         known=ctx.get('known_classes',self.known_classes)
         if known:
             p=(z[:,:known].double()/self.T).softmax(-1);w=v.reshape_as(z)[:,:known].double()
@@ -41,6 +46,7 @@ class _ReplayMetric(ICaRLPyCIL):
 
     def metric_blocks(self,z,ctx):
         blocks=CE.metric_blocks(self,z,ctx);known=ctx.get('known_classes',self.known_classes)
+        if 'ce_weights' in ctx:blocks=blocks*ctx['ce_weights'].to(blocks)[:,None,None]*len(z)
         if known:
             p=(z[:,:known].double()/self.T).softmax(-1)
             mass=(ctx['teacher_logits'][:,:known]/self.T).softmax(-1).double().sum(-1)
@@ -50,21 +56,29 @@ class _ReplayMetric(ICaRLPyCIL):
 
 class ReplayLoss:
     """Partition mean CE without changing its batch weights; KD is old-only."""
-    def __init__(self,targets,replay,*,kind='er',known=0,teacher=None,reference='replay_ce_kd',temperature=2.):
+    def __init__(self,targets,replay,*,kind='er',known=0,teacher=None,reference='replay_ce_kd',temperature=2.,reduction='pooled'):
         if kind not in ('er','icarl') or reference not in ('replay_ce_kd','kd'):raise ValueError('unknown replay objective')
         if targets.shape!=replay.shape or targets.numel()==0:raise ValueError('nonempty aligned targets/replay mask required')
         if kind=='er' and reference=='kd':raise ValueError('ER has no KD reference')
         if known and kind=='icarl' and teacher is None:raise ValueError('old-class teacher logits required')
+        if reduction not in ('pooled','separate_mean'):raise ValueError('explicit pooled or separate_mean reduction required')
+        if not math.isfinite(temperature) or temperature<=0:raise ValueError('positive finite KD temperature required')
         self.targets,self.replay=targets,replay.bool()
+        self.reduction=reduction
         self.kind,self.known,self.teacher,self.reference,self.temperature=kind,known,None if teacher is None else teacher.detach().clone(),reference,temperature
         self.spec=_ReplayMetric(T=temperature,known_classes=known) if kind=='icarl' else CE()
-        self.ctx=dict(targets=targets,known_classes=known,teacher_logits=self.teacher)
+        self.ctx=dict(targets=targets,known_classes=known if kind=='icarl' else 0,teacher_logits=self.teacher)
+        if reduction=='separate_mean':
+            weights=torch.where(self.replay,1/self.replay.sum().double().clamp_min(1),1/(~self.replay).sum().double().clamp_min(1))
+            self.ctx.update(ce_weights=weights,loss_fn=lambda z,ctx:self.new_loss(z)+self.old_loss(z))
+            self.spec=_ReplayMetric(T=temperature,known_classes=known if kind=='icarl' else 0)
         self.incoming=LossComponent('all_ce' if reference=='kd' else 'incoming_ce',self.new_loss)
         self.reference_loss=LossComponent('old_kd' if reference=='kd' else ('replay_ce_plus_old_kd' if kind=='icarl' else 'replay_ce'),self.old_loss)
         self.components=(self.incoming,self.reference_loss)
 
     def ce(self,z,mask):
-        return F.cross_entropy(z,self.targets,reduction='none').masked_fill(~mask,0).sum()/len(z)
+        denominator=len(z) if self.reduction=='pooled' else mask.sum().clamp_min(1)
+        return F.cross_entropy(z,self.targets,reduction='none').masked_fill(~mask,0).sum()/denominator
 
     def kd(self,z):
         if self.kind!='icarl' or not self.known:return z.sum()*0
@@ -72,7 +86,7 @@ class ReplayLoss:
         return -(soft*(z[:,:self.known]/self.temperature).log_softmax(-1)).sum()/len(z)
 
     def new_loss(self,z):
-        return F.cross_entropy(z,self.targets) if self.reference=='kd' else self.ce(z,~self.replay)
+        return (self.ce(z,~self.replay)+self.ce(z,self.replay) if self.reduction=='separate_mean' else F.cross_entropy(z,self.targets)) if self.reference=='kd' else self.ce(z,~self.replay)
 
     def old_loss(self,z):
         return self.kd(z) if self.reference=='kd' else self.ce(z,self.replay)+self.kd(z)
@@ -95,7 +109,9 @@ class CorrectionConfig:
     def __post_init__(self):
         if self.kernel not in ('tiny_V','random','native','gn','gradient'):raise ValueError('unknown candidate kernel')
         if self.mode not in ('intervention','unified'):raise ValueError('unknown integration mode')
-        if self.damping_relative<=0 or self.max_trials<1 or self.trace_probes<1:raise ValueError('positive numerical controls required')
+        if not math.isfinite(self.damping_relative) or self.damping_relative<=0 or self.max_trials<1 or self.trace_probes<1:
+            raise ValueError('positive finite numerical controls required')
+        if not 0<self.cg_tolerance<1 or self.cg_iterations<1:raise ValueError('invalid CG controls')
 
 
 @dataclass
@@ -204,6 +220,8 @@ class ReplayCorrection:
             qp=ConstraintSolver(A,config.cg_tolerance*10).solve(d0,gradients) if config.constrained else None
             d=qp.direction if qp else d0
             curvature=float(d@A.curvature(d));gain=gradients@d
+            norms=gradients.norm(dim=1)
+            opposed=bool((norms>0).all()) and float((gradients[0]/norms[0]+gradients[1]/norms[1]).norm())<=config.cg_tolerance
             diagnostic=dict(mu=mu,solves=deepcopy(A.solves),first_order_gains=gain.tolist(),
                 gradient_norms=gradients.norm(dim=1).tolist(),gradient_interference=float(gradients[0]@gradients[1]),
                 pure_candidate_gain=float(g@pure),z_kernel_z=float(z@kernel_target) if kernel_target is not None else None,
@@ -212,7 +230,9 @@ class ReplayCorrection:
                 quadratic_gain_at_unit_step=float(g@d)-curvature/2,curvature=curvature,
                 constraint_seconds=time.perf_counter()-constraint_started,
                 kkt=None if qp is None else dict(slack=qp.slack.tolist(),multipliers=qp.multipliers.tolist(),
-                    stationarity=qp.stationarity,complementarity=qp.complementarity,status=qp.status),
+                    stationarity=qp.stationarity,complementarity=qp.complementarity,status=qp.status,
+                    geometry='opposing_gradients_no_strict_joint_descent' if opposed else 'zero_constraint' if bool((norms==0).any()) else 'two_halfspaces',
+                    strict_progress=[bool(v>config.cg_tolerance*n*d.norm()) for v,n in zip(gain,norms)]),
                 kernel=kernel,incoming_directions_per_site=16,active_sites=len(active),
                 kernel_seconds=construction,projection_seconds=time.perf_counter()-started-construction,
                 forward_mode='train_batch_statistics',random_trajectories=1 if kernel=='random' else 0,

@@ -1,0 +1,12 @@
+{
+  "kind": "rotated",
+  "domains": 5,
+  "epochs": 1,
+  "angle_step": 15,
+  "batch_size": 128,
+  "memory_size": 2000,
+  "lr": 0.01,
+  "weight_decay": 0.0,
+  "normalization": "bn",
+  "arm": "h1"
+}

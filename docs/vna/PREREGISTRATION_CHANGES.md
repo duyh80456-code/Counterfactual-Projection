@@ -1268,3 +1268,45 @@ without the correction acceptance filter and without kernel-attribution
 eligibility. Use common full-arm cost accounting and report shared preparation
 once. Focused CPU mathematical/toy-BN tests are now run; research conclusions
 and real-data/GPU readiness remain INCONCLUSIVE / unapproved.
+
+
+### 2026-10-28 — standard CL H1–H4 executable completion, before benchmark runs
+
+Continue from verified branch HEAD `6bf844e`; preserve historical VNA–GIR runners,
+notebooks and checkpoint formats. This amendment completes the new standard-CL
+research branch and does not replace M1/P1 policy or retrospectively relabel its
+results. CPU numerical/synthetic verification is authorized; no CIFAR/MNIST/GPU
+benchmark is launched.
+
+* H1 exposes pooled versus separate-subset-mean CE reductions as distinct
+  experiment identities. Pooled CE+KD remains the native default. KD-only
+  reference is separately identified. Components share a single BN forward.
+* H2 is independently executable, fixed lambda1 and pooled `features` by default;
+  fixed stage_1/2/3 alternatives are declared in config. Recompute both solves
+  with lambda J_phi^T J_phi, log train/eval feature changes, do not assert an
+  exact constrained drift budget or equivalence to LPR. Its native/random/GN
+  controls use the same penalized metric and total-loss acceptance.
+* H3 generates tiny_V rows using existing generalized eigenvectors/real-ReLU
+  signs; serially evaluates all rows in every eligible live/dead slot plus
+  identity. Minimize actual post-swap loss minus damped GN recovery, subject to
+  componentwise measured loss nonincrease. Recompute the post-removal tangent
+  and record VNA gain separately. Install exactly the validated state; no
+  added-column Schur guarantee is applied to live swaps. At most one slot per
+  event, window128, cadence10000, unchanged LoP B5 stream/SGD recipe. CBP rate1e-4
+  and S&P scale1e-6 are declared defaults, not tuned accuracy claims.
+* H4 fixes ten labels/head, recorded rotations (15-degree increments) or seeded
+  permutations, reservoir2000, and disjoint train/test sets. Exact finite eval
+  weight/buffer effects are logged separately. L2 and native/GN controls are
+  separately configured; virtual GroupNorm/dropout remain unsupported.
+* A-GEM/ER-ACE are declared PyCIL herding/expanding-linear-head adaptations;
+  their sequential BN forwards and memory policy differ from original online
+  implementations and are not matched kernel-only controls. LPR remains blocked
+  rather than approximated under its name.
+* Synthetic fixtures explicitly shorten data/backbone/numerical controls under
+  `--fake-data`; protocols record effective values and cannot mix with benchmark
+  results. Full ResNet32 BN smoke uses one site, damping10 and norm0.01 solely
+  to verify CPU execution. No benchmark arm is shortened automatically.
+
+All H0–H4 superiority, stability-gap, representation-retention, plasticity and
+GPU-hour hypotheses remain UNVERIFIED. See standard_cl/PROTOCOL.md and the
+completion report for the actual executed CPU evidence and remaining limits.

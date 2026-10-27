@@ -41,7 +41,7 @@ def compare_local(model,optimizer,inputs,losses,sites,step_size,*,random_replica
     synchronize();shared_started=time.perf_counter();checkpoint=State(model,optimizer)
     def window_values():
         return dict(inputs=inputs,targets=losses.targets,replay=losses.replay,teacher=losses.teacher,
-            kind=losses.kind,known=losses.known,reference=losses.reference,temperature=losses.temperature)
+            kind=losses.kind,known=losses.known,reference=losses.reference,temperature=losses.temperature,reduction=losses.reduction)
     window=deepcopy(window_values())
     def verify_checkpoint():
         current=State(model,optimizer)
@@ -61,20 +61,23 @@ def compare_local(model,optimizer,inputs,losses,sites,step_size,*,random_replica
         cost_scope='seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation',
         compute_budget_policy='shared wall limit checked at operation boundaries; overshoot recorded and censored',
         acceptance='componentwise_nonincrease' if config.constrained else 'total_nonincrease')
-    for kernel,draws in (('tiny_V',1),('native',1),('random',random_replicates),('gn',1)):
+    arms=[(kernel,draws,config.constrained) for kernel,draws in (('tiny_V',1),('native',1),('random',random_replicates),('gn',1))]
+    if not config.constrained:arms.extend((kernel,1,True) for kernel in ('tiny_V','native'))
+    for kernel,draws,constrained in arms:
         for draw in range(draws):
             verify_checkpoint();synchronize();started=time.perf_counter()
             with isolated(model,optimizer):
                 accuracy_before=local_accuracy()
-                engine=ReplayCorrection(replace(config,kernel=kernel,mode='intervention'));engine.applications=draw
+                engine=ReplayCorrection(replace(config,kernel=kernel,constrained=constrained,mode='intervention'));engine.applications=draw
                 event=engine.step(model,optimizer,inputs,losses,sites,step_size,
                     damping=mu,update_norm=update_norm,compute_seconds=compute_seconds)
                 accuracy_after=local_accuracy()
             synchronize()
             completed=event['status'] in ('ACCEPTED','REJECTED')
             within_compute=completed and (compute_seconds is None or event['seconds']<=compute_seconds)
-            rows.append(dict(event,protocol=common,random_draw=draw if kernel=='random' else None,
-                comparison_group='kernel' if kernel!='gn' else 'gn_candidate_control',
+            group='constrained_kernel' if constrained else 'kernel'
+            rows.append(dict(event,protocol=dict(common,acceptance='componentwise_nonincrease' if constrained else 'total_nonincrease'),random_draw=draw if kernel=='random' else None,
+                comparison_group=group if kernel!='gn' else 'gn_candidate_control',
                 checkpoint_verified=True,matched_update_budget=update_norm is not None,
                 matched_compute_budget=compute_seconds is not None,completed_within_compute_budget=within_compute,
                 actual_update_norms_matched=False,
@@ -108,3 +111,32 @@ def compare_local(model,optimizer,inputs,losses,sites,step_size,*,random_replica
             comparison='unfiltered native reference; not a matched kernel/correction arm'))
     verify_checkpoint()
     return rows
+
+
+if __name__=='__main__':
+    import argparse
+    from pathlib import Path
+    from experiments.io_utils import atomic_json_save
+    from methods.cl_replay import ReplayLoss
+    from methods.vna_sites import HookSite
+    p=argparse.ArgumentParser(description=__doc__)
+    source=p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--checkpoint',help='trusted local torch payload: model, optimizer, inputs, loss_args, site_specs')
+    source.add_argument('--fake-data',action='store_true')
+    p.add_argument('--out',required=True);p.add_argument('--update-norm',type=float,default=.01)
+    p.add_argument('--compute-seconds',type=float);p.add_argument('--random-replicates',type=int,default=5)
+    args=p.parse_args();torch.set_num_threads(1)
+    if args.fake_data:
+        torch.manual_seed(21)
+        model=torch.nn.Sequential(torch.nn.Linear(3,4),torch.nn.BatchNorm1d(4),torch.nn.ReLU(),torch.nn.Linear(4,3)).double().train()
+        optimizer=torch.optim.SGD(model.parameters(),lr=.01,momentum=.9,weight_decay=.0002)
+        payload=dict(model=model,optimizer=optimizer,inputs=torch.randn(6,3,dtype=torch.double),
+            loss_args=dict(targets=torch.tensor([0,1,2,0,1,2]),replay=torch.tensor([True,False,False,True,False,False])),
+            site_specs=[dict(first='0',second='3',kind='linear',between=('1','2'))])
+    else:payload=torch.load(args.checkpoint,map_location='cpu',weights_only=False)
+    model,optimizer=payload['model'],payload['optimizer'];losses=ReplayLoss(**payload['loss_args'])
+    sites=[HookSite(model,**spec) for spec in payload['site_specs']]
+    rows=compare_local(model,optimizer,payload['inputs'],losses,sites,optimizer.param_groups[0]['lr'],
+        random_replicates=args.random_replicates,update_norm=args.update_norm,compute_seconds=args.compute_seconds)
+    target=Path(args.out);target.parent.mkdir(parents=True,exist_ok=True)
+    atomic_json_save(dict(branch='H0',synthetic_smoke=args.fake_data,rows=rows,evidence_status='INCONCLUSIVE'),target)

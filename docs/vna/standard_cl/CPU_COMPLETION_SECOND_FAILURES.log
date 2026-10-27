@@ -1,0 +1,70 @@
+................F.                                                       [100%]
+=================================== FAILURES ===================================
+____ test_plasticity_runner_authentic_adapters_and_generated_candidates[h3] ____
+
+tmp_path = PosixPath('/private/var/folders/j5/yh1730690kldtnb4j5qlr2300000gn/T/pytest-of-pxokq/pytest-27/test_plasticity_runner_authent4')
+arm = 'h3'
+
+    @pytest.mark.parametrize('arm',['bp','cbp','redo','snp','h3'])
+    def test_plasticity_runner_authentic_adapters_and_generated_candidates(tmp_path,arm):
+        from experiments.standard_plasticity import parser,run
+        args=parser().parse_args(['--out',str(tmp_path/arm),'--arm',arm,'--fake-data'])
+>       result=run(args);assert result['status']=='COMPLETED' and len(result['tasks'])==2
+               ^^^^^^^^^
+
+tests/test_standard_cl_completion.py:148: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+experiments/standard_plasticity.py:116: in run
+    event=engine.step(model,learner.opt,inputs[start:position],losses,model.sites())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+methods/cl_h3.py:133: in step
+    result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+methods/cl_h3.py:47: in choose_swap
+    best=score(before)
+         ^^^^^^^^^^^^^
+methods/cl_h3.py:46: in score
+    with isolated(model,optimizer):return float(surrogate(model))
+                                                ^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+net = RegressionNetwork(
+  (native): FFNN(
+    (layers): ModuleList(
+      (0): Linear(in_features=20, out_features=5, bias=True)
+      (1): ReLU()
+      (2): Linear(in_features=5, out_features=1, bias=True)
+    )
+  )
+)
+
+    def objective(net):
+        helper.boundary()
+        with training_products(net,active,proposals,inputs) as p:
+            op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
+            A=helper._operator(p,op,damping=mu)
+            inverse=A.solve(op.gradient);recovery=float(op.gradient@inverse)/2
+>           split=op.H(p.Jv(inverse));virtual_gain=float(split@p.KE(split)) if active else 0.
+                                                         ^^^^^^^^^^^^^^^^^
+E           RuntimeError: dot : expected both vectors to have same dtype, but found Double and Float
+
+methods/cl_h3.py:126: RuntimeError
+=============================== warnings summary ===============================
+tests/test_standard_cl_completion.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_standard_cl_completion.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+tests/test_standard_cl_completion.py::test_h2_feature_operator_dense_identity_and_small_step_drift
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_standard_cl_completion.py::test_plasticity_runner_authentic_adapters_and_generated_candidates[h3]
+1 failed, 17 passed, 36 warnings in 28.90s

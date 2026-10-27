@@ -1,115 +1,123 @@
-# Standard CL VNA implementation, 2026-10-28
+# Standard continual learning VNA
 
-This is a separate research path. Historical methods, training runners,
-notebooks and source pins are unchanged. The original b68a936 delivery was
-code-only. A subsequent [focused CPU audit](CPU_AUDIT.md) fixes a real QP
-interface error, verifies toy numerical/BN contracts and separates matched
-kernel controls from raw native optimizer references. Real-data benchmarks,
-ResNet32 execution and GPU profiling have not run. All research hypotheses
-remain **INCONCLUSIVE**; the pilot is not validated for paper claims.
+H1–H4 are independent executable research branches. Historical VNA–GIR,
+M1/P1 policies, notebooks and checkpoint formats are unchanged. Read the
+[completion report](../STANDARD_CL_COMPLETION_REPORT.md), [mathematics](MATHEMATICS.md)
+and [protocol](PROTOCOL.md). CPU smoke results are software checks, not CL
+performance experiments. Every superiority/cost-benefit hypothesis is **UNVERIFIED**.
 
-Read [audit](AUDIT.md), [mathematics](MATHEMATICS.md),
-[protocol](PROTOCOL.md) and [status](STATUS.md) before launching anything.
-The new source paths are:
+| Branch | Entry point | Configuration |
+|---|---|---|
+| H0 fixed-state kernel audit | `diagnostics.cl_mechanism` | explicit checkpoint/window and norm/time budgets |
+| H1 replay interference | `experiments.standard_cl` | `configs/standard_cl/h1_cifar100_bn.json` |
+| H2 feature geometry | `experiments.standard_h2` | `configs/standard_cl/h2_cifar100_bn.json` |
+| H3 tangent reconfiguration | `experiments.standard_plasticity` | `configs/standard_cl/h3_regression.json` |
+| H4 fixed-label Domain-IL | `experiments.standard_domain` | `configs/standard_cl/h4_{rotated,permuted}_mnist.json` |
 
-| Responsibility | Implementation |
-|---|---|
-| JVP/VJP, loss Hessian, virtual features | existing `methods/vna.py`, `vna_ggn.py`, `vna_sites.py`, `vna_v3.training_products` |
-| ProjectionOperator / ProjectionSolver | `methods/cl_projection.py` |
-| Two-halfspace ConstraintSolver | `methods/cl_projection.py` |
-| Model/optimizer/BN/RNG transactions | `methods/cl_state.py` |
-| LossComponent, CandidateUpdate, AcceptanceCertificate, H1 | `methods/cl_replay.py` |
-| H0 fixed-state controls | `diagnostics/cl_mechanism.py` |
-| Independent H2 penalty | `methods/cl_h2.py` |
-| Independent H3 finite-candidate search | `methods/cl_h3.py` |
-| Independent H4 data/head/replay | `methods/cl_h4.py` |
-| ContinualLearner / ExperimentLogger | `experiments/standard_cl.py` |
-| H4 training | `experiments/standard_domain.py` |
-| Strict result grouping | `scripts/collect_standard_cl.py` |
+## Installation and inputs
 
-## Reproduction commands (instructions only, not executed)
-
-Install the repository's existing dependencies and fetch its pinned upstreams
-with `scripts/fetch_third_party.sh` before using PyCIL. The active worktree
-does not contain a populated PyCIL checkout; a checkout in the original
-workspace is not silently substituted. Use the official CIFAR-100 Python
-files and unmodified PyCIL transforms. No data or checkpoints are downloaded
-automatically by this new code.
-
-After mathematical/integration validation, a paired BN pilot is expressed as:
+From the repository root, use Python 3.12 and a compatible torch/torchvision
+pair (the CPU audit used torch 2.2.2). Install the package and existing upstream
+requirements; SciPy supplies the independent numerical QP oracle.
 
 ```bash
-.venv/bin/python -m experiments.standard_cl --data-dir /path/to/cifar100 \
-  --config configs/standard_cl/h1_cifar100_bn.json --tasks 3 \
-  --baseline icarl --arm baseline --seed 0 --out outputs/h1/icarl/baseline/s0
-.venv/bin/python -m experiments.standard_cl --data-dir /path/to/cifar100 \
-  --config configs/standard_cl/h1_cifar100_bn.json --tasks 3 \
-  --baseline icarl --arm h1 --seed 0 --out outputs/h1/icarl/h1/s0
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[vision,test,diagnostics]' scipy
+.venv/bin/python -m pip install -r requirements-upstream.txt
+bash scripts/fetch_third_party.sh
+export REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 ```
 
-Repeat the same locked configuration for seed 1 and for `native`, `gn`,
-`gradient`, `random`, `vna`. `native` means native-kernel candidate followed
-by the same constrained projection. `gradient` is the gradient-candidate
-constrained control; `gn` is the damped GN-candidate constrained control.
-`vna` disables the halfspace projection and checks only total window loss.
-ER is a separate `--baseline er` family using PyCIL herding, explicitly
-labelled **ER with herding**, not a reservoir ER reproduction.
+The fetch script checks the existing registered dependency pins. The local
+verification linked the already populated dependency checkouts from the original
+workspace; those machine-specific links are not committed. No dataset download
+or GPU training is performed by import.
 
-`--reference kd` is a separate iCaRL-style experiment: the first constraint
-then covers all CE, the second only old-logit KD. It is rejected for ER.
-This field is part of the protocol and cannot be merged with replay-CE+KD.
+CIFAR input: `DATA/cifar-100-python/{train,test,meta}` from official CIFAR-100
+Python files. MNIST input: `DATA/MNIST/raw/` containing torchvision's extracted
+train/test images and labels. Train/test splits remain separate. H3 creates
+`OUT/data/regression.pkl` with the pinned upstream slowly-changing regression
+generator. It contains `(inputs, targets, target_network)`; generated inputs
+and targets are fingerprinted. No historical checkpoint is required.
 
-For unified updates, copy the configuration, explicitly set
-`intervention_every=1`, and use `--mode unified`. Candidate = actual SGD
-parameter step divided by LR + virtual correction; project that **whole**
-candidate, then line-search the physical update. The staged optimizer state
-is committed only on acceptance; a rejected/uncertified unified step is a
-no-op. It is a distinct algorithm and table from intervention mode.
-
-The later phases (20 tasks, B50 Inc10 and held-out seeds) require a new
-registered config and successful pilot validation. They are not scheduled
-or executed by this change. No full-scale job launches at import time.
-
-H4 uses local torchvision MNIST files, with no automatic download:
+## CPU verification
 
 ```bash
-.venv/bin/python -m experiments.standard_domain --data-dir /path/to/mnist \
-  --kind rotated --arm h1 --seed 0 --out outputs/h4/rotated/h1/s0
-.venv/bin/python -m experiments.standard_domain --data-dir /path/to/mnist \
-  --kind permuted --arm baseline --seed 0 --out outputs/h4/permuted/baseline/s0
+.venv/bin/python -m pytest tests/test_standard_cl_math.py tests/test_standard_cl_pipeline.py tests/test_standard_cl_audit.py -o addopts='' -q
+.venv/bin/python -m pytest tests/test_standard_cl_completion.py -o addopts='' -q
+.venv/bin/python -m experiments.standard_smoke
+.venv/bin/python -m diagnostics.cl_mechanism --fake-data --random-replicates 5 --update-norm .01 --out outputs/h0_smoke.json
 ```
 
-The optional GroupNorm control currently supports baseline/native/GN/gradient
-candidates; virtual GroupNorm construction explicitly refuses, rather than
-silently replacing it with a different virtual normalization. Frozen-BN is
-a labelled loss diagnostic, not an unregistered training-mode change.
+`standard_smoke` uses the actual full ResNet32 BN, synthetic images, one SGD
+step and a tiny_V correction at the final eligible virtual site. Locked damping10/norm0.01 are declared
+smoke settings, not the benchmark's damping defaults. `--fake-data` on the CIL
+runner replaces only the declared smoke dataset/backbone/size controls with a
+tiny BN fixture. Its source records `synthetic_smoke=true` and effective settings.
+The Domain-IL fixture has disjoint random train/test images and a width16 head;
+H3 has 32 synthetic online samples. Their metrics must never be used as benchmark
+results or merged with real-data runs.
 
-After runs finish, collect expanded directories with
-`scripts/collect_standard_cl.py ROOT [ROOT ...]`. Different task protocols,
-BN modes, integration modes, budgets, references and code commits remain
-separate. Failed/OOM/diverged runs stay in the outcome table; only completed
-runs supply finite metrics, and paired-seed counts are reported explicitly.
+## Launch commands (not executed on benchmark data)
 
-## Independent branches
+```bash
+# H1 native iCaRL-style control and H1, respectively; --tasks 20 is full B0 Inc5.
+.venv/bin/python -m experiments.standard_cl --data-dir DATA --tasks 3 --device cuda:0 --arm baseline --baseline icarl --seed 0 --out outputs/h1/icarl/baseline/s0
+.venv/bin/python -m experiments.standard_cl --data-dir DATA --tasks 3 --device cuda:0 --arm h1 --baseline icarl --seed 0 --out outputs/h1/icarl/h1/s0
+# Native constrained, random, GN, gradient and unconstrained virtual controls:
+# repeat the identical recipe with --arm native/random/gn/gradient/vna.
+# ER with herding is a separate --baseline er family.
+.venv/bin/python -m experiments.standard_h2 --data-dir DATA --tasks 3 --device cuda:0 --seed 0 --out outputs/h2/h2/s0
+.venv/bin/python -m experiments.standard_h2 --data-dir DATA --tasks 3 --device cuda:0 --arm native --seed 0 --out outputs/h2/native/s0
+.venv/bin/python -m experiments.standard_cl --data-dir DATA --tasks 3 --device cuda:0 --arm baseline --baseline agem --seed 0 --out outputs/controls/agem/s0
+.venv/bin/python -m experiments.standard_cl --data-dir DATA --tasks 3 --device cuda:0 --arm baseline --baseline er_ace --seed 0 --out outputs/controls/er_ace/s0
+.venv/bin/python -m experiments.standard_plasticity --arm h3 --seed 0 --out outputs/h3/h3/s0
+# Repeat H3 with --arm bp/cbp/redo/snp for the pinned upstream adapters.
+.venv/bin/python -m experiments.standard_domain --config configs/standard_cl/h4_rotated_mnist.json --data-dir DATA --device cuda:0 --seed 0 --out outputs/h4/rotated/h1/s0
+.venv/bin/python -m experiments.standard_domain --config configs/standard_cl/h4_permuted_mnist.json --data-dir DATA --device cuda:0 --arm baseline --seed 0 --out outputs/h4/permuted/baseline/s0
+.venv/bin/python scripts/collect_standard_cl.py outputs/h1 outputs/h2 outputs/h3 outputs/h4
+```
 
-H2's `GeometryCorrection.step(..., replay_inputs=..., geometry_weight=...)`
-recomputes both cotangent and correction with the feature penalty. It is
-not LPR and is not enabled by the H1 CLI. H3 accepts a finite set of in-place
-`SwapCandidate`s and an optional scalar GN-surrogate evaluator, always with
-identity available and componentwise measured loss checks. Its search is
-only optimal over the supplied admissible finite list. A complete new
-plasticity benchmark/candidate generator is not claimed. H4 shares the
-replay correction but never expands the ten-class head or uses domain ID
-to select an inference classifier.
+Unified H1/H2 configurations are `h1_cifar100_bn_unified.json` and
+`h2_cifar100_bn_unified.json`; each sets mode=unified and cadence=1. For example:
 
-## Validation to perform later
+```bash
+.venv/bin/python -m experiments.standard_cl --config configs/standard_cl/h1_cifar100_bn_unified.json --data-dir DATA --tasks 3 --device cuda:0 --arm h1 --out outputs/h1/unified/s0
+```
 
-The focused checks are `tests/test_standard_cl_math.py`,
-`tests/test_standard_cl_pipeline.py` and `tests/test_standard_cl_audit.py`.
-They include direct systems, generalized
-metrics, numerical QP reference, rank-deficient gradients, KD invariance,
-BN rollback, float32/float64 paths, state resume, Schur/derivative identities,
-dead/live effects, chunked trace, domain replay and collector integrity.
-The SciPy QP reference is explicitly skipped if SciPy is absent; a skip is
-not a numerical verification. See CPU_AUDIT.md and its actual pytest log for
-the executed CPU scope; no dataset-training/GPU readiness is implied.
+Resume by repeating the exact command and output directory. Immutable protocol
+identity is checked before loading `latest.pt`. H1/H2 and H4 roll back a partial
+epoch on deadline exit75. H3 checkpoints online position, upstream auxiliary
+state and RNG; an interrupted swap rolls back its enclosing native step before
+saving, so that slot is attempted again. Completed H1/H2/H4 runs return their
+existing verified summary. No seed replacement or clipping is automatic.
+
+H1/H2 synthetic startup example: append `--fake-data --tasks 2 --device cpu` and
+use a new output directory. H4 synthetic startup: `--fake-data --domains 2
+--batch-size 4 --device cpu`. H3 synthetic startup: `--fake-data`. Synthetic
+fixtures are shortened **only** under that explicit flag.
+
+## Baseline and normalization limits
+
+A-GEM and ER-ACE implement their update laws with a declared **task-boundary
+PyCIL herding / expanding linear-head adaptation**. They are not official
+end-to-end Mammoth reproductions. Sequential native BN forwards really update
+running statistics. H1/H2's functional pooled-forward loss decomposition is a
+different normalization protocol and must be interpreted accordingly. See
+[baseline sources](BASELINES.md). Authentic LPR is **BLOCKED** in this environment:
+its Avalanche/Hydra/OmegaConf environment is absent; H2 is never labelled LPR.
+
+H3 calls native LoP Backprop/ContinualBackprop and GnTredo directly. S&P uses
+upstream Backprop's perturbation and weight decay. The ReDo supervised hook calls
+GnTredo after native SGD, preserving its default threshold/period. No upstream
+algorithm source is edited. Default CBP rate/S&P scale are declared config values,
+not claimed tuned best configurations.
+
+H4 supports ER, native/GN/gradient controls and L2 through `--weight-decay`.
+GroupNorm is available for those controls; virtual GroupNorm and stochastic
+dropout corrections explicitly refuse. Domain identity selects a data transform,
+never a classifier. Train-mode parameter certificates do not imply eval-mode BN
+protection. GPU profiling remains to be performed with the same launch commands;
+summary/intervention artifacts contain wall time, JVP/VJP/CG accounting and CUDA
+peak allocation when CUDA is actually used. No GPU readiness claim is made.

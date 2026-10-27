@@ -13,6 +13,11 @@ class DomainMNIST(Dataset):
         if kind not in ('rotated','permuted'):raise ValueError(kind)
         self.base,self.domain,self.kind,self.angle_step=base,domain,kind,angle_step
         self.permutation=torch.randperm(784,generator=dedicated_generator(seed,f'mnist-domain:{domain}'))
+    def identity(self):
+        import hashlib
+        return dict(domain=self.domain,kind=self.kind,angle_degrees=self.domain*self.angle_step if self.kind=='rotated' else None,
+            permutation_sha256=hashlib.sha256(self.permutation.numpy().tobytes()).hexdigest() if self.kind=='permuted' else None,
+            label_identity=True,domain_id_at_inference=False,rotation_interpolation='nearest',fill=0)
     def __len__(self):return len(self.base)
     def __getitem__(self,index):
         from torchvision.transforms import functional as TF

@@ -117,3 +117,32 @@ The initial delivery followed the user's **no execution** instruction.
 The later requested focused review executes CPU tests only; see
 CPU_AUDIT.md for findings and the actual log. No real-data/GPU phase gate
 is asserted by those toy checks.
+
+
+## Completion audit — 2026-10-28
+
+The new completion task checked actual local and remote branch HEAD, both
+`6bf844ee51642f72a0eeac8256f923231f4cdfbf`, and freshly reproduced the 48-test
+focused audit: 48 passed, 36 warnings, 11.03s. This is distinct from the old
+48-pass log and from the later repository-wide run. See
+[completion report](../STANDARD_CL_COMPLETION_REPORT.md) for final commands/logs.
+
+H2 and H3 were API-only at that starting commit. They now have independent
+executable pipelines: fixed feature-layer geometry for CIL; actual serial
+candidate generation, net post-removal GN scoring and LoP plasticity integration.
+H4 has explicit transform records, configs, synthetic split fixtures and finite
+BN weight/buffer drift diagnostics. Genuine PyCIL head/herding/NME code executes
+in the two-task H1/H2 synthetic integration tests, which also test mid-epoch
+resume. A full ResNet32 BN CPU smoke uses synthetic images and a virtual-site
+correction. It is not a CIFAR-100 benchmark.
+
+The integration checks caught and corrected an unpickleable torch.Generator in
+learner snapshots (now a stored generator-state tensor), a BN diagnostic placed
+between forward/backward that invalidated parameter versions, and a float32/
+float64 H3 dot-product mismatch. CPU failures are not hidden as skipped tests.
+No scientific hyperparameter was selected from these fixture outcomes.
+
+Strong A-GEM/ER-ACE update-law adaptations are explicitly labelled; normalization
+and sampling differences remain. Authentic LPR is not integrated because its
+separate dependency stack is absent. Numerical identities and synthetic pipeline
+execution do not establish accuracy, GPU readiness or comparative superiority.

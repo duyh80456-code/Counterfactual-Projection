@@ -1,66 +1,41 @@
-# Delivery and evidence status — 2026-10-28
+# Completion and evidence status — 2026-10-28
 
-Original delivery: code only, no execution. Follow-up review: focused CPU
-tests authorized and executed; no dataset training or GPU run. See
-[CPU audit](CPU_AUDIT.md) and its actual pytest log.
+See [completion report](../STANDARD_CL_COMPLETION_REPORT.md) for the exact source
+revision, commands, fresh logs and qualifications. PASS below means the named
+software gate passed in the stated CPU/synthetic scope; it does not mean a
+hypothesis or benchmark passed.
 
-| Deliverable | Status |
+| Component | Implemented | CPU tested | End-to-end tested | GPU tested | Benchmark completed |
+|---|---|---|---|---|---|
+| H0 | PASS | PASS | PASS | NOT RUN | NOT RUN |
+| H1 | PASS | PASS | PASS | NOT RUN | NOT RUN |
+| H2 | PASS | PASS | PASS | NOT RUN | NOT RUN |
+| H3 | PASS | PASS | PASS | NOT RUN | NOT RUN |
+| H4 | PASS | PASS | PASS | NOT RUN | NOT RUN |
+
+H0 end-to-end scope is the synthetic fixed-state CLI, including distinct raw
+native BN references and constrained/unconstrained groups. H1/H2 execute native
+PyCIL head growth, herding, NME and two-task training on a tiny BN synthetic
+fixture, with mid-epoch checkpoint/resume. A separate smoke uses the full PyCIL
+ResNet32 BN and synthetic images. H3 executes generated live/dead candidates and
+identity on synthetic regression and authentic LoP BP/CBP/ReDo/S&P adapters;
+H4 executes two synthetic domains with fixed ten-class head and reservoir.
+Interrupted H1/H2/H4 epochs and H3 swaps/native auxiliary state have focused
+resume tests. This scope is not full CIFAR-100/MNIST/LoP benchmark completion.
+
+| Additional gate | Status |
 |---|---|
-| Repository/theory/old-code audit | Read-only audit documented |
-| Shared generalized matrix-free projection | Focused CPU toy checks passed |
-| Two-halfspace QP and residual/KKT checks | Tensor interface fixed; CPU/SciPy reference checks passed |
-| BN/optimizer/RNG transactions | CPU rollback tests include momentum, freeze flags and nonpersistent buffers |
-| ER with herding / iCaRL-style H1 pilot runner | Implemented, NOT RUN |
-| Intervention and unified modes | CPU toy/resume/rejection scope tested |
-| H0 fixed-state local controls | Shared damping/window/norm-budget checks; native BN references separated |
-| H2 consistent feature penalty | Same penalty in both operators verified on CPU toy |
-| H3 derivative/Schur/finite-candidate search | Small-system and in-place finite-candidate API checks passed; no generator/benchmark claim |
-| H4 fixed-head Domain-IL runner | Implemented, NOT RUN |
-| New mathematical/integration tests | Three focused files executed; see actual log |
-| Numerical verification results | CPU toy verification only; not a full-model certificate |
-| CIFAR/MNIST benchmark metrics | NOT RUN |
-| GPU memory/runtime profiling | NOT RUN; only instrumentation provided |
-| Strong compatible CL benchmark comparison | Pending; no adapted baseline/result claimed |
-| New H3 full plasticity benchmark | Pending research gate, not scheduled |
-| General virtual GroupNorm / dropout support | Explicitly unsupported |
+| Native ER/iCaRL with herding | PASS |
+| A-GEM/ER-ACE adapted update laws and tiny two-task execution | PASS |
+| Official matched-protocol A-GEM/ER-ACE reproduction | PARTIAL |
+| Authentic LPR integration | BLOCKED |
+| H2 constrained drift-budget calibration / fitted KKT multiplier | NOT RUN |
+| GroupNorm native/GN/gradient controls | NOT RUN |
+| Virtual GroupNorm / stochastic dropout correction | BLOCKED |
+| GPU memory, deterministic replay and performance validation | NOT RUN |
+| Accuracy/statistical superiority and GPU-hour trade-offs | NOT RUN |
 
-All H0–H4 research conclusions are **INCONCLUSIVE**. Source formulas are
-conditional algebraic statements, distinct from the bounded scope of executed
-tests. Old OOM and incomplete replay are not classified as negative
-method results. No test set selects hyperparameters or acceptance.
-
-## Research questions, by branch
-
-* H1 targets incoming/reference gradient interference. Native replay already
-  mixes old data (and iCaRL-style KD). The virtual candidate changes the
-  proposed direction; the QP changes its stability/plasticity trade-off.
-  Only local directional/window checks apply. Whether it beats native
-  constrained/GN/random or a cheaper strong baseline is unknown.
-* H2 targets feature drift left unresolved by loss constraints. It changes
-  the metric in both solves and is separate from LPR. Necessity, benefits
-  and extra solver/feature cost are unmeasured.
-* H3 targets tangent-capacity/plasticity loss. Schur gain for adding columns
-  is not a live-swap gain and not a VNA gain. Finite swap search accounts
-  for the removed slot and measured jump but has no whole-history guarantee.
-  A suitable new benchmark integration awaits evidence; existing baseline
-  hooks are preserved rather than silently redefined.
-* H4 tests a fixed label space under domain change, using ordinary ER
-  reservoir replay and a fixed classifier. Parameter-window certificates
-  do not protect BN running-statistic effects on eval outputs. Generality,
-  forgetting and cost-benefit remain unmeasured.
-
-## Next validation sequence
-
-1. The focused CPU files have run, including the numerical QP reference.
-   Preserve these checks as regressions; they do not validate a full PyCIL run.
-2. Profile a real small BN intervention; record resource failures as such.
-3. Run the paired three-task H1 pilot and compatible native/GN/random
-   controls, keeping the held-out seeds untouched.
-4. Only with those gates passed, consider full tasks/strong comparisons
-   and evidence-based independent H2/H4/H3 experiments.
-
-No CIFAR/MNIST-training, ResNet32 or GPU phase gate is represented as passed.
-
-The original static-only review parsed/compiled Python syntax trees and
-the JSON config parsed without importing the new modules or executing their
-code. This is not a test, mathematical verification or runtime validation.
+LPR's separate Hydra/OmegaConf/Avalanche environment and pinned checkout are
+absent; H2 is not a substitute. No old data or policies were relabelled, no
+held-out seed was spent on a benchmark, and no test metric selects candidates.
+All scientific superiority statements remain **UNVERIFIED**.

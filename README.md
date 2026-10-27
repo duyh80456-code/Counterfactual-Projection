@@ -1,11 +1,12 @@
 # Virtual-NTK Augmentation (VNA)
 
 The separate [standard continual-learning implementation](docs/vna/standard_cl/README.md)
-adds the H1 replay-aware numerical core and BN pilot runner, with isolated
-H2/H3/H4 research paths. The [focused CPU audit](docs/vna/standard_cl/CPU_AUDIT.md)
-verifies toy mathematics and BN state/comparison contracts; real-data training,
-ResNet32 execution and GPU readiness remain unvalidated. See its protocols
-and evidence status before running a pilot.
+provides independent H1 replay-aware, H2 feature-geometry, H3 plasticity and
+H4 Domain-IL runners. CPU numerical and synthetic pipeline checks include
+checkpoint/resume and a genuine PyCIL ResNet32 BN forward/backward/correction.
+See the [completion report](docs/vna/STANDARD_CL_COMPLETION_REPORT.md) for
+executed checks and limits. Real benchmark results, GPU compatibility and
+all superiority claims remain **UNVERIFIED**.
 Historical runners and pinned notebooks below remain unchanged.
 
 VNA uses T26–T28 trust-region corrections and protected GIR swaps without

@@ -1,0 +1,1683 @@
+{
+  "branch": "H0",
+  "evidence_status": "INCONCLUSIVE",
+  "rows": [
+    {
+      "acceptance": "total_nonincrease",
+      "accepted": true,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 1,
+      "actual_loss_change": [
+        -0.00148409151797535,
+        5.916388033883058e-05
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.773941209994657,
+        0.28843453166815314
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.773941209994657,
+        0.28843453166815314
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": false,
+      "constraint_seconds": 0.008293340004456695,
+      "constraint_violation": 0.005893157836069677,
+      "cross_interference": [
+        [
+          0.16313890032765577,
+          -0.014644812448515003
+        ],
+        [
+          -0.014644812448515003,
+          0.008751654606058328
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.033481364713542905,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.004586052152144529,
+      "eval_losses_after": [
+        0.7386079534411226,
+        0.2812594027453335
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.4047735959445123,
+      "first_order_gains": [
+        0.14849408773710485,
+        -0.005893157836069584
+      ],
+      "first_order_predicted_gain": 0.0014260092990103527,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 53,
+      "kernel": "tiny_V",
+      "kernel_seconds": 0.6354717479989631,
+      "kernel_trace_normalization": null,
+      "kkt": null,
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 10.800884894000774,
+      "proposed_direction_norm": 0.3522980039453549,
+      "protocol": {
+        "acceptance": "total_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.1426009299010353,
+      "quadratic_gain_at_unit_step": 0.12586024754426384,
+      "quadratic_predicted_gain": 0.0014243352307746755,
+      "random_draw": null,
+      "random_trajectories": 0,
+      "seconds": 11.541953546999139,
+      "seconds_total": 11.578361821993894,
+      "selection_direct_backward_calls": 1,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 2.361278452000988,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 1.9358474259934155,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 3.6639509844308246e-07,
+          "iterations": 13,
+          "relative_residual": 1.1258493074306257e-09,
+          "residual": 2.0712349574107335e-10,
+          "seconds": 4.050650445999054,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "ACCEPTED",
+      "step": 0.01,
+      "step_norm": 0.0035229800394535543,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0623757416628101,
+      "trials": [
+        {
+          "after": [
+            0.773941209994657,
+            0.28843453166815314
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14849408773710399,
+            -0.005893157836069677
+          ],
+          "physical_norm": 0.0035229800394535543,
+          "step": 0.01
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 58,
+      "z_kernel_z": 0.1426009300366841
+    },
+    {
+      "acceptance": "total_nonincrease",
+      "accepted": true,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 0,
+      "actual_loss_change": [
+        -0.004958422637667548,
+        0.0002589872977800667
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7704668788749648,
+        0.2886343550855944
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7704668788749648,
+        0.2886343550855944
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": false,
+      "constraint_seconds": 0.009680426999693736,
+      "constraint_violation": 0.025820734803928984,
+      "cross_interference": [
+        [
+          0.5914313716194775,
+          -0.09420005178227005
+        ],
+        [
+          -0.09420005178227003,
+          0.06837931688774543
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.3304024339137355,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.013279203762373536,
+      "eval_losses_after": [
+        0.7370212759146786,
+        0.2814367428622325
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.688137644056321,
+      "first_order_gains": [
+        0.49723132091065514,
+        -0.02582073480392859
+      ],
+      "first_order_predicted_gain": 0.004714105861067266,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 53,
+      "kernel": "native",
+      "kernel_seconds": 0.0,
+      "kernel_trace_normalization": null,
+      "kkt": null,
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 1.0651791190030053,
+      "proposed_direction_norm": 0.685052750969897,
+      "protocol": {
+        "acceptance": "total_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.47141058610672654,
+      "quadratic_gain_at_unit_step": 0.30620936914985875,
+      "quadratic_predicted_gain": 0.004697585739371579,
+      "random_draw": null,
+      "random_trajectories": 0,
+      "seconds": 1.3739546489960048,
+      "seconds_total": 1.3803891510033282,
+      "selection_direct_backward_calls": 0,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.5173405509995064,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.19057801200688118,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 1.2441069448549994e-06,
+          "iterations": 13,
+          "relative_residual": 1.2339995181290817e-09,
+          "residual": 7.032948327886653e-10,
+          "seconds": 0.1589685740036657,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "ACCEPTED",
+      "step": 0.01,
+      "step_norm": 0.006850527509698965,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0591012339605592,
+      "trials": [
+        {
+          "after": [
+            0.7704668788749648,
+            0.2886343550855944
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.4972313209106552,
+            -0.025820734803928984
+          ],
+          "physical_norm": 0.006850527509698965,
+          "step": 0.01
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 54,
+      "z_kernel_z": 0.4714105849426827
+    },
+    {
+      "acceptance": "total_nonincrease",
+      "accepted": true,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 1,
+      "actual_loss_change": [
+        -0.0012123854070819062,
+        -2.4128450024862858e-05
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7742129161055504,
+        0.28835123933778944
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7742129161055504,
+        0.28835123933778944
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": false,
+      "constraint_seconds": 0.04668381600640714,
+      "constraint_violation": 0.0,
+      "cross_interference": [
+        [
+          0.13043243382671457,
+          -0.009027767661442851
+        ],
+        [
+          -0.009027767661442851,
+          0.011454748795717316
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.023051540589251098,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.004909199803619376,
+      "eval_losses_after": [
+        0.7384671389007437,
+        0.2811080287216124
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.34316494565182476,
+      "first_order_gains": [
+        0.12140466610011759,
+        0.002426981043510653
+      ],
+      "first_order_predicted_gain": 0.0012383164714362823,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 65,
+      "kernel": "random",
+      "kernel_seconds": 0.17110021099506412,
+      "kernel_trace_normalization": "exact_per_site_against_tiny_V",
+      "kkt": null,
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 0.5272661550043267,
+      "proposed_direction_norm": 0.36085167996520207,
+      "protocol": {
+        "acceptance": "total_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.12383164714362822,
+      "quadratic_gain_at_unit_step": 0.11230587684900267,
+      "quadratic_predicted_gain": 0.0012371638944068198,
+      "random_draw": 0,
+      "random_trajectories": 1,
+      "seconds": 0.8325942270021187,
+      "seconds_total": 0.8376994430000195,
+      "selection_direct_backward_calls": 1,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.11090074499952607,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.0992340270022396,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 6.052816609561108e-07,
+          "iterations": 13,
+          "relative_residual": 2.4749189090729202e-09,
+          "residual": 3.421662955042726e-10,
+          "seconds": 0.21230214399838587,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "ACCEPTED",
+      "step": 0.01,
+      "step_norm": 0.003608516799652009,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0625641554433398,
+      "trials": [
+        {
+          "after": [
+            0.7742129161055504,
+            0.28835123933778944
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.12140466610011742,
+            0.002426981043510585
+          ],
+          "physical_norm": 0.003608516799652009,
+          "step": 0.01
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 58,
+      "z_kernel_z": 0.12383164729954621
+    },
+    {
+      "acceptance": "total_nonincrease",
+      "accepted": true,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 1,
+      "actual_loss_change": [
+        -0.001648836646676033,
+        -8.424491047320792e-06
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7737764648659563,
+        0.288366943296767
+      ],
+      "application": 1,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7737764648659563,
+        0.288366943296767
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": false,
+      "constraint_seconds": 0.00906648700038204,
+      "constraint_violation": 0.0,
+      "cross_interference": [
+        [
+          0.19805037142630127,
+          -0.03327845934262586
+        ],
+        [
+          -0.033278459342625855,
+          0.03418788731412175
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.03751114964822796,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.010418503074631363,
+      "eval_losses_after": [
+        0.7377648403261938,
+        0.28114422483469675
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.2985978368740713,
+      "first_order_gains": [
+        0.1647719122538702,
+        0.0009094280771321543
+      ],
+      "first_order_predicted_gain": 0.0016568134033100234,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 65,
+      "kernel": "random",
+      "kernel_seconds": 0.6742721499977051,
+      "kernel_trace_normalization": "exact_per_site_against_tiny_V",
+      "kkt": null,
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 1.6943655080031021,
+      "proposed_direction_norm": 0.5548645029229589,
+      "protocol": {
+        "acceptance": "total_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.16568134033100237,
+      "quadratic_gain_at_unit_step": 0.1469257655068884,
+      "quadratic_predicted_gain": 0.001654937845827612,
+      "random_draw": 1,
+      "random_trajectories": 1,
+      "seconds": 2.4545957750015077,
+      "seconds_total": 2.4620290439997916,
+      "selection_direct_backward_calls": 1,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.44790219699643785,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.48018626600241987,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 7.080087543794164e-07,
+          "iterations": 13,
+          "relative_residual": 3.783791458088033e-09,
+          "residual": 4.002380185910927e-10,
+          "seconds": 0.39139716200588737,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "ACCEPTED",
+      "step": 0.01,
+      "step_norm": 0.005548645029229576,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0621434081627232,
+      "trials": [
+        {
+          "after": [
+            0.7737764648659563,
+            0.288366943296767
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.16477191225386784,
+            0.0009094280771314734
+          ],
+          "physical_norm": 0.005548645029229576,
+          "step": 0.01
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 58,
+      "z_kernel_z": 0.1656813400551713
+    },
+    {
+      "acceptance": "total_nonincrease",
+      "accepted": true,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 0,
+      "actual_loss_change": [
+        -0.001468015375419518,
+        -0.0004309762258555283
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7739572861372128,
+        0.2879443915619588
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7739572861372128,
+        0.2879443915619588
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "gn_candidate_control",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": false,
+      "constraint_seconds": 0.025557594002748374,
+      "constraint_violation": 0.0,
+      "cross_interference": null,
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 1.94059326874517,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": false,
+      "eval_functional_drift": 0.009691520496485206,
+      "eval_losses_after": [
+        0.7380411359999481,
+        0.28064836954865263
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.19047803456258589,
+      "first_order_gains": [
+        1.5497496824665449,
+        0.45336081723296306
+      ],
+      "first_order_predicted_gain": 0.001904780345625859,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 51,
+      "kernel": "gn",
+      "kernel_seconds": 0.0,
+      "kernel_trace_normalization": null,
+      "kkt": null,
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.0009509112682059228,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 0.4754150610024226,
+      "proposed_direction_norm": 10.51622831104623,
+      "protocol": {
+        "acceptance": "total_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 2.003110499699508,
+      "quadratic_gain_at_unit_step": 1.032813865326923,
+      "quadratic_predicted_gain": 0.0019039029721266947,
+      "random_draw": null,
+      "random_trajectories": 0,
+      "seconds": 0.7142275180012803,
+      "seconds_total": 0.7200565609964542,
+      "selection_direct_backward_calls": 0,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.09985523600335,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.09144740600459045,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.2351088650029851,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "ACCEPTED",
+      "step": 0.0009509112682059228,
+      "step_norm": 0.009999999999999966,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0619016776991717,
+      "trials": [
+        {
+          "after": [
+            0.7739572861372128,
+            0.2879443915619588
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            1.5497496824665475,
+            0.4533608172329589
+          ],
+          "physical_norm": 0.009999999999999966,
+          "step": 0.0009509112682059228
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 51,
+      "z_kernel_z": null
+    },
+    {
+      "acceptance": "componentwise_nonincrease",
+      "accepted": false,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 1,
+      "actual_loss_change": [
+        0.0,
+        0.0
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7754245762579854,
+        0.2883753677878738
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "constrained_kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": true,
+      "constraint_seconds": 0.3302799140001298,
+      "constraint_violation": 1.1754312800871247e-13,
+      "cross_interference": [
+        [
+          0.16313890032765577,
+          -0.014644812448515003
+        ],
+        [
+          -0.014644812448515003,
+          0.008751654606058328
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.03339518521893056,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.0,
+      "eval_losses_after": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.39671931272431177,
+      "first_order_gains": [
+        0.1485321903111731,
+        0.0
+      ],
+      "first_order_predicted_gain": 0.0,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 88,
+      "kernel": "tiny_V",
+      "kernel_seconds": 0.06146638799691573,
+      "kernel_trace_normalization": null,
+      "kkt": {
+        "complementarity": 1.1913053809838505e-20,
+        "multipliers": [
+          0.0,
+          0.013082869510010246
+        ],
+        "slack": [
+          0.1485321903111731,
+          0.0
+        ],
+        "stationarity": 3.819722106998864e-12,
+        "status": "CERTIFIED"
+      },
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 0.861080729002424,
+      "proposed_direction_norm": 0.3744012089837207,
+      "protocol": {
+        "acceptance": "componentwise_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.1426009299010353,
+      "quadratic_gain_at_unit_step": 0.1318345977017078,
+      "quadratic_predicted_gain": 0.0,
+      "random_draw": null,
+      "random_trajectories": 0,
+      "seconds": 1.0945497799984878,
+      "seconds_total": 1.10074868099764,
+      "selection_direct_backward_calls": 1,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.19198752200463787,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.09368336899933638,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 3.6639509844308246e-07,
+          "iterations": 13,
+          "relative_residual": 1.1258493074306257e-09,
+          "residual": 2.0712349574107335e-10,
+          "seconds": 0.18695898699661484,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 2.566950326689633e-06,
+          "iterations": 13,
+          "relative_residual": 1.4510994478825977e-09,
+          "residual": 1.4510994478825977e-09,
+          "seconds": 0.1690417480058386,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 1.967836859051914e-06,
+          "iterations": 13,
+          "relative_residual": 1.1124200378960102e-09,
+          "residual": 1.1124200378960102e-09,
+          "seconds": 0.120817585993791,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "REJECTED",
+      "step": 0.0,
+      "step_norm": 0.0,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.0637999440458592,
+      "trials": [
+        {
+          "after": [
+            0.7739407716880596,
+            0.28837561742548057
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031117368,
+            -7.997075224253081e-16
+          ],
+          "physical_norm": 0.003744012089837205,
+          "step": 0.01
+        },
+        {
+          "after": [
+            0.774682838415162,
+            0.28837543019437445
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031116954,
+            -3.903127820947816e-17
+          ],
+          "physical_norm": 0.00187200604491859,
+          "step": 0.005
+        },
+        {
+          "after": [
+            0.7750540204796397,
+            0.2883753833890987
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031117423,
+            4.354155924701786e-16
+          ],
+          "physical_norm": 0.0009360030224593116,
+          "step": 0.0025
+        },
+        {
+          "after": [
+            0.7752396486328452,
+            0.288375371688091
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.1485321903111707,
+            2.319325287380991e-15
+          ],
+          "physical_norm": 0.0004680015112296665,
+          "step": 0.00125
+        },
+        {
+          "after": [
+            0.7753324719828888,
+            0.2883753687628779
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031117063,
+            -8.19830314746639e-15
+          ],
+          "physical_norm": 0.00023400075561479905,
+          "step": 0.000625
+        },
+        {
+          "after": [
+            0.7753788859754197,
+            0.28837536803157954
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031125664,
+            -8.31799906730879e-15
+          ],
+          "physical_norm": 0.00011700037780742385,
+          "step": 0.0003125
+        },
+        {
+          "after": [
+            0.775402093550956,
+            0.28837536784875556
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031127246,
+            -8.484532521002563e-15
+          ],
+          "physical_norm": 5.850018890372078e-05,
+          "step": 0.00015625
+        },
+        {
+          "after": [
+            0.7754136974835286,
+            0.28837536780304956
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.1485321903107887,
+            3.844927848328794e-14
+          ],
+          "physical_norm": 2.9250094451832616e-05,
+          "step": 7.8125e-05
+        },
+        {
+          "after": [
+            0.7754194994860143,
+            0.28837536779162315
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.1485321903113423,
+            3.897836914346087e-14
+          ],
+          "physical_norm": 1.462504722593645e-05,
+          "step": 3.90625e-05
+        },
+        {
+          "after": [
+            0.7754224004963067,
+            0.28837536778876655
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031065562,
+            1.4842814477500355e-13
+          ],
+          "physical_norm": 7.312523612953058e-06,
+          "step": 1.953125e-05
+        },
+        {
+          "after": [
+            0.7754238510037156,
+            0.28837536778805234
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031051879,
+            -4.3826053897078054e-14
+          ],
+          "physical_norm": 3.656261806463312e-06,
+          "step": 9.765625e-06
+        },
+        {
+          "after": [
+            0.7754245762579854,
+            0.2883753677878738
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.14853219031432055,
+            -1.1754312800871247e-13
+          ],
+          "physical_norm": 1.8281309032514912e-06,
+          "step": 4.8828125e-06
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 93,
+      "z_kernel_z": 0.1426009300366841
+    },
+    {
+      "acceptance": "componentwise_nonincrease",
+      "accepted": false,
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "active_sites": 0,
+      "actual_loss_change": [
+        0.0,
+        0.0
+      ],
+      "actual_update_norms_matched": false,
+      "after": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "application": 0,
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_buffer_drift": 0.0,
+      "candidate_after": [
+        0.7754228728134338,
+        0.28837536778800316
+      ],
+      "certificate_scope": "window_parameter_intervention",
+      "checkpoint_verified": true,
+      "comparison_group": "constrained_kernel",
+      "completed_within_compute_budget": true,
+      "compute_budget_seconds": null,
+      "compute_overshoot_seconds": null,
+      "constrained": true,
+      "constraint_seconds": 0.204749112999707,
+      "constraint_violation": 0.0,
+      "cross_interference": [
+        [
+          0.5914313716194775,
+          -0.09420005178227005
+        ],
+        [
+          -0.09420005178227003,
+          0.06837931688774543
+        ]
+      ],
+      "cross_interference_scope": "z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic",
+      "curvature": 0.32886851350051916,
+      "damping_source": "shared_diagnostic_lock",
+      "eligible_for_kernel_attribution": true,
+      "eval_functional_drift": 0.0,
+      "eval_losses_after": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "eval_losses_before": [
+        0.7393628456379084,
+        0.2811611744446718
+      ],
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_gain_per_unit_norm": 0.6620232897849527,
+      "first_order_gains": [
+        0.49739826645797125,
+        8.673617379884035e-19
+      ],
+      "first_order_predicted_gain": 0.0,
+      "forward_mode": "train_batch_statistics",
+      "gradient_interference": -0.09419661604660926,
+      "gradient_norms": [
+        0.7701616628080157,
+        0.26245801642354266
+      ],
+      "incoming_directions_per_site": 16,
+      "jvp": 88,
+      "kernel": "native",
+      "kernel_seconds": 0.0,
+      "kernel_trace_normalization": null,
+      "kkt": {
+        "complementarity": 5.219676982789352e-20,
+        "multipliers": [
+          0.0,
+          0.05732229027106427
+        ],
+        "slack": [
+          0.49739826645797125,
+          8.673617379884035e-19
+        ],
+        "stationarity": 1.6736019616020596e-11,
+        "status": "CERTIFIED"
+      },
+      "loss_components": [
+        "incoming_ce",
+        "replay_ce"
+      ],
+      "matched_compute_budget": false,
+      "matched_update_budget": true,
+      "maximum_step": 0.01,
+      "metric_seed": 0,
+      "mode": "intervention",
+      "mu": 0.0005653009459493326,
+      "peak_vram_bytes": 0,
+      "peak_vram_scope": "process high-water mark; reset by experiment runner, not per candidate",
+      "prediction_scope": "nominal direction at the pre-update linearization; physical gains separately logged",
+      "projection_seconds": 0.7082196780029335,
+      "proposed_direction_norm": 0.7513304654577074,
+      "protocol": {
+        "acceptance": "componentwise_nonincrease",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds: correction core including its snapshots/diagnostics; seconds_total: full arm including accuracy and outer isolation",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "pure_candidate_gain": 0.47141058610672654,
+      "quadratic_gain_at_unit_step": 0.3329640097077117,
+      "quadratic_predicted_gain": 0.0,
+      "random_draw": null,
+      "random_trajectories": 0,
+      "seconds": 0.8271560720022535,
+      "seconds_total": 0.8335377740004333,
+      "selection_direct_backward_calls": 0,
+      "solves": [
+        {
+          "error_bound": 4.1473312645189856e-06,
+          "iterations": 13,
+          "relative_residual": 3.4066245165512746e-09,
+          "residual": 2.344490286997824e-09,
+          "seconds": 0.09460080900316825,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 5.164745453626506e-07,
+          "iterations": 13,
+          "relative_residual": 1.1124200092295925e-09,
+          "residual": 2.9196354905225785e-10,
+          "seconds": 0.22335292699426645,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 1.2441069448549994e-06,
+          "iterations": 13,
+          "relative_residual": 1.2339995181290817e-09,
+          "residual": 7.032948327886653e-10,
+          "seconds": 0.1156795749993762,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 2.566950326689633e-06,
+          "iterations": 13,
+          "relative_residual": 1.4510994478825977e-09,
+          "residual": 1.4510994478825977e-09,
+          "seconds": 0.08748692800145363,
+          "status": "CERTIFIED"
+        },
+        {
+          "error_bound": 1.967836859051914e-06,
+          "iterations": 13,
+          "relative_residual": 1.1124200378960102e-09,
+          "residual": 1.1124200378960102e-09,
+          "seconds": 0.09432760199706536,
+          "status": "CERTIFIED"
+        }
+      ],
+      "status": "REJECTED",
+      "step": 0.0,
+      "step_norm": 0.0,
+      "total_before": 1.0638006693004467,
+      "total_candidate": 1.063798240601437,
+      "trials": [
+        {
+          "after": [
+            0.7704650745183564,
+            0.288376161190715
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.4973982664579727,
+            -3.4867941867133823e-16
+          ],
+          "physical_norm": 0.007513304654577092,
+          "step": 0.01
+        },
+        {
+          "after": [
+            0.7729417463976022,
+            0.2883755659807588
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645797036,
+            2.2985086056692694e-16
+          ],
+          "physical_norm": 0.0037566523272885293,
+          "step": 0.005
+        },
+        {
+          "after": [
+            0.7741826645596305,
+            0.28837541731632693
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645797236,
+            -1.3817072486155269e-15
+          ],
+          "physical_norm": 0.001878326163644266,
+          "step": 0.0025
+        },
+        {
+          "after": [
+            0.7748037683149726,
+            0.288375380167477
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.4973982664579771,
+            1.3010426069826053e-15
+          ],
+          "physical_norm": 0.0009391630818221493,
+          "step": 0.00125
+        },
+        {
+          "after": [
+            0.7751144812495759,
+            0.28837537088242177
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.4973982664579384,
+            9.007551649009571e-15
+          ],
+          "physical_norm": 0.00046958154091105206,
+          "step": 0.000625
+        },
+        {
+          "after": [
+            0.7752698779670616,
+            0.28837536856142765
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645799035,
+            -1.6906614996869962e-14
+          ],
+          "physical_norm": 0.00023479077045552893,
+          "step": 0.0003125
+        },
+        {
+          "after": [
+            0.7753475863865886,
+            0.2883753679812128
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645793916,
+            -9.414344304126132e-15
+          ],
+          "physical_norm": 0.00011739538522775884,
+          "step": 0.00015625
+        },
+        {
+          "after": [
+            0.7753864431113274,
+            0.28837536783616335
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645789087,
+            -1.3057263603677427e-14
+          ],
+          "physical_norm": 5.869769261386712e-05,
+          "step": 7.8125e-05
+        },
+        {
+          "after": [
+            0.7754058721024132,
+            0.2883753677999014
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826645807106,
+            1.98283230112839e-13
+          ],
+          "physical_norm": 2.9348846306967703e-05,
+          "step": 3.90625e-05
+        },
+        {
+          "after": [
+            0.7754155867551313,
+            0.2883753677908361
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.497398266457754,
+            -1.3618359911982125e-13
+          ],
+          "physical_norm": 1.4674423153464436e-05,
+          "step": 1.953125e-05
+        },
+        {
+          "after": [
+            0.7754204441207841,
+            0.2883753677885697
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.4973982664580978,
+            9.492493596718887e-14
+          ],
+          "physical_norm": 7.33721157674096e-06,
+          "step": 9.765625e-06
+        },
+        {
+          "after": [
+            0.7754228728134338,
+            0.28837536778800316
+          ],
+          "before": [
+            0.7754253015126323,
+            0.2883753677878143
+          ],
+          "feasible": true,
+          "in_update_budget": true,
+          "physical_gains": [
+            0.49739826646176627,
+            6.222479129180947e-13
+          ],
+          "physical_norm": 3.6686057883936613e-06,
+          "step": 4.8828125e-06
+        }
+      ],
+      "update_norm_budget": 0.01,
+      "vjp": 89,
+      "z_kernel_z": 0.4714105849426827
+    },
+    {
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "after": [
+        0.7704496012920363,
+        0.28862940837412676
+      ],
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_behavior": "standard_bn",
+      "bn_buffer_drift": 1.0133074748248945,
+      "checkpoint_verified": true,
+      "comparison": "unfiltered native reference; not a matched kernel/correction arm",
+      "comparison_group": "native_optimizer_reference",
+      "eligible_for_kernel_attribution": false,
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_predicted_gain": 0.004736371735416509,
+      "kernel": "native_optimizer",
+      "matched_compute_budget": false,
+      "matched_update_budget": false,
+      "protocol": {
+        "acceptance": "none",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds/seconds_total: full reference arm; update_seconds: native forward/backward/step",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "quadratic_predicted_gain": 0.004719796840505247,
+      "seconds": 0.036429710999072995,
+      "seconds_total": 0.036429710999072995,
+      "step_norm": 0.006882112200090316,
+      "update_seconds": 0.008591391000663862
+    },
+    {
+      "accuracy_after": null,
+      "accuracy_before": null,
+      "after": [
+        0.7704496012920363,
+        0.28862940837412676
+      ],
+      "before": [
+        0.7754253015126323,
+        0.2883753677878143
+      ],
+      "bn_behavior": "frozen_buffers",
+      "bn_buffer_drift": 0.0,
+      "checkpoint_verified": true,
+      "comparison": "unfiltered native reference; not a matched kernel/correction arm",
+      "comparison_group": "native_optimizer_reference",
+      "eligible_for_kernel_attribution": false,
+      "evidence_status": "INCONCLUSIVE",
+      "first_order_predicted_gain": 0.004736371735416509,
+      "kernel": "native_optimizer_frozen_buffers",
+      "matched_compute_budget": false,
+      "matched_update_budget": false,
+      "protocol": {
+        "acceptance": "none",
+        "checkpoint_sha256": "e38b533edc94d1558f4c8df10035a5a4b1728f45e19a41dcfcfca6b18a772607",
+        "compute_budget_policy": "shared wall limit checked at operation boundaries; overshoot recorded and censored",
+        "cost_scope": "seconds/seconds_total: full reference arm; update_seconds: native forward/backward/step",
+        "locked_mu": 0.0005653009459493326,
+        "requested_compute_seconds": null,
+        "requested_update_norm": 0.01,
+        "shared_preparation_seconds": 0.7176244950023829,
+        "window_sha256": "7d383bcb5f686101bad6accccc83230eb28ee33188e60e38781d17d20f968fad"
+      },
+      "quadratic_predicted_gain": 0.004719796840505247,
+      "seconds": 0.046372513999813236,
+      "seconds_total": 0.046372513999813236,
+      "step_norm": 0.006882112200090316,
+      "update_seconds": 0.009669776998634916
+    }
+  ],
+  "synthetic_smoke": true
+}
