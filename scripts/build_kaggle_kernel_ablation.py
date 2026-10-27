@@ -13,7 +13,7 @@ upstream_imports()
 ROOT=STAGE_B/REPO_COMMIT[:12]/RUN_TAG
 ROOT.mkdir(parents=True,exist_ok=True)
 ENV.update(OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
-RESOLVED={seed:discover_inputs((Path('/kaggle/input'),STAGE_B),seed,INPUTS[seed]) for seed in (0,1)}
+RESOLVED={seed:discover_inputs((Path('/kaggle/input'),REFERENCE_INPUTS,STAGE_B),seed,INPUTS[seed]) for seed in (0,1)}
 print('INPUTS',json.dumps(RESOLVED,indent=2),flush=True)
 for seed in (0,1):
     if not RESOLVED[seed].get('checkpoint'):
@@ -108,6 +108,8 @@ source: s0=29cc735, s1=6be6543. All 100 losses/accuracies/LRs must match origina
 epochs exactly. The s1 missing-record exception below defers proof to its anchor.
 The notebook locates compatible
 expanded files or restored output archives; use INPUTS paths to resolve ambiguity.
+Reference outputs are restored separately per source; only this source pin/run
+tag is merged into the active resume directory. Conflicting resumes still refuse.
 No task-1 GIR amendments or new preflight. Preserve the original
 6be6543 certificate/Gram trust region; actual update norms are observations only.
 Radius violations block interpretation. Native K is an untruncated control, not
@@ -128,6 +130,14 @@ the same source pin and original inputs. No source ZIP is required.
 ''')
     source=''.join(nb['cells'][2]['source']).replace('/kaggle/working/vna4_main','/kaggle/working/p1_kernel_ablation')
     nb['cells'][2]=cell('code',source+"\nos.environ.pop('VNA_SOURCE_DIGEST',None)\n")
+    for c in nb['cells']:
+        if c['cell_type']!='code':continue
+        text=''.join(c['source'])
+        old="restore_stage_archives(Path('/kaggle/input'), STAGE_B, 'outputs')"
+        if old in text:
+            c['source']=cell('code',text.replace(old,"""REFERENCE_INPUTS = RUN_ROOT/'reference_inputs'
+restore_stage_archives(Path('/kaggle/input'), REFERENCE_INPUTS, 'outputs', namespace=True)
+restore_stage_archives(Path('/kaggle/input'), STAGE_B, 'outputs', prefix=REPO_COMMIT[:12]+'/'+RUN_TAG)"""))['source']
     nb['cells'][-2]=cell('code',RUNNER);nb['cells'][-1]=cell('code',REPORT)
     for c in nb['cells']:
         if c['cell_type']=='code':compile(''.join(c['source']),'<notebook>','exec')

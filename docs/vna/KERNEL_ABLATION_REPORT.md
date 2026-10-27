@@ -47,8 +47,9 @@ Notebook: vna5_kernel_ablation_s01.ipynb; GPU0=s0, GPU1=s1 (replay first),
 each lane vna -> kernel_self -> vna_rand. Seeds 2–7 are not accepted by this
 runner. The notebook uses a real immutable source commit and no overlay.
 
-Focused local validation: **33 passed**, 36 upstream deprecation warnings,
-3.78 seconds, tests/test_kernel_ablation.py only. Includes original-6be fixed
+Focused local validation: **38 passed**, 36 upstream deprecation warnings,
+7.11 seconds, tests/test_kernel_ablation.py and tests/test_vna_kaggle_restore.py.
+Includes original-6be fixed
 system bitwise comparison on float32/64; native-kernel substitution; per-site
 random trace/rank; complete first-step restoration; observation isolation;
 source/resume rejection; discovery excluding own continuation outputs; and
@@ -92,3 +93,14 @@ checkpoint discovery, s1 fallback discovery and anchor validation, historical
 commit selection for both seeds, no export on mismatch, provisional s1 trace
 labelling and propagation of child exit75. Historical training is mocked in
 these CPU tests; no claim of real T4 trace reproduction is made.
+
+Restore fix: reference outputs from different attached datasets/archives are
+kept in separate source directories, including attachments under the common
+Kaggle datasets/ prefix. Historical flag_rates.json files no longer collide
+in the active output tree. Only the exact source-pin/run-tag prefix is restored
+into STAGE_B for resume; conflicting bytes for that selected run still refuse.
+Reference copies live outside the output archive. Default restore callers keep
+the existing strict merge and loose-file-over-own-stale-archive behavior.
+Focused tests cover separate loose/archive sources, unread unrelated prefix
+files, strict resume conflicts, stale tar precedence, unsafe archive members
+and notebook wiring. No experimental acceptance or kernel logic changes.
