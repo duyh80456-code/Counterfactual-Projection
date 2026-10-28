@@ -28,8 +28,11 @@ def test_four_notebooks_pin_source_and_exact_pairs():
     assert [j['args'][-1] for lane in jobs('H1') for j in lane]==['baseline','h1']
     assert [j['args'][-1] for lane in jobs('H2') for j in lane]==['lpr','h2']
     assert [j['args'][-1] for lane in jobs('H3') for j in lane]==['cbp','vna_gir']
-    assert all('--tasks' in j['args'] and j['args'][j['args'].index('--tasks')+1]=='20' for b in ('H1','H2') for lane in jobs(b) for j in lane)
-    assert len(jobs('H4')[0])==len(jobs('H4')[1])==2
+    assert all('--tasks' in j['args'] and j['args'][j['args'].index('--tasks')+1]=='20' for lane in jobs('H1') for j in lane)
+    assert all(j['module']=='experiments.standard_online' for lane in jobs('H2') for j in lane)
+    assert all(j['module']=='experiments.standard_imagenet' for lane in jobs('H3') for j in lane)
+    assert len(jobs('H4')[0])==len(jobs('H4')[1])==1
+    assert json.load(open('configs/standard_cl/h4_rotated_mnist.json'))['domains']==20
 
 
 def test_lpr_unchanged_source_and_head_view_are_real():

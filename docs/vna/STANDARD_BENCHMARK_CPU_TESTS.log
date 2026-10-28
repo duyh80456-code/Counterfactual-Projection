@@ -1,0 +1,144 @@
+Focused CPU/synthetic checks only; no GPU/real benchmark run.
+Local Python3.12, torch2.2.2, Avalanche0.4.0 from /tmp; wandb0.15.12.
+Python3.12 tests emulate ONLY the no-op Protocol constructors of original typing4.4.
+Production notebook uses Python3.10 + typing4.4 unchanged; that full environment was not exercised.
+Python3.10 + typing4.4 Protocol MRO probe: PASS.
+
+.................                                                        [100%]
+=============================== warnings summary ===============================
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:64: PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:85: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:89: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_mathtext.py:45: PyparsingDeprecationWarning: 'enablePackrat' deprecated - use 'enable_packrat'
+    ParserElement.enablePackrat()
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /tmp/vna_wandb15/wandb/vendor/graphql-core-1.1/wandb_graphql/language/lexer.py:224: SyntaxWarning: invalid escape sequence '\.'
+    """Reads a number token from the source file, either a float
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /tmp/vna_wandb15/wandb/sdk/launch/builder/build.py:11: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /tmp/vna_wandb15/wandb/analytics/sentry.py:90: SentryHubDeprecationWarning: `sentry_sdk.Hub` is deprecated and will be removed in a future major release. Please consult our 1.x to 2.x migration guide for details on how to migrate `Hub` usage to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x
+    self.hub = sentry_sdk.Hub(client)
+
+tests/test_standard_benchmark_protocols.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_standard_benchmark_protocols.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+tests/test_standard_benchmark_protocols.py::test_protocols_match_upstream_and_domain_table
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[h2]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[h2]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[h2]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[h2]
+  /tmp/vna_avalanche_test/avalanche/training/plugins/evaluation.py:94: UserWarning: No loggers specified, metrics will not be logged
+    warnings.warn("No loggers specified, metrics will not be logged")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+17 passed, 64 warnings in 33.77s
+
+Final online transaction rerun after restoring dynamic-head optimizer Parameter references:
+..                                                                       [100%]
+=============================== warnings summary ===============================
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:64: PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:85: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:89: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_mathtext.py:45: PyparsingDeprecationWarning: 'enablePackrat' deprecated - use 'enable_packrat'
+    ParserElement.enablePackrat()
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.MessageMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  <frozen importlib._bootstrap>:488: DeprecationWarning: Type google._upb._message.ScalarMapContainer uses PyType_Spec with a metaclass that has custom tp_new. This is deprecated and will no longer be allowed in Python 3.14.
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /tmp/vna_wandb15/wandb/sdk/launch/builder/build.py:11: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /tmp/vna_wandb15/wandb/analytics/sentry.py:90: SentryHubDeprecationWarning: `sentry_sdk.Hub` is deprecated and will be removed in a future major release. Please consult our 1.x to 2.x migration guide for details on how to migrate `Hub` usage to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x
+    self.hub = sentry_sdk.Hub(client)
+
+tests/test_standard_benchmark_protocols.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_standard_benchmark_protocols.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+tests/test_standard_benchmark_protocols.py::test_avalanche_online_native_callbacks_and_resume[lpr]
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+tests/test_standard_benchmark_protocols.py: 12 warnings
+  /tmp/vna_avalanche_test/avalanche/training/plugins/evaluation.py:94: UserWarning: No loggers specified, metrics will not be logged
+    warnings.warn("No loggers specified, metrics will not be logged")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 5 deselected, 66 warnings in 10.39s

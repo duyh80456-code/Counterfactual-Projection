@@ -125,10 +125,16 @@ peak allocation when CUDA is actually used. No GPU readiness claim is made.
 
 ## Main seed-zero notebook pairs (supersedes the earlier LPR block)
 
+2026-10-28 dataset correction: the main notebooks now use CIFAR10020×5 (H1),
+original **online** LPR Split-CIFAR100/SlimResNet18 (H2), original **Continual
+ImageNet32 binary** stream (H3), and **20 rotated MNIST** domains (H4). Old offline
+H2, regression H3 and permuted H4 commands below/above remain separate experiments.
+Use STANDARD_COMPARE_S0.md for the current inputs, compatibility pins and scope.
+
 See [STANDARD_COMPARE_S0.md](../STANDARD_COMPARE_S0.md) for the four full-horizon
-notebooks. H2 now includes verified official LPR callbacks through a documented
-framework adapter; no Hydra/Avalanche install is required for that path. It is
-an ER/PyCIL shared-protocol adaptation, not a paper-score reproduction. H3 main
+notebooks. Main H2 uses actual Avalanche0.4 online training and verified official
+LPR callbacks; its notebook installs the isolated compatible environment. The
+older ER/PyCIL callback adaptation remains separate. H3 main
 uses `--arm vna_gir` (actual VNA -> GIR), preserving the older `h3` as an ablation.
 Official pairs are H1 iCaRL, H2 LPR, H3 CBP and H4 ER. Paper references justify
 baseline selection only. GPU/benchmark validation is still pending.

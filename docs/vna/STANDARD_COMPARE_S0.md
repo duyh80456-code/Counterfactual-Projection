@@ -1,88 +1,90 @@
-# H1–H4 main comparisons — seed 0
+# H1–H4 benchmark comparisons, seed 0 — 2026-10-28
 
-Source pin: `acf1f033a85b9882c3fac8db08a3a6bee93090f0`. All notebooks use this immutable code commit;
-no source ZIP is attached. These are full-horizon runs, with no automatic pytest,
-smoke, task truncation, seed substitution or clipping in the notebook.
+This registration supersedes the earlier offline-H2/B5-H3/five-domain notebook
+plan. Papers justify baseline choice; published accuracy is not a gate. The
+four directions are different benchmark problems, evaluated within each pair.
 
-| Notebook | Baseline | Full algorithm | Fresh data input | Resource |
-|---|---|---|---|---|
-| standard_cl_H1_s0.ipynb | iCaRL | iCaRL + Replay-Aware VNA | CIFAR100 Python | T4 x2 |
-| standard_cl_H2_s0.ipynb | LPR on shared ER/PyCIL setup | Geometry-Aware VNA | CIFAR100 Python | T4 x2 |
-| standard_cl_H3_s0.ipynb | native CBP | BP + VNA -> GIR (`vna_gir`) | none; native regression generator | CPU, four cores |
-| standard_cl_H4_s0.ipynb | ER | ER + Domain-Adaptive VNA | MNIST raw IDX, plain or gzip | T4 x2 |
+| Notebook | Baseline / full arm | Dataset and horizon | Input |
+|---|---|---|---|
+| standard_cl_H1_s0.ipynb | iCaRL / Replay-Aware VNA | CIFAR100,20×5 classes, PyCIL ResNet32 BN, memory2000,200/170 epochs | Python train/test/meta |
+| standard_cl_H2_s0.ipynb | LPR / Geometry-Aware VNA | Online Split-CIFAR100, SlimResNet18 nf20,20 experiences, minibatch10 repeated3 times, validation5%, class-balanced replay2000 | Python train/test/meta |
+| standard_cl_H3_s0.ipynb | CBP / BP + VNA → GIR | Continual ImageNet32,5000 binary tasks,250epochs/task, batch100, original ConvNet | Original 0.npy …999.npy, each700×3×32×32 |
+| standard_cl_H4_s0.ipynb | ER / ER + Domain-Adaptive VNA | MNIST,20 rotations0,15,…,285degrees; fixed10 labels, one epoch/domain, MLP256 BN, reservoir2000 | Four IDX files, plain/gzip |
 
-Paper/framework references are **baseline-choice rationale only**. There is no
-paper-number reproduction gate. H4 uses our explicit reservoir ER implementation;
-Avalanche is a rationale/framework reference, not a claim that its trainer runs.
+All notebooks use T4×2: baselineGPU0/fullGPU1. No permuted-MNIST or regression
+jobs are queued. Those old runners remain separate experiments. Seed0 is
+descriptive, not a significance claim.
 
-## Protocol
+## Original protocol sources
 
-H1/H2: CIFAR100, BN ResNet32, PyCIL random class order seed0, B0 Inc5 full20 tasks,
-memory2000, 200 epochs first task/170 later, original standard-CL LR and milestones,
-final-epoch models. H1 uses the existing CE+KD iCaRL objective. H2 deliberately
-shares an ER objective/herding memory between LPR and Geometry-Aware VNA; it does
-not silently combine LPR with iCaRL KD. H2's fixed lambda1 is the existing penalty
-variant, not an exact calibrated feature-drift constraint.
+H1 keeps PyCIL `f3509b8ca3f20660ce4aa13f19d5283de81b4b35`.
+H2 follows LPR `76c44f8f2481f4e23881b2463eb58aaf94affabb`:
+`config/experiment/split_cifar100.yaml`, `benchmark/{nc_scenario,split_cifar100}.yaml`,
+`optimizer/sgd.yaml`, `strategy/{er,method_defaults}.yaml` and `experiments/main.py`.
+It uses actual Avalanche0.4 OnlineCLScenario, Naive, ReplayPlugin,
+ClassBalancedBuffer and IncrementalClassifier. Original LPR callback bodies
+are verified and unchanged. Hydra, asynchronous evaluation and external wandb
+logging are omitted. Evaluation is isolated from training RNG. Online experiences
+are materialized before training for deterministic resume; their original
+partition permutation consumes RNG at that boundary. Optimizer is SGD0.1,
+momentum0, weight_decay0, no scheduler. Geometry-VNA shares the online protocol,
+using its existing lambda1 feature penalty and cadence512, replacing LPR rather
+than silently stacking onto it.
 
-The LPR source is the official pinned callback implementation, with its original
-preconditioner formulas and default options. A small interface adapter runs it
-without the Avalanche/wandb stack: no callback algorithm body is rewritten; the
-unused framework superclass and disabled logger imports are adapted. A PyCIL
-linear-head view preserves its exact F.linear output, Parameter identities and
-initialization RNG while allowing the official nn.Linear checks to include it.
-Matrices/update cadence persist across task/epoch resume. This is an explicit
-framework/protocol adaptation, not a full official experiment reproduction.
+H2 creates Python3.10 because Avalanche0.4 does not support Kaggle's Python3.13.
+Torch2.2.2/torchvision0.17.2, NumPy1.26.4, torchmetrics0.11.4, pytorchcv0.0.67
+are pinned. Avalanche requires typing-extensions4.4 for its Protocol constructors. Keep that
+original version and wandb0.15.12/protobuf4.25.8; override torch2.2's newer typing
+metadata by installing Avalanche/typing4.4 without dependency resolution last.
+The training uses torch.func without torch.compile. Algorithm source is unchanged.
+This is a compatibility adaptation, not exact reproduction of the old dependency
+stack. Local Python3.12 toy tests emulate only typing4.4's no-op Protocol
+constructors; the production Python3.10 environment uses typing4.4 unchanged.
+Avalanche retains orphan optimizer entries when its classifier grows; only
+empty/None entries are pruned for torch2.2 serialization. Any nonempty orphan
+state raises. A toy comparison checks bitwise equality with native online LPR.
 
-H3 uses the native LoP B5 stream (width5 ReLU, SGD0.01, 100 tasks x10000 points).
-The earlier `h3` arm remains reconfiguration-only; it is not relabelled as full.
-The new main `vna_gir` actually attempts VNA and then evaluates GIR with its own
-loss certificate at cadence10000, window128. Resume restores both engines and
-rolls back the enclosing native step if an intervention is interrupted. CBP's
-registered rate1e-4/effective upstream maturity10 are preserved; no tuned-best
-baseline or reproduction of published scores is claimed.
+H3 reads unchanged LoP `a6b79580d85f3025bdb601566d3627c5f489f13b`
+`lop/imagenet/cfg/cbp.json` and class_order[0]. It retains SGD0.01 momentum0.9,
+CBP replacement3e-4, maturity100, decay0.99, adaptable_contribution,600 train and
+100 test images/class, raw float conversion, repeated class order and zero head
+at every task without clearing momentum. Baseline calls ConvCBP.learn. Full
+calls Backprop.learn then existing physical VNA→GIR at cadence10000/window128.
+VNA/GIR scope is fc1→fc2 and fc2→fc3. Pool/flatten sites lack compatible training
+statistics and are explicitly excluded, not assigned an invented kernel. Both
+engine states, CBP utilities/ages, optimizer, epoch ordering, head reset and RNG
+resume. H3 reports classification error in percentage points, not regression MSE.
 
-H4 runs rotated and permuted MNIST separately, five domains each, fixed10 labels,
-MLP width256 BN, reservoir2000, existing SGD0.01 and one epoch per domain. Each
-GPU lane queues the two streams. Their tables remain separate.
+H4's20-angle grid is registered here, not claimed to be a unique Avalanche paper
+protocol. Domain identity is absent at inference; all domains share the10 labels.
 
-## Kaggle use
+## Inputs and sessions
 
-Enable Internet and grant the existing Kaggle Secret `github_token`. H1/H2/H4:
-select GPU T4 x2; baseline is on GPU0 and full on GPU1. H3: select CPU, two lanes
-with two threads each. GPU acceleration is unnecessary for that native runner.
+Enable Internet and Kaggle Secret github_token. Fresh runs need only the dataset
+in their row; no source ZIP, Gram authority, old baseline or best_config. Set
+DATA_DIR only if several compatible roots are attached. Source must be committed
+and notebooks regenerated with its exact40-character commit before uploading;
+never pin an older implementation to run new code.
 
-CIFAR input must expose `cifar-100-python/{train,test,meta}` (or those files in a
-single directory). MNIST must expose train/test IDX images and labels, optionally
-gzipped. The notebook stages these paths without changing labels/splits. If
-multiple dataset roots are visible, set DATA_DIR in the first code cell to the
-intended directory; the notebook refuses to guess between different roots.
-No Gram output, old baseline, best_config.json or source ZIP is required.
+Eleven-hour deadline and exit75 resume stay enabled. Attach that notebook's
+previous Output and same dataset, then rerun the same source pin/run tag. Only
+matching run-tag output is restored. Local checkpoints take precedence; conflicting
+attachment versions raise. Archives every300s, heartbeat30s. Datasets and the H2
+environment are excluded from archives and rebuilt when needed. No notebook
+automatically tests/smokes, clips, truncates or substitutes seeds.
 
-Runtime on T4 is **unmeasured**. More than one eleven-hour session may be needed,
-particularly for the correction arms; this warning is printed before execution.
-The horizon stays full. On exit75, attach that notebook's latest Output together
-with its original dataset and rerun the same notebook/pin/run-tag. Matching
-`standard_outputs/<RUN_TAG>/` alone is restored. Existing local checkpoints are
-kept on an in-session rerun; conflicting attached versions raise. Archives are
-written periodically and at exit; heartbeat appears every30 seconds. Data and
-source checkouts are excluded from archives and are restaged/regenerated.
+H3 has **15 million native optimizer updates per arm**, before VNA/GIR overhead;
+many sessions are required. Exact T4 hours/session counts are unmeasured. Other
+branches may also need multiple sessions. No numerical runtime estimate is
+invented. Collector keeps branches separate, validates paired identity and retains
+failures. Whole-method differences do not isolate virtual-kernel benefits.
 
-Final tables list completed-run metrics and leave paused/failed metrics blank.
-The collector retains failures and pairs H2 to LPR and H3 to CBP. No kernel-only
-benefit can be inferred from comparing complete algorithms without the H0 controls.
-Seed0 gives a descriptive paired comparison, not a significance result.
+Only focused synthetic CPU checks are authorized here; no real dataset/GPU run.
 
-## Build and verification
-
-```bash
-.venv/bin/python -m scripts.build_kaggle_standard_compare --commit acf1f033a85b9882c3fac8db08a3a6bee93090f0
-REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/test_standard_compare_notebooks.py -o addopts='' -q
-```
-
-New focused tests passed4/4. A combined affected-path check passed16 tests,
-17 deselected (29.19s), including old H1/H2/H3 resume and collector paths.
-Log: STANDARD_COMPARE_CPU_TESTS.log. Source syntax/build checks are local;
-Kaggle authentication, live archive transport, CUDA and real benchmark training
-have not been executed. All scientific outcomes remain UNVERIFIED.
-
-Final builder-only check: 1 passed, 3 deselected (3.11s); generated cells compile and have stable notebook cell IDs.
+Focused verification:17 tests passed (33.77s), including original online LPR
+bitwise endpoint equality, LPR/Geometry resume, native Slim feature equality,
+ImageNet split/native CBP/full-hook resume and affected H2/H4 math. The added
+mid-correction/classifier-expansion rollback check passed in a subsequent2-test
+rerun (10.39s). See STANDARD_BENCHMARK_CPU_TESTS.log. Local tests use Python3.12
+and the documented Protocol-constructor shim; the production Python3.10 stack,
+Kaggle install, CUDA, real datasets and timing have not been exercised.

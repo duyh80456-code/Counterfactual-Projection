@@ -47,3 +47,12 @@ Hydra/Avalanche training-stack reproduction remains outside scope. The baseline
 runs under our shared ER/herding/expanding-head protocol. See
 [seed-zero notebook registration](../STANDARD_COMPARE_S0.md) for options,
 limitations, inputs and executable notebooks. No published result is a gate.
+
+### Superseding main notebook setup — 2026-10-28
+
+The offline PyCIL adapter above remains a separate experiment. Main H2 now uses
+original online LPR with actual Avalanche0.4 replay/class balancing, SlimResNet18,
+minibatch10×3 repeats and5% validation. Main H3 uses original Continual ImageNet32
+cfg (5000 binary tasks,250epochs), not B5. Main H4 is20 rotated MNIST domains.
+All four main notebooks use two GPUs. See the current registration, including
+compatibility overrides, supported H3 sites and absence of benchmark evidence.

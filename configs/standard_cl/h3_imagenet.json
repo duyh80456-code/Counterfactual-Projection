@@ -1,0 +1,6 @@
+{
+  "upstream_config": "lop/imagenet/cfg/cbp.json",
+  "intervention_every": 10000,
+  "window": 128,
+  "correction": {"damping_relative": 0.01, "cg_tolerance": 1e-6, "cg_iterations": 200, "trace_probes": 8, "max_trials": 12}
+}

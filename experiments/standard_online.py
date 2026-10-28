@@ -1,0 +1,240 @@
+"""H2: upstream LPR online Split-CIFAR100, with a Geometry-VNA comparison."""
+import argparse
+from copy import deepcopy
+from dataclasses import asdict
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import random
+import time
+import numpy as np
+import torch
+from torch import nn
+from experiments.standard_cl import ExperimentLogger,matrix_metrics
+from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
+from experiments.vna_provenance import code_commit
+from methods.cl_h2 import GeometryCorrection
+from methods.cl_lpr import ROOT,PIN,SOURCE_SHA256,official_module
+from methods.cl_replay import CorrectionConfig,ReplayLoss
+from methods.cl_state import isolated,State
+from methods.vna_sites import HookSite
+
+if importlib.util.find_spec('avalanche'):
+    from avalanche.training.plugins import SupervisedPlugin
+else:
+    SupervisedPlugin=object
+
+
+class OnlineNetwork(nn.Module):
+    def __init__(self,net):
+        super().__init__();self.net=net;self.virtual_relu=nn.ReLU()
+    def forward(self,x):return self.net(x)
+    def standard_features(self,x):
+        n=self.net
+        x=torch.relu(n.bn1(n.conv1(x)))
+        for layer in (n.layer1,n.layer2,n.layer3,n.layer4):x=layer(x)
+        return torch.nn.functional.avg_pool2d(x,4).flatten(1)
+    def sites(self):
+        return [HookSite(self,name+'.conv1',name+'.conv2','conv',between=(name+'.bn1','virtual_relu'))
+                for name,module in self.named_modules() if hasattr(module,'conv1') and hasattr(module,'conv2')]
+
+
+class GeometryPlugin(SupervisedPlugin):
+    def __init__(self,cfg,seed):
+        self.cfg=cfg;self.engine=GeometryCorrection(CorrectionConfig(seed=seed,**cfg['correction']));self.last_event=0
+    def after_update(self,strategy,**kwargs):
+        step=strategy.clock.train_iterations+1
+        if step-self.last_event<self.cfg['intervention_every']:return
+        x,y=strategy.mb_x,strategy.mb_y
+        incoming=min(self.cfg['train_mb_size'],len(y))
+        mask=torch.arange(len(y),device=y.device)>=incoming
+        if not bool(mask.any()):return
+        losses=ReplayLoss(y,mask,kind='er')
+        row=self.engine.step(strategy.model,strategy.optimizer,x,losses,strategy.model.sites(),self.cfg['lr'],
+            replay_inputs=x[mask],geometry_weight=self.cfg['geometry_weight'])
+        row.update(task=self.task+1,step=step)
+        self.last_event=step
+
+
+class LPRCallbacks(SupervisedPlugin):
+    def __init__(self,algorithm):self.algorithm=algorithm
+    def before_backward(self,strategy,**kwargs):self.algorithm.before_backward(strategy,**kwargs)
+    def after_backward(self,strategy,**kwargs):self.algorithm.after_backward(strategy,**kwargs)
+
+
+class FiniteLoss(SupervisedPlugin):
+    def before_training_exp(self,strategy,**kwargs):
+        self.last_loss=None
+        active={id(p) for group in strategy.optimizer.param_groups for p in group['params']}
+        # Avalanche0.4 retains empty entries for replaced heads; torch2.2 cannot serialize those orphans.
+        for parameter,state in list(strategy.optimizer.state.items()):
+            if id(parameter) not in active:
+                if any(v is not None for v in state.values()):raise ValueError('refuse to discard nonempty orphan optimizer state')
+                del strategy.optimizer.state[parameter]
+    def before_backward(self,strategy,**kwargs):
+        if not bool(torch.isfinite(strategy.loss)):
+            raise FloatingPointError(f'nonfinite loss at online experience={strategy.clock.train_exp_counter}, step={strategy.clock.train_iterations+1}, tensor=loss')
+        self.last_loss=float(strategy.loss.detach())
+
+
+def native_setup(cfg,data_dir,seed):
+    import avalanche
+    if avalanche.__version__!='0.4.0':raise ValueError('H2 requires the upstream avalanche-lib==0.4.0')
+    from avalanche.benchmarks.classic import SplitCIFAR100
+    from avalanche.benchmarks import benchmark_with_validation_stream
+    from avalanche.models import IncrementalClassifier
+    from torchvision import transforms
+    if not all((Path(data_dir)/'cifar-100-python'/name).is_file() for name in ('train','test','meta')):
+        raise FileNotFoundError('Attach original CIFAR100 cifar-100-python/{train,test,meta}')
+    official_module()
+    path=ROOT/'src/toolkit/slim_resnet18.py'
+    spec=importlib.util.spec_from_file_location('_standard_lpr_slim',path)
+    import sys
+    module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
+    normalize=transforms.Normalize((.5071,.4865,.4409),(.2673,.2564,.2762))
+    train=transforms.Compose([transforms.RandomCrop(32,padding=4),transforms.RandomHorizontalFlip(),transforms.ToTensor(),normalize])
+    test=transforms.Compose([transforms.ToTensor(),normalize])
+    # Upstream seeds global RNG and passes seed=None to SplitCIFAR100.
+    scenario=SplitCIFAR100(cfg['tasks'],seed=None,return_task_id=False,shuffle=True,
+        class_ids_from_zero_in_each_exp=False,class_ids_from_zero_from_first_exp=True,
+        train_transform=train,eval_transform=test,dataset_root=data_dir)
+    scenario=benchmark_with_validation_stream(scenario,validation_size=cfg['validation_fraction'],shuffle=True)
+    net=module.SlimResNet18(1,input_size=(32,32,3))
+    net.linear=IncrementalClassifier(net.linear.in_features,1)
+    return scenario,OnlineNetwork(net)
+
+
+def evaluate(model,stream,device):
+    from torch.utils.data import DataLoader
+    result=[]
+    with isolated(model),torch.no_grad():
+        model.eval()
+        for experience in stream:
+            correct=total=0
+            for batch in DataLoader(experience.dataset,batch_size=128,shuffle=False,num_workers=0):
+                x,y=batch[:2];z=model(x.to(device))
+                if not bool(torch.isfinite(z).all()):raise FloatingPointError('nonfinite evaluation logits')
+                correct+=int((z.argmax(1).cpu()==y).sum());total+=len(y)
+            result.append(100*correct/total)
+    return result
+
+
+def run(args):
+    from avalanche.benchmarks.scenarios import OnlineCLScenario
+    from avalanche.training.plugins import ReplayPlugin
+    from avalanche.training.storage_policy import ClassBalancedBuffer
+    from avalanche.training.supervised import Naive
+    from types import SimpleNamespace
+    from diagnostics.kernel_ablation import flags
+    cfg=json.loads(Path(args.config).read_text())
+    random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
+    scenario,model=native_setup(cfg,args.data_dir,args.seed)
+    model=model.to(args.device)
+    storage=ClassBalancedBuffer(max_size=cfg['memory_size'],adaptive_size=True)
+    replay=ReplayPlugin(mem_size=cfg['memory_size'],batch_size_mem=cfg['train_mb_size'],storage_policy=storage)
+    lpr_cfg=cfg['lpr']
+    lpr=official_module().LPRPlugin({k:SimpleNamespace(**v) for k,v in lpr_cfg.items()},storage)
+    geometry=GeometryPlugin(cfg,args.seed)
+    optimizer=torch.optim.SGD(model.parameters(),lr=cfg['lr'],momentum=cfg['momentum'],weight_decay=cfg['weight_decay'])
+    finite=FiniteLoss()
+    def make_strategy(net,opt):
+        return Naive(net,opt,torch.nn.CrossEntropyLoss(),train_mb_size=cfg['train_mb_size'],train_epochs=cfg['train_epochs'],
+            eval_mb_size=128,device=args.device,evaluator=None,eval_every=-1,
+            plugins=[replay,finite,LPRCallbacks(lpr) if args.arm=='lpr' else geometry])
+    strategy=make_strategy(model,optimizer)
+    hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((Path(args.data_dir)/'cifar-100-python').glob('*')) if p.is_file()}
+    protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),config=cfg,tasks=cfg['tasks'],
+        upstream_commit=PIN,lpr_source_sha256=SOURCE_SHA256,avalanche='0.4.0',backbone='SlimResNet18 nf20, IncrementalClassifier',dataset_fingerprint=hashes,
+        class_order=list(map(int,scenario.classes_order_original_ids)),runtime_flags=flags(),correction=asdict(geometry.engine.config),
+        online=True,task_boundaries=False,validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
+        framework_compatibility='typing4.4 Protocol semantics; prune only empty/None orphan optimizer entries after head adaptation for torch2.2 serialization',
+        arm_implementation='official LPR callbacks' if args.arm=='lpr' else 'ER + Geometry-Aware VNA',
+        evidence_status='INCONCLUSIVE')
+    logger=ExperimentLogger(args.out);out=Path(args.out)
+    if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('online protocol mismatch')
+    logger.save('protocol',protocol);progress=Progress(out,protocol)
+    if (out/'summary.json').exists():
+        previous=json.loads((out/'summary.json').read_text())
+        if previous.get('protocol')!=protocol:raise ValueError('online summary protocol mismatch')
+        if previous.get('status')=='COMPLETED':
+            if len(previous.get('tasks',[]))!=cfg['tasks']:raise ValueError('incomplete online summary')
+            return previous
+    rows=[];epochs=[];task=position=0;elapsed=0.;stream_rng=None
+    if progress.state:
+        s=progress.state;progress.restore_artifacts();strategy.model=s['model'].to(args.device)
+        strategy.optimizer=torch.optim.SGD(strategy.model.parameters(),lr=cfg['lr'],momentum=cfg['momentum'],weight_decay=cfg['weight_decay'])
+        strategy.optimizer.load_state_dict(s['optimizer']);vars(strategy.clock).update(s['clock'])
+        replay.storage_policy=s['storage'];lpr.storage_policy=replay.storage_policy
+        lpr._preconditioner_invs={k:official_module().PreconditionerInv(v.matrix.to(args.device),v.has_bias,v.parallel)
+                                  for k,v in s['lpr_inverses'].items()};lpr.update_config.every_iter=s['lpr_every_iter']
+        clock=s['clock'];strategy=make_strategy(strategy.model,strategy.optimizer);vars(strategy.clock).update(clock)
+        strategy.optimized_param_id=dict(strategy.model.named_parameters())
+        geometry.engine.load_state_dict(s['engine']);geometry.last_event=s['last_event']
+        rows,epochs,task,position,elapsed=s['rows'],s['epochs'],s['task'],s['position'],s['elapsed_seconds']
+        stream_rng=s['stream_rng'];restore_rng(s['rng'])
+    started=time.monotonic();status='COMPLETED';failure=None;coordinates=None
+    def save():
+        logger.save('tasks',rows);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events)
+        progress.save(dict(model=strategy.model,optimizer=strategy.optimizer.state_dict(),clock=vars(strategy.clock),storage=replay.storage_policy,
+            lpr_inverses=lpr._preconditioner_invs,lpr_every_iter=lpr.update_config.every_iter,engine=geometry.engine.state_dict(),last_event=geometry.last_event,
+            rng=rng_state(),rows=rows,epochs=epochs,task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
+    try:
+        while task<cfg['tasks']:
+            fresh=stream_rng is None
+            if fresh:stream_rng=rng_state()
+            current_rng=rng_state();restore_rng(stream_rng)
+            online=OnlineCLScenario(original_streams=scenario.streams.values(),experiences=scenario.train_stream[task],
+                experience_size=cfg['train_mb_size'],access_task_boundaries=False)
+            experiences=list(online.train_stream)
+            if not fresh:restore_rng(current_rng)
+            geometry.task=task
+            for index,experience in enumerate(experiences):
+                if index<position:continue
+                if deadline_due():save();raise SystemExit(75)
+                snapshot=State(strategy.model,strategy.optimizer)
+                old=dict(storage=deepcopy(replay.storage_policy),clock=deepcopy(vars(strategy.clock)),optimized=strategy.optimized_param_id is not None,
+                    param_groups=[list(group['params']) for group in strategy.optimizer.param_groups],
+                    inverses=deepcopy(lpr._preconditioner_invs),every=lpr.update_config.every_iter,
+                    engine=geometry.engine.state_dict(),last=geometry.last_event)
+                try:
+                    strategy.train(experience,eval_streams=[],num_workers=0,drop_last=True)
+                    value=finite.last_loss
+                except SystemExit as exc:
+                    if exc.code!=75:raise
+                    for group,parameters in zip(strategy.optimizer.param_groups,old['param_groups']):group['params']=parameters
+                    snapshot.restore();replay.storage_policy=old['storage'];lpr.storage_policy=replay.storage_policy
+                    strategy.optimized_param_id=dict(strategy.model.named_parameters()) if old['optimized'] else None
+                    vars(strategy.clock).clear();vars(strategy.clock).update(old['clock']);lpr._preconditioner_invs=old['inverses']
+                    lpr.update_config.every_iter=old['every'];geometry.engine.load_state_dict(old['engine']);geometry.last_event=old['last']
+                    save();raise
+                position=index+1
+                if position%100==0:
+                    log(f'H2 {args.arm} task={task+1} online_batch={position} loss={value}');save()
+            accuracy=evaluate(strategy.model,scenario.test_stream[:task+1],args.device)
+            rows.append(dict(task=task+1,domain_accuracies=accuracy,total=float(np.mean(accuracy))))
+            epochs.append(dict(task=task+1,online_minibatches=position,repeats=cfg['train_epochs']))
+            task+=1;position=0;stream_rng=None;save()
+    except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
+    except FloatingPointError as exc:
+        status='FAILED_DIVERGED';failure=str(exc)
+        coordinates=coordinates or dict(task=task+1,online_batch=position,step=strategy.clock.train_iterations+1,tensor='loss')
+    except BaseException as exc:status='FAILED_ERROR';failure=repr(exc);raise
+    finally:
+        seconds=elapsed+time.monotonic()-started
+        logger.save('summary',dict(protocol=protocol,status=status,failure=failure,diverged=coordinates,tasks=rows,
+            **matrix_metrics([r['domain_accuracies'] for r in rows]),wall_seconds=seconds,gpu_hours=seconds/3600 if args.device!='cpu' else 0.,
+            correction_seconds=sum(e['seconds'] for e in geometry.engine.events),parameter_count=sum(p.numel() for p in strategy.model.parameters()),
+            evidence_status='INCONCLUSIVE'))
+
+
+def parser():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--config',default='configs/standard_cl/h2_online_cifar100.json');p.add_argument('--out',required=True)
+    p.add_argument('--data-dir',required=True);p.add_argument('--device',default='cuda:0');p.add_argument('--seed',type=int,default=0)
+    p.add_argument('--arm',choices=('lpr','h2'),required=True)
+    return p
+
+
+if __name__=='__main__':run(parser().parse_args())

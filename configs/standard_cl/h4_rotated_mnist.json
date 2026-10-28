@@ -1,6 +1,6 @@
 {
   "kind": "rotated",
-  "domains": 5,
+  "domains": 20,
   "epochs": 1,
   "angle_step": 15,
   "batch_size": 128,

@@ -40,3 +40,8 @@ Hydra/Avalanche experiment stack is not run. H3's new `vna_gir` arm actually
 executes VNA then GIR; `h3` remains the reconfiguration-only ablation. See
 [seed-zero notebook registration](../STANDARD_COMPARE_S0.md). These additions
 have focused CPU checks; CUDA and benchmark outcomes remain UNVERIFIED.
+
+The main notebook update replaces offline H2 and regression H3 with online
+Avalanche LPR and Continual ImageNet32, and H4 with20 rotations. The historical
+PASS table above does not certify these new benchmark paths. See the current
+registration and focused test log; no CUDA or real dataset training was run.

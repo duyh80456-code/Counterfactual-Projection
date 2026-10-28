@@ -14,6 +14,9 @@ class Features(nn.Module):
         if not self.layers or len(set(self.layers))!=len(self.layers) or set(self.layers)-{'features','stage_1','stage_2','stage_3'}:
             raise ValueError('fixed feature layers: features, stage_1, stage_2, stage_3')
     def forward(self,x):
+        if hasattr(self.native,'standard_features'):
+            if self.layers!=('features',):raise ValueError('this backbone exposes pooled features only')
+            return self.native.standard_features(x)
         result=self.native(x)
         return torch.cat([(result['features'] if name=='features' else result['fmaps'][int(name[-1])-1]).flatten(1)
                           for name in self.layers],dim=1)

@@ -16,21 +16,39 @@ def jobs(branch):
     if branch=='H1':return ([job('icarl_s0','experiments.standard_cl',cil+['--arm','baseline'])],
         [job('icarl_replay_vna_s0','experiments.standard_cl',cil+['--arm','h1'])])
     if branch=='H2':
-        args=['--seed','0','--tasks','20','--baseline','er','--branch','H2','--config','configs/standard_cl/h2_cifar100_bn.json']
-        return ([job('lpr_s0','experiments.standard_cl',args+['--arm','lpr'])],
-            [job('geometry_vna_s0','experiments.standard_cl',args+['--arm','h2'])])
-    if branch=='H3':return ([job('cbp_s0','experiments.standard_plasticity',['--seed','0','--arm','cbp'])],
-        [job('plasticity_vna_gir_s0','experiments.standard_plasticity',['--seed','0','--arm','vna_gir'])])
+        args=['--seed','0','--config','configs/standard_cl/h2_online_cifar100.json']
+        return ([job('lpr_s0','experiments.standard_online',args+['--arm','lpr'])],
+            [job('geometry_vna_s0','experiments.standard_online',args+['--arm','h2'])])
+    if branch=='H3':return ([job('cbp_s0','experiments.standard_imagenet',['--seed','0','--arm','cbp'])],
+        [job('plasticity_vna_gir_s0','experiments.standard_imagenet',['--seed','0','--arm','vna_gir'])])
     if branch=='H4':
         return tuple([job(f'{"er" if arm=="baseline" else "domain_vna"}_{kind}_s0','experiments.standard_domain',['--seed','0','--arm',arm,
-            '--config',f'configs/standard_cl/h4_{kind}_mnist.json']) for kind in ('rotated','permuted')]
+            '--config',f'configs/standard_cl/h4_{kind}_mnist.json']) for kind in ('rotated',)]
             for arm in ('baseline','h1'))
     raise ValueError(branch)
 
 
 SETUP=r'''os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION']='python'
-subprocess.run([sys.executable,'-m','pip','install','-q','-e',str(REPO)+'[vision,diagnostics]'],check=True)
-subprocess.run([sys.executable,'-m','pip','install','-q','-r',str(REPO/'requirements-upstream.txt')],check=True)
+PYTHON=sys.executable
+if BRANCH=='H2':
+    # Avalanche 0.4 predates Kaggle's Python 3.13; give the original stack its supported interpreter.
+    subprocess.run([sys.executable,'-m','pip','install','-q','uv'],check=True)
+    environment=RUN_ROOT/'lpr_env'
+    if not (environment/'bin/python').exists():
+        subprocess.run([sys.executable,'-m','uv','venv','--python','3.10',str(environment)],check=True)
+    PYTHON=str(environment/'bin/python')
+    subprocess.run([sys.executable,'-m','uv','pip','install','--python',PYTHON,'torch==2.2.2','torchvision==0.17.2',
+        'numpy==1.26.4','torchmetrics==0.11.4','pytorchcv==0.0.67',
+        'psutil','gputil','scikit-learn==1.6.1','matplotlib','wandb==0.15.12','protobuf==4.25.8',
+        'tensorboard==2.19.0','tqdm','gdown==5.2.0','quadprog','dill==0.3.8','packaging','setuptools==75.8.0'],check=True)
+    subprocess.run([sys.executable,'-m','uv','pip','install','--python',PYTHON,'-e',str(REPO)+'[vision,diagnostics]',
+        '-r',str(REPO/'requirements-upstream.txt')],check=True)
+    # Avalanche requires old Protocol constructor semantics; override torch's typing metadata, not its algorithm.
+    subprocess.run([sys.executable,'-m','uv','pip','install','--python',PYTHON,'--no-deps',
+        'avalanche-lib==0.4.0','typing-extensions==4.4.0'],check=True)
+else:
+    subprocess.run([PYTHON,'-m','pip','install','-q','-e',str(REPO)+'[vision,diagnostics]'],check=True)
+    subprocess.run([PYTHON,'-m','pip','install','-q','-r',str(REPO/'requirements-upstream.txt')],check=True)
 def fetch(name,url,pin):
     path=REPO/'third_party'/name
     if not path.exists():
@@ -45,19 +63,19 @@ else:
     fetch('PyCIL','https://github.com/LAMDA-CL/PyCIL.git','f3509b8ca3f20660ce4aa13f19d5283de81b4b35')
 if BRANCH=='H2':fetch('LPR','https://github.com/plai-group/LPR.git','76c44f8f2481f4e23881b2463eb58aaf94affabb')
 sys.path.insert(0,str(REPO))
-import torch
-if BRANCH!='H3' and torch.cuda.device_count()!=2:raise RuntimeError('Select GPU T4 x2')
+subprocess.run([PYTHON,'-c',"import torch; assert torch.cuda.device_count()==2, 'Select GPU T4 x2'"],check=True)
 def input_root():
-    if BRANCH=='H3':return None
     candidates=[]
     for directory,_,files in os.walk(DATA_DIR or '/kaggle/input',followlinks=True):
         names=set(files);path=Path(directory)
         if BRANCH in ('H1','H2') and {'train','test','meta'}<=names:candidates.append(path)
+        if BRANCH=='H3' and all(str(i)+'.npy' in names for i in range(1000)):candidates.append(path)
         if BRANCH=='H4':
             needed={'train-images-idx3-ubyte','train-labels-idx1-ubyte','t10k-images-idx3-ubyte','t10k-labels-idx1-ubyte'}
             if all(name in names or name+'.gz' in names for name in needed):candidates.append(path)
     if len(candidates)!=1:raise ValueError(f'Set DATA_DIR to exactly one dataset root; found {candidates}')
     source=candidates[0];stage=RUN_ROOT/'input_data';stage.mkdir(exist_ok=True)
+    if BRANCH=='H3':return str(source)
     if BRANCH in ('H1','H2'):
         target=stage/'cifar-100-python'
         if not target.exists():target.symlink_to(source,target_is_directory=True)
@@ -88,24 +106,24 @@ else:restore_stage_archives(Path('/kaggle/input'),OUTPUT,'standard_outputs',pref
 ROOT_OUT.mkdir(parents=True,exist_ok=True)
 VNA_DEADLINE=SESSION_START+11*3600
 base_env={**os.environ,'PYTHONPATH':str(REPO),'PYTHONUNBUFFERED':'1','TQDM_DISABLE':'1',
-    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION':'python','OMP_NUM_THREADS':'1' if BRANCH!='H3' else '2',
-    'MKL_NUM_THREADS':'1' if BRANCH!='H3' else '2','VNA_DEADLINE':str(VNA_DEADLINE)}
+    'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION':'python','OMP_NUM_THREADS':'1',
+    'MKL_NUM_THREADS':'1','VNA_DEADLINE':str(VNA_DEADLINE)}
 configs=RUN_ROOT/'effective_configs';configs.mkdir(exist_ok=True)
 def command(job):
     args=list(job['args'])
-    if BRANCH in ('H1','H2'):
+    if BRANCH=='H1':
         index=args.index('--config') if '--config' in args else None
         source=args[index+1] if index is not None else 'configs/standard_cl/h1_cifar100_bn.json'
         config=json.loads((REPO/source).read_text());config['workers']=1
         target=configs/Path(source).name;target.write_text(json.dumps(config,indent=2)+'\n')
         if index is not None:args[index+1]=str(target)
         else:args+=['--config',str(target)]
-    if BRANCH!='H3':args+=['--data-dir',RESOLVED_DATA,'--device','cuda:0']
-    return [sys.executable,'-m',job['module'],*args,'--out',str(ROOT_OUT/job['name'])]
+    args+=['--data-dir',RESOLVED_DATA,'--device','cuda:0']
+    return [PYTHON,'-m',job['module'],*args,'--out',str(ROOT_OUT/job['name'])]
 commands=[[command(job) for job in lane] for lane in JOBS]
 manifest=dict(branch=BRANCH,seed=0,source_commit=REPO_COMMIT,jobs=JOBS,commands=commands,
     paper_role='baseline choice rationale only; no paper-number reproduction gate',
-    runtime_overrides={'workers':1,'OMP_NUM_THREADS':1,'MKL_NUM_THREADS':1} if BRANCH!='H3' else {'CPU_lanes':2,'threads_per_lane':2},
+    runtime_overrides={'workers':1 if BRANCH=='H1' else 0,'OMP_NUM_THREADS':1,'MKL_NUM_THREADS':1},
     horizons='full registered configs; exit75 resumes, never truncates or changes seed')
 atomic_json_save(manifest,ROOT_OUT/'notebook_protocol.json')
 stop=threading.Event();paused=threading.Event();lanes={};archive_lock=threading.Lock();archive_errors=[]
@@ -118,7 +136,7 @@ def periodic():
 def heartbeat():
     while not stop.wait(30):print_heartbeat(RUN_ROOT,SESSION_START,VNA_DEADLINE,lanes)
 def lane(index):
-    env={**base_env,'CUDA_VISIBLE_DEVICES':'' if BRANCH=='H3' else str(index)}
+    env={**base_env,'CUDA_VISIBLE_DEVICES':str(index)}
     for job,cmd in zip(JOBS[index],commands[index]):
         print('START',job['name'],cmd,flush=True)
         if not launch_logged(cmd,cwd=REPO,env=env,log_path=RUN_ROOT/(RUN_TAG+'_'+job['name']+'.log'),
@@ -162,20 +180,22 @@ def build(branch,commit):
 
 Paper references motivate baseline selection only. No comparison with paper accuracy numbers.
 Pinned source commit; no ZIP overlay. Full registered horizon, final-epoch models, no automatic smoke/test/truncation.
-H1/H2: CIFAR-100, BN ResNet32, PyCIL random class order seed0, B0 Inc5 (20 tasks), memory2000, 200/170 epochs.
-H3: native CPU LoP B5, 100 tasks ×10000 samples; CBP vs native BP + VNA → GIR.
-H4: rotated and permuted MNIST, five domains each; both streams run sequentially per arm.
+H1: CIFAR-100, BN ResNet32 PyCIL, 20 tasks ×5 classes, memory2000, 200/170 epochs.
+H2: official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch10 ×3 repeats, class-balanced replay2000, validation5%, SGD0.1 without momentum/weight decay/scheduler.
+H3: upstream Continual ImageNet32, 5000 binary tasks, 250 epochs/task, ConvNet, SGD0.01 momentum0.9, native head reset; CBP vs BP + VNA → GIR.
+H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + Domain-Adaptive VNA.
 
-Inputs: {'none for a fresh run; LoP generates the seeded regression stream' if branch=='H3' else 'CIFAR-100 Python train/test/meta' if branch in ('H1','H2') else 'MNIST raw IDX train/test images and labels (plain or gzip)' }.
-Enable Internet and Kaggle Secret `github_token`. {'Select CPU; two lanes use two threads each. GPU is unnecessary for this upstream protocol.' if branch=='H3' else 'Select T4 ×2; baseline GPU0, full GPU1. One loader worker and one BLAS thread per lane.'}
-Optional previous Output is only for exact resume. Runtime has not been profiled on T4; more than one 11-hour session may be needed. The horizon is never shortened.
+Inputs: {'CBP ImageNet32 original class files 0.npy through 999.npy (700 NCHW images/class)' if branch=='H3' else 'CIFAR-100 Python train/test/meta' if branch in ('H1','H2') else 'MNIST raw IDX train/test images and labels (plain or gzip)' }.
+Enable Internet and Kaggle Secret `github_token`. Select T4 ×2; baseline GPU0, full GPU1, one BLAS thread per lane.
+H2 builds an isolated Python3.10 environment for the pinned original Avalanche0.4 stack.
+Optional previous Output is only for exact resume. H3 has 15 million native optimizer updates per arm before interventions and requires many sessions; T4 timings are unmeasured. Other branches may also need multiple 11-hour sessions. The horizon is never shortened.
 '''
     cells=[cell('markdown',note),cell('code',first),cell('code',bootstrap),cell('code',SETUP),cell('code',RUNNER),cell('code',REPORT)]
     for index,c in enumerate(cells):
         c['id']=f'{branch.lower()}-{index}'
         if c['cell_type']=='code':compile(''.join(c['source']),'<notebook>','exec')
     return dict(cells=cells,nbformat=4,nbformat_minor=5,metadata=dict(kernelspec=dict(display_name='Python 3',language='python',name='python3'),
-        language_info=dict(name='python'),kaggle=dict(accelerator='none' if branch=='H3' else 'gpu',dataSources=[])))
+        language_info=dict(name='python'),kaggle=dict(accelerator='gpu',dataSources=[])))
 
 
 if __name__=='__main__':

@@ -1358,3 +1358,29 @@ and ER/baseline for H4. Algorithm-specific LPR provenance is retained in each ru
 but excluded from shared-setup grouping. All superiority hypotheses remain
 UNVERIFIED. GPU runtime/session counts remain unmeasured; several sessions may
 be required, and the notebook warns before launching.
+
+## 2026-10-28 — H1–H4 dataset/protocol correction, before benchmark runs
+
+User resolves the four directions as four distinct benchmark problems. Supersede
+the preceding notebook registration's offline PyCIL H2, B5 regression H3 and
+five-domain/permuted H4. H1 remains CIFAR10020×5. H2 uses original LPR online
+Split-CIFAR100: SlimResNet18, minibatch10×3 repeats,20 experiences,5% validation,
+class-balanced memory2000, SGD0.1 without momentum/WD/scheduler, actual Avalanche0.4
+online/replay/dynamic classifier and unchanged LPR callbacks. Geometry-VNA shares
+this protocol with existing feature penalty1/cadence512. This whole-method
+comparison is not a matched-cost kernel-only ablation.
+
+H3 uses original LoP Continual ImageNet32 cfg/cbp.json:5000 two-class tasks,
+250epochs/task,100batch, ConvNet,600/100 images/class, native class_order[0],
+SGD0.01 momentum0.9 and original head resets. Baseline calls ConvCBP unchanged.
+Full calls BP then VNA→GIR, cadence10000/window128, existing numerical settings.
+Only fc1→fc2 and fc2→fc3 are supported training sites; pooled/flattened convolution
+sites have incompatible selector statistics and are excluded rather than
+approximated. Every image/class/task is retained. H4 runs20 fixed rotations
+0,15,…,285degrees, no permuted stream in this notebook.
+
+All notebooks use T4×2, baselineGPU0/fullGPU1, no automatic smoke/tests or GPU
+launch. H2 uses Python3.10/torch2.2.2 with original typing-extensions4.4 and wandb0.15.12;
+torch's typing metadata is explicitly overridden, algorithm source is unchanged. H3's15million
+optimizer updates per arm require many sessions; T4 timings remain unmeasured.
+See STANDARD_COMPARE_S0.md for inputs, scope and resume policy.
