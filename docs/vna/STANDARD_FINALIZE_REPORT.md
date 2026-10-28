@@ -1,6 +1,6 @@
 # Finalize H1–H4 notebooks — 2026-10-28
 
-Implementation source pin: SOURCE_PIN_TO_FILL.
+Implementation source pin: 7717316bcefaca5fb2b5ce2ecd7f0164808f5e2e.
 Work base: c820c09 on codex/gir-live-task1, in the original repository folder.
 No mathematical-core redesign, new worktree, ZIP overlay or GPU benchmark launch.
 The reference Archive(3).zip was not present in the supplied attachment/Downloads;
@@ -129,4 +129,27 @@ are prepared with startup gates; a successful Kaggle GPU run is not claimed.
 
 Regenerate all notebooks:
 
-    .venv/bin/python -m scripts.build_kaggle_standard_compare --commit SOURCE_PIN_TO_FILL
+    .venv/bin/python -m scripts.build_kaggle_standard_compare --commit 7717316bcefaca5fb2b5ce2ecd7f0164808f5e2e
+
+
+Exact focused verification commands (from repository root):
+
+```bash
+export REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python PYTHONPATH=.
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 MPLCONFIGDIR=/tmp/vna_mpl_310
+/tmp/vna_h2_py310/bin/python -m pytest \
+  tests/test_standard_finalize.py tests/test_standard_benchmark_protocols.py tests/test_standard_compare_notebooks.py \
+  tests/test_standard_cl_completion.py::test_domain_runner_two_domains_checkpoint_and_bn_diagnostics \
+  tests/test_standard_cl_completion.py::test_generated_h3_live_dead_and_upstream_redo_reset \
+  tests/test_standard_cl_completion.py::test_h3_mid_candidate_deadline_resume \
+  tests/test_standard_cl_audit.py::test_h2_feature_penalty_is_shared_by_split_and_final_solve \
+  tests/test_standard_cl_completion.py::test_h2_zero_penalty_has_bitwise_identical_physical_update \
+  tests/test_standard_cl_audit.py::test_h3_commits_validated_state_without_reexecuting_candidate_callback \
+  -o addopts='' -q
+/tmp/vna_h2_py310/bin/python -m pytest tests/test_standard_benchmark_protocols.py -k avalanche -o addopts='' -q
+.venv/bin/python -m pytest tests/test_standard_finalize.py -k 'not real_h2' -o addopts='' -q
+```
+
+Last artifact-only fix (atomic PNG publication for concurrent archives):
+`test_export_keeps_paused_run_partial_and_writes_curves` passed1/1 in4.10s.
+Notebook JSON/code cells and immutable source pins were checked after generation.

@@ -135,5 +135,6 @@
     "fixture": "CPU toy, not a benchmark"
   },
   "scope": "real Python3.10 CPU environment; no Protocol constructor shim; no benchmark dataset training",
-  "kaggle_cuda_verified": false
+  "kaggle_cuda_verified": false,
+  "implementation_source_commit": "7717316bcefaca5fb2b5ce2ecd7f0164808f5e2e"
 }
