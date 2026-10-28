@@ -1,6 +1,7 @@
 # Extra imports of the pinned PyCIL, LoP and v4 competitor entry points.
-# torch/torchvision/numpy/scipy come from the environment and are NOT pinned
-# here, so pip never downgrades the Kaggle image.
+# torch/torchvision/numpy come from the environment and are NOT pinned here.
+# SciPy is needed by native PyCIL NME even on images where it is initially absent.
+scipy
 tqdm
 tensorboard_logger
 six

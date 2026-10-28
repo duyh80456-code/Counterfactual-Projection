@@ -45,3 +45,9 @@ The main notebook update replaces offline H2 and regression H3 with online
 Avalanche LPR and Continual ImageNet32, and H4 with20 rotations. The historical
 PASS table above does not certify these new benchmark paths. See the current
 registration and focused test log; no CUDA or real dataset training was run.
+
+Final notebooks use H3-small100×50 and bounded16-candidate GIR; the original full
+protocol stays separate. LPR README4/2/30 settings and real Python3.10/Avalanche0.4
+dependency/API/replay/resume gates replace constructor-shim-only evidence. See
+STANDARD_FINALIZE_REPORT.md and H2_ENVIRONMENT_VERIFICATION.json. Kaggle/Linux/CUDA
+execution remains NOT RUN.

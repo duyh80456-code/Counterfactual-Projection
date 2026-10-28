@@ -1,0 +1,23 @@
+# Python3.10; install torch2.2.2/torchvision0.17.2 first, Avalanche0.4/typing4.4 last without dependency resolution.
+numpy==1.26.4
+scipy==1.15.3
+pandas==2.2.3
+matplotlib==3.10.8
+scikit-learn==1.6.1
+torchmetrics==0.11.4
+pytorchcv==0.0.67
+wandb==0.15.12
+protobuf==4.25.8
+tensorboard==2.19.0
+grpcio==1.62.3
+gdown==5.2.0
+dill==0.3.8
+setuptools==75.8.0
+hydra-core==1.3.2
+jsonlines==4.0.0
+kornia==0.7.0
+psutil
+gputil
+quadprog
+tqdm
+packaging

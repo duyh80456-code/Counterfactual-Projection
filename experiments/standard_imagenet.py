@@ -47,11 +47,34 @@ def data_identity(root,order):
     result={}
     for label in sorted(set(map(int,order))):
         path=Path(root)/f'{label}.npy';digest=hashlib.sha256()
+        values=np.load(path,mmap_mode='r',allow_pickle=False)
+        if values.shape!=(700,3,32,32) or values.dtype.kind not in 'uif' or not bool(np.isfinite(values).all()):
+            raise ValueError(f'malformed ImageNet32 class file: {path}')
         with path.open('rb') as stream:
             for chunk in iter(lambda:stream.read(1024*1024),b''):digest.update(chunk)
         result[str(label)]=digest.hexdigest()
-        if len(result)%100==0:log(f'ImageNet dataset fingerprint: {len(result)}/1000 classes')
+        if len(result)%100==0:log(f'ImageNet dataset fingerprint: {len(result)}/{len(set(map(int,order)))} required classes')
     return result
+
+
+def effective_params(cfg,*,num_tasks=None,num_showings=None):
+    params=json.loads((lop.UPSTREAM/cfg['upstream_config']).read_text());overrides={}
+    for name,value in (('num_tasks',num_tasks),('num_showings',num_showings)):
+        value=cfg.get(name) if value is None else value
+        if value is not None:
+            if not isinstance(value,int) or value<1:raise ValueError(f'positive {name} required')
+            params[name]=value;overrides[name]=value
+    return params,overrides
+
+
+def required_classes(seed,num_tasks):
+    with (lop.UPSTREAM/'lop/imagenet/class_order').open('rb') as stream:orders=pickle.load(stream)
+    order=np.asarray(orders[seed],dtype=int)
+    if order.ndim!=1 or len(order)<2 or set(order)!=set(range(1000)):raise ValueError('invalid original upstream class sequence')
+    # The original file contains 14000 entries per run, not a single 1000-class permutation.
+    used=np.tile(order,(2*num_tasks+len(order)-1)//len(order))[:2*num_tasks]
+    if np.any(used[::2]==used[1::2]):raise ValueError('binary task must use two distinct classes')
+    return used
 
 
 def run(args):
@@ -61,12 +84,10 @@ def run(args):
     from lop.algos.convCBP import ConvCBP
     from diagnostics.kernel_ablation import flags
     cfg=json.loads(Path(args.config).read_text())
-    source=lop.UPSTREAM/cfg['upstream_config'];params=json.loads(source.read_text())
+    source=lop.UPSTREAM/cfg['upstream_config'];params,overrides=effective_params(cfg,num_tasks=args.num_tasks,num_showings=args.num_showings)
     random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
-    with (lop.UPSTREAM/'lop/imagenet/class_order').open('rb') as stream:orders=pickle.load(stream)
-    order=np.asarray(orders[args.seed],dtype=int)
-    if set(order)!=set(range(1000)):raise ValueError('upstream class order must be a permutation of 1000 classes')
+    order=required_classes(args.seed,params['num_tasks'])
     identity=data_identity(args.data_dir,order)
     if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
     with torch.device(args.device):
@@ -75,12 +96,12 @@ def run(args):
         learner=ConvCBP(**common,init='default',replacement_rate=params['replacement_rate'],decay_rate=params['decay_rate'],
             util_type=params['util_type'],maturity_threshold=params['maturity_threshold']) if args.arm=='cbp' else Backprop(**common)
     correction=CorrectionConfig(seed=args.seed,**cfg['correction'])
-    vna=ReplayCorrection(correction);gir=TangentReconfiguration(correction)
+    vna=ReplayCorrection(correction);gir=TangentReconfiguration(correction,max_candidates=cfg.get('max_candidates'))
     # Existing training statistics require equal spatial grids; pooling sites are measurement-only.
     all_sites=[site for site in sites_for(model) if site.kind=='linear']
     gir_sites=all_sites
     protocol=dict(branch='H3',arm=args.arm,seed=args.seed,code_commit=code_commit(),upstream_commit=lop.UPSTREAM_PIN,
-        config=cfg,params=params,tasks=params['num_tasks'],upstream_recipe=str(source.relative_to(lop.UPSTREAM)),
+        config=cfg,params=params,upstream_overrides=overrides,tasks=params['num_tasks'],upstream_recipe=str(source.relative_to(lop.UPSTREAM)),
         correction=asdict(correction),dataset='Continual ImageNet32',data_sha256=identity,class_order=order.tolist(),
         split=dict(train_per_class=600,test_per_class=100),normalization='upstream raw float conversion; no extra normalization',
         head_reset='zero final weight/bias at every task; retain optimizer momentum, as upstream',runtime_flags=flags(),
@@ -111,7 +132,7 @@ def run(args):
             elapsed_seconds=elapsed+time.monotonic()-started))
     try:
         while task<params['num_tasks']:
-            labels=np.tile(order,params['num_classes']*params['num_tasks']//1000+1)[task*2:(task+1)*2]
+            labels=order[task*2:(task+1)*2]
             x,y,test_x,test_y=load_task(args.data_dir,labels)
             x,y,test_x,test_y=(v.to(args.device) for v in (x,y,test_x,test_y))
             if task_rng is None:
@@ -171,7 +192,8 @@ def run(args):
             selected=epochs[-params['num_showings']:]
             rows.append(dict(task=task+1,classes=labels.tolist(),final_accuracy=selected[-1]['test_accuracy'],
                 mean_accuracy=float(np.mean([r['test_accuracy'] for r in selected])),mean_error=float(np.mean([100-r['test_accuracy'] for r in selected])),
-                early_accuracy=selected[0]['test_accuracy'],late_accuracy=selected[-1]['test_accuracy']))
+                early_accuracy=selected[0]['test_accuracy'],late_accuracy=selected[-1]['test_accuracy'],
+                learning_speed=selected[-1]['test_accuracy']-selected[0]['test_accuracy']))
             task+=1;epoch=0;task_rng=None;save()
     except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
     except FloatingPointError as exc:status='FAILED_DIVERGED';failure=str(exc)
@@ -183,6 +205,10 @@ def run(args):
             plasticity_decay=rows[0]['late_accuracy']-rows[-1]['late_accuracy'] if rows else None,
             final_accuracy=rows[-1]['final_accuracy'] if rows else None,wall_seconds=seconds,
             correction_seconds=sum(r['seconds'] for r in vna.events)+sum(r['seconds'] for r in gir.events),
+            actual_swaps=sum(r.get('actual_replacements',0) for r in gir.events),
+            candidate_search=dict(generated=sum(r.get('generated_candidates',0) for r in gir.events),
+                exact_evaluations=sum(r.get('exact_candidate_evaluations',len(r.get('trials',[]))) for r in gir.events)),
+            peak_vram_bytes=torch.cuda.max_memory_allocated(torch.device(args.device)) if args.device!='cpu' else 0,
             parameter_count=sum(p.numel() for p in model.parameters()),gpu_hours=seconds/3600 if args.device!='cpu' else 0.,evidence_status='INCONCLUSIVE'))
 
 
@@ -191,6 +217,7 @@ def parser():
     p.add_argument('--config',default='configs/standard_cl/h3_imagenet.json');p.add_argument('--out',required=True)
     p.add_argument('--arm',choices=('cbp','vna_gir'),required=True);p.add_argument('--seed',type=int,default=0)
     p.add_argument('--data-dir',required=True);p.add_argument('--device',default='cuda:0')
+    p.add_argument('--num-tasks',type=int);p.add_argument('--num-showings',type=int)
     return p
 
 

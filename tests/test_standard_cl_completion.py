@@ -137,6 +137,8 @@ def test_domain_runner_two_domains_checkpoint_and_bn_diagnostics(tmp_path,monkey
         calls+=1;return calls==5
     monkeypatch.setattr(module,'deadline_due',due)
     with pytest.raises(SystemExit):module.run(args(paused))
+    raw=tmp_path/'MNIST/raw';raw.mkdir(parents=True,exist_ok=True)
+    (raw/'optional-compressed-copy.gz').write_bytes(b'not part of canonical dataset identity')
     monkeypatch.setattr(module,'deadline_due',lambda:False)
     resumed=module.run(args(paused));assert result['tasks']==resumed['tasks']
     a=torch.load(complete/'latest.pt',weights_only=False);b=torch.load(paused/'latest.pt',weights_only=False)

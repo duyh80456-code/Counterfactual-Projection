@@ -61,7 +61,7 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     lop.upstream_imports()
     upstream=tmp_path/'native';(upstream/'lop/imagenet/cfg').mkdir(parents=True)
     params=json.loads((lop.UPSTREAM/'lop/imagenet/cfg/cbp.json').read_text())
-    params.update(num_tasks=2,num_showings=2,mini_batch_size=2)
+    params.update(mini_batch_size=2)
     (upstream/'lop/imagenet/cfg/cbp.json').write_text(json.dumps(params))
     with (upstream/'lop/imagenet/class_order').open('wb') as stream:pickle.dump([np.arange(1000)],stream)
     monkeypatch.setattr(lop,'UPSTREAM',upstream);monkeypatch.setattr(lop,'upstream_imports',lambda:None)
@@ -70,7 +70,7 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     for c in range(4):np.save(data/f'{c}.npy',np.random.RandomState(c).normal(size=(4,3,32,32)).astype(np.float32))
     original=runner.load_task
     monkeypatch.setattr(runner,'load_task',lambda root,classes:original(root,classes,2,2))
-    cfg=json.loads(Path('configs/standard_cl/h3_imagenet.json').read_text());cfg['intervention_every']=2
+    cfg=json.loads(Path('configs/standard_cl/h3_imagenet_small.json').read_text());cfg.update(num_tasks=2,num_showings=2,intervention_every=2)
     config=tmp_path/'config.json';config.write_text(json.dumps(cfg))
     order=[]
     def vna(self,model,opt,x,losses,sites,lr):
@@ -143,7 +143,7 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     config=tmp_path/'online.json';config.write_text(json.dumps(cfg))
     def setup(*args):
         gen=torch.Generator().manual_seed(81)
-        datasets=[make_classification_dataset(TensorDataset(torch.randn(4,3,generator=gen),torch.tensor([t*2,t*2+1]*2)),task_labels=0) for t in range(2)]
+        datasets=[make_classification_dataset(TensorDataset(torch.randn(12,3,generator=gen),torch.tensor([t*2,t*2+1]*6)),task_labels=0) for t in range(2)]
         scenario=dataset_benchmark(datasets,datasets);scenario.classes_order_original_ids=list(range(4))
         return scenario,ToyOnlineNetwork()
     monkeypatch.setattr(runner,'native_setup',setup)
@@ -151,9 +151,9 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
         '--config',str(config),'--out',str(out)])
     runner.run(args(tmp_path/'complete'))
     a=torch.load(tmp_path/'complete/latest.pt',weights_only=False)
-    assert a['clock']['train_iterations']==12 and a['clock']['train_exp_counter']==4
+    assert a['clock']['train_iterations']==36 and a['clock']['train_exp_counter']==12
     if arm=='lpr':
-        assert a['lpr_inverses'] and a['lpr_every_iter']==3
+        assert a['lpr_inverses'] and a['lpr_every_iter']==30
         from avalanche.benchmarks.scenarios import OnlineCLScenario
         from avalanche.training.plugins import ReplayPlugin
         from avalanche.training.storage_policy import ClassBalancedBuffer
@@ -176,9 +176,10 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     calls=0
     def deadline():
         nonlocal calls
-        calls+=1;return calls==3
+        calls+=1;return calls==(12 if arm=='lpr' else 3)
     monkeypatch.setattr(runner,'deadline_due',deadline)
     with pytest.raises(SystemExit):runner.run(args(tmp_path/'paused'))
+    if arm=='lpr':assert torch.load(tmp_path/'paused/latest.pt',weights_only=False)['lpr_inverses']
     monkeypatch.setattr(runner,'deadline_due',lambda:False);runner.run(args(tmp_path/'paused'))
     b=torch.load(tmp_path/'paused/latest.pt',weights_only=False)
     for key in ('optimizer','clock','rng','rows','epochs','position','last_event'):_assert_bitwise(a[key],b[key],key)

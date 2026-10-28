@@ -1384,3 +1384,41 @@ launch. H2 uses Python3.10/torch2.2.2 with original typing-extensions4.4 and wan
 torch's typing metadata is explicitly overridden, algorithm source is unchanged. H3's15million
 optimizer updates per arm require many sessions; T4 timings remain unmeasured.
 See STANDARD_COMPARE_S0.md for inputs, scope and resume policy.
+
+
+## 2026-10-28 — Final notebooks: H3-small and official LPR example, before GPU runs
+
+User replaces the main5000×250 H3 run with a pilot, identically for both arms:
+100 original binary tasks,50epochs, batch100, seed0's first100 task pairs,
+unchanged native ConvNet/CBP/SGD0.01 momentum0.9 and task-specific head resets.
+Keep the5000×250 config separately; no benchmark outcome motivated the reduction.
+Use window128, cadence4000. Full is native BP→VNA→fixed-capacity GIR; supported
+affine sites remain unchanged. Do not reinitialize the model between tasks.
+
+Bound GIR exact search to16 swaps plus identity. Generate existing tiny_V rows;
+rank parameter resets by -gᵀδθ-μ||δθ||²/2, a declared first-order LM proxy at the
+current state. Deterministic name tie-breaking, no ranking RNG. Exact finite-loss
+checks and post-removal damped-GN objective remain unchanged. Commit the tested
+winner state, preserve full rollback and report every ranking/pruning/exact
+trial. Claim optimality only over the evaluated shortlist plus identity, never
+exhaustive/global optimality. Config/CLI horizon overrides and candidate budget
+are strict checkpoint identity. Only required original data files are validated
+and hashed. Inspection fixed a prior incorrect assumption: upstream class_order
+has14000 entries per run, not one1000-class permutation; preserve its real prefix.
+This pilot does not reproduce published full-horizon Nature results.
+
+For H2, generic1/1/None LPR defaults are superseded by the exact pinned official
+README Split-CIFAR100 example: omega0=4,beta=2,every_iter=30. No test-set tuning.
+Retain the same native online/replay/model/optimizer protocol for both methods.
+H2 full now carries explicit sample-origin tags; original LPR's loader is not
+modified. Gradient decomposition and origin permutation are verified on real
+Avalanche minibatches. Real Python3.10 validates the original typing4.4 stack,
+with only torch's typing metadata exception allowed; other conflicts must fail.
+
+All four notebooks now automatically fetch pinned code/dependencies, stage or
+explicitly download official CIFAR/MNIST, and run a separate lightweight preflight
+before training. ImageNet requires attached authorized original files. No fake
+fallback or old VNA checkpoint dependency. Export validated paired tables/curves,
+status/cost/VRAM/solver logs and resume artifacts. Canonical dataset files prevent
+optional gzip copies from breaking resume identity. No full GPU run is launched
+by this coding task; live Kaggle/Linux/CUDA readiness remains a startup gate.

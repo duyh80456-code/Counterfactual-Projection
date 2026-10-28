@@ -58,7 +58,8 @@ def run(args):
         base_test=MNIST(args.data_dir,train=False,download=False,transform=ToTensor())
     import hashlib
     hashes={str(path.relative_to(Path(args.data_dir))):hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted((Path(args.data_dir)/'MNIST/raw').glob('*')) if path.is_file()}
+            for path in (Path(args.data_dir)/'MNIST/raw'/name for name in
+                ('train-images-idx3-ubyte','train-labels-idx1-ubyte','t10k-images-idx3-ubyte','t10k-labels-idx1-ubyte')) if path.is_file()}
     from diagnostics.kernel_ablation import flags
     tests=[DomainMNIST(base_test,d,args.kind,args.seed,args.angle_step) for d in range(args.domains)]
     protocol=dict(branch='H4',code_commit=code_commit(),config={k:v for k,v in vars(args).items() if k!='out'},runtime_flags=flags(),
@@ -150,6 +151,7 @@ def run(args):
             **matrix_metrics([r['domain_accuracies'] for r in rows]),wall_seconds=seconds,
             parameter_count=sum(p.numel() for p in model.parameters()),
             peak_vram_bytes=torch.cuda.max_memory_allocated(torch.device(args.device)) if args.device!='cpu' else 0,
+            correction_seconds=sum(row['seconds'] for row in engine.events),
             gpu_hours=seconds/3600 if args.device!='cpu' else 0.,evidence_status='INCONCLUSIVE'))
     return json.loads((out/'summary.json').read_text())
 

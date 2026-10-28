@@ -74,6 +74,41 @@ def collect(roots):
     return result
 
 
+def export_comparison(root):
+    """Keep partial curves labelled; final metrics require a completed run."""
+    collect([root])
+    from experiments.io_utils import write_csv
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    root=Path(root);rows=[];curves=[]
+    for path in sorted(root.rglob('summary.json')):
+        summary=json.loads(path.read_text());p=summary.get('protocol',{})
+        if p.get('branch') not in ('H1','H2','H3','H4'):continue
+        done=summary.get('status')=='COMPLETED'
+        row=dict(job=path.parent.name,branch=p['branch'],status=summary.get('status'))
+        for key in ('average_incremental_accuracy','final_accuracy','nme_average_incremental_accuracy','forgetting','backward_transfer',
+                    'last_50_task_error','plasticity_decay','online_accuracy','representation_drift_mean'):
+            row[key]=summary.get(key) if done else None
+        for key in ('wall_seconds','gpu_hours','peak_vram_bytes','correction_seconds','actual_swaps','candidate_search'):row[key]=summary.get(key)
+        rows.append(row)
+        for index,task in enumerate(summary.get('tasks',[]),1):
+            accuracy=task.get('global_accuracy',task.get('total',task.get('final_accuracy')))
+            if accuracy is None and task.get('domain_accuracies'):accuracy=statistics.mean(task['domain_accuracies'])
+            curves.append(dict(job=path.parent.name,status=summary['status'],task=index,accuracy=accuracy,
+                mean_error=task.get('mean_error'),learning_speed=task.get('learning_speed')))
+    write_csv(root/'comparison.csv',rows);write_csv(root/'curves.csv',curves)
+    if curves:
+        figure,axis=plt.subplots(figsize=(7,4))
+        for job in dict.fromkeys(row['job'] for row in curves):
+            points=[row for row in curves if row['job']==job]
+            metric='mean_error' if any(row['mean_error'] is not None for row in points) else 'accuracy'
+            axis.plot([row['task'] for row in points],[row[metric] for row in points],label=f"{job} [{points[0]['status']}]")
+        axis.set(xlabel='Task/domain',ylabel='Classification error (%)' if metric=='mean_error' else 'Accuracy (%)')
+        axis.legend();figure.tight_layout();figure.savefig(root/'accuracy_curves.png',dpi=150);plt.close(figure)
+    return rows
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('roots',nargs='+')
     args=parser.parse_args();print(json.dumps(collect(args.roots),indent=2))

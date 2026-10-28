@@ -26,6 +26,24 @@ class SwapCandidate:
     reset_optimizer: object
 
 
+def preliminary_score(site,proposal,unit,gradients,mu):
+    """Negative first-order loss jump minus isotropic LM displacement cost."""
+    first,second=site.first_layer.layer,site.second_layer.layer
+    changes=[(first.weight,unit,proposal['A']['weight'][0]-first.weight[unit]),
+             (second.weight,(slice(None),unit),-second.weight[:,unit])]
+    if first.bias is not None:changes.append((first.bias,unit,proposal['A']['bias'][0]-first.bias[unit]))
+    for path in site.between:
+        module=site.model.get_submodule(path)
+        if isinstance(module,torch.nn.modules.batchnorm._BatchNorm) and module.affine:
+            changes.extend([(module.weight,unit,proposal['A'].get('bn_weight',module.weight.new_ones(1))[0]-module.weight[unit]),
+                            (module.bias,unit,proposal['A'].get('bn_bias',module.bias.new_zeros(1))[0]-module.bias[unit])])
+    linear=norm2=0.
+    for parameter,index,delta in changes:
+        delta=delta.detach().double()
+        linear+=float((gradients[id(parameter)][index]*delta).sum());norm2+=float(delta.square().sum())
+    return -linear-.5*mu*norm2
+
+
 def reset_sgd_coordinates(optimizer,masks):
     if not isinstance(optimizer,torch.optim.SGD):raise ValueError('this reset contract is SGD-only')
     for parameter,mask in masks:
@@ -69,6 +87,9 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
         state.restore()
         # Commit the tested state; a callback may consume external RNG or have side effects.
         if winner_state is not None:winner_state.restore()
+    except Uncertified as exc:
+        exc.candidate_trials=rows;exc.failed_candidate=candidate.name
+        state.restore();raise
     except BaseException:
         state.restore();raise
     return dict(choice='identity' if winner is None else winner.name,trials=rows,
@@ -79,27 +100,37 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
 
 class TangentReconfiguration:
     """Serial tiny_V candidates, fixed-capacity swaps, net GN recovery objective."""
-    def __init__(self,config=CorrectionConfig()):
-        self.config=config;self.events=[];self.applications=0
+    def __init__(self,config=CorrectionConfig(),*,max_candidates=None):
+        if max_candidates is not None and (not isinstance(max_candidates,int) or max_candidates<1):raise ValueError('positive candidate limit required')
+        self.config=config;self.events=[];self.applications=0;self.max_candidates=max_candidates
 
     def state_dict(self):
         from dataclasses import asdict
         from copy import deepcopy
-        return dict(config=asdict(self.config),events=deepcopy(self.events),applications=self.applications)
+        result=dict(config=asdict(self.config),events=deepcopy(self.events),applications=self.applications)
+        if self.max_candidates is not None:result['max_candidates']=self.max_candidates
+        return result
 
     def load_state_dict(self,state):
         from dataclasses import asdict
         from copy import deepcopy
         if state['config']!=asdict(self.config):raise ValueError('H3 resume configuration mismatch')
+        if state.get('max_candidates')!=self.max_candidates:raise ValueError('H3 candidate search resume mismatch')
         self.events=deepcopy(state['events']);self.applications=state['applications']
 
     def step(self,model,optimizer,inputs,losses,sites):
         started=time.perf_counter();snapshot=State(model,optimizer)
         helper=ReplayCorrection(self.config);counts=dict(jvp=0,vjp=0);solves=[];scores=[]
+        ranking=[];candidates=[];generated=0;objective_calls=0
         try:
             with training_products(model,[],{},inputs) as p:
                 op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
                 A=helper._operator(p,op);mu=A.mu;z=A.split(op.gradient)
+                if self.max_candidates is not None:
+                    refs=[parameter for _,parameter in p.parameter_refs]
+                    parts=op.gradient.split([parameter.numel() for parameter in refs])
+                    gradients={id(parameter):part.reshape_as(parameter) for parameter,part in zip(
+                        (v for v in model.parameters() if v.requires_grad),parts)}
                 solves.extend(A.solves);counts['jvp']+=p.jvp_calls;counts['vjp']+=p.vjp_calls
             sites=[site for site in sites if V3Engine.valid_slot(site)]
             selector=_ChunkedSelector('vna',seed=self.config.seed)
@@ -119,7 +150,8 @@ class TangentReconfiguration:
                 proposals=selector._select(model,sites,(inputs,losses.targets),dict(z=z))
             finally:vna_v3.training_products=original
             generation_seconds=time.perf_counter()-generation_started
-            dead=V3Engine.dead_slots(model,sites,(inputs,losses.targets));candidates=[]
+            ranking_started=time.perf_counter()
+            dead=V3Engine.dead_slots(model,sites,(inputs,losses.targets));candidates=[];ranking=[]
             for site in sites:
                 if site.module_name not in proposals:continue
                 entries=proposals[site.module_name]
@@ -129,10 +161,23 @@ class TangentReconfiguration:
                         def install(net,site=site,proposal=proposal,unit=unit):
                             # install_gir zeroes outgoing weights and affected SGD/BN state atomically.
                             V3Engine('vna',seed=self.config.seed).install_gir(net,site,[proposal],[unit],optimizer)
-                        candidates.append(SwapCandidate(f'{site.module_name}:{unit}:{row}',
-                            'dead' if unit in dead.get(site.module_name,[]) else 'live',install,lambda *args:None))
+                        name=f'{site.module_name}:{unit}:{row}'
+                        candidates.append(SwapCandidate(name,'dead' if unit in dead.get(site.module_name,[]) else 'live',install,lambda *args:None))
+                        if self.max_candidates is not None:
+                            score=preliminary_score(site,proposal,unit,gradients,mu)
+                            ranking.append(dict(candidate=name,score=score if math.isfinite(score) else None))
+            generated=len(candidates)
+            if self.max_candidates is not None:
+                ranked=sorted(zip(candidates,ranking),key=lambda pair:(-(pair[1]['score'] if pair[1]['score'] is not None else -math.inf),pair[0].name))
+                candidates=[candidate for candidate,item in ranked if item['score'] is not None][:self.max_candidates]
+                selected={candidate.name for candidate in candidates}
+                ranking=[dict(item,selected=candidate.name in selected,
+                    reason='shortlisted' if candidate.name in selected else 'nonfinite_surrogate' if item['score'] is None else 'outside_shortlist') for candidate,item in ranked]
+            ranking_seconds=time.perf_counter()-ranking_started
             active=[site for site in sites if site.module_name in proposals]
             def objective(net):
+                nonlocal objective_calls
+                objective_calls+=1
                 helper.boundary()
                 with training_products(net,active,proposals,inputs) as p:
                     op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
@@ -147,6 +192,15 @@ class TangentReconfiguration:
                     return loss-recovery
             result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective)
             for row,score in zip(result['trials'],scores[1:]):row.update(score)
+            if self.max_candidates is not None:
+                for trial in result['trials']:
+                    trial['selected_winner']=trial['candidate']==result['choice']
+                    trial['rejection_reason']=None if trial['selected_winner'] else 'component_loss_increase' if not trial['admissible'] else 'not_better_than_identity_or_winner'
+                result.update(generated_candidates=generated,shortlist_count=len(candidates),exact_candidate_evaluations=len(result['trials']),
+                    preliminary_ranking_seconds=ranking_seconds,
+                    identity_evaluations=1,max_candidates=self.max_candidates,ranking=ranking,
+                    ranking_surrogate='-g^T delta_theta_reset - mu/2 ||delta_theta_reset||^2; parameter-only first-order LM proxy',
+                    search_scope='best feasible candidate among deterministic shortlist plus identity; no exhaustive/global guarantee')
             result.update(status='ACCEPTED' if result['choice']!='identity' else 'IDENTITY',identity=scores[0],
                 actual_replacements=int(result['choice']!='identity'),mu=mu,solves=solves,**counts,
                 candidate_generation_seconds=generation_seconds,candidate_evaluation_seconds=sum(r['seconds'] for r in result['trials']),
@@ -158,6 +212,11 @@ class TangentReconfiguration:
                 candidate_generation='existing tiny_V generalized eigenvectors with real-ReLU sign selection; every slot')
         except Uncertified as exc:
             snapshot.restore();result=dict(status='UNCERTIFIED',reason=str(exc),solver_failure=exc.diagnostics,actual_replacements=0)
+            if self.max_candidates is not None:
+                result.update(generated_candidates=generated,shortlist_count=len(candidates),max_candidates=self.max_candidates,
+                    ranking=ranking,exact_candidate_evaluations=max(0,objective_calls-1),identity_evaluations=min(1,objective_calls),
+                    trials=getattr(exc,'candidate_trials',[]),failed_candidate=getattr(exc,'failed_candidate','identity'),
+                    search_scope='bounded shortlist; solver failure rejected the intervention')
         except BaseException:
             snapshot.restore();raise
         result.update(application=self.applications,seconds=time.perf_counter()-started,

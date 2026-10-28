@@ -21,9 +21,46 @@ from methods.cl_state import isolated,State
 from methods.vna_sites import HookSite
 
 if importlib.util.find_spec('avalanche'):
-    from avalanche.training.plugins import SupervisedPlugin
+    from avalanche.training.plugins import SupervisedPlugin,ReplayPlugin
 else:
-    SupervisedPlugin=object
+    SupervisedPlugin=ReplayPlugin=object
+
+
+class OriginDataset(torch.utils.data.Dataset):
+    def __init__(self,dataset,replay):self.dataset,self.replay=dataset,bool(replay);self.targets=dataset.targets
+    def __len__(self):return len(self.dataset)
+    def __getitem__(self,index):
+        item=self.dataset[index]
+        if len(item)!=3:raise ValueError('expected Avalanche classification sample (x,y,task)')
+        return item[0],item[1],self.replay
+
+
+def with_origin(dataset,replay):
+    from avalanche.benchmarks.utils import make_classification_dataset
+    return make_classification_dataset(OriginDataset(dataset,replay),task_labels=dataset.targets_task_labels)
+
+
+class OriginReplayPlugin(ReplayPlugin):
+    """Tag H2 replay explicitly; keep native LPR's ReplayPlugin untouched."""
+    def before_training_exp(self,strategy,num_workers=0,shuffle=True,drop_last=False,**kwargs):
+        self.has_replay=len(self.storage_policy.buffer)>0
+        if not self.has_replay:return
+        from avalanche.benchmarks.utils.data_loader import ReplayDataLoader
+        strategy.dataloader=ReplayDataLoader(with_origin(strategy.adapted_dataset,False),with_origin(self.storage_policy.buffer,True),
+            oversample_small_tasks=True,batch_size=self.batch_size or strategy.train_mb_size,
+            batch_size_mem=self.batch_size_mem or strategy.train_mb_size,task_balanced_dataloader=self.task_balanced_dataloader,
+            num_workers=num_workers,shuffle=shuffle,drop_last=drop_last)
+    def before_training_iteration(self,strategy,**kwargs):
+        if not self.has_replay:
+            strategy.mbatch.insert(-1,torch.zeros_like(strategy.mb_y,dtype=torch.bool))
+        replay_mask(strategy)
+
+
+def replay_mask(strategy):
+    if len(strategy.mbatch)!=4:raise ValueError('missing explicit H2 sample origin')
+    mask=strategy.mbatch[-2]
+    if mask.dtype!=torch.bool or mask.shape!=strategy.mb_y.shape:raise ValueError('invalid H2 sample origin')
+    return mask
 
 
 class OnlineNetwork(nn.Module):
@@ -47,13 +84,13 @@ class GeometryPlugin(SupervisedPlugin):
         step=strategy.clock.train_iterations+1
         if step-self.last_event<self.cfg['intervention_every']:return
         x,y=strategy.mb_x,strategy.mb_y
-        incoming=min(self.cfg['train_mb_size'],len(y))
-        mask=torch.arange(len(y),device=y.device)>=incoming
+        mask=replay_mask(strategy)
         if not bool(mask.any()):return
         losses=ReplayLoss(y,mask,kind='er')
         row=self.engine.step(strategy.model,strategy.optimizer,x,losses,strategy.model.sites(),self.cfg['lr'],
             replay_inputs=x[mask],geometry_weight=self.cfg['geometry_weight'])
         row.update(task=self.task+1,step=step)
+        row.update(incoming_samples=int((~mask).sum()),replay_samples=int(mask.sum()),origin_tracking='explicit sample field; order independent')
         self.last_event=step
 
 
@@ -65,7 +102,7 @@ class LPRCallbacks(SupervisedPlugin):
 
 class FiniteLoss(SupervisedPlugin):
     def before_training_exp(self,strategy,**kwargs):
-        self.last_loss=None
+        self.last_loss=None;self.last_accuracy=None
         active={id(p) for group in strategy.optimizer.param_groups for p in group['params']}
         # Avalanche0.4 retains empty entries for replaced heads; torch2.2 cannot serialize those orphans.
         for parameter,state in list(strategy.optimizer.state.items()):
@@ -76,6 +113,9 @@ class FiniteLoss(SupervisedPlugin):
         if not bool(torch.isfinite(strategy.loss)):
             raise FloatingPointError(f'nonfinite loss at online experience={strategy.clock.train_exp_counter}, step={strategy.clock.train_iterations+1}, tensor=loss')
         self.last_loss=float(strategy.loss.detach())
+        if strategy.clock.train_exp_iterations==0:
+            mask=~replay_mask(strategy) if len(strategy.mbatch)==4 else torch.arange(len(strategy.mb_y),device=strategy.mb_y.device)<strategy.train_mb_size
+            self.last_accuracy=float((strategy.mb_output.detach().argmax(1)[mask]==strategy.mb_y[mask]).float().mean())*100
 
 
 def native_setup(cfg,data_dir,seed):
@@ -133,7 +173,7 @@ def run(args):
     scenario,model=native_setup(cfg,args.data_dir,args.seed)
     model=model.to(args.device)
     storage=ClassBalancedBuffer(max_size=cfg['memory_size'],adaptive_size=True)
-    replay=ReplayPlugin(mem_size=cfg['memory_size'],batch_size_mem=cfg['train_mb_size'],storage_policy=storage)
+    replay=(ReplayPlugin if args.arm=='lpr' else OriginReplayPlugin)(mem_size=cfg['memory_size'],batch_size_mem=cfg['train_mb_size'],storage_policy=storage)
     lpr_cfg=cfg['lpr']
     lpr=official_module().LPRPlugin({k:SimpleNamespace(**v) for k,v in lpr_cfg.items()},storage)
     geometry=GeometryPlugin(cfg,args.seed)
@@ -144,11 +184,14 @@ def run(args):
             eval_mb_size=128,device=args.device,evaluator=None,eval_every=-1,
             plugins=[replay,finite,LPRCallbacks(lpr) if args.arm=='lpr' else geometry])
     strategy=make_strategy(model,optimizer)
-    hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((Path(args.data_dir)/'cifar-100-python').glob('*')) if p.is_file()}
+    hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in
+        (Path(args.data_dir)/'cifar-100-python'/name for name in ('train','test','meta')) if p.is_file()}
     protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),config=cfg,tasks=cfg['tasks'],
         upstream_commit=PIN,lpr_source_sha256=SOURCE_SHA256,avalanche='0.4.0',backbone='SlimResNet18 nf20, IncrementalClassifier',dataset_fingerprint=hashes,
         class_order=list(map(int,scenario.classes_order_original_ids)),runtime_flags=flags(),correction=asdict(geometry.engine.config),
         online=True,task_boundaries=False,validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
+        lpr_configuration_source=f'LPR@{PIN}/README.md: Split-CIFAR100 example omega_0=4 beta=2 every_iter=30',
+        replay_origin='native loader for LPR; explicit boolean field for Geometry-VNA, preserved under permutations',
         framework_compatibility='typing4.4 Protocol semantics; prune only empty/None orphan optimizer entries after head adaptation for torch2.2 serialization',
         arm_implementation='official LPR callbacks' if args.arm=='lpr' else 'ER + Geometry-Aware VNA',
         evidence_status='INCONCLUSIVE')
@@ -161,7 +204,8 @@ def run(args):
         if previous.get('status')=='COMPLETED':
             if len(previous.get('tasks',[]))!=cfg['tasks']:raise ValueError('incomplete online summary')
             return previous
-    rows=[];epochs=[];task=position=0;elapsed=0.;stream_rng=None
+    rows=[];epochs=[];online_rows=[];task=position=0;elapsed=0.;stream_rng=None
+    if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
     if progress.state:
         s=progress.state;progress.restore_artifacts();strategy.model=s['model'].to(args.device)
         strategy.optimizer=torch.optim.SGD(strategy.model.parameters(),lr=cfg['lr'],momentum=cfg['momentum'],weight_decay=cfg['weight_decay'])
@@ -174,12 +218,13 @@ def run(args):
         geometry.engine.load_state_dict(s['engine']);geometry.last_event=s['last_event']
         rows,epochs,task,position,elapsed=s['rows'],s['epochs'],s['task'],s['position'],s['elapsed_seconds']
         stream_rng=s['stream_rng'];restore_rng(s['rng'])
+        online_rows=s.get('online_rows',[])
     started=time.monotonic();status='COMPLETED';failure=None;coordinates=None
     def save():
-        logger.save('tasks',rows);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events)
+        logger.save('tasks',rows);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events);logger.save('online',online_rows)
         progress.save(dict(model=strategy.model,optimizer=strategy.optimizer.state_dict(),clock=vars(strategy.clock),storage=replay.storage_policy,
             lpr_inverses=lpr._preconditioner_invs,lpr_every_iter=lpr.update_config.every_iter,engine=geometry.engine.state_dict(),last_event=geometry.last_event,
-            rng=rng_state(),rows=rows,epochs=epochs,task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
+            rng=rng_state(),rows=rows,epochs=epochs,online_rows=online_rows,task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
     try:
         while task<cfg['tasks']:
             fresh=stream_rng is None
@@ -210,6 +255,8 @@ def run(args):
                     lpr.update_config.every_iter=old['every'];geometry.engine.load_state_dict(old['engine']);geometry.last_event=old['last']
                     save();raise
                 position=index+1
+                online_rows.append(dict(task=task+1,online_batch=position,loss=value,accuracy=finite.last_accuracy,
+                    optimizer_steps=strategy.clock.train_iterations))
                 if position%100==0:
                     log(f'H2 {args.arm} task={task+1} online_batch={position} loss={value}');save()
             accuracy=evaluate(strategy.model,scenario.test_stream[:task+1],args.device)
@@ -226,6 +273,12 @@ def run(args):
         logger.save('summary',dict(protocol=protocol,status=status,failure=failure,diverged=coordinates,tasks=rows,
             **matrix_metrics([r['domain_accuracies'] for r in rows]),wall_seconds=seconds,gpu_hours=seconds/3600 if args.device!='cpu' else 0.,
             correction_seconds=sum(e['seconds'] for e in geometry.engine.events),parameter_count=sum(p.numel() for p in strategy.model.parameters()),
+            online_accuracy=float(np.mean([r['accuracy'] for r in online_rows if r['accuracy'] is not None])) if any(r['accuracy'] is not None for r in online_rows) else None,
+            online_accuracy_scope='incoming samples before first update of each online experience; no test-set use',
+            peak_vram_bytes=torch.cuda.max_memory_allocated(torch.device(args.device)) if args.device!='cpu' else 0,
+            representation_drift_mean=float(np.mean([r['replay_feature_drift'] for r in geometry.engine.events if 'replay_feature_drift' in r])) if any('replay_feature_drift' in r for r in geometry.engine.events) else None,
+            replay_diagnostics=dict(origin_tracking='explicit fields in Geometry-VNA; native ReplayDataLoader in LPR',
+                measured_interventions=sum('replay_samples' in r for r in geometry.engine.events)),
             evidence_status='INCONCLUSIVE'))
 
 
