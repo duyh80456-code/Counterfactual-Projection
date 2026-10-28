@@ -94,6 +94,16 @@ class ReplayLoss:
     def total(self,z):return self.spec.loss(z,self.ctx)
 
 
+def loss_gate(before,after,dtype,constrained=True):
+    """Allow only roundoff-scale changes; significance is classified separately."""
+    b=list(before) if constrained else [sum(before)]
+    a=list(after) if constrained else [sum(after)]
+    tolerances=[1e-12+8*torch.finfo(dtype).eps*max(1.,abs(v)) for v in b]
+    finite=all(math.isfinite(v) for v in (*a,*b))
+    return dict(passed=finite and all(x<=y+t for x,y,t in zip(a,b,tolerances)),
+        finite=finite,tolerances=tolerances,changes=[x-y for x,y in zip(a,b)])
+
+
 class CurrentTaskLoss:
     """H3 has no old-task replay: optimize current CE with one descent constraint."""
     def __init__(self,targets):
@@ -243,9 +253,14 @@ class ReplayCorrection:
             qp=ConstraintSolver(A,config.cg_tolerance*10).solve(d0,gradients) if config.constrained else None
             d=qp.direction if qp else d0
             curvature=float(d@A.curvature(d));gain=gradients@d
+            geometry_curvature=float(d@A.penalty(d));ridge_curvature=mu*float(d@d)
             norms=gradients.norm(dim=1)
             opposed=len(gradients)==2 and bool((norms>0).all()) and float((gradients[0]/norms[0]+gradients[1]/norms[1]).norm())<=config.cg_tolerance
-            diagnostic=dict(mu=mu,solves=deepcopy(A.solves),first_order_gains=gain.tolist(),
+            diagnostic=dict(mu=mu,curvature_balance_scope='proposed direction at the pre-update linearization',geometry_curvature=geometry_curvature,ridge_curvature=ridge_curvature,
+                geometry_to_ggn=geometry_curvature/curvature if curvature>0 else None,
+                geometry_to_ridge=geometry_curvature/ridge_curvature if ridge_curvature>0 else None,
+                geometry_fraction=geometry_curvature/(curvature+geometry_curvature+ridge_curvature) if curvature+geometry_curvature+ridge_curvature>0 else None,
+                solves=deepcopy(A.solves),first_order_gains=gain.tolist(),
                 gradient_norms=gradients.norm(dim=1).tolist(),gradient_interference=float(gradients[0]@gradients[1]) if len(gradients)>1 else None,
                 pure_candidate_gain=float(g@pure),z_kernel_z=float(z@kernel_target) if kernel_target is not None else None,
                 cross_interference=None if cross is None else cross.tolist(),
@@ -334,8 +349,9 @@ class ReplayCorrection:
                 feasible=not self.config.constrained or bool((gains>=-self.config.cg_tolerance*scale).all())
                 after=evaluate(model,inputs,losses.components)
                 finite=all(math.isfinite(x) for x in (*before,*after))
-                nonincrease=all(a<=b for a,b in zip(after,before)) if self.config.constrained else sum(after)<=sum(before)
-                # Significance is diagnostic, never a relaxation of strict nonincrease.
+                train_gate=loss_gate(before,after,next(model.parameters()).dtype,self.config.constrained)
+                nonincrease=train_gate['passed']
+                # Improvement classification is separate from the numerical gate.
                 if self.config.constrained:
                     thresholds=[self.config.improvement_relative_tolerance*max(1.,abs(b)) for b in before]
                     meaningful=any(b-a>threshold for a,b,threshold in zip(after,before,thresholds))
@@ -343,13 +359,15 @@ class ReplayCorrection:
                     thresholds=[self.config.improvement_relative_tolerance*max(1.,abs(sum(before)))]
                     meaningful=sum(before)-sum(after)>thresholds[0]
                 eval_after=evaluate(model,inputs,losses.components,'eval')
-                eval_ok=all(math.isfinite(a) and a<=b for a,b in zip(eval_after,eval_losses_before)) if self.config.constrained else all(math.isfinite(a) for a in eval_after) and sum(eval_after)<=sum(eval_losses_before)
+                eval_gate=loss_gate(eval_losses_before,eval_after,next(model.parameters()).dtype,self.config.constrained)
+                eval_ok=eval_gate['passed']
                 physical_norm=float((initial-vector(model)).norm())
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
                     physical_norm=physical_norm,in_update_budget=in_budget,
                     meaningful_improvement=meaningful,improvement_thresholds=thresholds,
-                    eval_after=eval_after,eval_nonincrease=eval_ok,
+                    eval_after=eval_after,eval_nonincrease=eval_ok,train_gate=train_gate,eval_gate=eval_gate,
+                    failed_gates=[name for name,ok in (('finite',finite),('constraints',feasible),('train',nonincrease),('eval',eval_ok or not self.config.eval_acceptance),('budget',in_budget),('nonzero',physical_norm>0)) if not ok],
                     normalized_constraint_violation=float((-gains/scale.clamp_min(1e-30)).clamp_min(0).max())))
                 if finite and feasible and nonincrease and in_budget and physical_norm>0 and (eval_ok or not self.config.eval_acceptance):
                     accepted=True;norm=physical_norm;used=s;break

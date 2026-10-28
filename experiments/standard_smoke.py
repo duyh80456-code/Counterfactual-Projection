@@ -46,7 +46,7 @@ def resnet_bn_smoke():
         opt=torch.optim.SGD(model.parameters(),lr=.01,momentum=.9,weight_decay=.0005)
         losses=ReplayLoss(y,torch.tensor([False,True]))
         opt.zero_grad();losses.total(model(x)).backward();opt.step()
-        engine=ReplayCorrection(CorrectionConfig(kernel='tiny_V',cg_tolerance=1e-4,cg_iterations=100,trace_probes=1,max_trials=3))
+        engine=ReplayCorrection(CorrectionConfig(kernel='tiny_V',cg_tolerance=1e-6,cg_iterations=100,trace_probes=1,max_trials=3))
         before=State(model,opt)
         event=engine.step(model,opt,x,losses,sites_for(model)[-1:],.01,damping=10.,update_norm=.01)
         assert event['status'] in ('ACCEPTED','REJECTED'),event

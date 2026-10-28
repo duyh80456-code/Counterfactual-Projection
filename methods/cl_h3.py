@@ -5,7 +5,7 @@ import time
 import torch
 from methods.cl_state import State,evaluate,predict,isolated,vector
 from methods.cl_projection import Uncertified
-from methods.cl_replay import ReplayCorrection,CorrectionConfig,_ChunkedSelector
+from methods.cl_replay import ReplayCorrection,CorrectionConfig,_ChunkedSelector,loss_gate
 from methods.vna_v3 import training_products,V3Engine
 from methods.vna_ggn import GGNProducts
 
@@ -70,28 +70,39 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,ev
         for candidate in candidates:
             started=time.perf_counter()
             if candidate.slot_kind not in ('live','dead'):raise ValueError('slot kind must be measured explicitly')
-            state.restore();candidate.apply(model)
-            if (shapes!={n:tuple(p.shape) for n,p in model.named_parameters()} or count!=sum(p.numel() for p in model.parameters())
-                    or identities!={n:id(p) for n,p in model.named_parameters()}):
-                raise ValueError('H3 requires fixed capacity and parameter structure')
-            candidate.reset_optimizer(optimizer,model)
-            after=evaluate(model,inputs,components)
-            admissible=all(math.isfinite(a) and a<=b for a,b in zip(after,before))
-            eval_after=evaluate(model,inputs,components,'eval')
-            eval_ok=all(math.isfinite(a) and a<=b for a,b in zip(eval_after,eval_before))
-            changed=float((vector(model)-initial).norm())
-            admissible=admissible and changed>0 and (eval_ok or not eval_acceptance)
-            objective=score(after)
-            jump=predict(model,inputs,'train')-output_before
-            rows.append(dict(candidate=candidate.name,slot_kind=candidate.slot_kind,before=before,after=after,
-                functional_loss_jump=[a-b for a,b in zip(after,before)],admissible=admissible,
-                objective=objective,output_jump_norm=float(jump.double().norm()),
-                window_output_preserved=not bool(jump.any()),step_norm=changed,
-                eval_before=eval_before,eval_after=eval_after,eval_nonincrease=eval_ok,
-                eval_functional_drift=float((predict(model,inputs)-eval_output).double().norm())))
-            rows[-1]['seconds']=time.perf_counter()-started
-            if admissible and math.isfinite(objective) and objective<best:
-                winner=candidate;best=objective;winner_state=State(model,optimizer)
+            try:
+                state.restore();candidate.apply(model)
+                if (shapes!={n:tuple(p.shape) for n,p in model.named_parameters()} or count!=sum(p.numel() for p in model.parameters())
+                        or identities!={n:id(p) for n,p in model.named_parameters()}):
+                    raise ValueError('H3 requires fixed capacity and parameter structure')
+                candidate.reset_optimizer(optimizer,model)
+                after=evaluate(model,inputs,components)
+                train_gate=loss_gate(before,after,next(model.parameters()).dtype)
+                admissible=train_gate['passed']
+                eval_after=evaluate(model,inputs,components,'eval')
+                eval_gate=loss_gate(eval_before,eval_after,next(model.parameters()).dtype)
+                eval_ok=eval_gate['passed']
+                changed=float((vector(model)-initial).norm())
+                admissible=admissible and changed>0 and (eval_ok or not eval_acceptance)
+                objective=score(after)
+                jump=predict(model,inputs,'train')-output_before
+                rows.append(dict(candidate=candidate.name,slot_kind=candidate.slot_kind,before=before,after=after,
+                    functional_loss_jump=[a-b for a,b in zip(after,before)],admissible=admissible,
+                    objective=objective,output_jump_norm=float(jump.double().norm()),
+                    window_output_preserved=not bool(jump.any()),step_norm=changed,
+                    eval_before=eval_before,eval_after=eval_after,eval_nonincrease=eval_ok,train_gate=train_gate,eval_gate=eval_gate,
+                    failed_gates=[name for name,ok in (('train',train_gate['passed']),('eval',eval_ok or not eval_acceptance),('nonzero',changed>0)) if not ok],
+                    rejection_reason='TRAIN_LOSS_INCREASE' if not train_gate['passed'] else 'EVAL_LOSS_INCREASE' if eval_acceptance and not eval_ok else 'ZERO_PHYSICAL_UPDATE' if changed==0 else None,
+                    eval_functional_drift=float((predict(model,inputs)-eval_output).double().norm())))
+                rows[-1]['seconds']=time.perf_counter()-started
+                if admissible and math.isfinite(objective) and objective<best:
+                    winner=candidate;best=objective;winner_state=State(model,optimizer)
+            except Uncertified as exc:
+                state.restore()
+                rows.append(dict(candidate=candidate.name,slot_kind=candidate.slot_kind,
+                    admissible=False,status='UNCERTIFIED',solver_failure=exc.diagnostics,
+                    rejection_reason='CANDIDATE_SOLVER_FAILURE',seconds=time.perf_counter()-started))
+                continue
         state.restore()
         # Commit the tested state; a callback may consume external RNG or have side effects.
         if winner_state is not None:winner_state.restore()
@@ -101,6 +112,8 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,ev
     except BaseException:
         state.restore();raise
     return dict(choice='identity' if winner is None else winner.name,trials=rows,
+        candidate_solver_failures=sum('solver_failure' in r for r in rows),
+        certified_candidates=sum('solver_failure' not in r for r in rows),
         criterion='minimum supplied surrogate' if surrogate is not None else 'minimum measured total window loss',
         search_scope='provided finite candidates only',dead_slot_preservation_claim=False,
         final_losses=evaluate(model,inputs,components))
@@ -147,7 +160,7 @@ class TangentReconfiguration:
             result['step_norm']=trial['step_norm']
             improved=any(b-a>self.config.improvement_relative_tolerance*max(1.,abs(b)) for a,b in zip(trial['after'],trial['before']))
             result['acceptance_detail']='ACCEPTED_WITH_IMPROVEMENT' if improved else 'ACCEPTED_NEUTRAL'
-        else:result['rejection_reason']=result.get('reason','NO_FEASIBLE_IMPROVING_SWAP' if result['candidate_generated'] else 'NO_CANDIDATE')
+        else:result['rejection_reason']=result.get('reason','ALL_CANDIDATES_UNCERTIFIED' if result.get('trials') and all('solver_failure' in r for r in result['trials']) else 'NO_FEASIBLE_IMPROVING_SWAP' if result['candidate_generated'] else 'NO_CANDIDATE')
         self.applications+=1;self.events.append(result)
         return result
 
@@ -224,11 +237,11 @@ class TangentReconfiguration:
                     counts['vjp']+=p.vjp_calls+p.extension_vjp_calls
                     return loss-recovery
             result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,eval_acceptance=self.config.eval_acceptance)
-            for row,score in zip(result['trials'],scores[1:]):row.update(score)
+            for row,score in zip((r for r in result['trials'] if 'solver_failure' not in r),scores[1:]):row.update(score)
             if self.max_candidates is not None:
                 for trial in result['trials']:
                     trial['selected_winner']=trial['candidate']==result['choice']
-                    trial['rejection_reason']=None if trial['selected_winner'] else 'component_loss_increase' if not trial['admissible'] else 'not_better_than_identity_or_winner'
+                    trial['rejection_reason']=trial.get('rejection_reason') or (None if trial['selected_winner'] else 'component_loss_increase' if not trial['admissible'] else 'not_better_than_identity_or_winner')
                 result.update(generated_candidates=generated,shortlist_count=len(candidates),exact_candidate_evaluations=len(result['trials']),
                     preliminary_ranking_seconds=ranking_seconds,
                     identity_evaluations=1,max_candidates=self.max_candidates,ranking=ranking,
@@ -239,7 +252,7 @@ class TangentReconfiguration:
                 candidate_generation_seconds=generation_seconds,candidate_evaluation_seconds=sum(r['seconds'] for r in result['trials']),
                 selection_direct_backward_calls=len(sites),
                 swap_kind=next((r['slot_kind'] for r in result['trials'] if r['candidate']==result['choice']),None),
-                criterion='minimum post-removal loss minus damped GN recovery; componentwise finite-loss nonincrease',
+                criterion='minimum post-removal loss minus damped GN recovery; componentwise loss gates with dtype-scaled numerical tolerance',
                 gain_scope='net fixed-capacity surrogate; NOT added-column Schur theorem',
                 vna_gain_role='diagnostic only; GN improvement does not imply VNA improvement',
                 candidate_generation='existing tiny_V generalized eigenvectors with real-ReLU sign selection; every slot')

@@ -192,7 +192,7 @@ def run(args):
     protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),source_hashes=source_hashes(),config=cfg,tasks=cfg['tasks'],
         upstream_commit=PIN,lpr_source_sha256=SOURCE_SHA256,avalanche='0.4.0',backbone='SlimResNet18 nf20, IncrementalClassifier',dataset_fingerprint=hashes,
         class_order=list(map(int,scenario.classes_order_original_ids)),runtime_flags=flags(),correction=asdict(geometry.engine.config),
-        acceptance='componentwise incoming/replay train and eval nonincrease; geometry penalty supplements constraints',
+        acceptance='componentwise incoming/replay train and eval nonincrease within dtype-scaled roundoff; geometry penalty supplements constraints',
         online=True,task_boundaries=False,validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
         lpr_configuration_source=f'LPR@{PIN}/README.md: Split-CIFAR100 example omega_0=4 beta=2 every_iter=30',
         replay_origin='native loader for LPR; explicit boolean field for Geometry-VNA, preserved under permutations',

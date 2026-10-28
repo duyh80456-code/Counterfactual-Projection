@@ -69,6 +69,7 @@ class ProjectionOperator:
         psd=all(m>=-1e-4*max(float(w.norm()*a.norm()),1e-30) for m,w,a in zip(margins,(u,v),(au,av)))
         self.audit=dict(adjoint_relative_error=adjoint,symmetry_relative_error=symmetry,
             lower_bound_margins=margins,tolerance=1e-4,
+            sampled_rayleigh=[float(w@a)/max(float(w@w),1e-30) for w,a in ((u,au),(v,av))],
             scope='seeded finite-precision probes; not a global SPD proof')
         self.audit['passed']=bool(all(torch.isfinite(a).all() for a in (au,av,jty)) and psd and adjoint<=1e-4 and symmetry<=1e-4)
         if not self.audit['passed']:
@@ -90,23 +91,32 @@ class ProjectionOperator:
             else:
                 generator = torch.Generator(device=rhs.device)
                 generator.manual_seed(self.preconditioner_seed)
-                diag = torch.zeros_like(rhs)
+                diag = torch.zeros_like(rhs);squares=torch.zeros_like(rhs)
                 for _ in range(self.preconditioner_probes):
                     self.boundary()
                     v = torch.empty_like(rhs).bernoulli_(.5, generator=generator).mul_(2).sub_(1)
-                    diag.add_(v * self(v))
+                    sample=v*self(v);diag.add_(sample);squares.add_(sample.square())
                 used=self.preconditioner_probes
                 if float((diag/used<floor).double().mean())>.1:
                     for _ in range(min(3*used,48)):
                         self.boundary()
                         v=torch.empty_like(rhs).bernoulli_(.5,generator=generator).mul_(2).sub_(1)
-                        diag.add_(v*self(v))
+                        sample=v*self(v);diag.add_(sample);squares.add_(sample.square())
                         used+=1
                 diag.div_(used)
+                self.preconditioner_quality['raw_clipped_fraction']=float((diag<floor).double().mean())
+                variance=(squares/used-diag.square()).clamp_min(0)/used
+                signal=(diag-floor).clamp_min(0)
+                confidence=torch.where(variance==0,torch.ones_like(signal),
+                    signal.square()/(signal.square()+variance+torch.finfo(rhs.dtype).tiny))
+                # Shrink noisy coordinate estimates toward a positive trace-scale prior.
+                diag=floor+confidence*signal+(1-confidence)*signal.mean()
+                self.preconditioner_quality.update(shrinkage_fraction=float((1-confidence).mean()),
+                    mean_standard_error=float(variance.sqrt().mean()))
             if not torch.isfinite(diag).all():
                 raise Uncertified('non-finite Jacobi diagonal')
             # Rademacher diagonal estimates may be negative; the ridge stays SPD.
-            self.preconditioner_quality=dict(clipped_fraction=float((diag<floor).double().mean()),
+            self.preconditioner_quality.update(estimator='exact_diagonal' if n<=16 else 'variance_shrunk_hutchinson',clipped_fraction=float((diag<floor).double().mean()),
                 minimum=float(diag.min()),maximum=float(diag.max()),floor=floor,actual_probes=used if n>16 else 0)
             self._preconditioner = diag.clamp_min(floor).detach()
         return lambda residual: residual / self._preconditioner
@@ -117,17 +127,33 @@ class ProjectionOperator:
         preconditioner=self._jacobi(rhs)
         result=conjugate_gradient(self,rhs,max_iter=self.max_iterations,tolerance=self.tolerance,
             preconditioner=preconditioner,eps=1e-30,callback=lambda _:self.boundary())
-        residual=float((rhs-self(result.solution)).norm())
+        solution=result.solution.detach();residual_vector=rhs-self(solution)
+        residual=float(residual_vector.norm());refinements=[];iterations=result.iterations
+        if preconditioner is not None:
+            for _ in range(2):
+                target=min(self.tolerance*float(rhs.norm()),
+                    self.max_relative_solution_error*self.mu*self.regularizer_floor*float(solution.norm()))
+                if residual<=target:break
+                self.boundary()
+                correction=conjugate_gradient(self,residual_vector,max_iter=self.max_iterations,
+                    tolerance=min(self.tolerance,1e-8),preconditioner=preconditioner,eps=1e-30,
+                    callback=lambda _:self.boundary())
+                candidate=solution+correction.solution
+                candidate_residual=rhs-self(candidate);new_residual=float(candidate_residual.norm())
+                refinements.append(dict(before=residual,after=new_residual,iterations=correction.iterations))
+                iterations+=correction.iterations
+                if not math.isfinite(new_residual) or new_residual>=residual:break
+                solution=candidate.detach();residual_vector=candidate_residual;residual=new_residual
         relative=residual/max(float(rhs.norm()),torch.finfo(rhs.dtype).tiny)
         # For SPD A with lambda_min(A)>=mu*R_floor, ||x-x*||<=||b-Ax||/(mu*R_floor).
         error_bound=residual/(self.mu*self.regularizer_floor)
-        solution_norm=float(result.solution.norm())
+        solution_norm=float(solution.norm())
         relative_error_bound=(error_bound/solution_norm if solution_norm>0 else
                               0. if error_bound==0 else math.inf)
-        residual_ok=bool(torch.isfinite(result.solution).all() and math.isfinite(relative) and relative<=self.tolerance)
+        residual_ok=bool(torch.isfinite(solution).all() and math.isfinite(relative) and relative<=self.tolerance)
         error_ok=bool(math.isfinite(relative_error_bound) and relative_error_bound<=self.max_relative_solution_error)
         certified=residual_ok and error_ok
-        self.solves.append(dict(iterations=result.iterations,residual=residual,relative_residual=relative,
+        self.solves.append(dict(iterations=iterations,refinements=refinements,residual=residual,relative_residual=relative,
             error_bound=error_bound,relative_solution_error_bound=relative_error_bound,
             max_relative_solution_error=self.max_relative_solution_error,
             status='CERTIFIED' if certified else 'UNCERTIFIED',
@@ -137,7 +163,7 @@ class ProjectionOperator:
         if not certified:
             reason='true-residual certificate' if not residual_ok else 'solution-error bound'
             raise Uncertified('linear solve failed '+reason,list(self.solves))
-        return result.solution.detach()
+        return solution.detach()
 
     def split(self,gradient):return self.metric(self.jvp(self.solve(gradient))).double()
 

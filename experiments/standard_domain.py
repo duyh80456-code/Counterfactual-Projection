@@ -68,7 +68,8 @@ def run(args):
         synthetic_smoke=args.fake_data,split_sizes=dict(train=len(base_train),test=len(base_test)),
         transformations=[dataset.identity() for dataset in tests],
         dataset_hashes=hashes,correction=asdict(config),classifier_classes=10,head_expansion=False,
-        domain_reference=args.domain_reference,acceptance='train and eval componentwise nonincrease',
+        domain_reference=args.domain_reference,
+        domain_mechanism='training-only domain IDs partition current/past CE constraints; shared fixed head and backbone; no shift estimator or domain-conditioned features',acceptance='train and eval componentwise nonincrease within dtype-scaled roundoff',
         memory='reservoir of previously observed transformed samples, including current-domain prefix',
         evidence_status='INCONCLUSIVE',test_gates='prelaunch CPU mathematical/synthetic validation; benchmark and CUDA validation pending')
     if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('domain protocol mismatch')

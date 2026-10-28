@@ -134,3 +134,157 @@ def test_acceptance_report_retains_tasks_without_interventions(tmp_path):
     (tmp_path/'interventions.json').write_text('[]')
     rows=acceptance_report(tmp_path)
     assert len(rows)==2 and all(r['attempts']==r['accepted_effective']==0 for r in rows)
+
+
+def test_bad_gir_candidate_does_not_cancel_later_winner():
+    from methods.cl_h3 import choose_swap,SwapCandidate
+    net=nn.Linear(1,1,bias=False).double();net.weight.data.fill_(2)
+    opt=torch.optim.SGD(net.parameters(),lr=.1,momentum=.9)
+    x=torch.ones(3,1,dtype=torch.double)
+    def install(value):
+        return lambda model:model.weight.data.fill_(value)
+    def score(model):
+        if model.weight.item()==3:raise Uncertified('linear solve failed candidate',[dict(mu=.1)])
+        return model.weight.square().sum().item()
+    result=choose_swap(net,opt,x,(LossComponent('square',lambda z:z.square().mean()),),[
+        SwapCandidate('bad','live',install(3),lambda *a:None),
+        SwapCandidate('good','live',install(1),lambda *a:None)],surrogate=score)
+    assert result['choice']=='good' and net.weight.item()==1
+    assert result['trials'][0]['rejection_reason']=='CANDIDATE_SOLVER_FAILURE'
+
+
+def test_roundoff_gates_allow_float32_noise_but_not_real_increase():
+    from methods.cl_replay import loss_gate
+    assert loss_gate([1.],[1.+1e-7],torch.float32)['passed']
+    assert not loss_gate([1.],[1.001],torch.float32)['passed']
+    assert not loss_gate([1.],[float('nan')],torch.float32)['passed']
+
+
+def test_h4_correction_applies_with_previous_domain_reference():
+    from methods.cl_h4 import domain_losses
+    from methods.vna_sites import HookSite
+    torch.manual_seed(0)
+    net=nn.Sequential(nn.Linear(2,2),nn.ReLU(),nn.Linear(2,2)).double()
+    opt=torch.optim.SGD(net.parameters(),lr=.1)
+    x=torch.tensor([[1.,0.],[0.,1.],[1.,0.],[0.,1.]],dtype=torch.double)
+    loss=domain_losses(torch.tensor([0,1,0,1]),torch.tensor([False,False,True,True]),
+        current_domain=1,replay_domains=(0,1))
+    engine=ReplayCorrection(CorrectionConfig(damping_relative=1.,cg_tolerance=1e-8))
+    before=vector(net).clone();event=engine.step(net,opt,x,loss,[HookSite(net,'0','2','linear',between=('1',))],.1)
+    assert event['accepted'] and event['step_norm']>0 and not torch.equal(before,vector(net))
+    assert event['trials'][-1]['train_gate']['passed'] and event['trials'][-1]['eval_gate']['passed']
+
+
+def test_h3_current_task_real_correction_and_gir_swap():
+    from methods.cl_h3 import TangentReconfiguration
+    from methods.vna_sites import HookSite
+    torch.manual_seed(0)
+    net=nn.Sequential(nn.Linear(2,2),nn.ReLU(),nn.Linear(2,2)).double()
+    with torch.no_grad():net[0].weight.fill_(1);net[0].bias.copy_(torch.tensor([-10.,1.]))
+    opt=torch.optim.SGD(net.parameters(),lr=.01,momentum=.9)
+    x=torch.tensor([[0.,1.],[1.,0.],[1.,1.]],dtype=torch.double);loss=CurrentTaskLoss(torch.tensor([0,1,0]))
+    event=ReplayCorrection(CorrectionConfig(damping_relative=1.)).step(net,opt,x,loss,[HookSite(net,'0','2','linear',between=('1',))],.01)
+    assert event['accepted'] and event['step_norm']>0
+    gir=TangentReconfiguration(CorrectionConfig(damping_relative=1.),max_candidates=4)
+    result=gir.step(net,opt,x,loss,[HookSite(net,'0','2','linear',between=('1',))])
+    assert result['certified'] and result['candidate_generated'] and result['trials']
+    assert result['status']=='ACCEPTED' and result['actual_replacements']==1
+    winner=next(t for t in result['trials'] if t['candidate']==result['choice'])
+    assert winner['step_norm']>0 and winner['train_gate']['passed'] and winner['eval_gate']['passed']
+
+
+def test_iterative_refinement_recovers_solution_without_damping_change(monkeypatch):
+    from methods import cl_projection
+    mu=1e-9;j=torch.tensor([0.,(1-mu)**.5],dtype=torch.double)
+    A=ProjectionOperator(lambda x:j*x,lambda x:j*x,lambda x:x,mu,preconditioner_probes=4)
+    b=torch.tensor([mu,1.],dtype=torch.double);calls=[]
+    def solve(operator,rhs,**kwargs):
+        calls.append(1)
+        x=torch.tensor([0.,1.],dtype=torch.double) if len(calls)==1 else rhs/torch.tensor([mu,1.],dtype=torch.double)
+        return SimpleNamespace(solution=x,iterations=1,breakdown=False)
+    monkeypatch.setattr(cl_projection,'conjugate_gradient',solve)
+    answer=A.solve(b)
+    torch.testing.assert_close(answer,torch.ones(2,dtype=torch.double))
+    assert A.solves[-1]['refinements'] and A.mu==mu
+    assert A.solves[-1]['relative_solution_error_bound']<=.1
+
+
+def test_geometry_curvature_contributions_are_measured():
+    from methods.cl_h2 import GeometryCorrection
+    from methods.cl_replay import ReplayLoss
+    class Net(nn.Module):
+        def __init__(self):super().__init__();self.hidden=nn.Linear(2,2);self.head=nn.Linear(2,2)
+        def standard_features(self,x):return self.hidden(x)
+        def forward(self,x):return self.head(self.standard_features(x))
+    torch.manual_seed(12);net=Net().double();opt=torch.optim.SGD(net.parameters(),lr=.01)
+    x=torch.randn(4,2,dtype=torch.double);loss=ReplayLoss(torch.zeros(4,dtype=torch.long),torch.tensor([False,False,True,True]))
+    event=GeometryCorrection(CorrectionConfig(kernel='native',damping_relative=1.)).step(net,opt,x,loss,[],.001,replay_inputs=x[2:],geometry_weight=10.)
+    assert event['geometry_curvature']>0 and event['ridge_curvature']>0
+    assert 0<event['geometry_fraction']<1
+    assert event['geometry_to_ggn']>0 and event['geometry_to_ridge']>0
+
+
+def test_h4_runner_real_engine_commits_corrections(tmp_path):
+    from experiments import standard_domain as runner
+    args=runner.parse_args(['--data-dir',str(tmp_path),'--out',str(tmp_path/'run'),
+        '--fake-data','--device','cpu','--domains','2','--epochs','1','--batch-size','4'])
+    summary=runner.run(args)
+    assert summary['status']=='COMPLETED'
+    events=json.loads((tmp_path/'run/interventions.json').read_text())
+    accepted=[e for e in events if e.get('accepted')]
+    assert accepted and all(e['step_norm']>0 and e['trials'][-1]['train_gate']['passed']
+        and e['trials'][-1]['eval_gate']['passed'] for e in accepted)
+    assert any(e['previous_domain_samples']>0 for e in events)
+
+
+def test_h3_runner_uses_real_correction_engines(tmp_path,monkeypatch):
+    import numpy as np
+    import pickle
+    from experiments import standard_imagenet as runner
+    from experiments.runners import lop
+    lop.upstream_imports()
+    from lop.nets import conv_net
+    class Tiny(nn.Module):
+        def __init__(self,num_classes=2):
+            super().__init__();self.layers=nn.ModuleList([nn.Linear(2,2),nn.ReLU(),nn.Linear(2,num_classes)])
+            self.act_type='relu';self.last_filter_output=1
+            self.double()
+        def predict(self,x):
+            h=self.layers[1](self.layers[0](x));return self.layers[2](h),[h]
+    monkeypatch.setattr(conv_net,'ConvNet',Tiny)
+    original=lop.UPSTREAM;upstream=tmp_path/'native';(upstream/'lop/imagenet/cfg').mkdir(parents=True)
+    params=json.loads((original/'lop/imagenet/cfg/cbp.json').read_text());params['mini_batch_size']=4
+    (upstream/'lop/imagenet/cfg/cbp.json').write_text(json.dumps(params))
+    with (upstream/'lop/imagenet/class_order').open('wb') as stream:pickle.dump([np.arange(1000)],stream)
+    monkeypatch.setattr(lop,'UPSTREAM',upstream);monkeypatch.setattr(lop,'upstream_imports',lambda:None)
+    monkeypatch.setattr(runner,'data_identity',lambda *a:{'synthetic':True})
+    x=torch.tensor([[1.,0.],[0.,1.],[1.,0.],[0.,1.]],dtype=torch.double);y=torch.tensor([0,1,0,1])
+    monkeypatch.setattr(runner,'load_task',lambda *a:(x.clone(),y.clone(),x.clone(),y.clone()))
+    cfg=json.loads((__import__('pathlib').Path('configs/standard_cl/h3_imagenet_small.json')).read_text())
+    cfg.update(num_tasks=1,num_showings=2,intervention_every=1,max_candidates=4)
+    cfg['correction']['damping_relative']=1.
+    config=tmp_path/'config.json';config.write_text(json.dumps(cfg));out=tmp_path/'run'
+    runner.run(runner.parser().parse_args(['--arm','vna_gir','--data-dir',str(tmp_path),'--device','cpu','--config',str(config),'--out',str(out)]))
+    summary=json.loads((out/'summary.json').read_text());events=json.loads((out/'vna_interventions.json').read_text())
+    assert summary['status']=='COMPLETED' and any(e.get('accepted') and e['step_norm']>0 for e in events)
+    swaps=json.loads((out/'interventions.json').read_text())
+    assert swaps and all('damping_attempts' in e for e in swaps)
+
+
+def test_noisy_jacobi_shrinkage_stays_positive_and_certified():
+    j=torch.ones(1,24,dtype=torch.double)
+    A=ProjectionOperator(lambda x:j@x,lambda y:j.T@y,lambda x:x,.1,
+        preconditioner_probes=16,tolerance=1e-10,max_iterations=100)
+    rng=torch.get_rng_state().clone();rhs=torch.ones(24,dtype=torch.double)
+    answer=A.solve(rhs)
+    torch.testing.assert_close(answer,rhs/24.1,rtol=1e-7,atol=1e-9)
+    assert A.preconditioner_quality['estimator']=='variance_shrunk_hutchinson'
+    assert A.preconditioner_quality['shrinkage_fraction']>0
+    assert bool((A._preconditioner>0).all()) and torch.equal(rng,torch.get_rng_state())
+
+
+def test_jacobi_exact_zero_curvature_coordinates_keep_ridge_floor():
+    values=torch.cat((torch.zeros(12),torch.ones(12))).double()
+    A=ProjectionOperator(lambda x:values*x,lambda x:values*x,lambda x:x,1.,preconditioner_probes=4)
+    A._jacobi(torch.ones(24,dtype=torch.double))
+    torch.testing.assert_close(A._preconditioner,values.square()+1.,rtol=0,atol=0)

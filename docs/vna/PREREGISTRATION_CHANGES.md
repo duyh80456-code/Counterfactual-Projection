@@ -1519,3 +1519,50 @@ accuracy matrices and old/new-task metrics. Log test accuracies at task/domain
 boundaries. Save source hashes and effective configs with strict resume identity.
 Main and separate solver/reference/cadence/gate ablation notebooks retain full
 horizons; multiple11-hour sessions may be needed, with no automatic truncation.
+
+### 2026-10-29 — candidate-local GIR failures and numerical acceptance gates
+
+GIR now skips/rolls back an individually uncertified candidate, retains its failure
+and continues the fixed-mu search. Identity/background failure still triggers
+whole-search adaptive damping retry. A later candidate can win even after a
+solver failure; all-candidate failures keep identity and are not a reason to
+retry/tune mu for individual candidates. Failed candidates never shift the
+alignment of successful per-candidate surrogate diagnostics.
+
+PCG can perform up to two residual-correction refinement rounds at the SAME mu,
+using the existing preconditioner and retaining only a strictly lower measured
+true residual. Each round is bounded by cg_iterations; total iterations/time
+are logged and deadline/budget guards remain active. Both V2 certificates are
+unchanged. No-preconditioner ablation does not receive this refinement. Seeded
+Rayleigh probes and Jacobi diagnostics remain empirical conditioning indicators,
+not a spectral condition-number proof. CPU ResNet32 BN smoke now requires1e-6
+true relative residual and0.1 solution-error bound; this is a synthetic-window
+check, not validation on real GPU checkpoints.
+
+Train/eval loss gates permit only a dtype-scaled numerical allowance:
+1e-12+8*eps(parameter_dtype)*max(1,abs(reference_loss)), separately for each
+component (or total when unconstrained). Log before/after, allowance and all
+failed gates. This prospectively replaces exact floating-point <= checks; it
+is not an additional allowance of1e-6 on every dtype. Improvement still requires
+the existing1e-6 significance test; numerical neutrality is not improvement.
+GIR uses the same gate helper. No tolerance is added to solver certificates.
+
+H2 logs d.T geometry d, d.T GGN d and mu*||d||² for the actual proposed direction,
+geometry/GGN and geometry/ridge ratios, and geometry fraction of total curvature.
+Zero directions yield undefined ratios, not evidence of weak regularization.
+Geometry weight is not auto-retuned from these diagnostics.
+
+H4's scope is explicitly training-time prior-domain loss constraints using
+stored domain IDs. It is not a domain-conditioned backbone, shift estimator or
+learned domain-specific feature adaptation. ER sampling, budget and inference
+remain unchanged. Mixed-domain reference ablation is retained. Real CPU toy
+integration checks require nonzero tiny_V corrections for H3/H4 and a committed
+H3 GIR swap, along with gate and rollback tests. No GPU benchmark claim follows.
+
+The large-system Jacobi estimator additionally records probe variance and
+shrinks noisy curvature-diagonal estimates toward their positive mean signal,
+keeping the exact ridge floor. Exact diagonal systems retain their estimator;
+zero-variance diagonal probes are unchanged. This deterministic positive
+preconditioner does not change A, its damping or either certificate. It is not
+a guaranteed condition-number improvement. Report raw clipping, shrinkage and
+standard error rather than inferring success from an increased probe count.

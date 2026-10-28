@@ -116,7 +116,7 @@ def run(args):
         runtime_flags=flags(),synthetic_smoke=args.fake_data,loss_reduction=args.loss_reduction,
         geometry=cfg.get('geometry') if branch=='H2' else None,
         dataset_fingerprint=fingerprint,raw_upstream_config=raw,evaluation='final epoch; CNN primary; NME separate',
-        acceptance='componentwise train and eval window nonincrease; finite parameter update; BN effects logged',
+        acceptance='componentwise train and eval window nonincrease within dtype-scaled roundoff; finite parameter update; BN effects logged',
         evidence_status='INCONCLUSIVE',test_gates='prelaunch CPU mathematical/synthetic validation; benchmark and CUDA validation pending',
         budget_comparison=args.budget,compute_budget_ratio=cfg['compute_budget_ratio'])
     if args.arm=='lpr':

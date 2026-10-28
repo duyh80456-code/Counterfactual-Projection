@@ -160,7 +160,10 @@ def test_plasticity_runner_authentic_adapters_and_generated_candidates(tmp_path,
 
 def test_real_resnet32_bn_forward_backward_correction():
     from experiments.standard_smoke import resnet_bn_smoke
-    assert resnet_bn_smoke()['correction']['status'] in ('ACCEPTED','REJECTED')
+    event=resnet_bn_smoke()['correction']
+    assert event['status'] in ('ACCEPTED','REJECTED')
+    assert event['solves'] and all(s['status']=='CERTIFIED' and s['relative_residual']<=1e-6
+        and s['relative_solution_error_bound']<=.1 and s['operator_audit']['passed'] for s in event['solves'])
 
 
 def test_generated_h3_live_dead_and_upstream_redo_reset():

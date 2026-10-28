@@ -156,7 +156,7 @@ def test_export_keeps_paused_run_partial_and_writes_curves(tmp_path):
     with pytest.raises(ValueError,match='incomplete completed'):export_comparison(tmp_path)
 
 
-def test_uncertified_candidate_keeps_partial_audit_and_rolls_back():
+def test_uncertified_candidate_keeps_audit_and_prior_winner():
     from methods.cl_h3 import choose_swap,SwapCandidate
     from methods.cl_projection import Uncertified
     from methods.cl_state import State
@@ -170,10 +170,10 @@ def test_uncertified_candidate_keeps_partial_audit_and_rolls_back():
         calls+=1
         if calls==3:raise Uncertified('fixture CG failure',[])
         return float(net.weight.square().sum())
-    with pytest.raises(Uncertified) as exc:
-        choose_swap(model,optimizer,torch.ones(1,1,dtype=torch.double),(lambda z:z.square().mean(),),candidates,surrogate=objective)
-    assert exc.value.failed_candidate=='failed' and len(exc.value.candidate_trials)==1
-    _assert_bitwise(snapshot.values,model.state_dict(),'uncertified rollback')
+    result=choose_swap(model,optimizer,torch.ones(1,1,dtype=torch.double),(lambda z:z.square().mean(),),candidates,surrogate=objective)
+    assert result['choice']=='first' and model.weight.item()==.5
+    assert len(result['trials'])==2 and result['trials'][1]['rejection_reason']=='CANDIDATE_SOLVER_FAILURE'
+    _assert_bitwise(snapshot.opt,optimizer.state_dict(),'candidate optimizer isolation')
 
 
 def test_input_scan_finds_nested_kaggle_dataset_without_download(tmp_path,monkeypatch):

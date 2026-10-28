@@ -174,7 +174,7 @@ Pinned source commit; no ZIP overlay. Full registered horizon, final-epoch model
 H1: CIFAR-100, BN ResNet32 PyCIL, 20 tasks ×5 classes, memory2000, 200/170 epochs.
 H2: official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch10 ×3 repeats, class-balanced replay2000, validation5%, LPR omega0=4/beta=2/update30 from official README, SGD0.1 without momentum/weight decay/scheduler.
 H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA cadence4000/window128; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. Single current-task CE objective, no replay. CBP remains main baseline; BP, VNA-only and GIR-only are queued ablations. This pilot does not reproduce full-horizon CBP results.
-H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + Domain-Adaptive VNA.
+H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + prior-domain constrained VNA; training-only domain IDs partition loss constraints, shared fixed backbone/head.
 
 Inputs: {'optional original CBP ImageNet32 files; otherwise automatically download the official archive to Kaggle disk and extract only the 200 required class files' if branch=='H3' else 'optional CIFAR-100 Python train/test/meta; auto-download from official torchvision source if absent' if branch in ('H1','H2') else 'optional MNIST raw IDX files (plain/gzip); auto-download from torchvision source if absent' }.
 Enable Internet and Kaggle Secret `github_token`. Select T4 ×2; baseline GPU0, full GPU1, one BLAS thread per lane.
