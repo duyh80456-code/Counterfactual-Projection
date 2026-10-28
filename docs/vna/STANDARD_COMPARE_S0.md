@@ -1,6 +1,6 @@
 # Final seed-0 H1–H4 Kaggle comparisons — 2026-10-29
 
-Source pin: 0326c869d895ab57ac8d72238f1e157f3c11df88. Four independent notebooks, GPU0 baseline and
+Source pin: fc54068de014c6af5e4d9f228dc6aa48e79c2e5c. Four independent notebooks, GPU0 baseline and
 GPU1 full method on T4×2. H3 additionally queues BP on GPU0 and VNA-only/GIR-only after full on GPU1. No source ZIP, old baseline, Gram schedule or old VNA
 checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 
@@ -9,7 +9,7 @@ checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 | standard_cl_H1_s0.ipynb | iCaRL / Replay-Aware VNA | CIFAR10020×5, PyCIL ResNet32 BN, memory2000,200/170 epochs | Optional CIFAR100 Python files; auto-download when absent |
 | standard_cl_H2_s0.ipynb | official LPR / Geometry-Aware VNA | Online Split-CIFAR10020 experiences, SlimResNet18 nf20, batch10×3 repeats, replay2000, validation5%, SGD0.1 | Optional CIFAR100 Python files; auto-download when absent |
 | standard_cl_H3_s0.ipynb | official ConvCBP / BP + VNA→GIR | H3-small, five arms:100 binary ImageNet32 tasks×50 epochs, batch100, native ConvNet, SGD0.01/momentum0.9 | Authorized original files listed in H3_SMALL_REQUIRED_FILES.json |
-| standard_cl_H4_s0.ipynb | ER / Domain-Adaptive VNA | MNIST20 rotations0,15,…,285°, MLP256 BN, fixed10-class head, reservoir2000,1epoch/domain | Optional four MNIST IDX files, plain/gzip; auto-download when absent |
+| standard_cl_H4_s0.ipynb | ER / prior-domain constrained VNA | MNIST20 rotations0,15,…,285°, MLP256 BN, fixed10-class head, reservoir2000,1epoch/domain | Optional four MNIST IDX files, plain/gzip; auto-download when absent |
 
 Enable Internet and Kaggle Secret github_token. Set DATA_DIR only if several
 compatible dataset roots are attached. CIFAR files are train/test/meta in the
@@ -110,3 +110,12 @@ notebooks share the pin above; four separate `*_ablations_s0.ipynb` notebooks
 isolate solver/gate/reference/cadence changes. New output tags; no old-engine
 resume. Native baseline training and main cadence remain unchanged. H3's five
 arms can need multiple sessions; exact GPU timings remain unmeasured.
+
+
+Six-followup revision: candidate-local GIR solver failures no longer abort the
+search; shared PCG uses variance-shrunk Jacobi plus fixed-mu iterative refinement,
+with unchanged V2 certificates. Loss gates allow dtype-scale roundoff and report
+train/eval failures separately. H2 records geometry/GGN/ridge directional ratios.
+H4's contribution is training-time prior-domain constraints, not an adaptive
+backbone. See STANDARD_SIX_FOLLOWUPS.md for final tests and limits. All eight
+main/ablation notebooks share the source pin above and fresh output tags.
