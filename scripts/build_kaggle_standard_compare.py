@@ -91,7 +91,7 @@ if any(ROOT_OUT.rglob('latest.pt')) or any(ROOT_OUT.rglob('summary.json')):
 else:restore_stage_archives(Path('/kaggle/input'),OUTPUT,'standard_outputs',prefix=RUN_TAG)
 ROOT_OUT.mkdir(parents=True,exist_ok=True)
 VNA_DEADLINE=SESSION_START+11*3600
-base_env={**os.environ,'PYTHONPATH':str(REPO),'PYTHONUNBUFFERED':'1','TQDM_DISABLE':'1',
+base_env={**os.environ,'MPLBACKEND':'Agg','PYTHONPATH':str(REPO),'PYTHONUNBUFFERED':'1','TQDM_DISABLE':'1',
     'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION':'python','OMP_NUM_THREADS':'1',
     'MKL_NUM_THREADS':'1','VNA_DEADLINE':str(VNA_DEADLINE)}
 configs=RUN_ROOT/'effective_configs';configs.mkdir(exist_ok=True)

@@ -33,8 +33,12 @@ def test_fresh_probe_failure_blocks_both_training_lanes_and_archives(tmp_path,mo
     from pathlib import Path
     from scripts.build_kaggle_standard_compare import RUNNER,jobs
     from experiments import vna_kaggle,vna_resume
+    import scripts.collect_standard_cl as collector
+    monkeypatch.setattr(collector,'export_comparison',lambda *a,**kw:None)
+    monkeypatch.setenv('MPLBACKEND','module://matplotlib_inline.backend_inline')
     probes=[];training=[];archives=[]
     def probe(command,**kwargs):
+        assert kwargs['env']['MPLBACKEND']=='Agg'
         visible=kwargs['env']['CUDA_VISIBLE_DEVICES'];probes.append(visible)
         assert "reset_cuda_peak_memory_stats('cuda:0')" in command[2]
         if visible=='1':raise subprocess.CalledProcessError(1,command)
