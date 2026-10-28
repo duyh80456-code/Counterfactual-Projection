@@ -35,7 +35,7 @@ def run(args):
     from torchvision.datasets import MNIST
     from torchvision.transforms import ToTensor
     logger=ExperimentLogger(args.out);out=Path(args.out)
-    if args.arm=='h2':raise ValueError('H2 is an independent CIL branch')
+    if args.arm in ('h2','lpr'):raise ValueError('H2/LPR are independent CIL branches')
     if args.normalization=='groupnorm' and ARMS[args.arm] in ('tiny_V','random'):
         raise ValueError('GroupNorm virtual-neuron construction is not implemented; use native/GN/baseline control')
     if args.batch_size<2 or args.epochs<1 or args.domains<1:raise ValueError('positive domains/epochs and batch size>=2 required')
@@ -66,7 +66,7 @@ def run(args):
         transformations=[dataset.identity() for dataset in tests],
         dataset_hashes=hashes,correction=asdict(config),classifier_classes=10,head_expansion=False,
         memory='reservoir of previously observed transformed samples, including current-domain prefix',
-        evidence_status='INCONCLUSIVE',test_gates='focused toy CPU audit only; real MNIST training/GPU execution NOT_RUN')
+        evidence_status='INCONCLUSIVE',test_gates='prelaunch CPU mathematical/synthetic validation; benchmark and CUDA validation pending')
     if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('domain protocol mismatch')
     logger.save('protocol',protocol)
     if (out/'summary.json').exists():
@@ -158,7 +158,7 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--data-dir',required=True);p.add_argument('--out',required=True)
     p.add_argument('--kind',choices=('rotated','permuted'),default='rotated');p.add_argument('--seed',type=int,default=0)
-    p.add_argument('--arm',choices=tuple(a for a in ARMS if a!='h2'),default='h1');p.add_argument('--normalization',choices=('bn','groupnorm'),default='bn')
+    p.add_argument('--arm',choices=tuple(a for a in ARMS if a not in ('h2','lpr')),default='h1');p.add_argument('--normalization',choices=('bn','groupnorm'),default='bn')
     p.add_argument('--mode',choices=('intervention','unified'),default='intervention')
     p.add_argument('--epochs',type=int,default=1);p.add_argument('--domains',type=int,default=5);p.add_argument('--angle-step',type=float,default=15.)
     p.add_argument('--batch-size',type=int,default=128);p.add_argument('--memory-size',type=int,default=2000)

@@ -17,7 +17,7 @@ from experiments.standard_cl import ExperimentLogger
 from experiments.vna_provenance import code_commit
 from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
 from methods.cl_h3 import TangentReconfiguration
-from methods.cl_replay import CorrectionConfig,LossComponent
+from methods.cl_replay import CorrectionConfig,LossComponent,ReplayCorrection
 from methods.vna_losses import MSE
 from methods.vna_sites import HookSite
 
@@ -81,6 +81,7 @@ def run(args):
     if args.fake_data:numerical.update(damping_relative=1.,cg_tolerance=1e-4)
     config=CorrectionConfig(**numerical,seed=args.seed)
     engine=TangentReconfiguration(config)
+    corrector=ReplayCorrection(config) if args.arm=='vna_gir' else None
     protocol=dict(branch='H3',code_commit=code_commit(),upstream_commit=lop.UPSTREAM_PIN,arm=args.arm,seed=args.seed,
         config=cfg,tasks=len(inputs)//params['flip_after'],params={k:v for k,v in params.items() if k not in ('env_file','data_file')},
         correction=asdict(config),upstream_recipe=source,synthetic_smoke=args.fake_data,
@@ -95,13 +96,15 @@ def run(args):
         s=progress.state;progress.restore_artifacts();model.load_state_dict(s['model']);learner.opt.load_state_dict(s['optimizer'])
         if recycler is not None:vars(recycler).update(s['recycler'])
         engine.load_state_dict(s['engine']);restore_rng(s['rng']);position=s['position'];rows=s['rows'];curves=s['curves']
+        if corrector is not None:corrector.load_state_dict(s['vna_engine'])
         elapsed_base=s['elapsed_seconds'];last_event=s['last_event'];replaced=s['replaced']
         gradient_sum=s['gradient_sum'];task_replacements=s['task_replacements']
     started=time.monotonic();status='COMPLETED';failure=None;coordinates=None
     def save():
         logger.save('tasks',rows);logger.save('interventions',engine.events);logger.save('learning_curves',curves)
+        if corrector is not None:logger.save('vna_interventions',corrector.events)
         progress.save(dict(model=model.state_dict(),optimizer=learner.opt.state_dict(),recycler=None if recycler is None else algorithm_state(recycler),
-            engine=engine.state_dict(),rng=rng_state(),position=position,rows=rows,curves=curves,last_event=last_event,replaced=replaced,
+            engine=engine.state_dict(),vna_engine=None if corrector is None else corrector.state_dict(),rng=rng_state(),position=position,rows=rows,curves=curves,last_event=last_event,replaced=replaced,
             gradient_sum=gradient_sum,task_replacements=task_replacements,elapsed_seconds=elapsed_base+time.monotonic()-started))
     gradient_values=[]
     handles=[p.register_hook(lambda g:gradient_values.append(float(g.double().square().sum()))) for p in model.parameters()]
@@ -109,10 +112,11 @@ def run(args):
         while position<len(inputs):
             if deadline_due():save();raise SystemExit(75)
             cadence=16 if args.fake_data else cfg['intervention_every']
-            pending=args.arm=='h3' and position+1-last_event>=cadence
+            pending=args.arm in ('h3','vna_gir') and position+1-last_event>=cadence
             if pending:
                 from methods.cl_state import State
                 snapshot=State(model,learner.opt);old_gradient_sum=gradient_sum
+                if corrector is not None:old_corrector=corrector.state_dict()
             x,y=inputs[position:position+1],targets[position:position+1]
             gradient_values.clear();err=learner.learn(x,y);gradient_sum+=sum(gradient_values)
             if not bool(torch.isfinite(err)):
@@ -120,14 +124,21 @@ def run(args):
                 raise FloatingPointError(str(coordinates))
             if args.arm=='redo':recycler.gen_and_test(torch.stack(learner.previous_features,dim=1))
             position+=1;curves.append(float(err))
-            if args.arm=='h3' and position-last_event>=cadence:
+            if args.arm in ('h3','vna_gir') and position-last_event>=cadence:
                 start=max(0,position-cfg['window'])
                 target=targets[start:position]
                 losses=SimpleNamespace(targets=target,spec=MSE(reduction='mean'),ctx=dict(targets=target),
                     components=(LossComponent('regression_mse',lambda z:(z-target).square().mean()),LossComponent('reference_zero',lambda z:z.sum()*0)))
-                try:event=engine.step(model,learner.opt,inputs[start:position],losses,model.sites())
+                try:
+                    vna=None
+                    if corrector is not None:
+                        vna=corrector.step(model,learner.opt,inputs[start:position],losses,model.sites(),params['step_size'])
+                        vna.update(task=(position-1)//params['flip_after']+1,step=position)
+                    event=engine.step(model,learner.opt,inputs[start:position],losses,model.sites())
+                    if vna is not None:event['vna']=vna
                 except SystemExit as exc:
                     if exc.code!=75:raise
+                    if corrector is not None:corrector.load_state_dict(old_corrector)
                     snapshot.restore();gradient_sum=old_gradient_sum;position-=1;curves.pop();save();raise
                 last_event=position
                 event.update(task=(position-1)//params['flip_after']+1,step=position)
@@ -151,7 +162,7 @@ def run(args):
         logger.save('summary',dict(protocol=protocol,status=status,failure=failure,diverged=coordinates,tasks=rows,
             last_50_task_error=float(np.mean([r['mean_error'] for r in rows[-50:]])) if rows else None,
             plasticity_decay=rows[-1]['late_error']-rows[0]['late_error'] if rows else None,
-            wall_seconds=seconds,correction_seconds=sum(e['seconds'] for e in engine.events),gpu_hours=0.,peak_vram_bytes=0,
+            wall_seconds=seconds,correction_seconds=sum(e['seconds'] for e in engine.events)+(sum(e['seconds'] for e in corrector.events) if corrector is not None else 0.),gpu_hours=0.,peak_vram_bytes=0,
             parameter_count=sum(p.numel() for p in model.parameters()),evidence_status='INCONCLUSIVE'))
     return json.loads((out/'summary.json').read_text())
 
@@ -159,7 +170,7 @@ def run(args):
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='configs/standard_cl/h3_regression.json');p.add_argument('--out',required=True)
-    p.add_argument('--arm',choices=('bp','cbp','redo','snp','h3'),default='h3');p.add_argument('--seed',type=int,default=0)
+    p.add_argument('--arm',choices=('bp','cbp','redo','snp','h3','vna_gir'),default='h3');p.add_argument('--seed',type=int,default=0)
     p.add_argument('--fake-data',action='store_true',help='32-point synthetic control; no plasticity conclusion')
     return p
 

@@ -9,7 +9,7 @@ import statistics
 
 def signature(protocol):
     p=dict(protocol)
-    for key in ('seed','arm','evidence_status','test_gates'):p.pop(key,None)
+    for key in ('seed','arm','arm_implementation','evidence_status','test_gates'):p.pop(key,None)
     if p.get('branch')=='H4':
         # Transform hashes depend on seed; the generation rule remains in config.
         p.pop('transformations',None)
@@ -57,7 +57,7 @@ def collect(roots):
         completed=[(s,r) for s,r in runs if r.get('status')=='COMPLETED']
         metrics={}
         fields=('last_50_task_error','plasticity_decay','gpu_hours') if json.loads(group)['branch']=='H3' else ('average_incremental_accuracy','final_accuracy','forgetting','backward_transfer','gpu_hours')
-        baseline='bp' if json.loads(group)['branch']=='H3' else 'baseline'
+        baseline={'H2':'lpr','H3':'cbp'}.get(json.loads(group)['branch'],'baseline')
         for metric in fields:
             values=[r[metric] for _,r in completed]
             delta=[r[metric]-records[(group,baseline,s)][metric] for s,r in completed
@@ -66,6 +66,7 @@ def collect(roots):
                 std=statistics.stdev(values) if len(values)>1 else None,
                 paired_delta=statistics.mean(delta) if delta else None,paired_seeds=len(delta))
         result.append(dict(protocol=json.loads(group),arm=arm,seeds=[s for s,_ in runs],
+            paired_reference_arm=baseline,
             outcomes=dict(Counter(r['status'] for _,r in runs)),metrics=metrics,evidence_status='INCONCLUSIVE',
             costs=[dict(seed=s,parameter_count=r.get('parameter_count'),wall_seconds=r.get('wall_seconds'),
                 correction_seconds=r.get('correction_seconds'),peak_vram_bytes=r.get('peak_vram_bytes')) for s,r in runs],

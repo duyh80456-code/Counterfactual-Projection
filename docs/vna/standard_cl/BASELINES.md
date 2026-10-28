@@ -32,14 +32,18 @@ Effective algorithm state (including CBP utilities/ages and ReDo period counter)
 is saved alongside optimizer and global RNG. Registered default settings are
 not claimed to be best-tuned baselines. Native LoP protocols run on CPU.
 
-## Authentic LPR: BLOCKED comparison
+## LPR official callback adapter — added for seed-zero notebooks
 
-The [official LPR repository](https://github.com/plai-group/LPR), remote HEAD
-`76c44f8f2481f4e23881b2463eb58aaf94affabb`, specifies a separate Python3.10
-Hydra/Avalanche-based experiment stack. Its source entry point is
-`experiments/main.py`, enabled with `strategy.lpr=true` and its own benchmark,
-model and replay configuration. The present environment has no Hydra,
-OmegaConf, Avalanche or wandb installed and no pinned LPR checkout. An authentic
-compatible adapter is not integrated or tested. No simplified H2 implementation
-is renamed LPR. This comparison remains incomplete; do not merge its future
-results until backbone, stream, sampler and optimizer differences are audited.
+Official source pin: `76c44f8f2481f4e23881b2463eb58aaf94affabb`.
+`methods/cl_lpr.py` verifies both Git HEAD and the official file SHA256 before
+loading its definitions. Only the unused Avalanche base import and disabled
+wandb import are adapted; algorithm callback bodies remain unchanged. PyCIL's
+identical F.linear classifier is exposed as an nn.Linear view sharing the same
+Parameters. Tests verify head output/RNG identity, the source preconditioner,
+two-task training, preconditioner/optimizer/RNG resume and paired collection.
+
+The earlier full-stack dependency block is superseded for this callback adapter;
+Hydra/Avalanche training-stack reproduction remains outside scope. The baseline
+runs under our shared ER/herding/expanding-head protocol. See
+[seed-zero notebook registration](../STANDARD_COMPARE_S0.md) for options,
+limitations, inputs and executable notebooks. No published result is a gate.

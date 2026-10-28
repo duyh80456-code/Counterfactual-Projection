@@ -22,7 +22,7 @@ from methods.cl_state import isolated
 from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
 from methods.cl_h2 import GeometryCorrection
 
-ARMS=dict(baseline=None,native='native',gn='gn',random='random',vna='tiny_V',h1='tiny_V',h2='tiny_V',gradient='gradient')
+ARMS=dict(baseline=None,lpr=None,native='native',gn='gn',random='random',vna='tiny_V',h1='tiny_V',h2='tiny_V',gradient='gradient')
 
 
 class ExperimentLogger:
@@ -77,6 +77,9 @@ def run(args):
     if cfg['backbone']!='resnet32' or (not args.fake_data and cfg['memory_size']!=2000):raise ValueError('this pilot locks BN ResNet32 and 2000 herded exemplars')
     if args.arm not in ARMS or args.baseline not in ('er','icarl','agem','er_ace'):raise ValueError('unknown arm/baseline')
     strong=args.baseline in ('agem','er_ace')
+    native_only=args.arm in ('baseline','lpr')
+    if args.arm=='lpr' and (args.branch!='H2' or args.baseline!='er' or args.mode!='intervention'):
+        raise ValueError('LPR baseline requires H2, ER and native intervention mode')
     if strong and args.arm!='baseline':raise ValueError('A-GEM/ER-ACE adapters are standalone controls')
     if args.baseline!='icarl' and args.reference=='kd':raise ValueError('only iCaRL has a KD reference')
     if not 1<=cfg['init_cls']<=100 or cfg['increment']<1:raise ValueError('invalid class increments')
@@ -84,7 +87,7 @@ def run(args):
         raise ValueError('invalid epoch/batch/worker configuration')
     if cfg['intervention_every']<1 or cfg['compute_budget_ratio']<=0:raise ValueError('positive cadence and resource budget required')
     if not 1<=args.tasks<=len(range(cfg['init_cls'],101,cfg['increment'])):raise ValueError('invalid task horizon')
-    if args.mode=='unified' and args.arm!='baseline' and cfg['intervention_every']!=1:
+    if args.mode=='unified' and not native_only and cfg['intervention_every']!=1:
         raise ValueError('unified certificates require every optimizer step; set intervention_every=1 explicitly')
     torch.manual_seed(args.seed);np.random.seed(args.seed)
     import random
@@ -114,8 +117,14 @@ def run(args):
         geometry=cfg.get('geometry') if branch=='H2' else None,
         dataset_fingerprint=fingerprint,raw_upstream_config=raw,evaluation='final epoch; CNN primary; NME separate',
         acceptance='same train-mode window; parameter certificate only; BN buffer effects reported separately',
-        evidence_status='INCONCLUSIVE',test_gates='focused toy CPU audit only; CIFAR/ResNet32/GPU execution NOT_RUN',
+        evidence_status='INCONCLUSIVE',test_gates='prelaunch CPU mathematical/synthetic validation; benchmark and CUDA validation pending',
         budget_comparison=args.budget,compute_budget_ratio=cfg['compute_budget_ratio'])
+    if args.arm=='lpr':
+        from methods.cl_lpr import PIN,SOURCE_SHA256,official_module
+        official_module()
+        protocol['arm_implementation']=dict(name='official LPR callbacks on shared PyCIL ER protocol',commit=PIN,source_sha256=SOURCE_SHA256,
+            geometry_active=False,framework_adapter='SupervisedPlugin base -> object; disabled wandb import; algorithm definitions unchanged; identical nn.Linear head view')
+    elif branch=='H2':protocol['arm_implementation']=dict(name='Geometry-Aware VNA',geometry_active=not native_only)
     manifest=out/'protocol.json'
     if manifest.exists() and json.loads(manifest.read_text())!=protocol:raise ValueError('experiment protocol mismatch')
     logger.save('protocol',protocol)
@@ -146,6 +155,9 @@ def run(args):
     class ContinualLearner(iCaRL):
         def _train(self,train_loader,test_loader):
             nonlocal resume,steps,last_event,training_seconds,correction_seconds
+            if args.arm=='lpr':
+                from methods.cl_lpr import prepare_head
+                prepare_head(self._network)
             self._network.to(self._device)
             if self._old_network is not None:self._old_network.to(self._device);self._old_network.eval()
             first=self._cur_task==0;count=cfg['first_epochs'] if first else cfg['later_epochs']
@@ -162,6 +174,11 @@ def run(args):
                 optimizer.load_state_dict(resume['optimizer']);scheduler.load_state_dict(resume['scheduler'])
                 restore_rng(resume['rng']);start=resume['epoch'];resume=None
             task=self._cur_task+1;task_start=task_origins.setdefault(task,steps)
+            lpr=None
+            if args.arm=='lpr':
+                from methods.cl_lpr import OfficialLPR
+                lpr=OfficialLPR(cfg['lpr'],self._device,getattr(self,'_lpr_state',None))
+                lpr_memory=manager.get_dataset(np.arange(0),source='train',mode='train',appendent=self._get_memory()) if self._known_classes else None
             if strong:
                 from methods.vna import dedicated_generator
                 if not hasattr(self,'_baseline_replay_rng'):
@@ -205,11 +222,16 @@ def run(args):
                         if not bool(torch.isfinite(loss)):
                             failure_coordinates.update(task=task,epoch=epoch+1,step=steps+1,tensor='loss')
                             raise FloatingPointError(f'nonfinite loss {failure_coordinates}')
+                        if lpr is not None:
+                            strategy=lpr.strategy(self._network,lpr_memory,steps,self._cur_task,steps-task_start,count)
+                            lpr.plugin.before_backward(strategy)
                         if not strong:loss.backward()
+                        if lpr is not None:
+                            lpr.plugin.after_backward(strategy);self._lpr_state=lpr.state_dict()
                         steps+=1
-                        if args.mode=='intervention' or args.arm=='baseline':optimizer.step()
+                        if args.mode=='intervention' or native_only:optimizer.step()
                         training_seconds+=time.monotonic()-batch_started
-                        due=args.arm!='baseline' and steps-last_event>=cfg['intervention_every']
+                        due=not native_only and steps-last_event>=cfg['intervention_every']
                         permitted=args.budget!='matched_compute' or correction_seconds<=cfg['compute_budget_ratio']*training_seconds
                         if due and permitted:
                             last_event=steps;model=Prediction(self._network)

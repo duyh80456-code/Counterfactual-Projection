@@ -1310,3 +1310,51 @@ benchmark is launched.
 All H0–H4 superiority, stability-gap, representation-retention, plasticity and
 GPU-hour hypotheses remain UNVERIFIED. See standard_cl/PROTOCOL.md and the
 completion report for the actual executed CPU evidence and remaining limits.
+
+
+### 2026-10-28 — H1–H4 official baseline pairs, seed 0 notebooks
+
+User-selected main baselines: H1 iCaRL, H2 LPR, H3 Continual Backpropagation,
+H4 Experience Replay. Papers/framework references justify choosing these
+baselines only; no published score is a reproduction target or acceptance gate.
+No benchmark/GPU job is launched by the coding agent.
+
+* H1: PyCIL BN ResNet32, random class order seed0, CIFAR100 B0 Inc5 full20 tasks,
+  memory2000, epochs200/170; iCaRL versus iCaRL + Replay-Aware VNA.
+* H2: the same backbone/order/epochs/horizon/memory, with a shared ER loss/herding
+  protocol. LPR versus Geometry-Aware VNA (fixed feature penalty lambda1). Use the
+  exact official LPR callbacks at 76c44f8f2481f4e23881b2463eb58aaf94affabb, source
+  SHA256 07d0aef6077bac8b77f4e52194b79e155696da956a14fa9cc55381d9ac28e7d6.
+  The adapter replaces only the unused Avalanche base/import and disabled wandb
+  logger import, executes unchanged source definitions, and exposes the identical
+  PyCIL F.linear classifier through an nn.Linear view sharing Parameter objects.
+  Optimizer, native BN, objective and exemplar protocol are shared. This is LPR
+  on our setup, not a full-stack Avalanche or paper-protocol reproduction.
+  All LPR options mirror official method_defaults: omega0=1, beta=1,
+  update.every_iter=None (resolved by the original callback), n_data=None,
+  statistics batch100, external logging disabled. Preconditioner state is resumed.
+* H3: retain `h3` as the GIR/reconfiguration-only ablation. The main full arm is
+  the separate `vna_gir`: native BP -> VNA physical correction -> GIR candidate
+  evaluation, at the existing cadence10000/window128, with existing numerical
+  settings and certificates. GIR uses its own finite candidate loss checks after
+  the VNA attempt. Both engine states roll back on interrupted events. Compare
+  against native CBP under the unchanged B5 CPU stream (100 tasks x10000 points,
+  ReLU width5, SGD0.01). CBP replacement rate1e-4 is a declared setting, not a
+  claim of tuning or reproduction of a Nature figure.
+* H4: ER versus ER + Domain-Adaptive VNA, both existing five-domain protocols:
+  rotated MNIST and permuted MNIST, fixed ten-label head, reservoir2000. Domains
+  run in full and the two streams are kept in separate result groups.
+* H1/H2/H4 notebooks use baseline GPU0 and full GPU1. One loader worker/BLAS
+  thread per GPU lane is an explicit runtime override for four CPU cores. H3
+  retains upstream CPU execution: two processes, two threads each, no GPU needed.
+* Exact source pin, no ZIP overlay. Dataset-only fresh inputs (H3 generates its
+  stream); optional previous Output for resume. Only matching run-tag output is
+  restored, local checkpoints take precedence over older attached archives.
+  Archive/heartbeat enabled. Eleven-hour session deadline, exit75 resume; never
+  truncate a task sequence, substitute seed or clip to finish a session.
+
+Collector paired references are now iCaRL/baseline for H1, LPR for H2, CBP for H3,
+and ER/baseline for H4. Algorithm-specific LPR provenance is retained in each run
+but excluded from shared-setup grouping. All superiority hypotheses remain
+UNVERIFIED. GPU runtime/session counts remain unmeasured; several sessions may
+be required, and the notebook warns before launching.

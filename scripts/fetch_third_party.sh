@@ -25,6 +25,7 @@ fetch() {
 }
 fetch loss-of-plasticity https://github.com/shibhansh/loss-of-plasticity.git a6b79580d85f3025bdb601566d3627c5f489f13b
 fetch PyCIL https://github.com/LAMDA-CL/PyCIL.git f3509b8ca3f20660ce4aa13f19d5283de81b4b35
+fetch LPR https://github.com/plai-group/LPR.git 76c44f8f2481f4e23881b2463eb58aaf94affabb
 fetch upgd https://github.com/mohmdelsayed/upgd b75e90ad4b09c28971ac9dbb902a8fd86709b28c
 fetch C-Flat https://github.com/WanNaa/C-Flat f57a557523136834bdc28a4902cde9842859b2a8
 fetch warm_start https://github.com/JordanAsh/warm_start 896176b2cf89f259bcde8e241a8987e6019741d0

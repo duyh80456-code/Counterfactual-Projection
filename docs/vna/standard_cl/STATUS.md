@@ -28,14 +28,15 @@ resume tests. This scope is not full CIFAR-100/MNIST/LoP benchmark completion.
 | Native ER/iCaRL with herding | PASS |
 | A-GEM/ER-ACE adapted update laws and tiny two-task execution | PASS |
 | Official matched-protocol A-GEM/ER-ACE reproduction | PARTIAL |
-| Authentic LPR integration | BLOCKED |
+| Official LPR callbacks / shared-protocol adapter | PASS |
 | H2 constrained drift-budget calibration / fitted KKT multiplier | NOT RUN |
 | GroupNorm native/GN/gradient controls | NOT RUN |
 | Virtual GroupNorm / stochastic dropout correction | BLOCKED |
 | GPU memory, deterministic replay and performance validation | NOT RUN |
 | Accuracy/statistical superiority and GPU-hour trade-offs | NOT RUN |
 
-LPR's separate Hydra/OmegaConf/Avalanche environment and pinned checkout are
-absent; H2 is not a substitute. No old data or policies were relabelled, no
-held-out seed was spent on a benchmark, and no test metric selects candidates.
-All scientific superiority statements remain **UNVERIFIED**.
+LPR now has a tested official-callback adapter for the shared protocol; its full
+Hydra/Avalanche experiment stack is not run. H3's new `vna_gir` arm actually
+executes VNA then GIR; `h3` remains the reconfiguration-only ablation. See
+[seed-zero notebook registration](../STANDARD_COMPARE_S0.md). These additions
+have focused CPU checks; CUDA and benchmark outcomes remain UNVERIFIED.

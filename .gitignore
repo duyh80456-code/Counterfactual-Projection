@@ -17,3 +17,5 @@ third_party/FIRE/
 third_party/SWR/
 third_party/MRFA/
 .DS_Store
+
+third_party/LPR/

@@ -53,5 +53,24 @@
     ],
     "weight": 1.0
   },
-  "mode": "intervention"
+  "mode": "intervention",
+  "lpr": {
+    "preconditioner": {
+      "omega_0": 1.0,
+      "beta": 1.0,
+      "linear_omega_0": null,
+      "conv_omega_0": null,
+      "bn_omega_0": null,
+      "conv_beta": null,
+      "bn_beta": null
+    },
+    "update": {
+      "every_iter": null,
+      "n_data": null,
+      "batch_size": 100
+    },
+    "log": {
+      "grad_norms": null
+    }
+  }
 }

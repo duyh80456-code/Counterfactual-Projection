@@ -121,3 +121,14 @@ never a classifier. Train-mode parameter certificates do not imply eval-mode BN
 protection. GPU profiling remains to be performed with the same launch commands;
 summary/intervention artifacts contain wall time, JVP/VJP/CG accounting and CUDA
 peak allocation when CUDA is actually used. No GPU readiness claim is made.
+
+
+## Main seed-zero notebook pairs (supersedes the earlier LPR block)
+
+See [STANDARD_COMPARE_S0.md](../STANDARD_COMPARE_S0.md) for the four full-horizon
+notebooks. H2 now includes verified official LPR callbacks through a documented
+framework adapter; no Hydra/Avalanche install is required for that path. It is
+an ER/PyCIL shared-protocol adaptation, not a paper-score reproduction. H3 main
+uses `--arm vna_gir` (actual VNA -> GIR), preserving the older `h3` as an ablation.
+Official pairs are H1 iCaRL, H2 LPR, H3 CBP and H4 ER. Paper references justify
+baseline selection only. GPU/benchmark validation is still pending.
