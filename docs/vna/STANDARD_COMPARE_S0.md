@@ -21,7 +21,7 @@ H3-small needs200 original class files: seed0's first100 pairs from upstream
 class_order. Each file is700×3×32×32, numeric and finite: first600 train, last100
 test. No label file or all1000 classes is needed. The exact filenames and pairs
 are in H3_SMALL_REQUIRED_FILES.json. Missing/malformed inputs block training.
-No automatic unverified ImageNet download is attempted; attach authorized data.
+H3 automatically downloads the archive linked by the pinned upstream CBP README when attached class files are absent. It extracts only the 200 required classes and deletes the archive after successful extraction. Internet and enough Kaggle disk for the complete compressed archive plus selected classes are required; Google Drive quota failures stop setup. Existing attached data still takes priority.
 
 ## H2 baseline and environment
 

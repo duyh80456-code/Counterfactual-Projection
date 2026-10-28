@@ -63,6 +63,7 @@ if BRANCH=='H2':
 else:
     subprocess.run([PYTHON,'-m','pip','install','-q','-e',str(REPO)+'[vision,diagnostics]',
         '-r',str(REPO/'requirements-upstream.txt')],check=True)
+if BRANCH=='H3':subprocess.run([PYTHON,'-m','pip','install','-q','gdown==5.2.0'],check=True)
 sys.path.insert(0,str(REPO))
 CONFIG={'H1':'configs/standard_cl/h1_cifar100_bn.json','H2':'configs/standard_cl/h2_online_cifar100.json',
         'H3':'configs/standard_cl/h3_imagenet_small.json','H4':'configs/standard_cl/h4_rotated_mnist.json'}[BRANCH]
@@ -172,7 +173,7 @@ H2: official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch1
 H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA cadence4000/window128; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. This pilot does not reproduce full-horizon CBP results.
 H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + Domain-Adaptive VNA.
 
-Inputs: {'authorized original CBP ImageNet32 files for first100 seed0 pairs only (200 class files, 700 NCHW images/class); preflight prints the exact required names' if branch=='H3' else 'optional CIFAR-100 Python train/test/meta; auto-download from official torchvision source if absent' if branch in ('H1','H2') else 'optional MNIST raw IDX files (plain/gzip); auto-download from torchvision source if absent' }.
+Inputs: {'optional original CBP ImageNet32 files; otherwise automatically download the official archive to Kaggle disk and extract only the 200 required class files' if branch=='H3' else 'optional CIFAR-100 Python train/test/meta; auto-download from official torchvision source if absent' if branch in ('H1','H2') else 'optional MNIST raw IDX files (plain/gzip); auto-download from torchvision source if absent' }.
 Enable Internet and Kaggle Secret `github_token`. Select T4 ×2; baseline GPU0, full GPU1, one BLAS thread per lane.
 H2 builds an isolated Python3.10 environment for the pinned original Avalanche0.4 stack.
 Optional previous Output is only for exact resume. H3-small has60000 native updates per arm plus bounded interventions; the full5000×250 config remains separate and is not queued. Exact T4 timings remain unmeasured. Other branches may also need multiple 11-hour sessions. The horizon is never shortened.

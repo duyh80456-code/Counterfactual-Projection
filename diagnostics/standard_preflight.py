@@ -128,6 +128,39 @@ def h2_environment(require_cuda=False):
         lpr_commit=PIN,lpr_source_sha256=SOURCE_SHA256,**dependency_report(),replay=replay_gate(),geometry=geometry_gate())
 
 
+def download_imagenet_classes(stage,needed):
+    import shutil,tarfile,zipfile
+    import gdown
+    target=Path(stage)/'cbp_imagenet32';target.mkdir(parents=True,exist_ok=True)
+    missing={name for name in needed if not (target/name).is_file()}
+    if not missing:return str(target)
+    archive=Path(stage)/'cbp_imagenet32.download'
+    if not archive.is_file():
+        temporary=archive.with_suffix('.part')
+        print('Downloading original CBP ImageNet32 archive to Kaggle disk',flush=True)
+        result=gdown.download(id='1i0ok3LT5_mYmFWaN7wlkpHsitUngGJ8z',output=str(temporary),quiet=False,resume=True)
+        if result is None:raise RuntimeError('CBP dataset download failed; attach the original dataset instead')
+        temporary.replace(archive)
+    def save(name,source):
+        name=Path(name).name
+        if name not in missing:return
+        temporary=target/(name+'.tmp')
+        with source,temporary.open('wb') as dest:shutil.copyfileobj(source,dest)
+        temporary.replace(target/name);missing.remove(name)
+    print('Extracting only required CBP class files',flush=True)
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                if not member.is_dir() and Path(member.filename).name in missing:save(member.filename,bundle.open(member))
+    else:
+        with tarfile.open(archive,'r:*') as bundle:
+            for member in bundle:
+                if member.isfile() and Path(member.name).name in missing:save(member.name,bundle.extractfile(member))
+    if missing:raise FileNotFoundError('CBP archive missing required classes: '+', '.join(sorted(missing)))
+    archive.unlink()
+    return str(target)
+
+
 def prepare_data(branch,search,stage,config):
     from torchvision.datasets import CIFAR100,MNIST
     search,stage=Path(search),Path(stage);stage.mkdir(parents=True,exist_ok=True)
@@ -149,7 +182,7 @@ def prepare_data(branch,search,stage,config):
     candidates=sorted(set(p.resolve() for p in candidates))
     if len(candidates)>1:raise ValueError(f'Set DATA_DIR to a single dataset root: {candidates}')
     if branch=='H3':
-        if not candidates:raise FileNotFoundError('Attach authorized original Continual ImageNet32 class files required by seed0 first100 pairs: '+', '.join(sorted(needed)))
+        if not candidates:return download_imagenet_classes(stage,needed)
         return str(candidates[0])
     if candidates:
         if branch in ('H1','H2'):
