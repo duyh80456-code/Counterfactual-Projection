@@ -1,5 +1,7 @@
 # H1–H4 benchmark comparisons, seed 0 — 2026-10-28
 
+Notebook source pin: `8cb50ca7114513864a44e0dc0eb7e1034d46ddd0`.
+
 This registration supersedes the earlier offline-H2/B5-H3/five-domain notebook
 plan. Papers justify baseline choice; published accuracy is not a gate. The
 four directions are different benchmark problems, evaluated within each pair.
