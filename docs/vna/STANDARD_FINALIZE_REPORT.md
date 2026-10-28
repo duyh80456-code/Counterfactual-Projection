@@ -1,6 +1,6 @@
 # Finalize H1–H4 notebooks — 2026-10-28
 
-Implementation source pin: 7717316bcefaca5fb2b5ce2ecd7f0164808f5e2e.
+Implementation source pin: 8845fb5733014b52d3d8929c4cdfe0ab54ca45d1.
 Work base: c820c09 on codex/gir-live-task1, in the original repository folder.
 No mathematical-core redesign, new worktree, ZIP overlay or GPU benchmark launch.
 The reference Archive(3).zip was not present in the supplied attachment/Downloads;
@@ -129,7 +129,7 @@ are prepared with startup gates; a successful Kaggle GPU run is not claimed.
 
 Regenerate all notebooks:
 
-    .venv/bin/python -m scripts.build_kaggle_standard_compare --commit 7717316bcefaca5fb2b5ce2ecd7f0164808f5e2e
+    .venv/bin/python -m scripts.build_kaggle_standard_compare --commit 8845fb5733014b52d3d8929c4cdfe0ab54ca45d1
 
 
 Exact focused verification commands (from repository root):
@@ -153,3 +153,5 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 MPLCONFIGDIR=/tmp/vna_mpl_310
 Last artifact-only fix (atomic PNG publication for concurrent archives):
 `test_export_keeps_paused_run_partial_and_writes_curves` passed1/1 in4.10s.
 Notebook JSON/code cells and immutable source pins were checked after generation.
+
+Runtime follow-up: fresh CUDA initialization/statistics fixed and separately checked. See STANDARD_CUDA_STARTUP_FIX.md. Historical full environment/math evidence remains CPU-scoped; no actual T4 pass is claimed.
