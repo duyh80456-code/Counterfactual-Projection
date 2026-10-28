@@ -1464,3 +1464,58 @@ ACCEPTED_UNCLASSIFIED. Uncertified/resource-skipped events retain their statuses
 
 H1/H2/H4 receive fresh source pins/output tags; old checkpoints remain on old
 source. H3 notebook stays pinned unchanged. No real-data GPU run is launched.
+
+### 2026-10-29 — H1–H4 audit repair, prospective protocol revision
+
+This changes future runs, not historical results. All four main notebooks are
+repinned together; use fresh commit-specific tags, never old-engine checkpoints.
+Native iCaRL/LPR/CBP/ER training and memory budgets are retained. No dataset/GPU
+benchmark is run by this coding task; empirical multi-seed and acceptance-rate
+claims require subsequent runs.
+
+Shared solver: seeded JVP/VJP adjoint and operator symmetry/lower-bound probes
+(tolerance1e-4 for float32 products) reject a failing audit. These probes do not
+prove global SPD or remove floating-point error. PCG retains both V2 solution
+certificates. Default Jacobi probes rise4->16, up to48 extra probes when over10%
+of diagonal estimates hit the ridge floor; log actual probes/clipping. Keep
+seeded RNG local. No block structure is invented for the general operator.
+
+Acceptance now requires nonincrease on both train and eval versions of the SAME
+fixed window, using frozen running BN buffers for inference. This is a hard gate
+for all correction branches, not a held-out/test guarantee. Retain separate
+neutral/improved labels, physical-update norms, candidate absence/zero-direction,
+normalized constraint violation and explicit rejection reasons. Separate
+train-gate-only configs quantify this gate's acceptance impact prospectively.
+Fix State.restore optimizer tensor aliasing with a fresh deep copy on every
+restore; failed swaps may not corrupt their rollback authority.
+
+H2 online already used componentwise constraints; the legacy CIL H2 runner now
+also protects both incoming and replay loss. Geometry supplements these gates,
+never substitutes for old-loss protection. Normalize feature curvature by the
+number of feature elements and compute both penalty and drift with frozen
+inference BN, retaining explicit metric scale/mode diagnostics. Add ER and
+zero-geometry controls in a separate ablation notebook.
+
+H3 has one current-task CE objective/halfspace, no dummy zero replay component
+and no added historical replay. VNA seeks current-task descent; GIR ranks net
+current loss minus damped GN recovery at fixed capacity. GIR retries its entire
+split, generation, shortlist and identity/candidate objective at a shared new
+mu; failed attempts restore parameters/optimizer/RNG. Log eval/train effects and
+optimizer reset transaction. Queue BP alongside CBP and full; VNA-only and
+GIR-only isolate effects. Main cadence4000 is unchanged; separate1000/8000
+cadence configs are ablations, not retroactive tuning. Add per-task discrete
+learning-curve AUC (uniform-epoch mean) and early-five-epoch accuracy; first/last
+accuracy difference is descriptive only, not standalone plasticity evidence.
+
+H4 uses stored domain IDs to partition current-domain samples (including current
+prefix in reservoir) from prior-domain reference samples. Native SGD/ER total CE
+and reservoir budget/sampling remain unchanged. Mixed-memory reference is an
+explicit ablation. No domain ID is supplied at test inference.
+
+Collector reads both GIR interventions.json and VNA vna_interventions.json.
+Export per-task/domain attempts, certified, candidate-generated, effective
+accepted, improved/neutral/unclassified and rejected reasons. H1/H2/H4 save
+accuracy matrices and old/new-task metrics. Log test accuracies at task/domain
+boundaries. Save source hashes and effective configs with strict resume identity.
+Main and separate solver/reference/cadence/gate ablation notebooks retain full
+horizons; multiple11-hour sessions may be needed, with no automatic truncation.

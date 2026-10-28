@@ -16,7 +16,7 @@ from experiments.parallel_validity import dataset_fingerprint
 from experiments.runners import pycil
 from experiments.competitors import cil_runtime
 from experiments.io_utils import working_directory
-from experiments.vna_provenance import code_commit
+from experiments.vna_provenance import code_commit,source_hashes
 from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
 from methods.cl_state import isolated
 from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
@@ -107,16 +107,16 @@ def run(args):
         if (not math.isfinite(geometry.get('weight',float('nan'))) or geometry['weight']<0
                 or not geometry.get('layers') or set(geometry['layers'])-{'features','stage_1','stage_2','stage_3'}):
             raise ValueError('H2 requires fixed valid feature layers and finite nonnegative geometry weight')
-    correction_cfg=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=branch=='H1' and args.arm!='vna',
+    correction_cfg=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=args.arm!='vna',
         mode=args.mode,seed=args.seed,**cfg['correction'])
     from diagnostics.kernel_ablation import flags
-    protocol=dict(benchmark='standard_cl_'+branch.lower(),branch=branch,code_commit=code_commit(),upstream_commit=pycil.UPSTREAM_PIN,
+    protocol=dict(benchmark='standard_cl_'+branch.lower(),branch=branch,code_commit=code_commit(),source_hashes=source_hashes(),upstream_commit=pycil.UPSTREAM_PIN,
         source_digest=None,baseline=args.baseline,baseline_implementation=('A-GEM/ER-ACE update law adaptation; task-boundary PyCIL herding; expanding linear head' if strong else 'PyCIL iCaRL-style' if args.baseline=='icarl' else 'ER with PyCIL herding'),
         arm=args.arm,seed=args.seed,mode=args.mode,reference=args.reference,config=cfg,correction=asdict(correction_cfg),tasks=args.tasks,
         runtime_flags=flags(),synthetic_smoke=args.fake_data,loss_reduction=args.loss_reduction,
         geometry=cfg.get('geometry') if branch=='H2' else None,
         dataset_fingerprint=fingerprint,raw_upstream_config=raw,evaluation='final epoch; CNN primary; NME separate',
-        acceptance='same train-mode window; parameter certificate only; BN buffer effects reported separately',
+        acceptance='componentwise train and eval window nonincrease; finite parameter update; BN effects logged',
         evidence_status='INCONCLUSIVE',test_gates='prelaunch CPU mathematical/synthetic validation; benchmark and CUDA validation pending',
         budget_comparison=args.budget,compute_budget_ratio=cfg['compute_budget_ratio'])
     if args.arm=='lpr':
@@ -145,7 +145,7 @@ def run(args):
     elapsed_base=0. if not resume else resume['elapsed_seconds'];started=time.monotonic()
     if resume:engine.load_state_dict(resume['engine'])
     def save(phase,epoch,optimizer=None,scheduler=None):
-        logger.save('epochs',epochs);logger.save('interventions',engine.events);logger.save('trajectory',trajectory);logger.save('tasks',rows)
+        logger.save('epochs',epochs);logger.save('interventions',engine.events);logger.save('trajectory',trajectory);logger.save('tasks',rows);logger.save('accuracy_matrix',[r['task_accuracy'] for r in rows])
         progress.save(dict(phase=phase,epoch=epoch,completed=len(rows),learner=ICaRLHook.learner_state(learner),
             optimizer=None if optimizer is None else optimizer.state_dict(),scheduler=None if scheduler is None else scheduler.state_dict(),
             rng=rng_state(),engine=engine.state_dict(),rows=rows,epochs=epochs,trajectory=trajectory,steps=steps,last_event=last_event,
@@ -290,7 +290,7 @@ def run(args):
                 row=dict(task=task+1,**metrics,nme_accuracy=None if nme is None else float(nme['top1']),
                     stability_gap=None if pre is None else pre-min(r['old_accuracy'] for r in points),
                     recovery_step=next((r['step'] for r in points if r['step']>0 and r['old_accuracy']>=pre),None) if pre is not None else None)
-                rows.append(row);learner.after_task();save('boundary',0)
+                rows.append(row);log(f'{branch} {args.arm} task={task+1} CNN={row["global_accuracy"]:.2f} NME={row["nme_accuracy"]} old={row["old_accuracy"]} new={row["new_accuracy"]}');learner.after_task();save('boundary',0)
     except SystemExit as exc:
         status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
     except KeyboardInterrupt as exc:status='INTERRUPTED';failure=repr(exc);raise

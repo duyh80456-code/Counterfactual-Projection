@@ -64,4 +64,12 @@ class Reservoir:
         self.items,self.seen=state['items'],state['seen'];self.generator.set_state(state['generator'])
 
 
-def domain_losses(targets,replay_mask):return ReplayLoss(targets,replay_mask,kind='er')
+def domain_losses(targets,replay_mask,*,current_domain=None,replay_domains=None):
+    if current_domain is not None:
+        if replay_domains is None or len(replay_domains)!=int(replay_mask.sum()):raise ValueError('aligned replay domain ids required')
+        replay_mask=replay_mask.clone()
+        replay_mask[replay_mask.clone()]=torch.as_tensor(replay_domains,device=targets.device)!=current_domain
+    result=ReplayLoss(targets,replay_mask,kind='er')
+    if current_domain is not None:
+        result.incoming.name='current_domain_ce';result.reference_loss.name='previous_domains_ce'
+    return result

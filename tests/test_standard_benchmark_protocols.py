@@ -52,7 +52,7 @@ def test_imagenet_split_uses_original_arrays_without_normalizing(tmp_path):
     with pytest.raises(ValueError,match='unexpected shape'):load_task(tmp_path,[7,3])
 
 
-@pytest.mark.parametrize('arm',['cbp','vna_gir'])
+@pytest.mark.parametrize('arm',['cbp','bp','vna','gir','vna_gir'])
 def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,arm):
     from experiments import standard_imagenet as runner
     from experiments.runners import lop
@@ -74,6 +74,7 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     config=tmp_path/'config.json';config.write_text(json.dumps(cfg))
     order=[]
     def vna(self,model,opt,x,losses,sites,lr):
+        assert len(losses.components)==1 and losses.components[0].name=='current_task_ce'
         order.append('vna');self.applications+=1
         with torch.no_grad():next(model.parameters()).add_(torch.rand(())*.00001)
         event=dict(seconds=0.,order='vna');self.events.append(event);return event
@@ -84,7 +85,7 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     def args(out):return runner.parser().parse_args(['--arm',arm,'--data-dir',str(data),'--device','cpu',
         '--config',str(config),'--out',str(out)])
     runner.run(args(tmp_path/'complete'))
-    assert order==(['vna','gir']*4 if arm=='vna_gir' else [])
+    assert order=={'cbp':[],'bp':[],'vna':['vna']*4,'gir':['gir']*4,'vna_gir':['vna','gir']*4}[arm]
     calls=0
     def deadline():
         nonlocal calls

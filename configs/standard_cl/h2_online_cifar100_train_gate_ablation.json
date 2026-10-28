@@ -1,0 +1,39 @@
+{
+  "tasks": 20,
+  "train_epochs": 3,
+  "train_mb_size": 10,
+  "memory_size": 2000,
+  "validation_fraction": 0.05,
+  "lr": 0.1,
+  "momentum": 0.0,
+  "weight_decay": 0.0,
+  "intervention_every": 512,
+  "geometry_weight": 1.0,
+  "lpr": {
+    "preconditioner": {
+      "omega_0": 4.0,
+      "beta": 2.0,
+      "linear_omega_0": null,
+      "conv_omega_0": null,
+      "bn_omega_0": null,
+      "conv_beta": null,
+      "bn_beta": null
+    },
+    "update": {
+      "every_iter": 30,
+      "n_data": null,
+      "batch_size": 100
+    },
+    "log": {
+      "grad_norms": null
+    }
+  },
+  "correction": {
+    "damping_relative": 0.01,
+    "cg_tolerance": 1e-06,
+    "cg_iterations": 200,
+    "trace_probes": 8,
+    "max_trials": 12,
+    "eval_acceptance": false
+  }
+}

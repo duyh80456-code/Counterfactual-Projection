@@ -1,0 +1,49 @@
+........................................................................ [ 59%]
+..............................sss....s...........                        [100%]
+=============================== warnings summary ===============================
+tests/test_standard_safety_revision.py: 17 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1209: DeprecationWarning: ast.Str is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(value, ast.Str):
+
+tests/test_standard_safety_revision.py: 16 warnings
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/jit/frontend.py:1210: DeprecationWarning: Attribute s is deprecated and will be removed in Python 3.14; use value instead
+    s += value.s
+
+tests/test_standard_safety_revision.py::test_bn_jvp_vjp_and_finite_difference_are_consistent
+tests/test_standard_safety_revision.py::test_bn_jvp_vjp_and_finite_difference_are_consistent
+tests/test_standard_safety_revision.py::test_bn_jvp_vjp_and_finite_difference_are_consistent
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/torch/_jit_internal.py:360: DeprecationWarning: ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead
+    elif isinstance(annotation, (ast.Constant, ast.NameConstant)):
+
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:64: PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:85: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_fontconfig_pattern.py:89: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+tests/test_standard_finalize.py::test_export_keeps_paused_run_partial_and_writes_curves
+  /Users/pxokq/expanding-guide model/.venv/lib/python3.12/site-packages/matplotlib/_mathtext.py:45: PyparsingDeprecationWarning: 'enablePackrat' deprecated - use 'enable_packrat'
+    ParserElement.enablePackrat()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_standard_benchmark_protocols.py:115: could not import 'avalanche': No module named 'avalanche'
+SKIPPED [2] tests/test_standard_benchmark_protocols.py:142: could not import 'avalanche': No module named 'avalanche'
+SKIPPED [1] tests/test_standard_finalize.py:97: could not import 'avalanche': No module named 'avalanche'
+117 passed, 4 skipped, 50 warnings in 235.86s (0:03:55)

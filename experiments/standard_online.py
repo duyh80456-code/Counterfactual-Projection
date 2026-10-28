@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from experiments.standard_cl import ExperimentLogger,matrix_metrics
 from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
-from experiments.vna_provenance import code_commit
+from experiments.vna_provenance import code_commit,source_hashes
 from methods.cl_h2 import GeometryCorrection
 from methods.cl_lpr import ROOT,PIN,SOURCE_SHA256,official_module
 from methods.cl_replay import CorrectionConfig,ReplayLoss
@@ -176,7 +176,7 @@ def run(args):
     scenario,model=native_setup(cfg,args.data_dir,args.seed)
     model=model.to(args.device)
     storage=ClassBalancedBuffer(max_size=cfg['memory_size'],adaptive_size=True)
-    replay=(ReplayPlugin if args.arm=='lpr' else OriginReplayPlugin)(mem_size=cfg['memory_size'],batch_size_mem=cfg['train_mb_size'],storage_policy=storage)
+    replay=(ReplayPlugin if args.arm in ('lpr','er') else OriginReplayPlugin)(mem_size=cfg['memory_size'],batch_size_mem=cfg['train_mb_size'],storage_policy=storage)
     lpr_cfg=cfg['lpr']
     lpr=official_module().LPRPlugin({k:SimpleNamespace(**v) for k,v in lpr_cfg.items()},storage)
     geometry=GeometryPlugin(cfg,args.seed)
@@ -185,18 +185,19 @@ def run(args):
     def make_strategy(net,opt):
         return Naive(net,opt,torch.nn.CrossEntropyLoss(),train_mb_size=cfg['train_mb_size'],train_epochs=cfg['train_epochs'],
             eval_mb_size=128,device=args.device,evaluator=None,eval_every=-1,
-            plugins=[replay,finite,LPRCallbacks(lpr) if args.arm=='lpr' else geometry])
+            plugins=[replay,finite]+([LPRCallbacks(lpr)] if args.arm=='lpr' else [geometry] if args.arm=='h2' else []))
     strategy=make_strategy(model,optimizer)
     hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in
         (Path(args.data_dir)/'cifar-100-python'/name for name in ('train','test','meta')) if p.is_file()}
-    protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),config=cfg,tasks=cfg['tasks'],
+    protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),source_hashes=source_hashes(),config=cfg,tasks=cfg['tasks'],
         upstream_commit=PIN,lpr_source_sha256=SOURCE_SHA256,avalanche='0.4.0',backbone='SlimResNet18 nf20, IncrementalClassifier',dataset_fingerprint=hashes,
         class_order=list(map(int,scenario.classes_order_original_ids)),runtime_flags=flags(),correction=asdict(geometry.engine.config),
+        acceptance='componentwise incoming/replay train and eval nonincrease; geometry penalty supplements constraints',
         online=True,task_boundaries=False,validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
         lpr_configuration_source=f'LPR@{PIN}/README.md: Split-CIFAR100 example omega_0=4 beta=2 every_iter=30',
         replay_origin='native loader for LPR; explicit boolean field for Geometry-VNA, preserved under permutations',
         framework_compatibility='typing4.4 Protocol semantics; prune only empty/None orphan optimizer entries after head adaptation for torch2.2 serialization',
-        arm_implementation='official LPR callbacks' if args.arm=='lpr' else 'ER + Geometry-Aware VNA',
+        arm_implementation='official LPR callbacks' if args.arm=='lpr' else 'ER' if args.arm=='er' else 'ER + Geometry-Aware VNA',
         evidence_status='INCONCLUSIVE')
     logger=ExperimentLogger(args.out);out=Path(args.out)
     if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('online protocol mismatch')
@@ -224,7 +225,7 @@ def run(args):
         online_rows=s.get('online_rows',[])
     started=time.monotonic();status='COMPLETED';failure=None;coordinates=None
     def save():
-        logger.save('tasks',rows);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events);logger.save('online',online_rows)
+        logger.save('tasks',rows);logger.save('accuracy_matrix',[r['domain_accuracies'] for r in rows]);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events);logger.save('online',online_rows)
         progress.save(dict(model=strategy.model,optimizer=strategy.optimizer.state_dict(),clock=vars(strategy.clock),storage=replay.storage_policy,
             lpr_inverses=lpr._preconditioner_invs,lpr_every_iter=lpr.update_config.every_iter,engine=geometry.engine.state_dict(),last_event=geometry.last_event,
             rng=rng_state(),rows=rows,epochs=epochs,online_rows=online_rows,task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
@@ -263,7 +264,9 @@ def run(args):
                 if position%100==0:
                     log(f'H2 {args.arm} task={task+1} online_batch={position} loss={value}');save()
             accuracy=evaluate(strategy.model,scenario.test_stream[:task+1],args.device)
-            rows.append(dict(task=task+1,domain_accuracies=accuracy,total=float(np.mean(accuracy))))
+            rows.append(dict(task=task+1,domain_accuracies=accuracy,total=float(np.mean(accuracy)),
+                new_task_accuracy=accuracy[-1],old_task_accuracy=float(np.mean(accuracy[:-1])) if task else None))
+            log(f'H2 {args.arm} task={task+1} test_accuracy={accuracy} mean={np.mean(accuracy):.2f}')
             epochs.append(dict(task=task+1,online_minibatches=position,repeats=cfg['train_epochs']))
             task+=1;position=0;stream_rng=None;save()
     except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
@@ -289,7 +292,7 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='configs/standard_cl/h2_online_cifar100.json');p.add_argument('--out',required=True)
     p.add_argument('--data-dir',required=True);p.add_argument('--device',default='cuda:0');p.add_argument('--seed',type=int,default=0)
-    p.add_argument('--arm',choices=('lpr','h2'),required=True)
+    p.add_argument('--arm',choices=('lpr','er','h2'),required=True)
     return p
 
 

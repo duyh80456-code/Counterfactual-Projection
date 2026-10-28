@@ -15,8 +15,8 @@ from adapters.lop_hooks import sites_for,learner_state,restore_learner
 from experiments.runners import lop
 from experiments.standard_cl import ExperimentLogger
 from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
-from experiments.vna_provenance import code_commit
-from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
+from experiments.vna_provenance import code_commit,source_hashes
+from methods.cl_replay import CorrectionConfig,ReplayCorrection,CurrentTaskLoss
 from methods.cl_h3 import TangentReconfiguration
 from methods.cl_state import isolated
 
@@ -100,10 +100,12 @@ def run(args):
     # Existing training statistics require equal spatial grids; pooling sites are measurement-only.
     all_sites=[site for site in sites_for(model) if site.kind=='linear']
     gir_sites=all_sites
-    protocol=dict(branch='H3',arm=args.arm,seed=args.seed,code_commit=code_commit(),upstream_commit=lop.UPSTREAM_PIN,
+    protocol=dict(branch='H3',arm=args.arm,seed=args.seed,code_commit=code_commit(),source_hashes=source_hashes(),upstream_commit=lop.UPSTREAM_PIN,
         config=cfg,params=params,upstream_overrides=overrides,tasks=params['num_tasks'],upstream_recipe=str(source.relative_to(lop.UPSTREAM)),
         correction=asdict(correction),dataset='Continual ImageNet32',data_sha256=identity,class_order=order.tolist(),
         split=dict(train_per_class=600,test_per_class=100),normalization='upstream raw float conversion; no extra normalization',
+        correction_objective='single current-task CE descent; GIR minimizes loss minus damped GN recovery; no old-task replay',
+        intervention_cadence=cfg['intervention_every'],
         head_reset='zero final weight/bias at every task; retain optimizer momentum, as upstream',runtime_flags=flags(),
         vna_sites=[s.module_name for s in all_sites],gir_sites=[s.module_name for s in gir_sites],device=args.device,evidence_status='INCONCLUSIVE')
     logger=ExperimentLogger(args.out);out=Path(args.out)
@@ -165,12 +167,14 @@ def run(args):
                             extra=sum(len(v[1]) for v in window)-cfg['window']
                             if extra>=len(window[0][1]):window.pop(0)
                             else:window[0]=(window[0][0][extra:],window[0][1][extra:])
-                        if args.arm=='vna_gir' and steps-last_event>=cfg['intervention_every']:
+                        if args.arm in ('vna','gir','vna_gir') and steps-last_event>=cfg['intervention_every']:
                             wx=torch.cat([v[0] for v in window]).to(args.device);wy=torch.cat([v[1] for v in window]).to(args.device)
-                            losses=ReplayLoss(wy,torch.zeros_like(wy,dtype=torch.bool),kind='er')
-                            event=vna.step(model,learner.opt,wx,losses,all_sites,params['step_size'])
-                            event.update(task=task+1,epoch=epoch+1,step=steps)
-                            event=gir.step(model,learner.opt,wx,losses,gir_sites);event.update(task=task+1,epoch=epoch+1,step=steps)
+                            losses=CurrentTaskLoss(wy)
+                            if args.arm in ('vna','vna_gir'):
+                                event=vna.step(model,learner.opt,wx,losses,all_sites,params['step_size'])
+                                event.update(task=task+1,epoch=epoch+1,step=steps)
+                            if args.arm in ('gir','vna_gir'):
+                                event=gir.step(model,learner.opt,wx,losses,gir_sites);event.update(task=task+1,epoch=epoch+1,step=steps)
                             last_event=steps
                         if deadline_due():raise SystemExit(75)
                     with isolated(model),torch.no_grad():
@@ -193,7 +197,9 @@ def run(args):
             rows.append(dict(task=task+1,classes=labels.tolist(),final_accuracy=selected[-1]['test_accuracy'],
                 mean_accuracy=float(np.mean([r['test_accuracy'] for r in selected])),mean_error=float(np.mean([100-r['test_accuracy'] for r in selected])),
                 early_accuracy=selected[0]['test_accuracy'],late_accuracy=selected[-1]['test_accuracy'],
-                learning_speed=selected[-1]['test_accuracy']-selected[0]['test_accuracy']))
+                learning_speed=selected[-1]['test_accuracy']-selected[0]['test_accuracy'],
+                learning_curve_auc=float(np.mean([r['test_accuracy'] for r in selected])),
+                early_learning_accuracy=float(np.mean([r['test_accuracy'] for r in selected[:min(5,len(selected))]]))))
             task+=1;epoch=0;task_rng=None;save()
     except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
     except FloatingPointError as exc:status='FAILED_DIVERGED';failure=str(exc)
@@ -204,6 +210,9 @@ def run(args):
             last_50_task_error=float(np.mean([r['mean_error'] for r in rows[-50:]])) if rows else None,
             plasticity_decay=rows[0]['late_accuracy']-rows[-1]['late_accuracy'] if rows else None,
             final_accuracy=rows[-1]['final_accuracy'] if rows else None,wall_seconds=seconds,
+            learning_curve_auc_mean=float(np.mean([r['learning_curve_auc'] for r in rows])) if rows else None,
+            early_learning_mean=float(np.mean([r['early_learning_accuracy'] for r in rows])) if rows else None,
+            plasticity_decay_scope='first/last task descriptive difference only; inspect per-task AUC and early learning',
             correction_seconds=sum(r['seconds'] for r in vna.events)+sum(r['seconds'] for r in gir.events),
             actual_swaps=sum(r.get('actual_replacements',0) for r in gir.events),
             candidate_search=dict(generated=sum(r.get('generated_candidates',0) for r in gir.events),
@@ -215,7 +224,7 @@ def run(args):
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='configs/standard_cl/h3_imagenet.json');p.add_argument('--out',required=True)
-    p.add_argument('--arm',choices=('cbp','vna_gir'),required=True);p.add_argument('--seed',type=int,default=0)
+    p.add_argument('--arm',choices=('cbp','bp','vna','gir','vna_gir'),required=True);p.add_argument('--seed',type=int,default=0)
     p.add_argument('--data-dir',required=True);p.add_argument('--device',default='cuda:0')
     p.add_argument('--num-tasks',type=int);p.add_argument('--num-showings',type=int)
     return p

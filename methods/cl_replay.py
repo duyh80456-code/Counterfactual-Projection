@@ -94,6 +94,14 @@ class ReplayLoss:
     def total(self,z):return self.spec.loss(z,self.ctx)
 
 
+class CurrentTaskLoss:
+    """H3 has no old-task replay: optimize current CE with one descent constraint."""
+    def __init__(self,targets):
+        self.targets=targets;self.spec=CE();self.ctx=dict(targets=targets)
+        self.components=(LossComponent('current_task_ce',lambda z:F.cross_entropy(z,targets)),)
+    def total(self,z):return self.spec.loss(z,self.ctx)
+
+
 @dataclass(frozen=True)
 class CorrectionConfig:
     kernel: str = 'tiny_V'
@@ -104,9 +112,10 @@ class CorrectionConfig:
     cg_iterations: int = 200
     max_relative_solution_error: float = 0.1
     improvement_relative_tolerance: float = 1e-6
-    preconditioner_probes: int = 4
+    preconditioner_probes: int = 16
     damping_retries: int = 4
     damping_multiplier: float = 10.0
+    eval_acceptance: bool = True
     trace_probes: int = 8
     max_trials: int = 12
     seed: int = 0
@@ -188,7 +197,7 @@ class ReplayCorrection:
             residuals=[torch.autograd.functional.jacobian(lambda z:component(z),op.logits).detach().flatten()
                        for component in losses.components]
             gradients=torch.stack([p.JT(e).double() for e in residuals]);g=gradients.sum(0)
-            z=A.split(g);zR=A.split(gradients[1]);mu=A.mu;solves=A.solves
+            z=A.split(g);zR=A.split(gradients[1]) if len(gradients)>1 else torch.zeros_like(z);mu=A.mu;solves=A.solves
             counts['jvp']+=p.jvp_calls;counts['vjp']+=p.vjp_calls
         selector=_ChunkedSelector('vna',seed=config.seed);selector.applications=self.applications
         proposals={};kernel=config.kernel
@@ -235,9 +244,9 @@ class ReplayCorrection:
             d=qp.direction if qp else d0
             curvature=float(d@A.curvature(d));gain=gradients@d
             norms=gradients.norm(dim=1)
-            opposed=bool((norms>0).all()) and float((gradients[0]/norms[0]+gradients[1]/norms[1]).norm())<=config.cg_tolerance
+            opposed=len(gradients)==2 and bool((norms>0).all()) and float((gradients[0]/norms[0]+gradients[1]/norms[1]).norm())<=config.cg_tolerance
             diagnostic=dict(mu=mu,solves=deepcopy(A.solves),first_order_gains=gain.tolist(),
-                gradient_norms=gradients.norm(dim=1).tolist(),gradient_interference=float(gradients[0]@gradients[1]),
+                gradient_norms=gradients.norm(dim=1).tolist(),gradient_interference=float(gradients[0]@gradients[1]) if len(gradients)>1 else None,
                 pure_candidate_gain=float(g@pure),z_kernel_z=float(z@kernel_target) if kernel_target is not None else None,
                 cross_interference=None if cross is None else cross.tolist(),
                 cross_interference_scope='z_i.T K_candidate z_j at shared metric; approximate-solve diagnostic',
@@ -245,9 +254,11 @@ class ReplayCorrection:
                 constraint_seconds=time.perf_counter()-constraint_started,
                 kkt=None if qp is None else dict(slack=qp.slack.tolist(),multipliers=qp.multipliers.tolist(),
                     stationarity=qp.stationarity,complementarity=qp.complementarity,status=qp.status,
-                    geometry='opposing_gradients_no_strict_joint_descent' if opposed else 'zero_constraint' if bool((norms==0).any()) else 'two_halfspaces',
+                    geometry='opposing_gradients_no_strict_joint_descent' if opposed else 'zero_constraint' if bool((norms==0).any()) else 'single_current_task_descent' if len(gradients)==1 else 'two_halfspaces',
                     strict_progress=[bool(v>config.cg_tolerance*n*d.norm()) for v,n in zip(gain,norms)]),
                 kernel=kernel,incoming_directions_per_site=16,active_sites=len(active),
+                candidate_generated=bool(active) if kernel in ('tiny_V','random') else True,
+                candidate_reason='NO_CANDIDATE' if kernel in ('tiny_V','random') and not active else None,
                 kernel_seconds=construction,projection_seconds=time.perf_counter()-started-construction,
                 forward_mode='train_batch_statistics',random_trajectories=1 if kernel=='random' else 0,
                 kernel_trace_normalization='exact_per_site_against_tiny_V' if kernel=='random' else None)
@@ -306,6 +317,9 @@ class ReplayCorrection:
                     candidate_damping=mu*self.config.damping_multiplier
             row['damping_attempts']=attempts
             row.update(proposal.diagnostics)
+            row['certified']=True
+            row.setdefault('candidate_generated',bool(proposal.direction.norm()))
+            row['eval_losses_before']=eval_losses_before
             before=evaluate(model,inputs,losses.components);trials=[];accepted=False;after=before;norm=0.;used=0.
             direction_norm=float(proposal.direction.norm())
             maximum_step=min(step_size,update_norm/direction_norm) if update_norm is not None and direction_norm>0 else step_size
@@ -328,14 +342,20 @@ class ReplayCorrection:
                 else:
                     thresholds=[self.config.improvement_relative_tolerance*max(1.,abs(sum(before)))]
                     meaningful=sum(before)-sum(after)>thresholds[0]
+                eval_after=evaluate(model,inputs,losses.components,'eval')
+                eval_ok=all(math.isfinite(a) and a<=b for a,b in zip(eval_after,eval_losses_before)) if self.config.constrained else all(math.isfinite(a) for a in eval_after) and sum(eval_after)<=sum(eval_losses_before)
                 physical_norm=float((initial-vector(model)).norm())
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
                     physical_norm=physical_norm,in_update_budget=in_budget,
-                    meaningful_improvement=meaningful,improvement_thresholds=thresholds))
-                if finite and feasible and nonincrease and in_budget and physical_norm>0:
+                    meaningful_improvement=meaningful,improvement_thresholds=thresholds,
+                    eval_after=eval_after,eval_nonincrease=eval_ok,
+                    normalized_constraint_violation=float((-gains/scale.clamp_min(1e-30)).clamp_min(0).max())))
+                if finite and feasible and nonincrease and in_budget and physical_norm>0 and (eval_ok or not self.config.eval_acceptance):
                     accepted=True;norm=physical_norm;used=s;break
-            if not accepted:state.restore()
+            if not accepted:
+                row['rejection_reason']=row.get('candidate_reason') or ('ZERO_DIRECTION' if direction_norm==0 else 'ZERO_PHYSICAL_UPDATE' if physical_norm==0 else 'CONSTRAINT_VIOLATION' if not feasible else 'TRAIN_LOSS_INCREASE' if not nonincrease else 'EVAL_LOSS_INCREASE' if self.config.eval_acceptance and not eval_ok else 'UPDATE_BUDGET' if not in_budget else 'NONFINITE')
+                state.restore()
             elif staged_optimizer is not None:optimizer.load_state_dict(staged_optimizer)
             candidate_after=after
             if not accepted:after=before
@@ -365,7 +385,7 @@ class ReplayCorrection:
                 row.update(candidate_eval_losses_after=row.get('eval_losses_after'),eval_losses_after=row['eval_losses_before'],
                     eval_functional_drift=0.,bn_buffer_drift=0.)
         except Uncertified as exc:
-            state.restore();row.update(accepted=False,status='UNCERTIFIED',reason=str(exc),solver_failure=exc.diagnostics)
+            state.restore();row.update(certified=False,accepted=False,status='UNCERTIFIED',reason=str(exc),solver_failure=exc.diagnostics)
         except BaseException:
             state.restore();raise
         finally:
@@ -374,6 +394,7 @@ class ReplayCorrection:
         if initial.is_cuda:torch.cuda.synchronize(initial.device)
         row.update(seconds=time.perf_counter()-started,peak_vram_bytes=torch.cuda.max_memory_allocated(initial.device) if initial.is_cuda else 0,
             peak_vram_scope='process high-water mark; reset by experiment runner, not per candidate')
+        row['cost_scope']='wall time includes all retries; jvp/vjp counters cover final successful construction'
         row['compute_overshoot_seconds']=max(0.,row['seconds']-compute_seconds) if compute_seconds is not None else None
         self.events.append(row)
         return row

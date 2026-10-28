@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 import time
 import torch
-from methods.cl_state import State,evaluate,predict,isolated
+from methods.cl_state import State,evaluate,predict,isolated,vector
 from methods.cl_projection import Uncertified
 from methods.cl_replay import ReplayCorrection,CorrectionConfig,_ChunkedSelector
 from methods.vna_v3 import training_products,V3Engine
@@ -52,9 +52,11 @@ def reset_sgd_coordinates(optimizer,masks):
         if momentum is not None:momentum.masked_fill_(mask,0)
 
 
-def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
+def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,eval_acceptance=True):
     """Minimize a specified surrogate over feasible swaps plus identity."""
     state=State(model,optimizer);before=evaluate(model,inputs,components)
+    eval_before=evaluate(model,inputs,components,'eval');eval_output=predict(model,inputs)
+    initial=vector(model)
     output_before=predict(model,inputs,'train')
     shapes={n:tuple(p.shape) for n,p in model.named_parameters()}
     identities={n:id(p) for n,p in model.named_parameters()}
@@ -75,12 +77,18 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None):
             candidate.reset_optimizer(optimizer,model)
             after=evaluate(model,inputs,components)
             admissible=all(math.isfinite(a) and a<=b for a,b in zip(after,before))
+            eval_after=evaluate(model,inputs,components,'eval')
+            eval_ok=all(math.isfinite(a) and a<=b for a,b in zip(eval_after,eval_before))
+            changed=float((vector(model)-initial).norm())
+            admissible=admissible and changed>0 and (eval_ok or not eval_acceptance)
             objective=score(after)
             jump=predict(model,inputs,'train')-output_before
             rows.append(dict(candidate=candidate.name,slot_kind=candidate.slot_kind,before=before,after=after,
                 functional_loss_jump=[a-b for a,b in zip(after,before)],admissible=admissible,
                 objective=objective,output_jump_norm=float(jump.double().norm()),
-                window_output_preserved=not bool(jump.any())))
+                window_output_preserved=not bool(jump.any()),step_norm=changed,
+                eval_before=eval_before,eval_after=eval_after,eval_nonincrease=eval_ok,
+                eval_functional_drift=float((predict(model,inputs)-eval_output).double().norm())))
             rows[-1]['seconds']=time.perf_counter()-started
             if admissible and math.isfinite(objective) and objective<best:
                 winner=candidate;best=objective;winner_state=State(model,optimizer)
@@ -119,13 +127,38 @@ class TangentReconfiguration:
         self.events=deepcopy(state['events']);self.applications=state['applications']
 
     def step(self,model,optimizer,inputs,losses,sites):
+        from copy import deepcopy
+        started=time.perf_counter();snapshot=State(model,optimizer);attempts=[];damping=None
+        for attempt in range(self.config.damping_retries+1):
+            snapshot.restore();ReplayCorrection.boundary()
+            result=self._attempt(model,optimizer,inputs,losses,sites,damping=damping)
+            attempts.append(dict(attempt=attempt,status=result['status'],mu=result.get('mu'),
+                solves=deepcopy(result.get('solves',result.get('solver_failure',[]))),reason=result.get('reason')))
+            if result['status']!='UNCERTIFIED':break
+            failure=result.get('solver_failure') or []
+            mu=failure[-1].get('mu') if isinstance(failure,list) and failure else result.get('mu')
+            if mu is None or not result.get('reason','').startswith('linear solve failed'):break
+            damping=mu*self.config.damping_multiplier
+        result.update(damping_attempts=attempts,application=self.applications,seconds=time.perf_counter()-started)
+        result['certified']=result['status']!='UNCERTIFIED'
+        result['candidate_generated']=bool(result.get('generated_candidates') or result.get('trials'))
+        if result['status']=='ACCEPTED':
+            trial=next(r for r in result['trials'] if r['candidate']==result['choice'])
+            result['step_norm']=trial['step_norm']
+            improved=any(b-a>self.config.improvement_relative_tolerance*max(1.,abs(b)) for a,b in zip(trial['after'],trial['before']))
+            result['acceptance_detail']='ACCEPTED_WITH_IMPROVEMENT' if improved else 'ACCEPTED_NEUTRAL'
+        else:result['rejection_reason']=result.get('reason','NO_FEASIBLE_IMPROVING_SWAP' if result['candidate_generated'] else 'NO_CANDIDATE')
+        self.applications+=1;self.events.append(result)
+        return result
+
+    def _attempt(self,model,optimizer,inputs,losses,sites,*,damping=None):
         started=time.perf_counter();snapshot=State(model,optimizer)
         helper=ReplayCorrection(self.config);counts=dict(jvp=0,vjp=0);solves=[];scores=[]
         ranking=[];candidates=[];generated=0;objective_calls=0
         try:
             with training_products(model,[],{},inputs) as p:
                 op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
-                A=helper._operator(p,op);mu=A.mu;z=A.split(op.gradient)
+                A=helper._operator(p,op,damping=damping);mu=A.mu;z=A.split(op.gradient)
                 if self.max_candidates is not None:
                     refs=[parameter for _,parameter in p.parameter_refs]
                     parts=op.gradient.split([parameter.numel() for parameter in refs])
@@ -190,7 +223,7 @@ class TangentReconfiguration:
                     solves.extend(A.solves);counts['jvp']+=p.jvp_calls+p.extension_jvp_calls
                     counts['vjp']+=p.vjp_calls+p.extension_vjp_calls
                     return loss-recovery
-            result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective)
+            result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,eval_acceptance=self.config.eval_acceptance)
             for row,score in zip(result['trials'],scores[1:]):row.update(score)
             if self.max_candidates is not None:
                 for trial in result['trials']:
@@ -201,7 +234,7 @@ class TangentReconfiguration:
                     identity_evaluations=1,max_candidates=self.max_candidates,ranking=ranking,
                     ranking_surrogate='-g^T delta_theta_reset - mu/2 ||delta_theta_reset||^2; parameter-only first-order LM proxy',
                     search_scope='best feasible candidate among deterministic shortlist plus identity; no exhaustive/global guarantee')
-            result.update(status='ACCEPTED' if result['choice']!='identity' else 'IDENTITY',identity=scores[0],
+            result.update(status='ACCEPTED' if result['choice']!='identity' else 'IDENTITY',identity=scores[0],generated_candidates=generated,
                 actual_replacements=int(result['choice']!='identity'),mu=mu,solves=solves,**counts,
                 candidate_generation_seconds=generation_seconds,candidate_evaluation_seconds=sum(r['seconds'] for r in result['trials']),
                 selection_direct_backward_calls=len(sites),
@@ -221,5 +254,4 @@ class TangentReconfiguration:
             snapshot.restore();raise
         result.update(application=self.applications,seconds=time.perf_counter()-started,
             peak_vram_bytes=torch.cuda.max_memory_allocated(inputs.device) if inputs.is_cuda else 0)
-        self.applications+=1;self.events.append(result)
         return result

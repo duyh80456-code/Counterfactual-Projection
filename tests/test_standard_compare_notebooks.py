@@ -27,7 +27,7 @@ def test_four_notebooks_pin_source_and_exact_pairs():
         assert '--tasks' not in text if branch=='H3' else True
     assert [j['args'][-1] for lane in jobs('H1') for j in lane]==['baseline','h1']
     assert [j['args'][-1] for lane in jobs('H2') for j in lane]==['lpr','h2']
-    assert [j['args'][-1] for lane in jobs('H3') for j in lane]==['cbp','vna_gir']
+    assert [j['args'][-1] for lane in jobs('H3') for j in lane]==['cbp','bp','vna_gir','vna','gir']
     assert all('--tasks' in j['args'] and j['args'][j['args'].index('--tasks')+1]=='20' for lane in jobs('H1') for j in lane)
     assert all(j['module']=='experiments.standard_online' for lane in jobs('H2') for j in lane)
     assert all(j['module']=='experiments.standard_imagenet' for lane in jobs('H3') for j in lane)

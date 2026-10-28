@@ -9,11 +9,18 @@ from methods.cl_state import predict,vector
 
 
 class Features(nn.Module):
-    def __init__(self,network,layers=('features',)):
-        super().__init__();self.native=network;self.layers=tuple(layers)
+    def __init__(self,network,layers=('features',),*,inference=False):
+        super().__init__();self.native=network;self.layers=tuple(layers);self.inference=inference
         if not self.layers or len(set(self.layers))!=len(self.layers) or set(self.layers)-{'features','stage_1','stage_2','stage_3'}:
             raise ValueError('fixed feature layers: features, stage_1, stage_2, stage_3')
     def forward(self,x):
+        modes={m:m.training for m in self.native.modules()}
+        try:
+            if self.inference:self.native.eval()
+            return self._features(x)
+        finally:
+            for m,mode in modes.items():m.training=mode
+    def _features(self,x):
         if hasattr(self.native,'standard_features'):
             if self.layers!=('features',):raise ValueError('this backbone exposes pooled features only')
             return self.native.standard_features(x)
@@ -33,24 +40,26 @@ class GeometryCorrection(ReplayCorrection):
             event.update(branch='H2',geometry_weight=0.,feature_layers=list(feature_layers),no_replay=True)
             return event
         native=model.native if hasattr(model,'native') else model
-        features=Features(native,feature_layers)
+        features=Features(native,feature_layers,inference=True)
         before=predict(features,replay_inputs).double();initial=vector(features)
         with training_products(features,[],{},replay_inputs) as products:
             # Freeze the feature linearization across the physical acceptance trials.
             products.parameter_refs=tuple((n,p.clone()) for n,p in products.parameter_refs)
             train_before=products._call({}).detach().double()
-            penalty=lambda d:geometry_weight*products.JT(products.Jv(d)).double()
+            normalization=max(train_before.numel(),1)
+            penalty=lambda d:geometry_weight*products.JT(products.Jv(d)).double()/normalization
             event=super().step(model,optimizer,inputs,losses,sites,step_size,penalty=penalty,**kwargs)
             predicted=products.Jv(vector(features)-initial).double()
-            event.update(predicted_train_feature_drift=float(predicted.norm()),feature_jvp=products.jvp_calls,feature_vjp=products.vjp_calls)
-        event.update(branch='H2',geometry_weight=geometry_weight,metric='JtHJ+lambda*Jphi_t_Jphi+mu*I',
+            event.update(predicted_feature_drift=float(predicted.norm()),feature_jvp=products.jvp_calls,feature_vjp=products.vjp_calls)
+        event.update(branch='H2',geometry_weight=geometry_weight,metric='JtHJ+lambda/Nphi*Jphi_eval_t_Jphi_eval+mu*I',
             cotangent_recomputed=True,implementation='VNA feature penalty; not LPR',feature_layers=list(feature_layers),
+            geometry_normalization='mean squared feature displacement; divided by sample-feature count',
             penalty_form='fixed lambda; not an inferred constrained-problem KKT multiplier')
         after=predict(features,replay_inputs).double()
         actual=(predict(features,replay_inputs,'train').double().flatten()-train_before)
         event.update(replay_feature_drift=float((after-before).norm()),
             feature_cosine=float(torch.nn.functional.cosine_similarity(before.flatten(1),after.flatten(1),dim=1).mean()),
-            feature_measurement_mode='eval; distinct from train-mode penalty',train_feature_drift=float(actual.norm()),
+            feature_measurement_mode='eval; penalty and measurement both use frozen running BN statistics',feature_drift=float(actual.norm()),
             feature_linearization_error=float((actual-predicted).norm()),correction_core_seconds=event['seconds'],
             seconds=time.perf_counter()-started)
         if inputs.is_cuda:torch.cuda.synchronize(inputs.device)

@@ -45,11 +45,35 @@ class ProjectionOperator:
                 or not math.isfinite(self.max_relative_solution_error) or self.max_relative_solution_error<=0):
             raise ValueError('invalid solver tolerance/iterations/preconditioner probes/error bound')
         self._preconditioner = None
+        self.audit=None;self.preconditioner_quality={}
 
     def curvature(self,x):return self.vjp(self.metric(self.jvp(x))).double()
 
     def __call__(self,x):
         return self.curvature(x)+self.mu*self.regularizer(x)+self.penalty(x)
+
+    def _audit(self,rhs):
+        if self.audit is not None:
+            if not self.audit['passed']:raise Uncertified('linear solve failed operator audit',list(self.solves))
+            return
+        generator=torch.Generator(device=rhs.device).manual_seed(self.preconditioner_seed+917)
+        u=torch.randn(rhs.shape,generator=generator,device=rhs.device,dtype=rhs.dtype)
+        v=torch.randn(rhs.shape,generator=generator,device=rhs.device,dtype=rhs.dtype)
+        self.boundary();au,av=self(u),self(v)
+        ju=self.jvp(u).double();y=torch.randn(ju.shape,generator=generator,device=ju.device,dtype=ju.dtype)
+        jty=self.vjp(y).double()
+        adjoint=float(abs(ju.flatten()@y.flatten()-u.flatten()@jty.flatten()))/max(float(ju.norm()*y.norm()),float(u.norm()*jty.norm()),1e-30)
+        symmetry=float(abs(u@av-v@au))/max(float(u.norm()*av.norm()),float(v.norm()*au.norm()),1e-30)
+        lower=self.mu*self.regularizer_floor
+        margins=[float(w@a)-lower*float(w@w) for w,a in ((u,au),(v,av))]
+        psd=all(m>=-1e-4*max(float(w.norm()*a.norm()),1e-30) for m,w,a in zip(margins,(u,v),(au,av)))
+        self.audit=dict(adjoint_relative_error=adjoint,symmetry_relative_error=symmetry,
+            lower_bound_margins=margins,tolerance=1e-4,
+            scope='seeded finite-precision probes; not a global SPD proof')
+        self.audit['passed']=bool(all(torch.isfinite(a).all() for a in (au,av,jty)) and psd and adjoint<=1e-4 and symmetry<=1e-4)
+        if not self.audit['passed']:
+            self.solves.append(dict(mu=self.mu,status='UNCERTIFIED',operator_audit=self.audit))
+            raise Uncertified('linear solve failed operator audit',list(self.solves))
 
     def _jacobi(self, rhs):
         """Deterministic positive Jacobi estimate; never use an indefinite preconditioner."""
@@ -71,15 +95,25 @@ class ProjectionOperator:
                     self.boundary()
                     v = torch.empty_like(rhs).bernoulli_(.5, generator=generator).mul_(2).sub_(1)
                     diag.add_(v * self(v))
-                diag.div_(self.preconditioner_probes)
+                used=self.preconditioner_probes
+                if float((diag/used<floor).double().mean())>.1:
+                    for _ in range(min(3*used,48)):
+                        self.boundary()
+                        v=torch.empty_like(rhs).bernoulli_(.5,generator=generator).mul_(2).sub_(1)
+                        diag.add_(v*self(v))
+                        used+=1
+                diag.div_(used)
             if not torch.isfinite(diag).all():
                 raise Uncertified('non-finite Jacobi diagonal')
             # Rademacher diagonal estimates may be negative; the ridge stays SPD.
+            self.preconditioner_quality=dict(clipped_fraction=float((diag<floor).double().mean()),
+                minimum=float(diag.min()),maximum=float(diag.max()),floor=floor,actual_probes=used if n>16 else 0)
             self._preconditioner = diag.clamp_min(floor).detach()
         return lambda residual: residual / self._preconditioner
 
     def solve(self,rhs):
         started=time.perf_counter();rhs=rhs.detach().double()
+        self._audit(rhs)
         preconditioner=self._jacobi(rhs)
         result=conjugate_gradient(self,rhs,max_iter=self.max_iterations,tolerance=self.tolerance,
             preconditioner=preconditioner,eps=1e-30,callback=lambda _:self.boundary())
@@ -97,7 +131,7 @@ class ProjectionOperator:
             error_bound=error_bound,relative_solution_error_bound=relative_error_bound,
             max_relative_solution_error=self.max_relative_solution_error,
             status='CERTIFIED' if certified else 'UNCERTIFIED',
-            mu=self.mu,preconditioner='jacobi' if preconditioner is not None else 'none',
+            operator_audit=self.audit,preconditioner_quality=self.preconditioner_quality,mu=self.mu,preconditioner='jacobi' if preconditioner is not None else 'none',
             preconditioner_probes=self.preconditioner_probes,breakdown=result.breakdown,
             seconds=time.perf_counter()-started))
         if not certified:
@@ -129,10 +163,11 @@ class ConstraintSolver:
         self.operator,self.tolerance=operator,tolerance
 
     def solve(self,candidate,gradients):
-        if len(gradients)!=2:raise ValueError('exactly two halfspaces are supported; no trust-ball constraint')
+        n=len(gradients)
+        if n not in (1,2):raise ValueError('one or two halfspaces required; no trust-ball constraint')
         d0=candidate.detach().double()
         C=(gradients if isinstance(gradients,torch.Tensor) else torch.stack(tuple(gradients))).detach().double()
-        if C.shape!=(2,d0.numel()) or not torch.isfinite(C).all() or not torch.isfinite(d0).all():
+        if C.shape!=(n,d0.numel()) or not torch.isfinite(C).all() or not torch.isfinite(d0).all():
             raise ValueError('finite two-row gradients and aligned candidate required')
         norms=C.norm(dim=1);scales=torch.where(norms>0,norms,torch.ones_like(norms))
         U=C/scales[:,None]
@@ -141,9 +176,9 @@ class ConstraintSolver:
         if not torch.isfinite(W).all() or float((W-W.T).norm())>self.tolerance*max(float(W.norm()),1e-30):
             raise Uncertified('non-symmetric approximate dual operator')
         W=(W+W.T)/2;q=U@d0;solutions=[]
-        for size in range(3):
-            for active in combinations(range(2),size):
-                lam=torch.zeros(2,dtype=d0.dtype,device=d0.device)
+        for size in range(n+1):
+            for active in combinations(range(n),size):
+                lam=torch.zeros(n,dtype=d0.dtype,device=d0.device)
                 if active:
                     indices=list(active);block=W[indices][:,indices]
                     lam[indices]=torch.linalg.pinv(block,hermitian=True)@(-q[indices])

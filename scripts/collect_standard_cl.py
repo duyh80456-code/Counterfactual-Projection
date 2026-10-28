@@ -28,15 +28,37 @@ def signature(protocol):
     return json.dumps(p,sort_keys=True)
 
 
-def correction_counts(folder):
-    path=Path(folder)/'interventions.json'
-    counts=Counter()
-    if path.is_file():
+def acceptance_report(folder):
+    grouped={}
+    summary=Path(folder)/'summary.json'
+    tasks=json.loads(summary.read_text()).get('tasks',[]) if summary.is_file() else []
+    def entry(stream,task):
+        return grouped.setdefault((stream,str(task)),dict(stream=stream,task=task,attempts=0,
+            certified=0,candidate_generated=0,accepted_effective=0,improved=0,neutral=0,
+            accepted_unclassified=0,outcomes=Counter(),rejected_reasons=Counter()))
+    for name,stream in (('interventions.json','correction'),('vna_interventions.json','vna')):
+        path=Path(folder)/name
+        if not path.is_file():continue
+        for i,task in enumerate(tasks,1):entry(stream,task.get('task',task.get('domain',i)))
         for event in json.loads(path.read_text()):
-            status=event.get('status','UNRECORDED')
-            detail=event.get('acceptance_detail')
-            key=detail if status=='ACCEPTED' and detail in ('ACCEPTED_WITH_IMPROVEMENT','ACCEPTED_NEUTRAL') else 'ACCEPTED_UNCLASSIFIED' if status=='ACCEPTED' else status
-            counts[key]+=1
+            task=event.get('task',event.get('domain','unrecorded'))
+            row=entry(stream,task)
+            row['attempts']+=1;status=event.get('status','UNRECORDED');detail=event.get('acceptance_detail')
+            outcome=detail if status=='ACCEPTED' and detail in ('ACCEPTED_WITH_IMPROVEMENT','ACCEPTED_NEUTRAL') else 'ACCEPTED_UNCLASSIFIED' if status=='ACCEPTED' else status
+            row['outcomes'][outcome]+=1
+            solves=event.get('solves',[])
+            row['certified']+=int(event.get('certified',bool(solves) and all(s.get('status')=='CERTIFIED' for s in solves)))
+            row['candidate_generated']+=int(event.get('candidate_generated',event.get('active_sites',0)>0))
+            row['accepted_effective']+=int(status=='ACCEPTED' and (event.get('step_norm',0)>0 or event.get('actual_replacements',0)>0))
+            row['improved']+=int(detail=='ACCEPTED_WITH_IMPROVEMENT');row['neutral']+=int(detail=='ACCEPTED_NEUTRAL')
+            row['accepted_unclassified']+=int(outcome=='ACCEPTED_UNCLASSIFIED')
+            if status!='ACCEPTED':row['rejected_reasons'][event.get('rejection_reason',event.get('reason',status))]+=1
+    return [dict(r,outcomes=dict(r['outcomes']),rejected_reasons=dict(r['rejected_reasons'])) for r in grouped.values()]
+
+
+def correction_counts(folder):
+    counts=Counter()
+    for row in acceptance_report(folder):counts.update(row['outcomes'])
     return dict(counts)
 
 
@@ -95,14 +117,15 @@ def export_comparison(root):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    root=Path(root);rows=[];curves=[]
+    root=Path(root);rows=[];curves=[];acceptance=[]
     for path in sorted(root.rglob('summary.json')):
         summary=json.loads(path.read_text());p=summary.get('protocol',{})
         if p.get('branch') not in ('H1','H2','H3','H4'):continue
+        acceptance.extend(dict(job=path.parent.name,**row) for row in acceptance_report(path.parent))
         done=summary.get('status')=='COMPLETED'
         row=dict(job=path.parent.name,branch=p['branch'],status=summary.get('status'))
         for key in ('average_incremental_accuracy','final_accuracy','nme_average_incremental_accuracy','forgetting','backward_transfer',
-                    'last_50_task_error','plasticity_decay','online_accuracy','representation_drift_mean'):
+                    'last_50_task_error','plasticity_decay','learning_curve_auc_mean','early_learning_mean','online_accuracy','representation_drift_mean'):
             row[key]=summary.get(key) if done else None
         for key in ('wall_seconds','gpu_hours','peak_vram_bytes','correction_seconds','actual_swaps','candidate_search'):row[key]=summary.get(key)
         row.update({'correction_'+key:count for key,count in correction_counts(path.parent).items()})
@@ -112,6 +135,9 @@ def export_comparison(root):
             if accuracy is None and task.get('domain_accuracies'):accuracy=statistics.mean(task['domain_accuracies'])
             curves.append(dict(job=path.parent.name,status=summary['status'],task=index,accuracy=accuracy,
                 mean_error=task.get('mean_error'),learning_speed=task.get('learning_speed')))
+    from experiments.io_utils import atomic_json_save
+    atomic_json_save(acceptance,root/'acceptance_by_task.json')
+    write_csv(root/'acceptance_by_task.csv',[dict(r,outcomes=json.dumps(r['outcomes'],sort_keys=True),rejected_reasons=json.dumps(r['rejected_reasons'],sort_keys=True)) for r in acceptance])
     write_csv(root/'comparison.csv',rows);write_csv(root/'curves.csv',curves)
     if curves:
         figure,axis=plt.subplots(figsize=(7,4))

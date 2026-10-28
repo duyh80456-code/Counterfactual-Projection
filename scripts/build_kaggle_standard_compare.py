@@ -21,8 +21,11 @@ def jobs(branch):
             [job('geometry_vna_s0','experiments.standard_online',args+['--arm','h2'])])
     if branch=='H3':
         args=['--seed','0','--config','configs/standard_cl/h3_imagenet_small.json']
-        return ([job('cbp_s0','experiments.standard_imagenet',args+['--arm','cbp'])],
-            [job('plasticity_vna_gir_s0','experiments.standard_imagenet',args+['--arm','vna_gir'])])
+        return ([job('cbp_s0','experiments.standard_imagenet',args+['--arm','cbp']),
+                 job('bp_s0','experiments.standard_imagenet',args+['--arm','bp'])],
+            [job('plasticity_vna_gir_s0','experiments.standard_imagenet',args+['--arm','vna_gir']),
+             job('plasticity_vna_s0','experiments.standard_imagenet',args+['--arm','vna']),
+             job('plasticity_gir_s0','experiments.standard_imagenet',args+['--arm','gir'])])
     if branch=='H4':
         return tuple([job(f'{"er" if arm=="baseline" else "domain_vna"}_{kind}_s0','experiments.standard_domain',['--seed','0','--arm',arm,
             '--config',f'configs/standard_cl/h4_{kind}_mnist.json']) for kind in ('rotated',)]
@@ -170,13 +173,13 @@ Paper references motivate baseline selection only. No comparison with paper accu
 Pinned source commit; no ZIP overlay. Full registered horizon, final-epoch models, lightweight API/dataset preflight; no benchmark training in preflight; no truncation.
 H1: CIFAR-100, BN ResNet32 PyCIL, 20 tasks ×5 classes, memory2000, 200/170 epochs.
 H2: official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch10 ×3 repeats, class-balanced replay2000, validation5%, LPR omega0=4/beta=2/update30 from official README, SGD0.1 without momentum/weight decay/scheduler.
-H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA cadence4000/window128; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. This pilot does not reproduce full-horizon CBP results.
+H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA cadence4000/window128; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. Single current-task CE objective, no replay. CBP remains main baseline; BP, VNA-only and GIR-only are queued ablations. This pilot does not reproduce full-horizon CBP results.
 H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + Domain-Adaptive VNA.
 
 Inputs: {'optional original CBP ImageNet32 files; otherwise automatically download the official archive to Kaggle disk and extract only the 200 required class files' if branch=='H3' else 'optional CIFAR-100 Python train/test/meta; auto-download from official torchvision source if absent' if branch in ('H1','H2') else 'optional MNIST raw IDX files (plain/gzip); auto-download from torchvision source if absent' }.
 Enable Internet and Kaggle Secret `github_token`. Select T4 ×2; baseline GPU0, full GPU1, one BLAS thread per lane.
 H2 builds an isolated Python3.10 environment for the pinned original Avalanche0.4 stack.
-Optional previous Output is only for exact resume. H3-small has60000 native updates per arm plus bounded interventions; the full5000×250 config remains separate and is not queued. Exact T4 timings remain unmeasured. Other branches may also need multiple 11-hour sessions. The horizon is never shortened.
+Optional previous Output is only for exact resume. H3-small queues five arms (GPU0 CBP then BP; GPU1 full then VNA-only then GIR-only),60000 native updates per arm plus bounded interventions; the full5000×250 config remains separate and is not queued. Exact T4 timings remain unmeasured. Other branches may also need multiple 11-hour sessions. The horizon is never shortened.
 '''
     cells=[cell('markdown',note),cell('code',first),cell('code',bootstrap),cell('code',SETUP),cell('code',RUNNER),cell('code',REPORT)]
     for index,c in enumerate(cells):
@@ -186,7 +189,40 @@ Optional previous Output is only for exact resume. H3-small has60000 native upda
         language_info=dict(name='python'),kaggle=dict(accelerator='gpu',dataSources=[])))
 
 
+def build_ablations(branch,commit):
+    notebook=build(branch,commit)
+    lanes=[[],[]]
+    base=jobs(branch)[1][0]
+    variants={'H1':(('solver_ablation',0),('train_gate_ablation',1)),
+        'H2':(('solver_ablation',0),('train_gate_ablation',1),('no_geometry',0)),
+        'H3':(('cadence1000',0),('cadence8000',1)),
+        'H4':(('mixed',0),('cg',1),('train_gate',0))}[branch]
+    for variant,lane in variants:
+        args=list(base['args'])
+        if branch in ('H1','H2'):
+            config='h1_cifar100_bn' if branch=='H1' else 'h2_online_cifar100'
+            if '--config' in args:args[args.index('--config')+1]=f'configs/standard_cl/{config}_{variant}.json'
+            else:args+=['--config',f'configs/standard_cl/{config}_{variant}.json']
+        elif branch=='H3':args[args.index('--config')+1]=f'configs/standard_cl/h3_imagenet_{variant}.json'
+        elif variant=='mixed':args+=['--domain-reference','mixed']
+        elif variant=='cg':args+=['--solver','cg']
+        else:args+=['--no-eval-acceptance']
+        lanes[lane].append(dict(name=branch.lower()+'_'+variant+'_s0',module=base['module'],args=args))
+    if branch=='H2':
+        args=list(base['args']);args[args.index('--arm')+1]='er'
+        lanes[1].append(dict(name='er_online_s0',module=base['module'],args=args))
+    for cell in notebook['cells']:
+        if cell['cell_type']=='code' and ''.join(cell['source']).startswith('BRANCH ='):
+            source=''.join(cell['source']).replace("RUN_TAG = 'standard_", "RUN_TAG = 'ablation_")
+            lines=source.splitlines();lines=[f'JOBS = {tuple(lanes)!r}' if line.startswith('JOBS = ') else line for line in lines]
+            cell['source']=[line+'\n' for line in lines]
+    notebook['cells'][0]['source']=['# '+branch+' separate ablations — seed0\n',
+        'Separate from the main run; unchanged horizons and certificates. Jobs queue across sessions. GPU timings unmeasured.\n']
+    return notebook
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--commit',required=True);args=parser.parse_args()
     for branch in ('H1','H2','H3','H4'):
         path=ROOT/f'notebooks/standard_cl_{branch}_s0.ipynb';path.write_text(json.dumps(build(branch,args.commit),ensure_ascii=False,indent=1)+'\n');print(path)
+        path=ROOT/f'notebooks/standard_cl_{branch}_ablations_s0.ipynb';path.write_text(json.dumps(build_ablations(branch,args.commit),ensure_ascii=False,indent=1)+'\n');print(path)

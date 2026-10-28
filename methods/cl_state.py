@@ -36,7 +36,7 @@ class State:
             for n,b in self.model.named_buffers():b.copy_(self.buffers[n])
         for n,m in self.model.named_modules():m.training=self.modes[n]
         for n,p in self.model.named_parameters():p.grad=None if self.gradients[n] is None else self.gradients[n].clone()
-        if self.optimizer is not None:self.optimizer.load_state_dict(self.opt)
+        if self.optimizer is not None:self.optimizer.load_state_dict(deepcopy(self.opt))
         restore_rng(self.rng)
 
 
