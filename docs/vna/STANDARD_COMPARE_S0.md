@@ -1,6 +1,6 @@
 # Final seed-0 H1–H4 Kaggle comparisons — 2026-10-29
 
-Source pin: c2398527f589dcd458288a75316fe5650ebb2db4. Four independent notebooks, GPU0 baseline and
+Source pin: 7edff5d99367f79ad363e5e68fba2405241ef908. Four independent notebooks, GPU0 baseline and
 GPU1 full method on T4×2. H3 additionally queues BP on GPU0 and VNA-only/GIR-only after full on GPU1. No source ZIP, old baseline, Gram schedule or old VNA
 checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 
@@ -138,8 +138,6 @@ for exact tests and methodological limits. Real Python3.10/Avalanche0.4 tests
 have run without skips in that environment. GPU checkpoint verification was
 explicitly skipped by the user and must not be described as passed.
 
-Current follow-up source changes are local and uncommitted; the notebook pin above
-still identifies the preceding implementation. Rebuild only after committing the
-new source. H3 saves at the end of each epoch containing an intervention; an
+The notebooks now pin the committed follow-up source shown above. H3 saves at the end of each epoch containing an intervention; an
 interrupted unsaved epoch replays from its prior checkpoint. This preserves
 logical events, not computation already spent. More frequent saves add I/O.

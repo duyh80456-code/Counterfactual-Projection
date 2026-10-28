@@ -12,6 +12,6 @@ Actual Python 3.10 / Torch 2.2.2 / Avalanche 0.4 CPU environment:
 
 Synthetic fixtures verify state/event restoration and protocol enforcement; they
 do not establish real-data solver convergence, accuracy or GPU timing.
-No GPU run was performed, as requested. The existing notebook pins are unchanged
-until notebook rebuilding. AGENTS.md explicitly permits committing and pushing
+No GPU run was performed, as requested. All eight H1–H4 main/ablation notebooks now pin source
+7edff5d99367f79ad363e5e68fba2405241ef908. AGENTS.md explicitly permits committing and pushing
 completed requested changes.
