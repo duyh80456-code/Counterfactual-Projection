@@ -23,8 +23,16 @@ validation of results, anything in the task spec or PREREGISTRATION_CHANGES.md.
 
 ## Tests
 New non-trivial logic gets one small focused test. Run only the tests the spec names plus the affected
-test files; run the full suite once at most, and only when the spec asks. Do not commit.
+test files; run the full suite once at most, and only when the spec asks.
 Env: `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+
+## Workspace and delivery
+- Work directly in `/Users/pxokq/expanding-guide model`. Use this directory explicitly for repository commands.
+- Do not create or switch to a separate worktree, checkout, or copied repository folder unless the user explicitly requests it.
+- The user grants standing authorization to commit and push completed requested changes to the current branch without asking again.
+- Stage only files belonging to the requested change; preserve unrelated local edits and untracked files.
+- Update repository code directly. Do not create or update source ZIP overlays unless explicitly requested.
+- New notebooks must pin a real source commit containing their required code.
 
 ## Current layout
 - Main runs: `experiments/{pilot_v3,main_cil,v4_competitors,v4_b5_width}.py`.
