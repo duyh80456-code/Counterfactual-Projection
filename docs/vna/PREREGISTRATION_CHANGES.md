@@ -1440,3 +1440,27 @@ is left pinned to its previous source in this change.
 Repin H1/H2/H4 into fresh source-specific output tags. Do not resume old-engine
 checkpoints under the new controls or combine them with new results as one run.
 No GPU benchmark or claim of improved acceptance/accuracy accompanies this fix.
+
+### 2026-10-29 — V2 solution-error bound and acceptance detail
+
+Integrate the incremental changes from the supplied V2 full patch onto V1.
+Require both true relative residual <=1e-6 (benchmark configuration) and
+residual/(mu*regularizer_floor*norm(approximate_solution)) <=0.1. The latter
+bounds error relative to the approximate solution; relative to the exact
+solution it implies at most1/9, not10%. It assumes a symmetric PSD curvature
+and penalty, and the declared positive regularizer lower bound. This certifies
+individual linear solves, not relative error of the final combined KKT direction.
+Retain0.1 as specified; no claim of a rigorous floating-point operator bound.
+Failures retry the whole proposal under the existing damping policy. Retain
+full per-solve diagnostics for failed and successful damping attempts.
+
+Keep status=ACCEPTED for compatibility. acceptance_detail distinguishes
+ACCEPTED_WITH_IMPROVEMENT and ACCEPTED_NEUTRAL using1e-6*max(1,abs(loss_before))
+per component (any significant decrease with all components nonincreasing),
+or the total for unconstrained mode. This is a mixed absolute/relative diagnostic,
+not an accuracy or forgetting guarantee. Nonincrease is not relaxed. Collector
+counts both classes separately; historical accepted events lacking detail remain
+ACCEPTED_UNCLASSIFIED. Uncertified/resource-skipped events retain their statuses.
+
+H1/H2/H4 receive fresh source pins/output tags; old checkpoints remain on old
+source. H3 notebook stays pinned unchanged. No real-data GPU run is launched.

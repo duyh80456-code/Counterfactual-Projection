@@ -102,6 +102,8 @@ class CorrectionConfig:
     damping_relative: float = .01
     cg_tolerance: float = 1e-6
     cg_iterations: int = 200
+    max_relative_solution_error: float = 0.1
+    improvement_relative_tolerance: float = 1e-6
     preconditioner_probes: int = 4
     damping_retries: int = 4
     damping_multiplier: float = 10.0
@@ -114,8 +116,10 @@ class CorrectionConfig:
         if self.mode not in ('intervention','unified'):raise ValueError('unknown integration mode')
         if not math.isfinite(self.damping_relative) or self.damping_relative<=0 or self.max_trials<1 or self.trace_probes<1:
             raise ValueError('positive finite numerical controls required')
-        if not 0<self.cg_tolerance<1 or self.cg_iterations<1 or self.preconditioner_probes<0 or self.damping_retries<0:
-            raise ValueError('invalid CG controls')
+        if (not 0<self.cg_tolerance<1 or self.cg_iterations<1 or self.preconditioner_probes<0 or self.damping_retries<0
+                or not math.isfinite(self.max_relative_solution_error) or self.max_relative_solution_error<=0
+                or not math.isfinite(self.improvement_relative_tolerance) or self.improvement_relative_tolerance<0):
+            raise ValueError('invalid CG / acceptance numerical controls')
         if not math.isfinite(self.damping_multiplier) or self.damping_multiplier<=1:
             raise ValueError('damping multiplier must exceed one')
 
@@ -172,6 +176,7 @@ class ReplayCorrection:
         mu=max(self.config.damping_relative*op.trace(cfg)/max(op.size,1),1e-12) if damping is None else float(damping)
         return ProjectionOperator(lambda x:p.Jv(x).double(),lambda x:p.JT(x).double(),op.H,mu,
             tolerance=self.config.cg_tolerance,max_iterations=self.config.cg_iterations,
+            max_relative_solution_error=self.config.max_relative_solution_error,
             preconditioner_probes=self.config.preconditioner_probes,preconditioner_seed=self.config.seed,
             penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
 
@@ -210,6 +215,7 @@ class ReplayCorrection:
             op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
             A=ProjectionOperator(lambda x:p.Jv(x).double(),lambda x:p.JT(x).double(),op.H,mu,
                 tolerance=config.cg_tolerance,max_iterations=config.cg_iterations,solves=solves,
+                max_relative_solution_error=config.max_relative_solution_error,
                 preconditioner_probes=config.preconditioner_probes,preconditioner_seed=config.seed,
                 penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
             kernel_target=None;cross=None
@@ -284,14 +290,16 @@ class ReplayCorrection:
                     state.restore()
                 try:
                     proposal=self.propose(model,inputs,losses,sites,base,penalty,damping=candidate_damping)
-                    attempts.append(dict(attempt=attempt,mu=proposal.diagnostics.get('mu'),status='CERTIFIED'))
+                    attempts.append(dict(attempt=attempt,mu=proposal.diagnostics.get('mu'),status='CERTIFIED',
+                                         solves=deepcopy(proposal.diagnostics.get('solves',[]))))
                     break
                 except Uncertified as exc:
                     diagnostics=exc.diagnostics if isinstance(exc.diagnostics,list) else []
                     last=diagnostics[-1] if diagnostics else {}
                     mu=last.get('mu',candidate_damping)
                     attempts.append(dict(attempt=attempt,mu=mu,status='UNCERTIFIED',reason=str(exc),
-                                         last_relative_residual=last.get('relative_residual')))
+                                         solves=deepcopy(diagnostics),last_relative_residual=last.get('relative_residual'),
+                                         last_relative_solution_error_bound=last.get('relative_solution_error_bound')))
                     row['damping_attempts']=attempts
                     if attempt==retries or not str(exc).startswith('linear solve failed') or mu is None:
                         raise
@@ -313,18 +321,30 @@ class ReplayCorrection:
                 after=evaluate(model,inputs,losses.components)
                 finite=all(math.isfinite(x) for x in (*before,*after))
                 nonincrease=all(a<=b for a,b in zip(after,before)) if self.config.constrained else sum(after)<=sum(before)
+                # Significance is diagnostic, never a relaxation of strict nonincrease.
+                if self.config.constrained:
+                    thresholds=[self.config.improvement_relative_tolerance*max(1.,abs(b)) for b in before]
+                    meaningful=any(b-a>threshold for a,b,threshold in zip(after,before,thresholds))
+                else:
+                    thresholds=[self.config.improvement_relative_tolerance*max(1.,abs(sum(before)))]
+                    meaningful=sum(before)-sum(after)>thresholds[0]
                 physical_norm=float((initial-vector(model)).norm())
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
-                    physical_norm=physical_norm,in_update_budget=in_budget))
+                    physical_norm=physical_norm,in_update_budget=in_budget,
+                    meaningful_improvement=meaningful,improvement_thresholds=thresholds))
                 if finite and feasible and nonincrease and in_budget and physical_norm>0:
-                    accepted=True;norm=float((initial-vector(model)).norm());used=s;break
+                    accepted=True;norm=physical_norm;used=s;break
             if not accepted:state.restore()
             elif staged_optimizer is not None:optimizer.load_state_dict(staged_optimizer)
             candidate_after=after
             if not accepted:after=before
+            # Keep status='ACCEPTED' for existing runners, but distinguish neutral updates in diagnostics.
+            acceptance_detail=('ACCEPTED_WITH_IMPROVEMENT' if trials[-1]['meaningful_improvement'] else 'ACCEPTED_NEUTRAL') if accepted else 'REJECTED'
             certificate=AcceptanceCertificate(accepted,'ACCEPTED' if accepted else 'REJECTED',before,after,used,norm,trials)
-            row.update(asdict(certificate),certificate_scope='window_parameter_intervention' if self.config.mode=='intervention' else 'window_entire_parameter_update',
+            row.update(asdict(certificate),acceptance_detail=acceptance_detail,
+                improvement_relative_tolerance=self.config.improvement_relative_tolerance,
+                certificate_scope='window_parameter_intervention' if self.config.mode=='intervention' else 'window_entire_parameter_update',
                 total_before=sum(before),total_candidate=sum(candidate_after),candidate_after=candidate_after,
                 actual_loss_change=[a-b for a,b in zip(after,before)],
                 constraint_violation=max(0.,-min(trials[-1]['physical_gains'])) if trials else 0.)

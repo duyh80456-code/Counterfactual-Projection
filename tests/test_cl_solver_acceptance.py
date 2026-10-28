@@ -103,3 +103,94 @@ def test_no_op_cannot_be_reported_as_accepted(monkeypatch):
         torch.zeros_like(vector(net)),torch.zeros(2,vector(net).numel(),dtype=torch.double),None,{}))
     row=engine.step(net,opt,x,losses,[],.1)
     assert not row['accepted'] and row['status']=='REJECTED' and row['step_norm']==0.
+
+
+def test_small_true_residual_does_not_certify_large_solution_error(monkeypatch):
+    """A tiny eigenvalue can hide an order-one solution error behind a 1e-9 residual."""
+    from methods import cl_projection
+    from types import SimpleNamespace
+    mu=1e-9
+    j=torch.tensor([0.,(1.-mu)**.5],dtype=torch.double)
+    A=ProjectionOperator(lambda x:j*x,lambda y:j*y,lambda x:x,mu,
+                         tolerance=1e-6,max_relative_solution_error=.1)
+    b=torch.tensor([mu,1.],dtype=torch.double)
+    x_bad=torch.tensor([0.,1.],dtype=torch.double)
+    monkeypatch.setattr(cl_projection,'conjugate_gradient',lambda *a,**kw:
+                        SimpleNamespace(solution=x_bad,iterations=1,breakdown=False))
+    with pytest.raises(Uncertified,match='solution-error bound'):
+        A.solve(b)
+    record=A.solves[-1]
+    assert record['relative_residual'] < A.tolerance
+    assert record['relative_solution_error_bound'] > .1
+    assert record['status']=='UNCERTIFIED'
+
+
+def test_weak_error_bound_retries_complete_proposal(monkeypatch):
+    net,opt,x,losses=toy()
+    engine=ReplayCorrection(CorrectionConfig(damping_retries=1,damping_multiplier=10.))
+    calls=[]
+    def proposal(*args,damping=None,**kwargs):
+        calls.append(damping)
+        if damping is None:
+            raise Uncertified('linear solve failed solution-error bound',[
+                dict(mu=.01,relative_residual=1e-8,relative_solution_error_bound=.4)])
+        return CandidateUpdate(torch.tensor([-1.],dtype=torch.double),
+            torch.tensor([[-1.],[-1.]],dtype=torch.double),None,dict(mu=damping))
+    monkeypatch.setattr(engine,'propose',proposal)
+    result=engine.step(net,opt,x,losses,[],.1)
+    assert calls==[None,.1]
+    assert result['accepted'] and result['acceptance_detail']=='ACCEPTED_WITH_IMPROVEMENT'
+    assert result['damping_attempts'][0]['last_relative_solution_error_bound']==.4
+
+
+def test_acceptance_distinguishes_neutral_from_meaningful_improvement(monkeypatch):
+    net,opt,x,losses=toy()
+    engine=ReplayCorrection(CorrectionConfig(max_trials=1,improvement_relative_tolerance=1e-6))
+    def proposal(size):
+        return CandidateUpdate(torch.tensor([-size],dtype=torch.double),
+                torch.tensor([[-1.],[-1.]],dtype=torch.double),None,dict())
+    monkeypatch.setattr(engine,'propose',lambda *args,**kw: proposal(1e-7))
+    neutral=engine.step(net,opt,x,losses,[],.1)
+    assert neutral['accepted'] and neutral['status']=='ACCEPTED'
+    assert neutral['acceptance_detail']=='ACCEPTED_NEUTRAL'
+    assert not neutral['trials'][0]['meaningful_improvement']
+    with torch.no_grad():net.weight.zero_()
+    monkeypatch.setattr(engine,'propose',lambda *args,**kw: proposal(1.))
+    improved=engine.step(net,opt,x,losses,[],.1)
+    assert improved['accepted'] and improved['status']=='ACCEPTED'
+    assert improved['acceptance_detail']=='ACCEPTED_WITH_IMPROVEMENT'
+    assert improved['trials'][0]['meaningful_improvement']
+
+
+def test_loss_increase_below_noise_threshold_still_rejected(monkeypatch):
+    net,opt,x,losses=toy()
+    engine=ReplayCorrection(CorrectionConfig(max_trials=1,improvement_relative_tolerance=1e-4))
+    monkeypatch.setattr(engine,'propose',lambda *args,**kw:CandidateUpdate(
+        torch.tensor([1e-7],dtype=torch.double),
+        torch.tensor([[-1.],[-1.]],dtype=torch.double),None,dict()))
+    event=engine.step(net,opt,x,losses,[],.1)
+    assert not event['accepted'] and event['status']=='REJECTED'
+    assert event['acceptance_detail']=='REJECTED'
+    assert net.weight.item()==0.
+
+
+def test_nonunit_regularizer_floor_and_zero_rhs():
+    A=ProjectionOperator(lambda x:x,lambda x:x,lambda x:x, .2,
+        regularizer=lambda x:3*x,regularizer_floor=3.,tolerance=1e-10)
+    for rhs in (torch.tensor([2.,-1.],dtype=torch.double),torch.zeros(2,dtype=torch.double)):
+        answer=A.solve(rhs)
+        torch.testing.assert_close(answer,rhs/1.6)
+        record=A.solves[-1]
+        assert record['error_bound']==record['residual']/(.2*3)
+        assert record['relative_solution_error_bound']<=.1
+
+
+def test_collector_separates_neutral_improved_and_legacy(tmp_path):
+    import json
+    from scripts.collect_standard_cl import correction_counts
+    events=[dict(status='ACCEPTED',acceptance_detail=detail) for detail in
+            ('ACCEPTED_NEUTRAL','ACCEPTED_WITH_IMPROVEMENT')]
+    events += [dict(status=status) for status in ('ACCEPTED','REJECTED','UNCERTIFIED')]
+    (tmp_path/'interventions.json').write_text(json.dumps(events))
+    assert correction_counts(tmp_path)==dict(ACCEPTED_NEUTRAL=1,ACCEPTED_WITH_IMPROVEMENT=1,
+        ACCEPTED_UNCLASSIFIED=1,REJECTED=1,UNCERTIFIED=1)

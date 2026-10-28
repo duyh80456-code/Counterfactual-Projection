@@ -32,6 +32,7 @@ class ProjectionOperator:
     penalty: LinearOperator = lambda x: torch.zeros_like(x)
     tolerance: float = 1e-6
     max_iterations: int = 200
+    max_relative_solution_error: float = 0.1
     preconditioner_probes: int = 0
     preconditioner_seed: int = 0
     boundary: Callable = lambda: None
@@ -40,8 +41,9 @@ class ProjectionOperator:
     def __post_init__(self):
         if not math.isfinite(self.mu) or self.mu<=0 or not math.isfinite(self.regularizer_floor) or self.regularizer_floor<=0:
             raise ValueError('require mu>0 and a valid positive lower bound for R')
-        if not 0<self.tolerance<1 or self.max_iterations<1 or self.preconditioner_probes<0:
-            raise ValueError('invalid solver tolerance/iterations/preconditioner probes')
+        if (not 0<self.tolerance<1 or self.max_iterations<1 or self.preconditioner_probes<0
+                or not math.isfinite(self.max_relative_solution_error) or self.max_relative_solution_error<=0):
+            raise ValueError('invalid solver tolerance/iterations/preconditioner probes/error bound')
         self._preconditioner = None
 
     def curvature(self,x):return self.vjp(self.metric(self.jvp(x))).double()
@@ -83,14 +85,24 @@ class ProjectionOperator:
             preconditioner=preconditioner,eps=1e-30,callback=lambda _:self.boundary())
         residual=float((rhs-self(result.solution)).norm())
         relative=residual/max(float(rhs.norm()),torch.finfo(rhs.dtype).tiny)
-        # True residual, not the recursively estimated CG residual, is authoritative.
-        certified=bool(torch.isfinite(result.solution).all() and math.isfinite(relative) and relative<=self.tolerance)
+        # For SPD A with lambda_min(A)>=mu*R_floor, ||x-x*||<=||b-Ax||/(mu*R_floor).
+        error_bound=residual/(self.mu*self.regularizer_floor)
+        solution_norm=float(result.solution.norm())
+        relative_error_bound=(error_bound/solution_norm if solution_norm>0 else
+                              0. if error_bound==0 else math.inf)
+        residual_ok=bool(torch.isfinite(result.solution).all() and math.isfinite(relative) and relative<=self.tolerance)
+        error_ok=bool(math.isfinite(relative_error_bound) and relative_error_bound<=self.max_relative_solution_error)
+        certified=residual_ok and error_ok
         self.solves.append(dict(iterations=result.iterations,residual=residual,relative_residual=relative,
-            error_bound=residual/(self.mu*self.regularizer_floor),status='CERTIFIED' if certified else 'UNCERTIFIED',
+            error_bound=error_bound,relative_solution_error_bound=relative_error_bound,
+            max_relative_solution_error=self.max_relative_solution_error,
+            status='CERTIFIED' if certified else 'UNCERTIFIED',
             mu=self.mu,preconditioner='jacobi' if preconditioner is not None else 'none',
             preconditioner_probes=self.preconditioner_probes,breakdown=result.breakdown,
             seconds=time.perf_counter()-started))
-        if not certified:raise Uncertified('linear solve failed true-residual certificate',list(self.solves))
+        if not certified:
+            reason='true-residual certificate' if not residual_ok else 'solution-error bound'
+            raise Uncertified('linear solve failed '+reason,list(self.solves))
         return result.solution.detach()
 
     def split(self,gradient):return self.metric(self.jvp(self.solve(gradient))).double()

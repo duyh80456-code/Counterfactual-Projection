@@ -28,8 +28,20 @@ def signature(protocol):
     return json.dumps(p,sort_keys=True)
 
 
+def correction_counts(folder):
+    path=Path(folder)/'interventions.json'
+    counts=Counter()
+    if path.is_file():
+        for event in json.loads(path.read_text()):
+            status=event.get('status','UNRECORDED')
+            detail=event.get('acceptance_detail')
+            key=detail if status=='ACCEPTED' and detail in ('ACCEPTED_WITH_IMPROVEMENT','ACCEPTED_NEUTRAL') else 'ACCEPTED_UNCLASSIFIED' if status=='ACCEPTED' else status
+            counts[key]+=1
+    return dict(counts)
+
+
 def collect(roots):
-    records={};identities={}
+    records={};identities={};corrections={}
     for root in map(Path,roots):
         for path in root.rglob('summary.json'):
             value=json.loads(path.read_text());p=value.get('protocol',{})
@@ -50,6 +62,7 @@ def collect(roots):
                 if not all(isinstance(value.get(k),(int,float)) and math.isfinite(value[k]) for k in required):
                     raise ValueError(f'nonfinite/missing completed metrics: {path}')
             records[key]=value
+            corrections[key]=correction_counts(path.parent)
     grouped=defaultdict(list)
     for (group,arm,seed),value in records.items():grouped[(group,arm)].append((seed,value))
     result=[]
@@ -67,6 +80,7 @@ def collect(roots):
                 paired_delta=statistics.mean(delta) if delta else None,paired_seeds=len(delta))
         result.append(dict(protocol=json.loads(group),arm=arm,seeds=[s for s,_ in runs],
             paired_reference_arm=baseline,
+            correction_outcomes=[dict(seed=s,counts=corrections[(group,arm,s)]) for s,_ in runs],
             outcomes=dict(Counter(r['status'] for _,r in runs)),metrics=metrics,evidence_status='INCONCLUSIVE',
             costs=[dict(seed=s,parameter_count=r.get('parameter_count'),wall_seconds=r.get('wall_seconds'),
                 correction_seconds=r.get('correction_seconds'),peak_vram_bytes=r.get('peak_vram_bytes')) for s,r in runs],
@@ -91,6 +105,7 @@ def export_comparison(root):
                     'last_50_task_error','plasticity_decay','online_accuracy','representation_drift_mean'):
             row[key]=summary.get(key) if done else None
         for key in ('wall_seconds','gpu_hours','peak_vram_bytes','correction_seconds','actual_swaps','candidate_search'):row[key]=summary.get(key)
+        row.update({'correction_'+key:count for key,count in correction_counts(path.parent).items()})
         rows.append(row)
         for index,task in enumerate(summary.get('tasks',[]),1):
             accuracy=task.get('global_accuracy',task.get('total',task.get('final_accuracy')))
