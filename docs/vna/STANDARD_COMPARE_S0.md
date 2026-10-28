@@ -1,6 +1,6 @@
 # Final seed-0 H1–H4 Kaggle comparisons — 2026-10-29
 
-Source pin: fc54068de014c6af5e4d9f228dc6aa48e79c2e5c. Four independent notebooks, GPU0 baseline and
+Source pin: c2398527f589dcd458288a75316fe5650ebb2db4. Four independent notebooks, GPU0 baseline and
 GPU1 full method on T4×2. H3 additionally queues BP on GPU0 and VNA-only/GIR-only after full on GPU1. No source ZIP, old baseline, Gram schedule or old VNA
 checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 
@@ -40,14 +40,19 @@ exception is tested on real Python3.10 CPU, without any constructor shim.
 grpcio1.62.3 prevents a second typing conflict. The dependency gate rejects
 missing packages or any other unresolved conflict. Exact versions are printed.
 Required APIs are constructed/executed, not merely imported. See
-H2_ENVIRONMENT_VERIFICATION.json and STANDARD_FINALIZE_REPORT.md.
+H2_AVALANCHE_FINAL_ENVIRONMENT.json and STANDARD_VALIDATION_COMPLETION.md.
 
 Baseline retains native ReplayPlugin/ReplayDataLoader. Full uses the same loader
 with an explicit per-sample incoming/replay boolean before the final task label;
 no positional constraint mask. Origins survive permutation. Original untagged
 experiences feed ClassBalancedBuffer; baseline loader behavior is unchanged.
 Both loss gradients come from one shared physical forward and sum to total CE.
-Full uses existing feature penalty1 and cadence512. No mathematical redesign.
+Full retains cadence512. Geometry weight starts at1, then a bounded seen-validation
+grid{0,0.1,1,10,100} from task2 selects and freezes it. Up to3 eligible windows
+are allowed; no qualified candidate yields FAILED_PREFLIGHT. Trials restore all
+state, share fixed held-out tensors and use only classes already observed.
+No test data selects the weight. This is one-step calibration, not full-run
+hyperparameter optimality; its external experience-prefix metadata is disclosed.
 LPR and VNA have different algorithm-specific compute, reported in wall/GPU hours;
 their native training budgets match, not their elapsed runtime.
 
@@ -61,14 +66,18 @@ The full model is not reinitialized at task boundaries. The original class file
 has14000 sequence entries/run; use its actual prefix, not a fabricated repeated
 1000-class permutation. The5000×250 config stays available separately, unqueued.
 
-Full: physical VNA then fixed-capacity GIR, cadence4000/window128; supported sites
+Full: physical VNA then fixed-capacity GIR, first full128-sample window of each
+task then every200 updates. Planned local steps2,202,402 give300 opportunities.
+The4000 schedule remains a separate ablation. Supported sites
 remain fc1→fc2 and fc2→fc3. Generate tiny_V proposals normally. Rank all resets by
 R=-gᵀδθ_reset-(μ/2)||δθ_reset||² at the current network, using the same μ as the
 exact identity objective. This is a parameter-only first-order LM proxy, not a
 Schur or global guarantee. Ties break by stable candidate name, without RNG.
 Evaluate at most16 swaps with the unchanged full transactional objective and
 componentwise loss checks. Identity is always included. Commit the exact stored
-winning state; rejects/failures restore model, optimizer and RNG. Logs contain
+winning state; rejects/failures restore model, optimizer and RNG. Candidate-local
+solver failures are skipped; only identity/background solve failure retries the
+whole search at a new shared damping. Logs contain
 all preliminary scores, shortlist/pruning reasons, exact trials, failures and
 actual swaps. Optimality is only within the evaluated shortlist plus identity.
 This reduced pilot does not reproduce published full-horizon CBP results.
@@ -101,21 +110,26 @@ horizon remains unchanged. No real dataset training or Kaggle/CUDA run occurred
 in this coding task. See the focused CPU test log and environment report.
 
 
-Audit revision2026-10-29 supersedes prior correction descriptions: shared V2
-certificates plus seeded operator audits,16->64 Jacobi probes when needed,
-train+eval window nonincrease, single current-task H3 CE, whole GIR damping
-retry, inference-normalized H2 geometry and explicit prior-domain H4 reference.
-See STANDARD_AUDIT_REPAIR.md and PREREGISTRATION_CHANGES.md. All four main
-notebooks share the pin above; four separate `*_ablations_s0.ipynb` notebooks
-isolate solver/gate/reference/cadence changes. New output tags; no old-engine
-resume. Native baseline training and main cadence remain unchanged. H3's five
-arms can need multiple sessions; exact GPU timings remain unmeasured.
+## Current correction and validation scope
 
+Shared V2 residual and approximate-solution error certificates remain unchanged.
+Seeded operator audits, variance-shrunk Jacobi and fixed-mu iterative refinement
+are used; train/eval gates have dtype-scaled roundoff allowances and separate
+failure reasons. Neutral accepted updates are not evidence of improvement.
+H3 uses single current-task CE and H4 uses explicit prior-domain reference loss.
+H4 has a shared fixed backbone/head and training-only domain IDs.
 
-Six-followup revision: candidate-local GIR solver failures no longer abort the
-search; shared PCG uses variance-shrunk Jacobi plus fixed-mu iterative refinement,
-with unchanged V2 certificates. Loss gates allow dtype-scale roundoff and report
-train/eval failures separately. H2 records geometry/GGN/ridge directional ratios.
-H4's contribution is training-time prior-domain constraints, not an adaptive
-backbone. See STANDARD_SIX_FOLLOWUPS.md for final tests and limits. All eight
-main/ablation notebooks share the source pin above and fresh output tags.
+All four main and four `*_ablations_s0.ipynb` notebooks share the pin above and
+fresh output tags. Numerical H2 ablations share the calibration budget and may
+select different weights, so they compare complete policies, not matched-lambda
+mechanisms. H3 old schedules contrast phase/frequency together. Native baseline
+training is unchanged; H3 has five queued arms and substantially more correction
+work, which can require multiple sessions. No automatic truncation occurs.
+
+H2 exports geometry_selection.json and selected geometry fields in summary and
+comparison.csv. H1/H2/H4 export accuracy matrices; acceptance_by_task.json/CSV
+separate attempts, certificates, candidates, effective/neutral/improved updates
+and failures. See STANDARD_SIX_FOLLOWUPS.md and STANDARD_VALIDATION_COMPLETION.md
+for exact tests and methodological limits. Real Python3.10/Avalanche0.4 tests
+have run without skips in that environment. GPU checkpoint verification was
+explicitly skipped by the user and must not be described as passed.
