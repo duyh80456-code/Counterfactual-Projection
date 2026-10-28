@@ -201,7 +201,7 @@ def run(args):
                     vna.load_state_dict(old_vna);gir.load_state_dict(old_gir);steps,last_event=old_steps,old_last;x,y=old_x,old_y
                     save();raise
                 epoch+=1
-                if epoch%25==0:save()
+                if last_event!=old_last or epoch%25==0:save()
                 log(f'H3 {args.arm} task={task+1}/{params["num_tasks"]} epoch={epoch}/{params["num_showings"]} acc={epochs[-1]["test_accuracy"]:.2f}')
             selected=epochs[-params['num_showings']:]
             rows.append(dict(task=task+1,classes=labels.tolist(),final_accuracy=selected[-1]['test_accuracy'],

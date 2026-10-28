@@ -84,7 +84,13 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     monkeypatch.setattr(ReplayCorrection,'step',vna);monkeypatch.setattr(TangentReconfiguration,'step',gir)
     def args(out):return runner.parser().parse_args(['--arm',arm,'--data-dir',str(data),'--device','cpu',
         '--config',str(config),'--out',str(out)])
+    saved=[];save_original=runner.Progress.save
+    def observe_save(self,state):
+        saved.append((state['task'],state['epoch'],state['vna']['applications'],state['gir']['applications']))
+        return save_original(self,state)
+    monkeypatch.setattr(runner.Progress,'save',observe_save)
     runner.run(args(tmp_path/'complete'))
+    if arm=='vna_gir':assert (0,1,1,1) in saved
     assert order=={'cbp':[],'bp':[],'vna':['vna']*4,'gir':['gir']*4,'vna_gir':['vna','gir']*4}[arm]
     calls=0
     def deadline():
@@ -96,6 +102,22 @@ def test_imagenet_native_epochs_resume_and_full_hook_order(tmp_path,monkeypatch,
     monkeypatch.setattr(runner,'deadline_due',lambda:False);runner.run(args(tmp_path/'paused'))
     a=torch.load(tmp_path/'complete/latest.pt',weights_only=False);b=torch.load(tmp_path/'paused/latest.pt',weights_only=False)
     for key in ('learner','rng','rows','epochs','steps','last_event','window'):_assert_bitwise(a[key],b[key],key)
+    if arm=='vna_gir':
+        interrupted=False
+        def interrupt_gir(*args,**kwargs):
+            nonlocal interrupted
+            event=gir(*args,**kwargs)
+            if not interrupted:interrupted=True;raise SystemExit(75)
+            return event
+        monkeypatch.setattr(TangentReconfiguration,'step',interrupt_gir)
+        with pytest.raises(SystemExit):runner.run(args(tmp_path/'during_gir'))
+        monkeypatch.setattr(TangentReconfiguration,'step',gir);runner.run(args(tmp_path/'during_gir'))
+        c=torch.load(tmp_path/'during_gir/latest.pt',weights_only=False)
+        for key in ('learner','rng','rows','epochs','steps','last_event','window','vna','gir'):_assert_bitwise(a[key],c[key],'episode.'+key)
+        for filename in ('interventions.json','vna_interventions.json'):
+            events=json.loads((tmp_path/'during_gir'/filename).read_text())
+            points=[(r['task'],r['step']) for r in events]
+            assert len(points)==len(set(points))==4
     from scripts.collect_standard_cl import collect
     assert collect([tmp_path/'complete'])[0]['outcomes']=={'COMPLETED':1}
 
@@ -138,7 +160,7 @@ def test_native_slim_features_and_sites_match_original_forward(tmp_path,monkeypa
     assert features.shape==(2,160) and len(model.sites())==8
 
 
-@pytest.mark.parametrize('arm',['lpr','h2','h2_tuned'])
+@pytest.mark.parametrize('arm',['lpr','h2','h2_tuned','h2_fallback','h2_locked'])
 def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     pytest.importorskip('avalanche')
     from avalanche.benchmarks.generators import dataset_benchmark
@@ -147,10 +169,11 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     from experiments import standard_online as runner
     cfg=json.loads(Path('configs/standard_cl/h2_online_cifar100.json').read_text())
     cfg.update(tasks=2,train_mb_size=2,memory_size=8,intervention_every=2)
-    if arm=='h2_tuned':
+    if arm in ('h2_tuned','h2_fallback'):
         cfg['geometry_selection']=dict(weights=[0.,1.],first_task=2,validation_per_task=4)
         cfg['correction'].update(kernel='native',constrained=False)
     elif arm!='lpr':cfg.pop('geometry_selection',None)
+    if arm=='h2_locked':cfg['geometry_authority']=dict(status='LOCKED',selected_weight=.1,sha256='fixture')
     cfg['correction'].update(damping_relative=1.,cg_iterations=30,trace_probes=1,cg_tolerance=1e-4,max_trials=3)
     config=tmp_path/'online.json';config.write_text(json.dumps(cfg))
     def setup(*args):
@@ -161,7 +184,8 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
         scenario.valid_stream=validation
         return scenario,ToyOnlineNetwork()
     monkeypatch.setattr(runner,'native_setup',setup)
-    def args(out):return runner.parser().parse_args(['--arm','h2' if arm=='h2_tuned' else arm,'--data-dir',str(tmp_path),'--device','cpu',
+    if arm=='h2_fallback':monkeypatch.setattr(runner.GeometryPlugin,'select_geometry',lambda *a:dict(selected_weight=None,status='NO_CERTIFIED_NONZERO_CANDIDATE',seconds=0.,trials=[]))
+    def args(out):return runner.parser().parse_args(['--arm','h2' if arm.startswith('h2_') else arm,'--data-dir',str(tmp_path),'--device','cpu',
         '--config',str(config),'--out',str(out)])
     runner.run(args(tmp_path/'complete'))
     a=torch.load(tmp_path/'complete/latest.pt',weights_only=False)
@@ -188,6 +212,15 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
             runner.evaluate(model,scenario.test_stream[:t+1],'cpu')
         _assert_bitwise(a['model'].state_dict(),model.state_dict(),'unmodified_native_online')
     else:assert a['engine']['applications']>0
+    if arm=='h2_locked':
+        assert a['geometry_selection_attempts']==[]
+        assert a['geometry_selection']['selected_weight']==.1
+        assert all(e['effective_geometry_weight']==.1 for e in a['engine']['events'])
+    if arm=='h2_fallback':
+        assert a['geometry_selection']['status']=='FALLBACK_ER'
+        summary=json.loads((tmp_path/'complete/summary.json').read_text())
+        assert summary['status']=='COMPLETED' and summary['geometry_evidence']=='VNA_PREFIX_THEN_ER_FALLBACK'
+        assert not any(e.get('step',0)>a['geometry_selection']['step'] for e in a['engine']['events'])
     calls=0
     def deadline():
         nonlocal calls
@@ -201,6 +234,19 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     _assert_bitwise(a['model'].state_dict(),b['model'].state_dict(),'model')
     assert a['lpr_inverses'].keys()==b['lpr_inverses'].keys()
     for name in a['lpr_inverses']:_assert_bitwise(a['lpr_inverses'][name].matrix,b['lpr_inverses'][name].matrix,'lpr.'+name)
+    if arm=='h2_fallback':
+        original_callback=runner.GeometryPlugin.after_update;interrupted=False
+        def interrupt_fallback(self,strategy,**kwargs):
+            nonlocal interrupted
+            original_callback(self,strategy,**kwargs)
+            if self.selection and self.selection.get('status')=='FALLBACK_ER' and not interrupted:
+                interrupted=True;raise SystemExit(75)
+        monkeypatch.setattr(runner.GeometryPlugin,'after_update',interrupt_fallback)
+        with pytest.raises(SystemExit):runner.run(args(tmp_path/'during_fallback'))
+        monkeypatch.setattr(runner.GeometryPlugin,'after_update',original_callback);runner.run(args(tmp_path/'during_fallback'))
+        c=torch.load(tmp_path/'during_fallback/latest.pt',weights_only=False)
+        for key in ('optimizer','clock','rng','rows','epochs','geometry_selection','geometry_selection_attempts'):_assert_bitwise(a[key],c[key],'fallback.'+key)
+        _assert_bitwise(a['model'].state_dict(),c['model'].state_dict(),'fallback.model')
     if arm in ('h2','h2_tuned'):
         if arm=='h2_tuned':
             assert a['geometry_selection']['status']=='SELECTED'

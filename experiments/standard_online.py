@@ -77,13 +77,11 @@ class OnlineNetwork(nn.Module):
                 for name,module in self.named_modules() if hasattr(module,'conv1') and hasattr(module,'conv2')]
 
 
-class GeometrySelectionFailed(RuntimeError):
-    pass
-
-
 class GeometryPlugin(SupervisedPlugin):
     def __init__(self,cfg,seed):
-        self.cfg=cfg;self.engine=GeometryCorrection(CorrectionConfig(seed=seed,**cfg['correction']));self.last_event=0;self.selection=None;self.selection_attempts=[];self.seen_classes=set();self.validation_stream=None;self.selection_path=None
+        self.cfg=cfg;self.engine=GeometryCorrection(CorrectionConfig(seed=seed,**cfg['correction']));self.last_event=0;self.selection=deepcopy(cfg.get('geometry_authority'));self.selection_attempts=[];self.seen_classes=set();self.validation_stream=None;self.selection_path=None
+        if cfg.get('require_geometry_authority') and not self.selection:raise ValueError('Numerical H2 ablation requires a frozen geometry authority')
+        if self.selection and (self.selection.get('status')!='LOCKED' or cfg.get('geometry_selection')):raise ValueError('Locked geometry authority cannot be combined with calibration')
         policy=cfg.get('geometry_selection')
         if policy and (not isinstance(policy.get('first_task'),int) or policy['first_task']<2 or not isinstance(policy.get('max_windows',3),int) or policy.get('max_windows',3)<1):raise ValueError('Geometry pilot must start with old classes and have a positive window budget')
     def select_geometry(self,strategy,x,losses,mask):
@@ -128,7 +126,9 @@ class GeometryPlugin(SupervisedPlugin):
             best=min(eligible,key=lambda r:(r['validation_loss'],r['weight'])) if eligible else None
             report=dict(status='SELECTED' if best else 'NO_CERTIFIED_NONZERO_CANDIDATE',
                 selected_weight=best['weight'] if best else None,task=self.task+1,
-                source='held-out seen-task validation only; never test data',validation_sha256=fingerprint.hexdigest(),
+                source='held-out seen-task validation only; never test data',seed=self.engine.config.seed,
+                source_commit=code_commit(),benchmark_config=deepcopy(self.cfg),
+                dataset_fingerprint=json.loads((self.selection_path.parent/'protocol.json').read_text()).get('dataset_fingerprint',{}) if self.selection_path else {},validation_sha256=fingerprint.hexdigest(),
                 validation_samples=sum(len(vy) for _,vy in validation),seen_classes=sorted(self.seen_classes),baseline_validation_loss=baseline,
                 selected_validation_loss=best['validation_loss'] if best else None,
                 validation_improved=best['validation_loss']<baseline if best else False,
@@ -139,6 +139,7 @@ class GeometryPlugin(SupervisedPlugin):
 
     def after_update(self,strategy,**kwargs):
         if self.cfg.get('geometry_selection'):self.seen_classes.update(strategy.mb_y.detach().cpu().tolist())
+        if self.selection and self.selection.get('status')=='FALLBACK_ER':return
         step=strategy.clock.train_iterations+1
         if step-self.last_event<self.cfg['intervention_every']:return
         x,y=strategy.mb_x,strategy.mb_y
@@ -165,7 +166,14 @@ class GeometryPlugin(SupervisedPlugin):
                     rejection_reason='GEOMETRY_SELECTION_NO_QUALIFIED_CANDIDATE',
                     reason='No qualified candidate in this window; continue bounded pilot'))
                 self.engine.applications+=1
-                if len(self.selection_attempts)>=limit:raise GeometrySelectionFailed('No qualified geometry correction within the registered validation pilot budget')
+                if len(self.selection_attempts)>=limit:
+                    self.selection=dict(status='FALLBACK_ER',selected_weight=None,task=self.task+1,step=step,
+                        reason='calibration budget exhausted; native ER continues; earlier corrections are retained')
+                    self.engine.events[-1]['status']='FALLBACK_ER'
+                    if self.selection_path:
+                        from experiments.io_utils import atomic_json_save
+                        atomic_json_save(dict(self.selection,windows=self.selection_attempts),self.selection_path)
+                    log('H2 calibration exhausted: continuing native ER; no geometry-effect claim')
                 return
             self.selection=selection
             log(f'H2 frozen geometry weight={selection["selected_weight"]} validation_loss={selection["selected_validation_loss"]} baseline_validation_loss={selection["baseline_validation_loss"]}')
@@ -359,19 +367,20 @@ def run(args):
             epochs.append(dict(task=task+1,online_minibatches=position,repeats=cfg['train_epochs']))
             task+=1;position=0;stream_rng=None;save()
     except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
-    except GeometrySelectionFailed as exc:status='FAILED_PREFLIGHT';failure=str(exc);raise
     except FloatingPointError as exc:
         status='FAILED_DIVERGED';failure=str(exc)
         coordinates=coordinates or dict(task=task+1,online_batch=position,step=strategy.clock.train_iterations+1,tensor='loss')
     except BaseException as exc:status='FAILED_ERROR';failure=repr(exc);raise
     finally:
+        from scripts.collect_standard_cl import geometry_evidence
+        evidence=geometry_evidence(geometry.selection,cfg['geometry_weight'],bool(cfg.get('geometry_selection'))) if args.arm=='h2' else 'BASELINE'
         logger.save('interventions',geometry.engine.events)
         seconds=elapsed+time.monotonic()-started
         logger.save('summary',dict(protocol=protocol,status=status,failure=failure,diverged=coordinates,tasks=rows,
             **matrix_metrics([r['domain_accuracies'] for r in rows]),wall_seconds=seconds,gpu_hours=seconds/3600 if args.device!='cpu' else 0.,
             correction_seconds=sum(e['seconds'] for e in geometry.engine.events),parameter_count=sum(p.numel() for p in strategy.model.parameters()),
             online_accuracy=float(np.mean([r['accuracy'] for r in online_rows if r['accuracy'] is not None])) if any(r['accuracy'] is not None for r in online_rows) else None,
-            geometry_selection=geometry.selection,geometry_selection_attempts=geometry.selection_attempts,online_accuracy_scope='incoming samples before first update of each online experience; no test-set use',
+            geometry_evidence=evidence,geometry_selection=geometry.selection,geometry_selection_attempts=geometry.selection_attempts,online_accuracy_scope='incoming samples before first update of each online experience; no test-set use',
             peak_vram_bytes=torch.cuda.max_memory_allocated(torch.device(args.device)) if args.device!='cpu' else 0,
             representation_drift_mean=float(np.mean([r['replay_feature_drift'] for r in geometry.engine.events if 'replay_feature_drift' in r])) if any('replay_feature_drift' in r for r in geometry.engine.events) else None,
             replay_diagnostics=dict(origin_tracking='explicit fields in Geometry-VNA; native ReplayDataLoader in LPR',

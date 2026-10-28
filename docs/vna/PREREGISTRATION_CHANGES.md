@@ -1614,3 +1614,26 @@ fixed/tuned correction resume, interruption during calibration, validation
 fingerprint repeatability and frozen selected weights are checked. Synthetic
 fixtures are not real-data validation scores and are not used to pick the main
 geometry coefficient. No new benchmark training is run in this coding task.
+
+
+## 2026-10-29 — H2 fallback, matched-weight ablations, H3 event durability
+
+Supersedes the prior FAILED_PREFLIGHT calibration outcome: after three windows
+without a qualified candidate, stop corrections and continue native ER to the
+registered horizon. Retain the earlier correction prefix and report
+VNA_PREFIX_THEN_ER_FALLBACK; do not describe the entire trajectory as pure ER.
+No solver certificate is relaxed. A selected zero geometry coefficient remains
+valid VNA but is reported separately from positive geometry regularization.
+Collectors never pool zero, positive, and fallback evidence categories.
+
+Numerical H2 ablations no longer independently select coefficients. They require
+a main-run selected-weight authority matching seed, commit, native protocol and
+CIFAR fingerprints, and compare against a separate reference using that weight
+from the start. A fallback has no selected coefficient and is not an authority.
+Calibration uses held-out data only; selection-conditioned positive cohorts alone
+do not establish a causal geometry benefit.
+
+H3 keeps its registered cadence and horizon. Save after every epoch containing
+an intervention in addition to periodic saves. An interrupted partial epoch
+replays from the previous checkpoint, with event lists and RNG restored. Increased
+solver and checkpoint cost remains unmeasured on GPU; never truncate automatically.

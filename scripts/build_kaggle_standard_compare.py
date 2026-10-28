@@ -33,6 +33,29 @@ def jobs(branch):
     raise ValueError(branch)
 
 
+def lock_geometry_config(config,authority,data_dir,source_commit):
+    import hashlib,math
+    authority=Path(authority);report=json.loads(authority.read_text())
+    weight=report.get('selected_weight');source=report.get('benchmark_config',{})
+    if report.get('status')!='SELECTED' or isinstance(weight,bool) or not isinstance(weight,(int,float)) or not math.isfinite(weight) or weight<0:
+        raise ValueError('Geometry authority must contain a selected finite weight; fallback is not an authority')
+    if report.get('seed')!=0 or report.get('source_commit')!=source_commit:raise ValueError('Geometry authority seed/source mismatch')
+    if weight not in source.get('geometry_selection',{}).get('weights',[]):raise ValueError('Selected weight outside registered grid')
+    def native(cfg):return {k:v for k,v in cfg.items() if k not in ('geometry_weight','geometry_selection','correction','require_geometry_authority')}
+    if native(source)!=native(config):raise ValueError('Geometry authority native protocol mismatch')
+    allowed={'preconditioner_probes','damping_retries','eval_acceptance'}
+    if {k:v for k,v in source['correction'].items() if k not in allowed}!={k:v for k,v in config['correction'].items() if k not in allowed}:
+        raise ValueError('Geometry authority differs beyond numerical ablation controls')
+    fingerprints=report.get('dataset_fingerprint',{})
+    for name in ('train','test','meta'):
+        path=Path(data_dir)/'cifar-100-python'/name
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=fingerprints.get(name):raise ValueError('Geometry authority dataset mismatch: '+name)
+    result=json.loads(json.dumps(config));result.pop('geometry_selection',None);result.pop('require_geometry_authority',None);result['geometry_weight']=weight
+    result['geometry_authority']=dict(status='LOCKED',selected_weight=weight,seed=0,source_commit=source_commit,
+        sha256=hashlib.sha256(authority.read_bytes()).hexdigest(),validation_sha256=report.get('validation_sha256'))
+    return result
+
+
 SETUP=r'''os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION']='python'
 print('KAGGLE HOST',sys.version,flush=True)
 print(subprocess.run(['nvidia-smi'],capture_output=True,text=True).stdout,flush=True)
@@ -100,6 +123,21 @@ base_env={**os.environ,'MPLBACKEND':'Agg','PYTHONPATH':str(REPO),'PYTHONUNBUFFER
 configs=RUN_ROOT/'effective_configs';configs.mkdir(exist_ok=True)
 def command(job):
     args=list(job['args'])
+    if job.get('geometry_lock'):
+        from scripts.build_kaggle_standard_compare import lock_geometry_config
+        authority=globals().get('GEOMETRY_AUTHORITY')
+        if authority is None:
+            import hashlib
+            choices={}
+            for path in Path('/kaggle/input').rglob('geometry_selection.json'):
+                report=json.loads(path.read_text())
+                if report.get('status')=='SELECTED' and report.get('seed')==0 and report.get('source_commit')==REPO_COMMIT:
+                    choices[hashlib.sha256(path.read_bytes()).hexdigest()]=path
+            if len(choices)!=1:raise ValueError('Attach one matching main H2 geometry_selection.json or set GEOMETRY_AUTHORITY explicitly')
+            authority=next(iter(choices.values()))
+        index=args.index('--config');config=json.loads((REPO/args[index+1]).read_text())
+        config=lock_geometry_config(config,authority,RESOLVED_DATA,REPO_COMMIT)
+        target=configs/(job['name']+'.json');target.write_text(json.dumps(config,indent=2)+'\n');args[index+1]=str(target)
     if BRANCH=='H1':
         index=args.index('--config') if '--config' in args else None
         source=args[index+1] if index is not None else 'configs/standard_cl/h1_cifar100_bn.json'
@@ -207,14 +245,16 @@ def build_ablations(branch,commit):
         elif variant=='mixed':args+=['--domain-reference','mixed']
         elif variant=='cg':args+=['--solver','cg']
         else:args+=['--no-eval-acceptance']
-        lanes[lane].append(dict(name=branch.lower()+'_'+variant+'_s0',module=base['module'],args=args))
+        lanes[lane].append(dict(name=branch.lower()+'_'+variant+'_s0',module=base['module'],args=args,geometry_lock=branch=='H2' and variant!='no_geometry'))
     if branch=='H2':
+        lanes[0].insert(0,dict(name='h2_reference_locked_s0',module=base['module'],args=list(base['args']),geometry_lock=True))
         args=list(base['args']);args[args.index('--arm')+1]='er'
         lanes[1].append(dict(name='er_online_s0',module=base['module'],args=args))
     for cell in notebook['cells']:
         if cell['cell_type']=='code' and ''.join(cell['source']).startswith('BRANCH ='):
             source=''.join(cell['source']).replace("RUN_TAG = 'standard_", "RUN_TAG = 'ablation_")
             lines=source.splitlines();lines=[f'JOBS = {tuple(lanes)!r}' if line.startswith('JOBS = ') else line for line in lines]
+            if branch=='H2':lines.append('GEOMETRY_AUTHORITY = None  # attach main geometry_selection.json; matched-lambda numerical ablations')
             cell['source']=[line+'\n' for line in lines]
     notebook['cells'][0]['source']=['# '+branch+' separate ablations — seed0\n',
         'Separate from the main run; unchanged horizons and certificates. Jobs queue across sessions. GPU timings unmeasured.\n']

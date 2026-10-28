@@ -49,7 +49,8 @@ experiences feed ClassBalancedBuffer; baseline loader behavior is unchanged.
 Both loss gradients come from one shared physical forward and sum to total CE.
 Full retains cadence512. Geometry weight starts at1, then a bounded seen-validation
 grid{0,0.1,1,10,100} from task2 selects and freezes it. Up to3 eligible windows
-are allowed; no qualified candidate yields FAILED_PREFLIGHT. Trials restore all
+are allowed; exhaustion freezes FALLBACK_ER and continues native ER training,
+retaining any earlier correction prefix. It is not a pure-ER trajectory. Trials restore all
 state, share fixed held-out tensors and use only classes already observed.
 No test data selects the weight. This is one-step calibration, not full-run
 hyperparameter optimality; its external experience-prefix metadata is disclosed.
@@ -120,9 +121,12 @@ H3 uses single current-task CE and H4 uses explicit prior-domain reference loss.
 H4 has a shared fixed backbone/head and training-only domain IDs.
 
 All four main and four `*_ablations_s0.ipynb` notebooks share the pin above and
-fresh output tags. Numerical H2 ablations share the calibration budget and may
-select different weights, so they compare complete policies, not matched-lambda
-mechanisms. H3 old schedules contrast phase/frequency together. Native baseline
+fresh output tags. Numerical H2 ablations require the main selected geometry_selection.json
+(seed0, identical source and dataset fingerprints). They share a frozen weight
+with a new fixed-weight reference; neither retunes. Compare numerical effects
+against that reference, since the calibrated main has a different prefix.
+Fallback cannot supply an authority. Zero-weight and fallback cohorts are
+reported separately and are not evidence of geometry regularization benefit. H3 old schedules contrast phase/frequency together. Native baseline
 training is unchanged; H3 has five queued arms and substantially more correction
 work, which can require multiple sessions. No automatic truncation occurs.
 
@@ -133,3 +137,9 @@ and failures. See STANDARD_SIX_FOLLOWUPS.md and STANDARD_VALIDATION_COMPLETION.m
 for exact tests and methodological limits. Real Python3.10/Avalanche0.4 tests
 have run without skips in that environment. GPU checkpoint verification was
 explicitly skipped by the user and must not be described as passed.
+
+Current follow-up source changes are local and uncommitted; the notebook pin above
+still identifies the preceding implementation. Rebuild only after committing the
+new source. H3 saves at the end of each epoch containing an intervention; an
+interrupted unsaved epoch replays from its prior checkpoint. This preserves
+logical events, not computation already spent. More frequent saves add I/O.

@@ -29,7 +29,7 @@ Env: `.venv/bin/python`, `REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTAT
 ## Workspace and delivery
 - Work directly in `/Users/pxokq/expanding-guide model`. Use this directory explicitly for repository commands.
 - Do not create or switch to a separate worktree, checkout, or copied repository folder unless the user explicitly requests it.
-- The user grants standing authorization to commit and push completed requested changes to the current branch without asking again.
+- Commit completed requested changes to the current branch. The user grants standing authorization to commit and push without asking again.
 - Stage only files belonging to the requested change; preserve unrelated local edits and untracked files.
 - Update repository code directly. Do not create or update source ZIP overlays unless explicitly requested.
 - New notebooks must pin a real source commit containing their required code.

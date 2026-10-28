@@ -1,0 +1,8 @@
+................................                                         [100%]
+=============================== warnings summary ===============================
+tests/test_standard_benchmark_protocols.py: 23 warnings
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/avalanche/training/plugins/evaluation.py:94: UserWarning: No loggers specified, metrics will not be logged
+    warnings.warn("No loggers specified, metrics will not be logged")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+32 passed, 23 warnings in 428.91s (0:07:08)

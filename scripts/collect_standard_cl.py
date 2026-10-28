@@ -62,6 +62,23 @@ def correction_counts(folder):
     return dict(counts)
 
 
+def geometry_evidence(selection,weight,calibration_expected=False):
+    if selection and selection.get('status')=='FALLBACK_ER':return 'VNA_PREFIX_THEN_ER_FALLBACK'
+    if selection and selection.get('selected_weight') is not None:
+        prefix='LOCKED' if selection.get('status')=='LOCKED' else 'CALIBRATED'
+        return prefix+'_ZERO_GEOMETRY' if selection['selected_weight']==0 else prefix+'_POSITIVE_GEOMETRY'
+    if calibration_expected:return 'CALIBRATION_NOT_REACHED'
+    return 'FIXED_ZERO_GEOMETRY' if weight==0 else 'FIXED_POSITIVE_GEOMETRY' if weight is not None and weight>0 else 'UNKNOWN'
+
+
+def run_geometry_evidence(summary):
+    protocol=summary.get('protocol',{});cfg=protocol.get('config',{})
+    if protocol.get('branch')!='H2' or protocol.get('arm')!='h2':return None
+    category=geometry_evidence(summary.get('geometry_selection'),cfg.get('geometry_weight',(cfg.get('geometry') or {}).get('weight')),bool(cfg.get('geometry_selection')))
+    if summary.get('geometry_evidence',category)!=category:raise ValueError('inconsistent geometry evidence label')
+    return category
+
+
 def collect(roots):
     records={};identities={};corrections={}
     for root in map(Path,roots):
@@ -86,9 +103,9 @@ def collect(roots):
             records[key]=value
             corrections[key]=correction_counts(path.parent)
     grouped=defaultdict(list)
-    for (group,arm,seed),value in records.items():grouped[(group,arm)].append((seed,value))
+    for (group,arm,seed),value in records.items():grouped[(group,arm,run_geometry_evidence(value))].append((seed,value))
     result=[]
-    for (group,arm),runs in grouped.items():
+    for (group,arm,category),runs in grouped.items():
         completed=[(s,r) for s,r in runs if r.get('status')=='COMPLETED']
         metrics={}
         fields=('last_50_task_error','plasticity_decay','gpu_hours') if json.loads(group)['branch']=='H3' else ('average_incremental_accuracy','final_accuracy','forgetting','backward_transfer','gpu_hours')
@@ -100,7 +117,7 @@ def collect(roots):
             metrics[metric]=dict(mean=statistics.mean(values) if values else None,
                 std=statistics.stdev(values) if len(values)>1 else None,
                 paired_delta=statistics.mean(delta) if delta else None,paired_seeds=len(delta))
-        result.append(dict(protocol=json.loads(group),arm=arm,seeds=[s for s,_ in runs],
+        result.append(dict(protocol=json.loads(group),arm=arm,geometry_evidence=category,seeds=[s for s,_ in runs],
             paired_reference_arm=baseline,
             correction_outcomes=[dict(seed=s,counts=corrections[(group,arm,s)]) for s,_ in runs],
             geometry_selections=[dict(seed=s,selected_weight=(r.get('geometry_selection') or {}).get('selected_weight'),
@@ -125,7 +142,7 @@ def export_comparison(root):
         if p.get('branch') not in ('H1','H2','H3','H4'):continue
         acceptance.extend(dict(job=path.parent.name,**row) for row in acceptance_report(path.parent))
         done=summary.get('status')=='COMPLETED'
-        row=dict(job=path.parent.name,branch=p['branch'],status=summary.get('status'))
+        row=dict(job=path.parent.name,branch=p['branch'],status=summary.get('status'),geometry_evidence=run_geometry_evidence(summary))
         for key in ('average_incremental_accuracy','final_accuracy','nme_average_incremental_accuracy','forgetting','backward_transfer',
                     'last_50_task_error','plasticity_decay','learning_curve_auc_mean','early_learning_mean','online_accuracy','representation_drift_mean'):
             row[key]=summary.get(key) if done else None
@@ -138,7 +155,7 @@ def export_comparison(root):
         for index,task in enumerate(summary.get('tasks',[]),1):
             accuracy=task.get('global_accuracy',task.get('total',task.get('final_accuracy')))
             if accuracy is None and task.get('domain_accuracies'):accuracy=statistics.mean(task['domain_accuracies'])
-            curves.append(dict(job=path.parent.name,status=summary['status'],task=index,accuracy=accuracy,
+            curves.append(dict(job=path.parent.name,status=summary['status'],geometry_evidence=row['geometry_evidence'],task=index,accuracy=accuracy,
                 mean_error=task.get('mean_error'),learning_speed=task.get('learning_speed')))
     from experiments.io_utils import atomic_json_save
     atomic_json_save(acceptance,root/'acceptance_by_task.json')
@@ -149,7 +166,7 @@ def export_comparison(root):
         for job in dict.fromkeys(row['job'] for row in curves):
             points=[row for row in curves if row['job']==job]
             metric='mean_error' if any(row['mean_error'] is not None for row in points) else 'accuracy'
-            axis.plot([row['task'] for row in points],[row[metric] for row in points],label=f"{job} [{points[0]['status']}]")
+            axis.plot([row['task'] for row in points],[row[metric] for row in points],label=f"{job} [{points[0]['status']}"+("; "+points[0]['geometry_evidence'] if points[0]['geometry_evidence'] else "")+"]")
         axis.set(xlabel='Task/domain',ylabel='Classification error (%)' if metric=='mean_error' else 'Accuracy (%)')
         axis.legend();figure.tight_layout();temporary=root/'accuracy_curves.png.tmp'
         figure.savefig(temporary,format='png',dpi=150);plt.close(figure);temporary.replace(root/'accuracy_curves.png')
