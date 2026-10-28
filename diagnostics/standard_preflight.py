@@ -172,15 +172,21 @@ def prepare_data(branch,search,stage,config):
         lop.upstream_imports();params,_=effective_params(config)
         classes=required_classes(0,params['num_tasks']);needed={f'{int(i)}.npy' for i in classes}
     visited=set()
-    for directory,dirs,files in os.walk(search,followlinks=True):
+    print(f'Scanning dataset input recursively: {search}',flush=True)
+    def scan_error(error):
+        raise OSError(f'Cannot scan dataset input {error.filename}; refusing silent download fallback') from error
+    for directory,dirs,files in os.walk(search,followlinks=True,onerror=scan_error):
         resolved=Path(directory).resolve()
         if resolved in visited:dirs[:]=[];continue
         visited.add(resolved)
         dirs[:]=[name for name in dirs if name!='.git']
-        names=set(files)
-        if needed<=names or (branch=='H4' and all(n in names or n+'.gz' in names for n in needed)):candidates.append(Path(directory))
+        folder=Path(directory)
+        if all((folder/n).is_file() or (branch=='H4' and (folder/(n+'.gz')).is_file()) for n in needed):
+            candidates.append(folder)
+            print(f'Found dataset files: {folder}',flush=True)
     candidates=sorted(set(p.resolve() for p in candidates))
     if len(candidates)>1:raise ValueError(f'Set DATA_DIR to a single dataset root: {candidates}')
+    print(f'Dataset scan complete: {len(visited)} directories, {len(candidates)} compatible roots',flush=True)
     if branch=='H3':
         if not candidates:return download_imagenet_classes(stage,needed)
         return str(candidates[0])

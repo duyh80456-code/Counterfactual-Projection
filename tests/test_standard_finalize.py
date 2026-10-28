@@ -117,7 +117,7 @@ def test_automatic_official_dataset_download_when_absent(tmp_path,monkeypatch):
             calls.append((train,download));self.targets=np.tile(np.arange(100),500 if train else 100)
         def __len__(self):return len(self.targets)
     monkeypatch.setattr(datasets,'CIFAR100',Fixture)
-    assert prepare_data('H1',tmp_path/'absent',tmp_path/'stage',{})==str(tmp_path/'stage')
+    assert prepare_data('H1',tmp_path,tmp_path/'stage',{})==str(tmp_path/'stage')
     assert calls==[(True,True),(False,True)]
 
 
@@ -174,3 +174,30 @@ def test_uncertified_candidate_keeps_partial_audit_and_rolls_back():
         choose_swap(model,optimizer,torch.ones(1,1,dtype=torch.double),(lambda z:z.square().mean(),),candidates,surrogate=objective)
     assert exc.value.failed_candidate=='failed' and len(exc.value.candidate_trials)==1
     _assert_bitwise(snapshot.values,model.state_dict(),'uncertified rollback')
+
+
+def test_input_scan_finds_nested_kaggle_dataset_without_download(tmp_path,monkeypatch):
+    import torchvision.datasets as datasets
+    from diagnostics.standard_preflight import prepare_data
+    root=tmp_path/'input/datasets/nlnk1607/cifar100/cifar-100-python'
+    root.mkdir(parents=True)
+    for name in ('train','test','meta'):(root/name).touch()
+    calls=[]
+    class Fixture:
+        def __init__(self,root,train,download):
+            calls.append(download);self.targets=np.tile(np.arange(100),500 if train else 100)
+        def __len__(self):return len(self.targets)
+    monkeypatch.setattr(datasets,'CIFAR100',Fixture)
+    prepare_data('H2',tmp_path/'input',tmp_path/'stage',{})
+    assert calls==[False,False]
+    assert (tmp_path/'stage/cifar-100-python').resolve()==root
+
+
+def test_input_scan_errors_do_not_trigger_download(tmp_path,monkeypatch):
+    from diagnostics import standard_preflight as module
+    def walk(root,**kwargs):
+        kwargs['onerror'](PermissionError(13,'denied',str(root)))
+        return iter(())
+    monkeypatch.setattr(module.os,'walk',walk)
+    with pytest.raises(OSError,match='refusing silent download'):
+        module.prepare_data('H2',tmp_path,tmp_path/'stage',{})
