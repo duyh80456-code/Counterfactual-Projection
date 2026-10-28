@@ -1,6 +1,6 @@
 # H1–H4 main comparisons — seed 0
 
-Source pin: `SOURCE_PIN_TO_RECORD`. All notebooks use this immutable code commit;
+Source pin: `acf1f033a85b9882c3fac8db08a3a6bee93090f0`. All notebooks use this immutable code commit;
 no source ZIP is attached. These are full-horizon runs, with no automatic pytest,
 smoke, task truncation, seed substitution or clipping in the notebook.
 
@@ -75,7 +75,7 @@ Seed0 gives a descriptive paired comparison, not a significance result.
 ## Build and verification
 
 ```bash
-.venv/bin/python -m scripts.build_kaggle_standard_compare --commit SOURCE_PIN_TO_RECORD
+.venv/bin/python -m scripts.build_kaggle_standard_compare --commit acf1f033a85b9882c3fac8db08a3a6bee93090f0
 REQUIRE_UPSTREAM=1 PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest tests/test_standard_compare_notebooks.py -o addopts='' -q
 ```
 
@@ -84,3 +84,5 @@ New focused tests passed4/4. A combined affected-path check passed16 tests,
 Log: STANDARD_COMPARE_CPU_TESTS.log. Source syntax/build checks are local;
 Kaggle authentication, live archive transport, CUDA and real benchmark training
 have not been executed. All scientific outcomes remain UNVERIFIED.
+
+Final builder-only check: 1 passed, 3 deselected (3.11s); generated cells compile and have stable notebook cell IDs.
