@@ -153,7 +153,7 @@ def test_compute_budget_censors_and_restores_without_poisoning_next_call(monkeyp
     assert_state(snapshot,model,optimizer)
     monkeypatch.setattr(engine,'propose',lambda *a,**kw:CandidateUpdate(torch.zeros_like(vector(model)),
         torch.zeros(2,vector(model).numel(),dtype=torch.double),None,{}))
-    assert engine.step(model,optimizer,x,loss,model.sites(),.02)['status']=='ACCEPTED'
+    assert engine.step(model,optimizer,x,loss,model.sites(),.02)['status']=='REJECTED'  # zero physical update is not an application
     assert_state(snapshot,model,optimizer)
 
 

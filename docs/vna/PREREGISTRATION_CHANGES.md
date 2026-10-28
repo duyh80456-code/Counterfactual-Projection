@@ -1422,3 +1422,21 @@ fallback or old VNA checkpoint dependency. Export validated paired tables/curves
 status/cost/VRAM/solver logs and resume artifacts. Canonical dataset files prevent
 optional gzip copies from breaking resume identity. No full GPU run is launched
 by this coding task; live Kaggle/Linux/CUDA readiness remains a startup gate.
+
+### 2026-10-28 — shared correction solver/acceptance repair
+
+Apply the supplied `vna_solver_acceptance.patch` to the current source, retaining
+subsequent Kaggle startup and input-discovery fixes. H1/H2/H4 use four seeded
+Rademacher Jacobi probes (exact diagonal for systems of at most16 parameters).
+A failed true-residual solve can retry the entire proposal at up to four higher
+damping values, multiplying damping by10. Recompute cotangents, candidates and
+constraints at each retry. Explicit diagnostic damping remains locked. The true
+relative residual certificate remains1e-6 in benchmark configs; no forced
+acceptance. Zero physical updates are rejected. Failed proposals restore model,
+optimizer and RNG; attempt/residual/status diagnostics are retained. This shared
+implementation also affects future callers such as H3, whose existing notebook
+is left pinned to its previous source in this change.
+
+Repin H1/H2/H4 into fresh source-specific output tags. Do not resume old-engine
+checkpoints under the new controls or combine them with new results as one run.
+No GPU benchmark or claim of improved acceptance/accuracy accompanies this fix.

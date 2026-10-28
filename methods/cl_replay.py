@@ -102,6 +102,9 @@ class CorrectionConfig:
     damping_relative: float = .01
     cg_tolerance: float = 1e-6
     cg_iterations: int = 200
+    preconditioner_probes: int = 4
+    damping_retries: int = 4
+    damping_multiplier: float = 10.0
     trace_probes: int = 8
     max_trials: int = 12
     seed: int = 0
@@ -111,7 +114,10 @@ class CorrectionConfig:
         if self.mode not in ('intervention','unified'):raise ValueError('unknown integration mode')
         if not math.isfinite(self.damping_relative) or self.damping_relative<=0 or self.max_trials<1 or self.trace_probes<1:
             raise ValueError('positive finite numerical controls required')
-        if not 0<self.cg_tolerance<1 or self.cg_iterations<1:raise ValueError('invalid CG controls')
+        if not 0<self.cg_tolerance<1 or self.cg_iterations<1 or self.preconditioner_probes<0 or self.damping_retries<0:
+            raise ValueError('invalid CG controls')
+        if not math.isfinite(self.damping_multiplier) or self.damping_multiplier<=1:
+            raise ValueError('damping multiplier must exceed one')
 
 
 @dataclass
@@ -166,6 +172,7 @@ class ReplayCorrection:
         mu=max(self.config.damping_relative*op.trace(cfg)/max(op.size,1),1e-12) if damping is None else float(damping)
         return ProjectionOperator(lambda x:p.Jv(x).double(),lambda x:p.JT(x).double(),op.H,mu,
             tolerance=self.config.cg_tolerance,max_iterations=self.config.cg_iterations,
+            preconditioner_probes=self.config.preconditioner_probes,preconditioner_seed=self.config.seed,
             penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
 
     def propose(self,model,inputs,losses,sites,optimizer_candidate=None,penalty=None,*,damping=None):
@@ -203,6 +210,7 @@ class ReplayCorrection:
             op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
             A=ProjectionOperator(lambda x:p.Jv(x).double(),lambda x:p.JT(x).double(),op.H,mu,
                 tolerance=config.cg_tolerance,max_iterations=config.cg_iterations,solves=solves,
+                preconditioner_probes=config.preconditioner_probes,preconditioner_seed=config.seed,
                 penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
             kernel_target=None;cross=None
             if kernel=='gn':d0=A.solve(g)
@@ -266,7 +274,29 @@ class ReplayCorrection:
                 if any(group['lr']!=step_size for group in optimizer.param_groups):raise ValueError('unified mode requires a common optimizer LR')
                 optimizer.step();base=(initial-vector(model))/step_size
                 staged_optimizer=deepcopy(optimizer.state_dict());state.restore()
-            proposal=self.propose(model,inputs,losses,sites,base,penalty,damping=damping)
+            # Retry the *whole* construction: z, zR, candidates and KKT solves
+            # must all use the same damped A. Explicit damping is a locked protocol.
+            retries=0 if damping is not None else self.config.damping_retries
+            attempts=[];candidate_damping=damping
+            for attempt in range(retries+1):
+                if attempt:
+                    self.boundary()
+                    state.restore()
+                try:
+                    proposal=self.propose(model,inputs,losses,sites,base,penalty,damping=candidate_damping)
+                    attempts.append(dict(attempt=attempt,mu=proposal.diagnostics.get('mu'),status='CERTIFIED'))
+                    break
+                except Uncertified as exc:
+                    diagnostics=exc.diagnostics if isinstance(exc.diagnostics,list) else []
+                    last=diagnostics[-1] if diagnostics else {}
+                    mu=last.get('mu',candidate_damping)
+                    attempts.append(dict(attempt=attempt,mu=mu,status='UNCERTIFIED',reason=str(exc),
+                                         last_relative_residual=last.get('relative_residual')))
+                    row['damping_attempts']=attempts
+                    if attempt==retries or not str(exc).startswith('linear solve failed') or mu is None:
+                        raise
+                    candidate_damping=mu*self.config.damping_multiplier
+            row['damping_attempts']=attempts
             row.update(proposal.diagnostics)
             before=evaluate(model,inputs,losses.components);trials=[];accepted=False;after=before;norm=0.;used=0.
             direction_norm=float(proposal.direction.norm())
@@ -287,7 +317,7 @@ class ReplayCorrection:
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
                     physical_norm=physical_norm,in_update_budget=in_budget))
-                if finite and feasible and nonincrease and in_budget:
+                if finite and feasible and nonincrease and in_budget and physical_norm>0:
                     accepted=True;norm=float((initial-vector(model)).norm());used=s;break
             if not accepted:state.restore()
             elif staged_optimizer is not None:optimizer.load_state_dict(staged_optimizer)

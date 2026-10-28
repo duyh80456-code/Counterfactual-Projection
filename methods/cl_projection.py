@@ -32,28 +32,63 @@ class ProjectionOperator:
     penalty: LinearOperator = lambda x: torch.zeros_like(x)
     tolerance: float = 1e-6
     max_iterations: int = 200
+    preconditioner_probes: int = 0
+    preconditioner_seed: int = 0
     boundary: Callable = lambda: None
     solves: list = field(default_factory=list)
 
     def __post_init__(self):
         if not math.isfinite(self.mu) or self.mu<=0 or not math.isfinite(self.regularizer_floor) or self.regularizer_floor<=0:
             raise ValueError('require mu>0 and a valid positive lower bound for R')
-        if not 0<self.tolerance<1 or self.max_iterations<1:raise ValueError('invalid solver tolerance/iterations')
+        if not 0<self.tolerance<1 or self.max_iterations<1 or self.preconditioner_probes<0:
+            raise ValueError('invalid solver tolerance/iterations/preconditioner probes')
+        self._preconditioner = None
 
     def curvature(self,x):return self.vjp(self.metric(self.jvp(x))).double()
 
     def __call__(self,x):
         return self.curvature(x)+self.mu*self.regularizer(x)+self.penalty(x)
 
+    def _jacobi(self, rhs):
+        """Deterministic positive Jacobi estimate; never use an indefinite preconditioner."""
+        if self.preconditioner_probes == 0:
+            return None
+        if self._preconditioner is None:
+            floor = self.mu * self.regularizer_floor
+            n = rhs.numel()
+            if n <= 16:
+                # Tiny systems can use an exact diagonal (also an audit reference).
+                diag = torch.stack([self(torch.nn.functional.one_hot(
+                    torch.tensor(i, device=rhs.device), n).to(rhs.dtype))[i]
+                    for i in range(n)])
+            else:
+                generator = torch.Generator(device=rhs.device)
+                generator.manual_seed(self.preconditioner_seed)
+                diag = torch.zeros_like(rhs)
+                for _ in range(self.preconditioner_probes):
+                    self.boundary()
+                    v = torch.empty_like(rhs).bernoulli_(.5, generator=generator).mul_(2).sub_(1)
+                    diag.add_(v * self(v))
+                diag.div_(self.preconditioner_probes)
+            if not torch.isfinite(diag).all():
+                raise Uncertified('non-finite Jacobi diagonal')
+            # Rademacher diagonal estimates may be negative; the ridge stays SPD.
+            self._preconditioner = diag.clamp_min(floor).detach()
+        return lambda residual: residual / self._preconditioner
+
     def solve(self,rhs):
         started=time.perf_counter();rhs=rhs.detach().double()
+        preconditioner=self._jacobi(rhs)
         result=conjugate_gradient(self,rhs,max_iter=self.max_iterations,tolerance=self.tolerance,
-            eps=1e-30,callback=lambda _:self.boundary())
+            preconditioner=preconditioner,eps=1e-30,callback=lambda _:self.boundary())
         residual=float((rhs-self(result.solution)).norm())
         relative=residual/max(float(rhs.norm()),torch.finfo(rhs.dtype).tiny)
-        certified=bool(result.converged and torch.isfinite(result.solution).all() and math.isfinite(relative) and relative<=self.tolerance)
+        # True residual, not the recursively estimated CG residual, is authoritative.
+        certified=bool(torch.isfinite(result.solution).all() and math.isfinite(relative) and relative<=self.tolerance)
         self.solves.append(dict(iterations=result.iterations,residual=residual,relative_residual=relative,
             error_bound=residual/(self.mu*self.regularizer_floor),status='CERTIFIED' if certified else 'UNCERTIFIED',
+            mu=self.mu,preconditioner='jacobi' if preconditioner is not None else 'none',
+            preconditioner_probes=self.preconditioner_probes,breakdown=result.breakdown,
             seconds=time.perf_counter()-started))
         if not certified:raise Uncertified('linear solve failed true-residual certificate',list(self.solves))
         return result.solution.detach()
