@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 from experiments.standard_cl import ExperimentLogger,matrix_metrics
-from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
+from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
 from experiments.vna_provenance import code_commit
 from methods.cl_h2 import GeometryCorrection
 from methods.cl_lpr import ROOT,PIN,SOURCE_SHA256,official_module
@@ -205,7 +205,7 @@ def run(args):
             if len(previous.get('tasks',[]))!=cfg['tasks']:raise ValueError('incomplete online summary')
             return previous
     rows=[];epochs=[];online_rows=[];task=position=0;elapsed=0.;stream_rng=None
-    if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
+    reset_cuda_peak_memory_stats(args.device)
     if progress.state:
         s=progress.state;progress.restore_artifacts();strategy.model=s['model'].to(args.device)
         strategy.optimizer=torch.optim.SGD(strategy.model.parameters(),lr=cfg['lr'],momentum=cfg['momentum'],weight_decay=cfg['weight_decay'])

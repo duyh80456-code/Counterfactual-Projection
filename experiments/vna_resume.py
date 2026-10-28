@@ -14,6 +14,16 @@ from experiments.io_utils import atomic_torch_save, atomic_json_save
 from methods.vna import dedicated_generator
 
 
+def reset_cuda_peak_memory_stats(device):
+    device=torch.device(device)
+    if device.type!='cuda':return
+    # Memory-stat APIs do not initialize CUDA in a fresh training subprocess.
+    torch.cuda.init()
+    if device.index is None:device=torch.device('cuda',torch.cuda.current_device())
+    torch.cuda.set_device(device)
+    torch.cuda.reset_peak_memory_stats(device)
+
+
 def rng_state():
     return {'python': random.getstate(), 'numpy': np.random.get_state(),
             'torch': torch.get_rng_state(),

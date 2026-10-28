@@ -130,6 +130,9 @@ def lane(index):
 threads=[threading.Thread(target=periodic,daemon=True),threading.Thread(target=heartbeat,daemon=True)]
 for thread in threads:thread.start()
 try:
+    for index in range(2):
+        probe=f"from experiments.vna_resume import reset_cuda_peak_memory_stats; import torch; reset_cuda_peak_memory_stats('cuda:0'); print('FRESH LANE {index} CUDA:', torch.cuda.device_count(), torch.cuda.get_device_name(0), flush=True)"
+        subprocess.run([PYTHON,'-c',probe],cwd=REPO,env={**base_env,'CUDA_VISIBLE_DEVICES':str(index)},check=True)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures=[pool.submit(lane,index) for index in range(2)]
         for future in futures:future.result()

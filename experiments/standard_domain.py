@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from experiments.standard_cl import ExperimentLogger,matrix_metrics,ARMS
-from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
+from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
 from experiments.vna_provenance import code_commit
 from methods.cl_h4 import DomainMNIST,DomainNetwork,Reservoir,domain_losses
 from methods.cl_replay import CorrectionConfig,ReplayCorrection
@@ -42,7 +42,7 @@ def run(args):
     random.seed(args.seed);np.random.seed(args.seed);torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
     model=DomainNetwork(args.normalization,width=16 if args.fake_data else 256).to(args.device)
-    if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
+    reset_cuda_peak_memory_stats(args.device)
     optimizer=torch.optim.SGD(model.parameters(),lr=args.lr,momentum=0.,weight_decay=args.weight_decay)
     memory=Reservoir(args.memory_size,args.seed)
     numerical=dict(damping_relative=1.,cg_tolerance=1e-4,cg_iterations=100,trace_probes=1,max_trials=3) if args.fake_data else {}

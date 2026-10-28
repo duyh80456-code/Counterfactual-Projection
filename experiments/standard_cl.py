@@ -17,7 +17,7 @@ from experiments.runners import pycil
 from experiments.competitors import cil_runtime
 from experiments.io_utils import working_directory
 from experiments.vna_provenance import code_commit
-from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
+from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
 from methods.cl_state import isolated
 from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
 from methods.cl_h2 import GeometryCorrection
@@ -94,7 +94,7 @@ def run(args):
     random.seed(args.seed)
     if torch.cuda.is_available():torch.cuda.manual_seed_all(args.seed)
     torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
-    if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
+    reset_cuda_peak_memory_stats(args.device)
     raw=json.loads((pycil.UPSTREAM/'exps/icarl.json').read_text())
     params=dict(raw,device=[torch.device(args.device)],seed=[args.seed],init_cls=cfg['init_cls'],increment=cfg['increment'],
         convnet_type='resnet32',memory_size=cfg['memory_size'],fixed_memory=False)

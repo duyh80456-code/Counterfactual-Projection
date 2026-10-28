@@ -14,7 +14,7 @@ from torch import nn
 from adapters.lop_hooks import sites_for,learner_state,restore_learner
 from experiments.runners import lop
 from experiments.standard_cl import ExperimentLogger
-from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log
+from experiments.vna_resume import Progress,rng_state,restore_rng,deadline_due,log,reset_cuda_peak_memory_stats
 from experiments.vna_provenance import code_commit
 from methods.cl_replay import CorrectionConfig,ReplayCorrection,ReplayLoss
 from methods.cl_h3 import TangentReconfiguration
@@ -89,7 +89,7 @@ def run(args):
     torch.backends.cudnn.deterministic=True;torch.backends.cudnn.benchmark=False
     order=required_classes(args.seed,params['num_tasks'])
     identity=data_identity(args.data_dir,order)
-    if args.device!='cpu':torch.cuda.reset_peak_memory_stats(torch.device(args.device))
+    reset_cuda_peak_memory_stats(args.device)
     with torch.device(args.device):
         model=ImageNetwork(ConvNet(num_classes=params['num_classes']))
         common=dict(net=model,step_size=params['step_size'],momentum=params['momentum'],loss='nll',opt=params['opt'],device=args.device)
