@@ -118,11 +118,18 @@ def test_native_slim_features_and_sites_match_original_forward(tmp_path,monkeypa
     from experiments.standard_online import native_setup
     raw=tmp_path/'cifar-100-python';raw.mkdir()
     for name in ('train','test','meta'):(raw/name).touch()
-    sentinel=object()
-    monkeypatch.setattr(classic,'SplitCIFAR100',lambda *a,**kw:sentinel)
-    monkeypatch.setattr(benchmarks,'benchmark_with_validation_stream',lambda s,**kw:s)
+    from avalanche.benchmarks.generators import dataset_benchmark
+    from avalanche.benchmarks.utils import make_classification_dataset
+    from torch.utils.data import TensorDataset
+    data=make_classification_dataset(TensorDataset(torch.randn(20,3,32,32),torch.tensor([0,1]*10)),task_labels=0)
+    original=dataset_benchmark([data],[data]);original.classes_order_original_ids=[37,12]
+    monkeypatch.setattr(classic,'SplitCIFAR100',lambda *a,**kw:original)
     cfg=json.loads(Path('configs/standard_cl/h2_online_cifar100.json').read_text())
-    scenario,model=native_setup(cfg,str(tmp_path),0);assert scenario is sentinel
+    scenario,model=native_setup(cfg,str(tmp_path),0)
+    assert scenario is not original
+    assert scenario.classes_order_original_ids==[37,12]
+    assert len(scenario.train_stream[0].dataset)==19
+    assert len(scenario.valid_stream[0].dataset)==1
     model.eval();x=torch.randn(2,3,32,32);capture=[]
     handle=model.net.linear.register_forward_pre_hook(lambda module,args:capture.append(args[0].detach().clone()))
     with torch.no_grad():model(x);features=model.standard_features(x)

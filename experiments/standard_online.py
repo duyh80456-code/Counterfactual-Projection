@@ -139,7 +139,10 @@ def native_setup(cfg,data_dir,seed):
     scenario=SplitCIFAR100(cfg['tasks'],seed=None,return_task_id=False,shuffle=True,
         class_ids_from_zero_in_each_exp=False,class_ids_from_zero_from_first_exp=True,
         train_transform=train,eval_transform=test,dataset_root=data_dir)
+    class_order=list(scenario.classes_order_original_ids)
     scenario=benchmark_with_validation_stream(scenario,validation_size=cfg['validation_fraction'],shuffle=True)
+    # Avalanche's validation wrapper returns a generic scenario without NC metadata.
+    scenario.classes_order_original_ids=class_order
     net=module.SlimResNet18(1,input_size=(32,32,3))
     net.linear=IncrementalClassifier(net.linear.in_features,1)
     return scenario,OnlineNetwork(net)
