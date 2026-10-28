@@ -172,8 +172,8 @@ def build(branch,commit):
 Paper references motivate baseline selection only. No comparison with paper accuracy numbers.
 Pinned source commit; no ZIP overlay. Full registered horizon, final-epoch models, lightweight API/dataset preflight; no benchmark training in preflight; no truncation.
 H1: CIFAR-100, BN ResNet32 PyCIL, 20 tasks ×5 classes, memory2000, 200/170 epochs.
-H2: official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch10 ×3 repeats, class-balanced replay2000, validation5%, LPR omega0=4/beta=2/update30 from official README, SGD0.1 without momentum/weight decay/scheduler.
-H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA cadence4000/window128; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. Single current-task CE objective, no replay. CBP remains main baseline; BP, VNA-only and GIR-only are queued ablations. This pilot does not reproduce full-horizon CBP results.
+H2: validation-only geometry grid selected from task2 within three eligible windows, then frozen; official LPR online Split-CIFAR100, SlimResNet18, 20 experiences, minibatch10 ×3 repeats, class-balanced replay2000, validation5%, LPR omega0=4/beta=2/update30 from official README, SGD0.1 without momentum/weight decay/scheduler.
+H3-small: original Continual ImageNet32, first100 seed0 binary pairs, 50 epochs/task, batch100, ConvNet, SGD0.01 momentum0.9, native head reset. VNA at first full window of each task, then every200 updates/window128; about300 opportunities over100 tasks; at most16 exact swap candidates plus identity, selected by deterministic first-order LM ranking. Shortlist-only guarantee, not global optimization. Single current-task CE objective, no replay. CBP remains main baseline; BP, VNA-only and GIR-only are queued ablations. This pilot does not reproduce full-horizon CBP results.
 H4: Rotated MNIST, 20 fixed angles 0,15,...,285 degrees; fixed 10-class head, ER vs ER + prior-domain constrained VNA; training-only domain IDs partition loss constraints, shared fixed backbone/head.
 
 Inputs: {'optional original CBP ImageNet32 files; otherwise automatically download the official archive to Kaggle disk and extract only the 200 required class files' if branch=='H3' else 'optional CIFAR-100 Python train/test/meta; auto-download from official torchvision source if absent' if branch in ('H1','H2') else 'optional MNIST raw IDX files (plain/gzip); auto-download from torchvision source if absent' }.
@@ -195,7 +195,7 @@ def build_ablations(branch,commit):
     base=jobs(branch)[1][0]
     variants={'H1':(('solver_ablation',0),('train_gate_ablation',1)),
         'H2':(('solver_ablation',0),('train_gate_ablation',1),('no_geometry',0)),
-        'H3':(('cadence1000',0),('cadence8000',1)),
+        'H3':(('cadence4000',0),('cadence1000',1),('cadence8000',0)),
         'H4':(('mixed',0),('cg',1),('train_gate',0))}[branch]
     for variant,lane in variants:
         args=list(base['args'])

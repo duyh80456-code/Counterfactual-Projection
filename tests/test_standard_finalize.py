@@ -25,7 +25,7 @@ def test_h3_small_overrides_and_required_prefix_keep_upstream_unchanged():
     params,overrides=effective_params(cfg)
     assert (params['num_tasks'],params['num_showings'],params['mini_batch_size'])==(100,50,100)
     assert overrides==dict(num_tasks=100,num_showings=50)
-    assert cfg['intervention_every']==4000 and cfg['window']==128 and cfg['max_candidates']==16
+    assert cfg['intervention_every']==200 and cfg['task_start_intervention'] is True and cfg['window']==128 and cfg['max_candidates']==16
     used=required_classes(0,params['num_tasks']);assert len(used)==len(set(used))==200
     assert np.array_equal(used,required_classes(0,5000)[:200])
     assert effective_params(cfg,num_tasks=2,num_showings=1)[1]==dict(num_tasks=2,num_showings=1)

@@ -138,7 +138,7 @@ def test_native_slim_features_and_sites_match_original_forward(tmp_path,monkeypa
     assert features.shape==(2,160) and len(model.sites())==8
 
 
-@pytest.mark.parametrize('arm',['lpr','h2'])
+@pytest.mark.parametrize('arm',['lpr','h2','h2_tuned'])
 def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     pytest.importorskip('avalanche')
     from avalanche.benchmarks.generators import dataset_benchmark
@@ -147,20 +147,27 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     from experiments import standard_online as runner
     cfg=json.loads(Path('configs/standard_cl/h2_online_cifar100.json').read_text())
     cfg.update(tasks=2,train_mb_size=2,memory_size=8,intervention_every=2)
+    if arm=='h2_tuned':
+        cfg['geometry_selection']=dict(weights=[0.,1.],first_task=2,validation_per_task=4)
+        cfg['correction'].update(kernel='native',constrained=False)
+    elif arm!='lpr':cfg.pop('geometry_selection',None)
     cfg['correction'].update(damping_relative=1.,cg_iterations=30,trace_probes=1,cg_tolerance=1e-4,max_trials=3)
     config=tmp_path/'online.json';config.write_text(json.dumps(cfg))
     def setup(*args):
         gen=torch.Generator().manual_seed(81)
         datasets=[make_classification_dataset(TensorDataset(torch.randn(12,3,generator=gen),torch.tensor([t*2,t*2+1]*6)),task_labels=0) for t in range(2)]
         scenario=dataset_benchmark(datasets,datasets);scenario.classes_order_original_ids=list(range(4))
+        validation=[SimpleNamespace(dataset=TensorDataset(torch.randn(4,3,generator=gen),torch.tensor([t*2,t*2+1]*2))) for t in range(2)]
+        scenario.valid_stream=validation
         return scenario,ToyOnlineNetwork()
     monkeypatch.setattr(runner,'native_setup',setup)
-    def args(out):return runner.parser().parse_args(['--arm',arm,'--data-dir',str(tmp_path),'--device','cpu',
+    def args(out):return runner.parser().parse_args(['--arm','h2' if arm=='h2_tuned' else arm,'--data-dir',str(tmp_path),'--device','cpu',
         '--config',str(config),'--out',str(out)])
     runner.run(args(tmp_path/'complete'))
     a=torch.load(tmp_path/'complete/latest.pt',weights_only=False)
     assert a['clock']['train_iterations']==36 and a['clock']['train_exp_counter']==12
     if arm=='lpr':
+        assert a['geometry_selection'] is None and a['geometry_selection_attempts']==[]
         assert a['lpr_inverses'] and a['lpr_every_iter']==30
         from avalanche.benchmarks.scenarios import OnlineCLScenario
         from avalanche.training.plugins import ReplayPlugin
@@ -194,7 +201,16 @@ def test_avalanche_online_native_callbacks_and_resume(tmp_path,monkeypatch,arm):
     _assert_bitwise(a['model'].state_dict(),b['model'].state_dict(),'model')
     assert a['lpr_inverses'].keys()==b['lpr_inverses'].keys()
     for name in a['lpr_inverses']:_assert_bitwise(a['lpr_inverses'][name].matrix,b['lpr_inverses'][name].matrix,'lpr.'+name)
-    if arm=='h2':
+    if arm in ('h2','h2_tuned'):
+        if arm=='h2_tuned':
+            assert a['geometry_selection']['status']=='SELECTED'
+            assert a['geometry_selection']['selected_weight']==b['geometry_selection']['selected_weight']
+            assert a['geometry_selection']['validation_sha256']==b['geometry_selection']['validation_sha256']
+            assert 4<a['geometry_selection']['validation_samples']<=8
+            assert set(a['geometry_selection']['seen_classes'])<=set(a['geometry_seen_classes'])
+            chosen=a['geometry_selection']['selected_weight'];selected_step=a['geometry_selection']['step']
+            later=[e for e in a['engine']['events'] if e.get('step',0)>selected_step]
+            assert later and all(e.get('effective_geometry_weight')==chosen for e in later)
         original=runner.GeometryCorrection.step;interrupted=False
         def interrupt(self,model,opt,x,losses,*positional,**kwargs):
             nonlocal interrupted

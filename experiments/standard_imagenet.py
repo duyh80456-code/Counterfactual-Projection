@@ -77,6 +77,12 @@ def required_classes(seed,num_tasks):
     return used
 
 
+def intervention_due(steps,last_event,task_start,window_count,task_size,cfg):
+    ready=window_count>=min(cfg['window'],task_size)
+    first=cfg.get('task_start_intervention',False) and last_event<=task_start
+    return ready and (first or steps-last_event>=cfg['intervention_every'])
+
+
 def run(args):
     lop.upstream_imports()
     from lop.nets.conv_net import ConvNet
@@ -147,6 +153,7 @@ def run(args):
                 for _ in range(epoch):
                     indices=np.random.permutation(len(y));x,y=x[indices],y[indices]
                 restore_rng(current_rng)
+            task_start=steps-epoch*((len(y)+params['mini_batch_size']-1)//params['mini_batch_size'])
             while epoch<params['num_showings']:
                 if deadline_due():save();raise SystemExit(75)
                 snapshot=learner_state(learner);epoch_rng=rng_state();old_window=deepcopy(window)
@@ -167,14 +174,17 @@ def run(args):
                             extra=sum(len(v[1]) for v in window)-cfg['window']
                             if extra>=len(window[0][1]):window.pop(0)
                             else:window[0]=(window[0][0][extra:],window[0][1][extra:])
-                        if args.arm in ('vna','gir','vna_gir') and steps-last_event>=cfg['intervention_every']:
+                        if args.arm in ('vna','gir','vna_gir') and intervention_due(steps,last_event,task_start,sum(len(v[1]) for v in window),len(y),cfg):
                             wx=torch.cat([v[0] for v in window]).to(args.device);wy=torch.cat([v[1] for v in window]).to(args.device)
+                            log(f'H3 {args.arm} correction task={task+1} epoch={epoch+1} step={steps} starting')
                             losses=CurrentTaskLoss(wy)
                             if args.arm in ('vna','vna_gir'):
                                 event=vna.step(model,learner.opt,wx,losses,all_sites,params['step_size'])
                                 event.update(task=task+1,epoch=epoch+1,step=steps)
+                                log(f'H3 VNA status={event.get("status")} step_norm={event.get("step_norm")}')
                             if args.arm in ('gir','vna_gir'):
                                 event=gir.step(model,learner.opt,wx,losses,gir_sites);event.update(task=task+1,epoch=epoch+1,step=steps)
+                                log(f'H3 GIR status={event.get("status")} swaps={event.get("actual_replacements",0)}')
                             last_event=steps
                         if deadline_due():raise SystemExit(75)
                     with isolated(model),torch.no_grad():

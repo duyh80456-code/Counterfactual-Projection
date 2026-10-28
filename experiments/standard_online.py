@@ -77,19 +77,106 @@ class OnlineNetwork(nn.Module):
                 for name,module in self.named_modules() if hasattr(module,'conv1') and hasattr(module,'conv2')]
 
 
+class GeometrySelectionFailed(RuntimeError):
+    pass
+
+
 class GeometryPlugin(SupervisedPlugin):
     def __init__(self,cfg,seed):
-        self.cfg=cfg;self.engine=GeometryCorrection(CorrectionConfig(seed=seed,**cfg['correction']));self.last_event=0
+        self.cfg=cfg;self.engine=GeometryCorrection(CorrectionConfig(seed=seed,**cfg['correction']));self.last_event=0;self.selection=None;self.selection_attempts=[];self.seen_classes=set();self.validation_stream=None;self.selection_path=None
+        policy=cfg.get('geometry_selection')
+        if policy and (not isinstance(policy.get('first_task'),int) or policy['first_task']<2 or not isinstance(policy.get('max_windows',3),int) or policy.get('max_windows',3)<1):raise ValueError('Geometry pilot must start with old classes and have a positive window budget')
+    def select_geometry(self,strategy,x,losses,mask):
+        import hashlib
+        from time import perf_counter
+        from torch.utils.data import DataLoader,Subset
+        from experiments.io_utils import atomic_json_save
+        policy=self.cfg['geometry_selection'];model,opt=strategy.model,strategy.optimizer
+        if self.validation_stream is None:raise ValueError('Geometry selection requires the held-out validation stream')
+        weights=policy['weights']
+        if not weights or len(set(weights))!=len(weights) or any(not np.isfinite(w) or w<0 for w in weights):raise ValueError('finite nonnegative geometry grid required')
+        limit=policy['validation_per_task']
+        if not isinstance(limit,int) or limit<1:raise ValueError('positive validation sample budget required')
+        snapshot=State(model,opt);started=perf_counter();trials=[];validation=[]
+        try:
+            for experience in self.validation_stream:
+                dataset=experience.dataset.eval() if hasattr(experience.dataset,'eval') else experience.dataset
+                subset=Subset(dataset,list(range(min(limit,len(dataset)))))
+                for batch in DataLoader(subset,batch_size=128,shuffle=False,num_workers=0):
+                    vx,vy=batch[0].to(x.device),batch[1].to(x.device)
+                    known=torch.isin(vy,torch.tensor(sorted(self.seen_classes),device=vy.device,dtype=vy.dtype))
+                    if bool(known.any()):validation.append((vx[known],vy[known]))
+            if not validation:raise ValueError('Empty held-out validation stream')
+            fingerprint=hashlib.sha256()
+            for vx,vy in validation:
+                fingerprint.update(vx.detach().cpu().numpy().tobytes());fingerprint.update(vy.detach().cpu().numpy().tobytes())
+            def validation_loss():
+                with isolated(model,opt),torch.no_grad():
+                    model.eval();total=count=0
+                    for vx,vy in validation:
+                        total+=float(torch.nn.functional.cross_entropy(model(vx),vy,reduction='sum'));count+=len(vy)
+                    return total/count
+            snapshot.restore();baseline=validation_loss()
+            for weight in sorted(weights):
+                log(f'H2 geometry pilot task={self.task+1} window={len(self.selection_attempts)+1} weight={weight} starting')
+                snapshot.restore();engine=GeometryCorrection(self.engine.config);engine.applications=self.engine.applications
+                event=engine.step(model,opt,x,losses,model.sites(),self.cfg['lr'],replay_inputs=x[mask],geometry_weight=weight)
+                score=validation_loss() if event.get('accepted') and event.get('step_norm',0)>0 else None
+                trials.append(dict(weight=weight,validation_loss=score,event=event))
+                log(f'H2 geometry pilot weight={weight} status={event["status"]} validation_loss={score}')
+            eligible=[r for r in trials if r['validation_loss'] is not None and np.isfinite(r['validation_loss'])]
+            best=min(eligible,key=lambda r:(r['validation_loss'],r['weight'])) if eligible else None
+            report=dict(status='SELECTED' if best else 'NO_CERTIFIED_NONZERO_CANDIDATE',
+                selected_weight=best['weight'] if best else None,task=self.task+1,
+                source='held-out seen-task validation only; never test data',validation_sha256=fingerprint.hexdigest(),
+                validation_samples=sum(len(vy) for _,vy in validation),seen_classes=sorted(self.seen_classes),baseline_validation_loss=baseline,
+                selected_validation_loss=best['validation_loss'] if best else None,
+                validation_improved=best['validation_loss']<baseline if best else False,
+                trials=trials,seconds=perf_counter()-started)
+            if self.selection_path:atomic_json_save(report,self.selection_path)
+            return report
+        finally:snapshot.restore()
+
     def after_update(self,strategy,**kwargs):
+        if self.cfg.get('geometry_selection'):self.seen_classes.update(strategy.mb_y.detach().cpu().tolist())
         step=strategy.clock.train_iterations+1
         if step-self.last_event<self.cfg['intervention_every']:return
         x,y=strategy.mb_x,strategy.mb_y
         mask=replay_mask(strategy)
         if not bool(mask.any()):return
         losses=ReplayLoss(y,mask,kind='er')
+        selection=None
+        if self.cfg.get('geometry_selection') and self.task+1>=self.cfg['geometry_selection']['first_task'] and self.selection is None:
+            selection=self.select_geometry(strategy,x,losses,mask)
+            selection.update(step=step,window=len(self.selection_attempts)+1);self.selection_attempts.append(selection)
+            if self.selection_path:
+                from experiments.io_utils import atomic_json_save
+                atomic_json_save(dict(selection,windows=self.selection_attempts),self.selection_path)
+            if selection['selected_weight'] is None:
+                limit=self.cfg['geometry_selection'].get('max_windows',3)
+                self.last_event=step
+                self.engine.events.append(dict(status='SKIPPED_GEOMETRY_SELECTION',accepted=False,
+                    application=self.engine.applications,task=self.task+1,step=step,seconds=selection['seconds'],
+                    geometry_selection=selection,
+                    certified=any(t['event'].get('certified',False) for t in selection['trials']),
+                    candidate_generated=any(t['event'].get('candidate_generated',False) for t in selection['trials']),
+                    jvp=sum(t['event'].get('jvp',0) for t in selection['trials']),
+                    vjp=sum(t['event'].get('vjp',0) for t in selection['trials']),
+                    rejection_reason='GEOMETRY_SELECTION_NO_QUALIFIED_CANDIDATE',
+                    reason='No qualified candidate in this window; continue bounded pilot'))
+                self.engine.applications+=1
+                if len(self.selection_attempts)>=limit:raise GeometrySelectionFailed('No qualified geometry correction within the registered validation pilot budget')
+                return
+            self.selection=selection
+            log(f'H2 frozen geometry weight={selection["selected_weight"]} validation_loss={selection["selected_validation_loss"]} baseline_validation_loss={selection["baseline_validation_loss"]}')
+        weight=self.selection['selected_weight'] if self.selection else self.cfg['geometry_weight']
         row=self.engine.step(strategy.model,strategy.optimizer,x,losses,strategy.model.sites(),self.cfg['lr'],
-            replay_inputs=x[mask],geometry_weight=self.cfg['geometry_weight'])
-        row.update(task=self.task+1,step=step)
+            replay_inputs=x[mask],geometry_weight=weight)
+        row.update(task=self.task+1,step=step,effective_geometry_weight=weight)
+        if selection is not None:
+            row.update(geometry_selection=selection,geometry_selection_seconds=selection['seconds'])
+            row['seconds']+=selection['seconds']
+            for key in ('jvp','vjp'):row[key]=row.get(key,0)+sum(t['event'].get(key,0) for t in selection['trials'])
         row.update(incoming_samples=int((~mask).sum()),replay_samples=int(mask.sum()),origin_tracking='explicit sample field; order independent')
         self.last_event=step
 
@@ -192,14 +279,15 @@ def run(args):
     protocol=dict(branch='H2',arm=args.arm,seed=args.seed,code_commit=code_commit(),source_hashes=source_hashes(),config=cfg,tasks=cfg['tasks'],
         upstream_commit=PIN,lpr_source_sha256=SOURCE_SHA256,avalanche='0.4.0',backbone='SlimResNet18 nf20, IncrementalClassifier',dataset_fingerprint=hashes,
         class_order=list(map(int,scenario.classes_order_original_ids)),runtime_flags=flags(),correction=asdict(geometry.engine.config),
-        acceptance='componentwise incoming/replay train and eval nonincrease within dtype-scaled roundoff; geometry penalty supplements constraints',
-        online=True,task_boundaries=False,validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
+        acceptance=('componentwise' if geometry.engine.config.constrained else 'total')+' incoming/replay loss gates within dtype-scaled roundoff; geometry penalty supplements constraints',
+        online=True,task_boundaries=False,
+        geometry_calibration='external seen-experience validation prefix from task2; calibration uses benchmark boundaries; online updates do not receive task IDs',validation_fraction=cfg['validation_fraction'],memory='upstream ClassBalancedBuffer/ReplayPlugin',
         lpr_configuration_source=f'LPR@{PIN}/README.md: Split-CIFAR100 example omega_0=4 beta=2 every_iter=30',
         replay_origin='native loader for LPR; explicit boolean field for Geometry-VNA, preserved under permutations',
         framework_compatibility='typing4.4 Protocol semantics; prune only empty/None orphan optimizer entries after head adaptation for torch2.2 serialization',
         arm_implementation='official LPR callbacks' if args.arm=='lpr' else 'ER' if args.arm=='er' else 'ER + Geometry-Aware VNA',
         evidence_status='INCONCLUSIVE')
-    logger=ExperimentLogger(args.out);out=Path(args.out)
+    logger=ExperimentLogger(args.out);out=Path(args.out);geometry.selection_path=out/'geometry_selection.json'
     if (out/'protocol.json').exists() and json.loads((out/'protocol.json').read_text())!=protocol:raise ValueError('online protocol mismatch')
     logger.save('protocol',protocol);progress=Progress(out,protocol)
     if (out/'summary.json').exists():
@@ -219,7 +307,7 @@ def run(args):
                                   for k,v in s['lpr_inverses'].items()};lpr.update_config.every_iter=s['lpr_every_iter']
         clock=s['clock'];strategy=make_strategy(strategy.model,strategy.optimizer);vars(strategy.clock).update(clock)
         strategy.optimized_param_id=dict(strategy.model.named_parameters())
-        geometry.engine.load_state_dict(s['engine']);geometry.last_event=s['last_event']
+        geometry.engine.load_state_dict(s['engine']);geometry.last_event=s['last_event'];geometry.selection=s.get('geometry_selection');geometry.selection_attempts=s.get('geometry_selection_attempts',[]);geometry.seen_classes=set(s.get('geometry_seen_classes',[]))
         rows,epochs,task,position,elapsed=s['rows'],s['epochs'],s['task'],s['position'],s['elapsed_seconds']
         stream_rng=s['stream_rng'];restore_rng(s['rng'])
         online_rows=s.get('online_rows',[])
@@ -228,7 +316,7 @@ def run(args):
         logger.save('tasks',rows);logger.save('accuracy_matrix',[r['domain_accuracies'] for r in rows]);logger.save('epochs',epochs);logger.save('interventions',geometry.engine.events);logger.save('online',online_rows)
         progress.save(dict(model=strategy.model,optimizer=strategy.optimizer.state_dict(),clock=vars(strategy.clock),storage=replay.storage_policy,
             lpr_inverses=lpr._preconditioner_invs,lpr_every_iter=lpr.update_config.every_iter,engine=geometry.engine.state_dict(),last_event=geometry.last_event,
-            rng=rng_state(),rows=rows,epochs=epochs,online_rows=online_rows,task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
+            rng=rng_state(),rows=rows,epochs=epochs,online_rows=online_rows,geometry_selection=geometry.selection,geometry_selection_attempts=geometry.selection_attempts,geometry_seen_classes=sorted(geometry.seen_classes),task=task,position=position,stream_rng=stream_rng,elapsed_seconds=elapsed+time.monotonic()-started))
     try:
         while task<cfg['tasks']:
             fresh=stream_rng is None
@@ -239,6 +327,7 @@ def run(args):
             experiences=list(online.train_stream)
             if not fresh:restore_rng(current_rng)
             geometry.task=task
+            if cfg.get('geometry_selection') and args.arm=='h2':geometry.validation_stream=scenario.valid_stream[:task+1]
             for index,experience in enumerate(experiences):
                 if index<position:continue
                 if deadline_due():save();raise SystemExit(75)
@@ -246,7 +335,7 @@ def run(args):
                 old=dict(storage=deepcopy(replay.storage_policy),clock=deepcopy(vars(strategy.clock)),optimized=strategy.optimized_param_id is not None,
                     param_groups=[list(group['params']) for group in strategy.optimizer.param_groups],
                     inverses=deepcopy(lpr._preconditioner_invs),every=lpr.update_config.every_iter,
-                    engine=geometry.engine.state_dict(),last=geometry.last_event)
+                    engine=geometry.engine.state_dict(),last=geometry.last_event,selection=deepcopy(geometry.selection),selection_attempts=deepcopy(geometry.selection_attempts),seen_classes=set(geometry.seen_classes))
                 try:
                     strategy.train(experience,eval_streams=[],num_workers=0,drop_last=True)
                     value=finite.last_loss
@@ -256,7 +345,7 @@ def run(args):
                     snapshot.restore();replay.storage_policy=old['storage'];lpr.storage_policy=replay.storage_policy
                     strategy.optimized_param_id=dict(strategy.model.named_parameters()) if old['optimized'] else None
                     vars(strategy.clock).clear();vars(strategy.clock).update(old['clock']);lpr._preconditioner_invs=old['inverses']
-                    lpr.update_config.every_iter=old['every'];geometry.engine.load_state_dict(old['engine']);geometry.last_event=old['last']
+                    lpr.update_config.every_iter=old['every'];geometry.engine.load_state_dict(old['engine']);geometry.last_event=old['last'];geometry.selection=old['selection'];geometry.selection_attempts=old['selection_attempts'];geometry.seen_classes=old['seen_classes']
                     save();raise
                 position=index+1
                 online_rows.append(dict(task=task+1,online_batch=position,loss=value,accuracy=finite.last_accuracy,
@@ -270,17 +359,19 @@ def run(args):
             epochs.append(dict(task=task+1,online_minibatches=position,repeats=cfg['train_epochs']))
             task+=1;position=0;stream_rng=None;save()
     except SystemExit as exc:status='PAUSED' if exc.code==75 else 'INTERRUPTED';raise
+    except GeometrySelectionFailed as exc:status='FAILED_PREFLIGHT';failure=str(exc);raise
     except FloatingPointError as exc:
         status='FAILED_DIVERGED';failure=str(exc)
         coordinates=coordinates or dict(task=task+1,online_batch=position,step=strategy.clock.train_iterations+1,tensor='loss')
     except BaseException as exc:status='FAILED_ERROR';failure=repr(exc);raise
     finally:
+        logger.save('interventions',geometry.engine.events)
         seconds=elapsed+time.monotonic()-started
         logger.save('summary',dict(protocol=protocol,status=status,failure=failure,diverged=coordinates,tasks=rows,
             **matrix_metrics([r['domain_accuracies'] for r in rows]),wall_seconds=seconds,gpu_hours=seconds/3600 if args.device!='cpu' else 0.,
             correction_seconds=sum(e['seconds'] for e in geometry.engine.events),parameter_count=sum(p.numel() for p in strategy.model.parameters()),
             online_accuracy=float(np.mean([r['accuracy'] for r in online_rows if r['accuracy'] is not None])) if any(r['accuracy'] is not None for r in online_rows) else None,
-            online_accuracy_scope='incoming samples before first update of each online experience; no test-set use',
+            geometry_selection=geometry.selection,geometry_selection_attempts=geometry.selection_attempts,online_accuracy_scope='incoming samples before first update of each online experience; no test-set use',
             peak_vram_bytes=torch.cuda.max_memory_allocated(torch.device(args.device)) if args.device!='cpu' else 0,
             representation_drift_mean=float(np.mean([r['replay_feature_drift'] for r in geometry.engine.events if 'replay_feature_drift' in r])) if any('replay_feature_drift' in r for r in geometry.engine.events) else None,
             replay_diagnostics=dict(origin_tracking='explicit fields in Geometry-VNA; native ReplayDataLoader in LPR',

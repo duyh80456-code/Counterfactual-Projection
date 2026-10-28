@@ -36,5 +36,17 @@
     "max_trials": 12,
     "preconditioner_probes": 0,
     "damping_retries": 0
+  },
+  "geometry_selection": {
+    "weights": [
+      0.0,
+      0.1,
+      1.0,
+      10.0,
+      100.0
+    ],
+    "first_task": 2,
+    "validation_per_task": 128,
+    "max_windows": 3
   }
 }

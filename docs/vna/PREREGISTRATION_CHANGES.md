@@ -1566,3 +1566,51 @@ zero-variance diagonal probes are unchanged. This deterministic positive
 preconditioner does not change A, its damping or either certificate. It is not
 a guaranteed condition-number improvement. Report raw clipping, shrinkage and
 standard error rather than inferring success from an increased probe count.
+
+### 2026-10-29 — validation completion; GPU checkpoint audit explicitly deferred
+
+The user explicitly asked to skip GPU checkpoint verification. No new checkpoint
+input or GPU-audit dependency is added to the notebooks; CPU evidence must not
+be presented as CUDA checkpoint validation. H4 remains prior-domain constrained
+VNA with training-only domain labels; no domain-conditioned representation claim.
+
+Prospective H3-small schedule: replace the4000-step main cadence with a first
+correction at each task's first full128-sample window, then every200 updates.
+For the registered100tasks ×50epochs ×12updates/epoch, opportunities are at
+local steps2,202,402:300 total versus15 under the old main schedule. Preserve
+window128, max_candidates16, optimizer, data, native head reset and full horizon.
+The4000 schedule without early-task triggering is retained explicitly as an
+ablation, alongside1000/8000 controls. This contrasts whole schedules (phase and
+frequency), not a claim that200 is accuracy-optimal. More correction work can
+require additional11-hour sessions; do not silently truncate or reduce cadence.
+
+H2 geometry calibration uses the original5% held-out validation split. Starting
+at task2, evaluate weights{0,0.1,1,10,100} at the SAME real training state/window,
+restoring model/optimizer/RNG between trials. Freeze one validation batch set
+(per seen experience up to128 samples) for all weights. Among certified,
+nonzero accepted candidates choose minimum seen-validation mean CE; ties choose
+smaller weight. Record baseline validation CE, whether it improved, all failed
+candidates, validation input digest, selected weight and costs. No test labels
+or test accuracy participate in selection. This is one-step validation
+calibration, not full-trajectory hyperparameter optimality. Lambda0 is allowed;
+selection is not evidence that geometry helps. Up to3 eligible windows may be
+tried; if none qualifies, stop with FAILED_PREFLIGHT and retain every trial.
+
+Freeze the selected weight for remaining updates and serialize it plus all
+calibration windows in the checkpoint; rollback and interrupted-calibration
+resume restore those decisions. Config/protocol records the selection policy;
+geometry_selection.json, summary and comparison CSV record its effective value.
+Calibration uses the external benchmark's seen-experience validation prefix;
+its boundary metadata is acknowledged. The native OnlineCLScenario still hides
+task IDs from online updates, but do not call the hyperparameter calibration
+fully boundary-free. Native LPR callbacks and its published settings are unchanged.
+Numerical ablations share the selection budget and may select different weights:
+compare complete policies, not pure matched-lambda solver/gate effects. The
+zero-geometry control remains fixed0, and ER has no correction calibration.
+
+Actual Python3.10, torch2.2.2, Avalanche0.4 and typing4.4 tests replace prior
+skips in the dedicated environment. Native LPR bitwise identity, H2 callbacks,
+fixed/tuned correction resume, interruption during calibration, validation
+fingerprint repeatability and frozen selected weights are checked. Synthetic
+fixtures are not real-data validation scores and are not used to pick the main
+geometry coefficient. No new benchmark training is run in this coding task.

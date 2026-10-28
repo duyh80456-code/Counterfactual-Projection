@@ -1,0 +1,16 @@
+{
+  "upstream_config": "lop/imagenet/cfg/cbp.json",
+  "num_tasks": 100,
+  "num_showings": 50,
+  "intervention_every": 4000,
+  "window": 128,
+  "max_candidates": 16,
+  "correction": {
+    "damping_relative": 0.01,
+    "cg_tolerance": 1e-06,
+    "cg_iterations": 200,
+    "trace_probes": 8,
+    "max_trials": 12
+  },
+  "task_start_intervention": false
+}
