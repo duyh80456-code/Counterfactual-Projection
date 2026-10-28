@@ -1,14 +1,14 @@
-# Final seed-0 H1–H4 Kaggle comparisons — 2026-10-28
+# Final seed-0 H1–H4 Kaggle comparisons — 2026-10-29
 
-Source pin: 8845fb5733014b52d3d8929c4cdfe0ab54ca45d1. Four independent notebooks, GPU0 baseline and
-GPU1 full method on T4×2. No source ZIP, old baseline, Gram schedule or old VNA
+Source pin: 0326c869d895ab57ac8d72238f1e157f3c11df88. Four independent notebooks, GPU0 baseline and
+GPU1 full method on T4×2. H3 additionally queues BP on GPU0 and VNA-only/GIR-only after full on GPU1. No source ZIP, old baseline, Gram schedule or old VNA
 checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 
 | Notebook | Matched baseline / full method | Native protocol | Fresh input |
 |---|---|---|---|
 | standard_cl_H1_s0.ipynb | iCaRL / Replay-Aware VNA | CIFAR10020×5, PyCIL ResNet32 BN, memory2000,200/170 epochs | Optional CIFAR100 Python files; auto-download when absent |
 | standard_cl_H2_s0.ipynb | official LPR / Geometry-Aware VNA | Online Split-CIFAR10020 experiences, SlimResNet18 nf20, batch10×3 repeats, replay2000, validation5%, SGD0.1 | Optional CIFAR100 Python files; auto-download when absent |
-| standard_cl_H3_s0.ipynb | official ConvCBP / BP + VNA→GIR | H3-small:100 binary ImageNet32 tasks×50 epochs, batch100, native ConvNet, SGD0.01/momentum0.9 | Authorized original files listed in H3_SMALL_REQUIRED_FILES.json |
+| standard_cl_H3_s0.ipynb | official ConvCBP / BP + VNA→GIR | H3-small, five arms:100 binary ImageNet32 tasks×50 epochs, batch100, native ConvNet, SGD0.01/momentum0.9 | Authorized original files listed in H3_SMALL_REQUIRED_FILES.json |
 | standard_cl_H4_s0.ipynb | ER / Domain-Adaptive VNA | MNIST20 rotations0,15,…,285°, MLP256 BN, fixed10-class head, reservoir2000,1epoch/domain | Optional four MNIST IDX files, plain/gzip; auto-download when absent |
 
 Enable Internet and Kaggle Secret github_token. Set DATA_DIR only if several
@@ -99,3 +99,14 @@ their status, partial curves and costs but no completed-run performance claim.
 T4 runtime is unmeasured. More than one session may be necessary; the registered
 horizon remains unchanged. No real dataset training or Kaggle/CUDA run occurred
 in this coding task. See the focused CPU test log and environment report.
+
+
+Audit revision2026-10-29 supersedes prior correction descriptions: shared V2
+certificates plus seeded operator audits,16->64 Jacobi probes when needed,
+train+eval window nonincrease, single current-task H3 CE, whole GIR damping
+retry, inference-normalized H2 geometry and explicit prior-domain H4 reference.
+See STANDARD_AUDIT_REPAIR.md and PREREGISTRATION_CHANGES.md. All four main
+notebooks share the pin above; four separate `*_ablations_s0.ipynb` notebooks
+isolate solver/gate/reference/cadence changes. New output tags; no old-engine
+resume. Native baseline training and main cadence remain unchanged. H3's five
+arms can need multiple sessions; exact GPU timings remain unmeasured.
