@@ -105,7 +105,8 @@ def export_comparison(root):
             metric='mean_error' if any(row['mean_error'] is not None for row in points) else 'accuracy'
             axis.plot([row['task'] for row in points],[row[metric] for row in points],label=f"{job} [{points[0]['status']}]")
         axis.set(xlabel='Task/domain',ylabel='Classification error (%)' if metric=='mean_error' else 'Accuracy (%)')
-        axis.legend();figure.tight_layout();figure.savefig(root/'accuracy_curves.png',dpi=150);plt.close(figure)
+        axis.legend();figure.tight_layout();temporary=root/'accuracy_curves.png.tmp'
+        figure.savefig(temporary,format='png',dpi=150);plt.close(figure);temporary.replace(root/'accuracy_curves.png')
     return rows
 
 
