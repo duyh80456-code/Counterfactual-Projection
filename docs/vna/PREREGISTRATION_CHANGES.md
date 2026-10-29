@@ -1651,3 +1651,13 @@ H3 logs conditional exact-surrogate intervals using the certified solve error
 bound and the declared SPD lower bound. Strictly separated winner/identity
 intervals are marked surrogate_wins_identity_certified. This is a diagnostic,
 not a new swap gate, a global SPD proof, or a future-accuracy guarantee.
+
+
+## 2026-10-29 — Projection code-review correctness fix
+
+Apply VNA_GIR_code_review_correctness_fix.patch: scale finite gradient rows
+before taking norms; require a positive roundoff margin for the feasible
+shortcut (except exact zero rows/candidate); retain KKT for boundary cases.
+Rescale dual multipliers in two stages and reject nonfinite multipliers.
+Check deadlines even with cached audits and reject nonfinite RHS before audit.
+Residual/solution-error thresholds and physical acceptance gates are unchanged.

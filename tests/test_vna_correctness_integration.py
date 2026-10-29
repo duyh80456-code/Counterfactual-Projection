@@ -90,3 +90,56 @@ def test_h3_engine_exports_surrogate_intervals_for_a_real_swap():
         assert row['net_surrogate_error_bound'] >= 0
     if result['choice'] != 'identity':
         assert isinstance(result['surrogate_wins_identity_certified'], bool)
+
+
+def test_large_finite_gradient_cannot_disappear_during_normalization():
+    op = _operator()
+    candidate = torch.tensor([-1., 1.], dtype=torch.float64)
+    constraints = torch.tensor([[1e200, 0.], [0., 1.]], dtype=torch.float64)
+    result = ConstraintSolver(op).solve(candidate, constraints)
+    assert result.status == 'CERTIFIED'
+    assert torch.all(constraints @ result.direction >= 0)
+    assert result.direction[0].abs() < 1e-8
+    assert result.objective > 0
+
+
+def test_tiny_finite_gradient_cannot_disappear_during_normalization():
+    op = _operator()
+    candidate = torch.tensor([-1., 1.], dtype=torch.float64)
+    constraints = torch.tensor([[1e-200, 0.], [0., 1.]], dtype=torch.float64)
+    result = ConstraintSolver(op).solve(candidate, constraints)
+    assert result.status == 'CERTIFIED'
+    assert torch.all(constraints @ result.direction >= 0)
+    assert result.direction[0].abs() < 1e-8
+
+
+def test_cached_audit_does_not_skip_deadline_on_fast_paths():
+    op = _operator()
+    op._audit(torch.ones(2, dtype=torch.float64))
+    def expired():
+        raise TimeoutError('expired')
+    op.boundary = expired
+    with pytest.raises(TimeoutError, match='expired'):
+        op.solve(torch.zeros(2, dtype=torch.float64))
+    with pytest.raises(TimeoutError, match='expired'):
+        ConstraintSolver(op).solve(torch.ones(2, dtype=torch.float64),
+                                    torch.eye(2, dtype=torch.float64))
+
+
+def test_boundary_feasible_candidate_uses_kkt_instead_of_roundoff_shortcut():
+    op = _operator()
+    candidate = torch.tensor([1., 1.], dtype=torch.float64)
+    constraints = torch.tensor([[1., -1.]], dtype=torch.float64)
+    result = ConstraintSolver(op).solve(candidate, constraints)
+    assert result.status == 'CERTIFIED'
+    assert len(op.solves) == 1
+    torch.testing.assert_close(result.direction, candidate, atol=0, rtol=0)
+
+
+def test_nonfinite_rhs_is_rejected_before_operator_evaluation(monkeypatch):
+    op = _operator()
+    def forbidden(*args):
+        raise AssertionError('invalid RHS must not reach operator audit')
+    monkeypatch.setattr(op, '_audit', forbidden)
+    with pytest.raises(Uncertified, match='non-finite linear solve RHS'):
+        op.solve(torch.tensor([float('nan')], dtype=torch.float64))

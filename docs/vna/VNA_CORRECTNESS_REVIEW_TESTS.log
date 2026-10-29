@@ -1,0 +1,13 @@
+Affected projection/audit/safety files
+....................................................................     [100%]
+68 passed in 26.48s
+
+
+Additional boundary and nonfinite-RHS regressions
+..                                                                       [100%]
+2 passed in 2.03s
+
+
+Nearly parallel halfspaces float32/float64
+..                                                                       [100%]
+2 passed in 3.93s

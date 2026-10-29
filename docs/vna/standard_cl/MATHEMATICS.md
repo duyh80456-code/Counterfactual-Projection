@@ -62,10 +62,12 @@ stationarity and complementarity and select the lowest primal objective.
 Failure to find a numerically certified active set gives UNCERTIFIED.
 Zero/opposed gradients and zero directions are valid cases.
 
-For a candidate satisfying every normalized halfspace in double precision
-(`U @ d0 >= 0`), the exact metric-projection solution is `d0`, regardless of
-the choice of SPD A. `ConstraintSolver` returns that candidate without the
-two constraint-inverse solves, after the operator's usual finite-probe audit.
+For a candidate satisfying every halfspace, the exact metric projection is
+`d0` for any SPD A. The shortcut requires a positive floating-point roundoff
+margin for every nonzero normalized row, or an exactly zero candidate.
+Boundary cases use the ordinary KKT path. Rows are scaled by their maximum
+absolute entry before L2 normalization to avoid norm overflow/underflow.
+The shortcut retains the operator's finite-probe audit and deadline boundary.
 This changes neither the mathematical projection nor the finite physical
 acceptance checks. A right-hand side exactly equal to zero is returned as an
 exact zero solution without Jacobi or PCG, also after the operator audit.

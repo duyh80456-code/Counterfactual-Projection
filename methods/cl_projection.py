@@ -123,9 +123,10 @@ class ProjectionOperator:
 
     def solve(self,rhs):
         started=time.perf_counter();rhs=rhs.detach().double()
-        self._audit(rhs)
+        self.boundary()
         if not bool(torch.isfinite(rhs).all()):
             raise Uncertified('non-finite linear solve RHS',list(self.solves))
+        self._audit(rhs)
         if not bool(rhs.any()):
             # The zero RHS has the exact zero solution for the audited SPD operator.
             self.solves.append(dict(iterations=0,refinements=[],residual=0.,relative_residual=0.,
@@ -206,9 +207,22 @@ class ConstraintSolver:
         C=(gradients if isinstance(gradients,torch.Tensor) else torch.stack(tuple(gradients))).detach().double()
         if C.shape!=(n,d0.numel()) or not torch.isfinite(C).all() or not torch.isfinite(d0).all():
             raise ValueError('finite two-row gradients and aligned candidate required')
-        norms=C.norm(dim=1);scales=torch.where(norms>0,norms,torch.ones_like(norms))
-        U=C/scales[:,None]
-        if bool((U@d0>=0).all()):
+        # Scale before taking L2 norms: finite gradients may have overflowing or
+        # underflowing squared norms, falsely turning a constraint into a zero row.
+        maxabs=C.abs().amax(dim=1)
+        safe_maxabs=torch.where(maxabs>0,maxabs,torch.ones_like(maxabs))
+        scaled=C/safe_maxabs[:,None]
+        norms=scaled.norm(dim=1)
+        safe_norms=torch.where(norms>0,norms,torch.ones_like(norms))
+        U=scaled/safe_norms[:,None]
+        if hasattr(self.operator,'boundary'):self.operator.boundary()
+        q=U@d0
+        # Only take the zero-solve shortcut with a positive roundoff margin.
+        # Zero constraints and the zero candidate are exactly feasible.
+        guard=(8*d0.numel()*torch.finfo(d0.dtype).eps)*(U.abs()@d0.abs())
+        zero_rows=maxabs==0
+        safely_feasible=(not bool(d0.any())) or bool((torch.isfinite(q)&((q>guard)|zero_rows)).all())
+        if safely_feasible:
             # Exactly feasible d0 is the unique metric projection: no constraint solves.
             if hasattr(self.operator,'_audit'):self.operator._audit(d0)
             return ConstraintResult(d0,torch.zeros(n,dtype=d0.dtype,device=d0.device),C@d0,0.,0.,0.,'CERTIFIED')
@@ -216,7 +230,7 @@ class ConstraintSolver:
         W=U@inverse
         if not torch.isfinite(W).all() or float((W-W.T).norm())>self.tolerance*max(float(W.norm()),1e-30):
             raise Uncertified('non-symmetric approximate dual operator')
-        W=(W+W.T)/2;q=U@d0;solutions=[]
+        W=(W+W.T)/2;solutions=[]
         for size in range(n+1):
             for active in combinations(range(n),size):
                 lam=torch.zeros(n,dtype=d0.dtype,device=d0.device)
@@ -233,7 +247,9 @@ class ConstraintSolver:
                 delta=d-d0;stationarity=float((self.operator(delta)-U.T@lam).norm())
                 if stationarity>self.tolerance*max(float((U.T@lam).norm()),float(self.operator(d0).norm()),1e-30):continue
                 objective=float(delta@self.operator(delta))/2
-                solutions.append(ConstraintResult(d,lam/scales,C@d,stationarity,complement,objective,'CERTIFIED'))
+                multipliers=(lam/safe_norms)/safe_maxabs
+                if not torch.isfinite(multipliers).all():continue
+                solutions.append(ConstraintResult(d,multipliers,C@d,stationarity,complement,objective,'CERTIFIED'))
         if not solutions:raise Uncertified('no active set satisfies primal/dual/stationarity/complementarity checks')
         return min(solutions,key=lambda result:result.objective)
 
