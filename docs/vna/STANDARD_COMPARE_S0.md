@@ -1,6 +1,6 @@
 # Final seed-0 H1–H4 Kaggle comparisons — 2026-10-29
 
-Source pin: 7edff5d99367f79ad363e5e68fba2405241ef908. Four independent notebooks, GPU0 baseline and
+Source pin: febd26a80228e75b24184499b316d4e36ce5f26b. Four independent notebooks, GPU0 baseline and
 GPU1 full method on T4×2. H3 additionally queues BP on GPU0 and VNA-only/GIR-only after full on GPU1. No source ZIP, old baseline, Gram schedule or old VNA
 checkpoint is required. Papers motivate baseline choice, not a paper-score gate.
 
