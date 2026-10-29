@@ -1,0 +1,17 @@
+........................................................................ [ 73%]
+..........................                                               [100%]
+=============================== warnings summary ===============================
+tests/test_vna_algorithm_v2.py::test_h2_calibration_trials_use_the_same_drift_gate
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/wandb/sdk/launch/builder/build.py:11: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+tests/test_vna_algorithm_v2.py::test_h2_calibration_trials_use_the_same_drift_gate
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/wandb/analytics/sentry.py:90: SentryHubDeprecationWarning: `sentry_sdk.Hub` is deprecated and will be removed in a future major release. Please consult our 1.x to 2.x migration guide for details on how to migrate `Hub` usage to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x
+    self.hub = sentry_sdk.Hub(client)
+
+tests/test_standard_benchmark_protocols.py: 30 warnings
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/avalanche/training/plugins/evaluation.py:94: UserWarning: No loggers specified, metrics will not be logged
+    warnings.warn("No loggers specified, metrics will not be logged")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+98 passed, 32 warnings in 147.47s (0:02:27)

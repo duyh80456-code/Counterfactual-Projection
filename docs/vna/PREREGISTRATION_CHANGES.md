@@ -1661,3 +1661,19 @@ shortcut (except exact zero rows/candidate); retain KKT for boundary cases.
 Rescale dual multipliers in two stages and reject nonfinite multipliers.
 Check deadlines even with cached audits and reject nonfinite RHS before audit.
 Residual/solution-error thresholds and physical acceptance gates are unchanged.
+
+
+## 2026-10-29 — Opt-in algorithm V2
+
+Integrate VNA_GIR_algorithm_v2.patch and verify its eleven changed files against
+the supplied source ZIP. Original candidate and GIR policies remain default;
+existing notebook plans retain their original configurations. Separate V2 configs
+expose virtual-feature Pareto minimax (H1/H4), measured absolute replay-feature
+drift gating (H2), and certified local GN-recovery/surrogate gating (H3).
+
+Pareto zero-margin cases retain the original projected candidate. No residual
+certificate, damping retry or physical loss gate is relaxed. H2 calibration
+uses the same drift gate as the actual correction; the example absolute budget
+0.1 is unvalidated and is not a claim of an optimized hyperparameter.
+These are algorithmic ablations, not established improvements. GPU accuracy and
+runtime require future matched-protocol evaluation.

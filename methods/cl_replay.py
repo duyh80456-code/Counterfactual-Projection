@@ -115,6 +115,8 @@ class CurrentTaskLoss:
 @dataclass(frozen=True)
 class CorrectionConfig:
     kernel: str = 'tiny_V'
+    candidate_strategy: str = 'original'  # opt-in: pareto_minimax for pure two-objective VNA
+    gir_selection: str = 'original'  # opt-in: certified_plasticity for H3
     constrained: bool = True
     mode: str = 'intervention'
     damping_relative: float = .01
@@ -133,6 +135,8 @@ class CorrectionConfig:
     def __post_init__(self):
         if self.kernel not in ('tiny_V','random','native','gn','gradient'):raise ValueError('unknown candidate kernel')
         if self.mode not in ('intervention','unified'):raise ValueError('unknown integration mode')
+        if self.candidate_strategy not in ('original','pareto_minimax'):raise ValueError('unknown VNA candidate strategy')
+        if self.gir_selection not in ('original','certified_plasticity'):raise ValueError('unknown GIR selection policy')
         if not math.isfinite(self.damping_relative) or self.damping_relative<=0 or self.max_trials<1 or self.trace_probes<1:
             raise ValueError('positive finite numerical controls required')
         if (not 0<self.cg_tolerance<1 or self.cg_iterations<1 or self.preconditioner_probes<0 or self.damping_retries<0
@@ -172,6 +176,42 @@ class _ChunkedSelector(V3Engine):
             basis=products.inputs.new_zeros(size);basis[index]=1
             total+=float(action(basis).double().square().sum())
         return total
+
+
+
+
+def pareto_minimax_kernel_target(new_z, old_z, new_target, old_target):
+    """Two-objective, fixed-PSD-kernel MGDA in virtual feature space.
+
+    z_i are H J A^{-1} g_i and targets are K_E z_i. Returns a kernel
+    target for A^{-1} J^T H K_E z_mix. Exact arithmetic gives strictly
+    positive individual gains when the feature-space hull avoids zero.
+    This DOES NOT certify approximate PCG or physical acceptance.
+    """
+    a=float(new_z@new_target);b=float(old_z@old_target)
+    cross_new_old=float(new_z@old_target);cross_old_new=float(old_z@new_target)
+    c=(cross_new_old+cross_old_new)/2
+    scale=max(abs(a),abs(b),abs(c),1e-300)
+    # A noticeably non-PSD/asymmetric Gram matrix invalidates the proof.
+    if (not all(math.isfinite(x) for x in (a,b,c))
+            or a < -1e-8*scale or b < -1e-8*scale
+            or abs(cross_new_old-cross_old_new)>1e-6*scale
+            or c*c>max(a,0.)*max(b,0.)+1e-7*scale*scale):
+        raise Uncertified('virtual kernel Gram matrix failed PSD/symmetry audit')
+    a=max(a,0.);b=max(b,0.)
+    denom=max(a+b-2*c,0.)
+    weight=max(0.,min(1.,(b-c)/denom)) if denom>1e-14*scale else .5
+    mix_z=weight*new_z+(1-weight)*old_z
+    mix_target=weight*new_target+(1-weight)*old_target
+    # Use the actual mixed inner product to avoid cancellation in the Gram formula.
+    energy=float(mix_z@mix_target)
+    if not math.isfinite(energy) or energy < -1e-8*scale:
+        raise Uncertified('virtual minimax energy is not nonnegative')
+    if energy <= 1e-14*scale:
+        return torch.zeros_like(mix_target),dict(weight_new=weight,weight_old=1-weight,
+            virtual_margin=0.,candidate_zero=True,gram=[[a,c],[c,b]])
+    return mix_target/math.sqrt(energy),dict(weight_new=weight,weight_old=1-weight,
+        virtual_margin=math.sqrt(energy),candidate_zero=False,gram=[[a,c],[c,b]])
 
 
 class ReplayCorrection:
@@ -237,7 +277,7 @@ class ReplayCorrection:
                 max_relative_solution_error=config.max_relative_solution_error,
                 preconditioner_probes=config.preconditioner_probes,preconditioner_seed=config.seed,
                 penalty=penalty or (lambda x:torch.zeros_like(x)),boundary=self.boundary)
-            kernel_target=None;cross=None
+            kernel_target=None;cross=None;strategy_info=None;strategy_applied='original'
             if kernel=='gn':d0=A.solve(g)
             elif kernel=='gradient':d0=g.clone()
             elif kernel=='native' or active:
@@ -245,7 +285,20 @@ class ReplayCorrection:
                 kernel_target=action(z).double();reference_target=action(zR).double();new_z=z-zR;new_target=kernel_target-reference_target
                 cross=torch.stack((torch.stack((new_z@new_target,new_z@reference_target)),
                     torch.stack((zR@new_target,zR@reference_target)))).double()
-                d0=A.solve(p.JT(op.H(kernel_target)).double())
+                final_target=kernel_target
+                if (config.candidate_strategy=='pareto_minimax' and config.constrained
+                        and optimizer_candidate is None and len(gradients)==2
+                        and kernel in ('tiny_V','random') and active):
+                    final_target,strategy_info=pareto_minimax_kernel_target(
+                        new_z,zR,new_target,reference_target)
+                    if strategy_info['candidate_zero']:
+                        # Rank-deficient/opposed virtual features have no strict
+                        # common descent direction; retain the original projected
+                        # candidate instead of regressing to an automatic no-op.
+                        final_target=kernel_target
+                        strategy_applied='original_fallback_zero_virtual_margin'
+                    else:strategy_applied='pareto_minimax'
+                d0=A.solve(p.JT(op.H(final_target)).double())
             else:d0=torch.zeros_like(g)
             pure=d0.clone()
             if optimizer_candidate is not None:d0=d0+optimizer_candidate
@@ -271,7 +324,10 @@ class ReplayCorrection:
                     stationarity=qp.stationarity,complementarity=qp.complementarity,status=qp.status,
                     geometry='opposing_gradients_no_strict_joint_descent' if opposed else 'zero_constraint' if bool((norms==0).any()) else 'single_current_task_descent' if len(gradients)==1 else 'two_halfspaces',
                     strict_progress=[bool(v>config.cg_tolerance*n*d.norm()) for v,n in zip(gain,norms)]),
-                kernel=kernel,incoming_directions_per_site=16,active_sites=len(active),
+                kernel=kernel,candidate_strategy_requested=config.candidate_strategy,
+                candidate_strategy_applied=strategy_applied,
+                candidate_strategy_diagnostics=strategy_info,
+                incoming_directions_per_site=16,active_sites=len(active),
                 candidate_generated=bool(active) if kernel in ('tiny_V','random') else True,
                 candidate_reason='NO_CANDIDATE' if kernel in ('tiny_V','random') and not active else None,
                 kernel_seconds=construction,projection_seconds=time.perf_counter()-started-construction,
@@ -283,7 +339,8 @@ class ReplayCorrection:
             # A is valid only inside this products context; retain the needed scalar diagnostics.
             return CandidateUpdate(d.detach(),gradients.detach(),None,diagnostic)
 
-    def step(self,model,optimizer,inputs,losses,sites,step_size,*,penalty=None,damping=None,update_norm=None,compute_seconds=None):
+    def step(self,model,optimizer,inputs,losses,sites,step_size,*,penalty=None,damping=None,
+             update_norm=None,compute_seconds=None,trial_guard=None):
         if not math.isfinite(step_size) or step_size<=0:raise ValueError('positive finite physical step required')
         for name,value in (('damping',damping),('update_norm',update_norm),('compute_seconds',compute_seconds)):
             if value is not None and (not math.isfinite(value) or value<=0):raise ValueError(f'{name} must be positive finite or None')
@@ -361,18 +418,23 @@ class ReplayCorrection:
                 eval_after=evaluate(model,inputs,losses.components,'eval')
                 eval_gate=loss_gate(eval_losses_before,eval_after,next(model.parameters()).dtype,self.config.constrained)
                 eval_ok=eval_gate['passed']
+                extra_gate=trial_guard(model) if trial_guard is not None else {'passed':True}
+                if not isinstance(extra_gate,dict) or not isinstance(extra_gate.get('passed'),bool):
+                    raise ValueError('trial_guard must return a dict with boolean passed')
+                extra_ok=extra_gate['passed']
                 physical_norm=float((initial-vector(model)).norm())
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
                     physical_norm=physical_norm,in_update_budget=in_budget,
                     meaningful_improvement=meaningful,improvement_thresholds=thresholds,
                     eval_after=eval_after,eval_nonincrease=eval_ok,train_gate=train_gate,eval_gate=eval_gate,
-                    failed_gates=[name for name,ok in (('finite',finite),('constraints',feasible),('train',nonincrease),('eval',eval_ok or not self.config.eval_acceptance),('budget',in_budget),('nonzero',physical_norm>0)) if not ok],
+                    additional_gate=extra_gate,
+                    failed_gates=[name for name,ok in (('finite',finite),('constraints',feasible),('train',nonincrease),('eval',eval_ok or not self.config.eval_acceptance),('budget',in_budget),('nonzero',physical_norm>0),('additional',extra_ok)) if not ok],
                     normalized_constraint_violation=float((-gains/scale.clamp_min(1e-30)).clamp_min(0).max())))
-                if finite and feasible and nonincrease and in_budget and physical_norm>0 and (eval_ok or not self.config.eval_acceptance):
+                if finite and feasible and nonincrease and in_budget and physical_norm>0 and extra_ok and (eval_ok or not self.config.eval_acceptance):
                     accepted=True;norm=physical_norm;used=s;break
             if not accepted:
-                row['rejection_reason']=row.get('candidate_reason') or ('ZERO_DIRECTION' if direction_norm==0 else 'ZERO_PHYSICAL_UPDATE' if physical_norm==0 else 'CONSTRAINT_VIOLATION' if not feasible else 'TRAIN_LOSS_INCREASE' if not nonincrease else 'EVAL_LOSS_INCREASE' if self.config.eval_acceptance and not eval_ok else 'UPDATE_BUDGET' if not in_budget else 'NONFINITE')
+                row['rejection_reason']=row.get('candidate_reason') or ('ZERO_DIRECTION' if direction_norm==0 else 'ZERO_PHYSICAL_UPDATE' if physical_norm==0 else 'CONSTRAINT_VIOLATION' if not feasible else 'TRAIN_LOSS_INCREASE' if not nonincrease else 'EVAL_LOSS_INCREASE' if self.config.eval_acceptance and not eval_ok else 'UPDATE_BUDGET' if not in_budget else 'ADDITIONAL_TRIAL_GATE' if not extra_ok else 'NONFINITE')
                 state.restore()
             elif staged_optimizer is not None:optimizer.load_state_dict(staged_optimizer)
             candidate_after=after

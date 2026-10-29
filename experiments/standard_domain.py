@@ -48,7 +48,8 @@ def run(args):
     numerical=dict(damping_relative=1.,cg_tolerance=1e-4,cg_iterations=100,trace_probes=1,max_trials=3) if args.fake_data else {}
     if args.solver=='cg':numerical.update(preconditioner_probes=0,damping_retries=0)
     numerical['eval_acceptance']=args.eval_acceptance
-    config=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=args.arm!='vna',mode=args.mode,seed=args.seed,**numerical)
+    config=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=args.arm!='vna',mode=args.mode,seed=args.seed,
+        candidate_strategy=args.candidate_strategy,**numerical)
     engine=ReplayCorrection(config)
     if args.fake_data:
         from torch.utils.data import TensorDataset
@@ -170,6 +171,7 @@ def parser():
     p.add_argument('--kind',choices=('rotated','permuted'),default='rotated');p.add_argument('--seed',type=int,default=0)
     p.add_argument('--arm',choices=tuple(a for a in ARMS if a not in ('h2','lpr')),default='h1');p.add_argument('--normalization',choices=('bn','groupnorm'),default='bn')
     p.add_argument('--solver',choices=('pcg','cg'),default='pcg')
+    p.add_argument('--candidate-strategy',choices=('original','pareto_minimax'),default='original')
     p.add_argument('--eval-acceptance',action=argparse.BooleanOptionalAction,default=True)
     p.add_argument('--domain-reference',choices=('previous','mixed'),default='previous')
     p.add_argument('--mode',choices=('intervention','unified'),default='intervention')

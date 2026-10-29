@@ -52,7 +52,8 @@ def reset_sgd_coordinates(optimizer,masks):
         if momentum is not None:momentum.masked_fill_(mask,0)
 
 
-def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,eval_acceptance=True):
+def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,eval_acceptance=True,
+                candidate_qualifier=None):
     """Minimize a specified surrogate over feasible swaps plus identity."""
     state=State(model,optimizer);before=evaluate(model,inputs,components)
     eval_before=evaluate(model,inputs,components,'eval');eval_output=predict(model,inputs)
@@ -85,14 +86,17 @@ def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,ev
                 changed=float((vector(model)-initial).norm())
                 admissible=admissible and changed>0 and (eval_ok or not eval_acceptance)
                 objective=score(after)
+                qualified=True if candidate_qualifier is None else bool(candidate_qualifier(candidate,objective))
+                admissible=admissible and qualified
                 jump=predict(model,inputs,'train')-output_before
                 rows.append(dict(candidate=candidate.name,slot_kind=candidate.slot_kind,before=before,after=after,
                     functional_loss_jump=[a-b for a,b in zip(after,before)],admissible=admissible,
+                    candidate_qualified=qualified,
                     objective=objective,output_jump_norm=float(jump.double().norm()),
                     window_output_preserved=not bool(jump.any()),step_norm=changed,
                     eval_before=eval_before,eval_after=eval_after,eval_nonincrease=eval_ok,train_gate=train_gate,eval_gate=eval_gate,
-                    failed_gates=[name for name,ok in (('train',train_gate['passed']),('eval',eval_ok or not eval_acceptance),('nonzero',changed>0)) if not ok],
-                    rejection_reason='TRAIN_LOSS_INCREASE' if not train_gate['passed'] else 'EVAL_LOSS_INCREASE' if eval_acceptance and not eval_ok else 'ZERO_PHYSICAL_UPDATE' if changed==0 else None,
+                    failed_gates=[name for name,ok in (('train',train_gate['passed']),('eval',eval_ok or not eval_acceptance),('nonzero',changed>0),('candidate_qualifier',qualified)) if not ok],
+                    rejection_reason='TRAIN_LOSS_INCREASE' if not train_gate['passed'] else 'EVAL_LOSS_INCREASE' if eval_acceptance and not eval_ok else 'ZERO_PHYSICAL_UPDATE' if changed==0 else 'UNCERTIFIED_PLASTICITY_GAIN' if not qualified else None,
                     eval_functional_drift=float((predict(model,inputs)-eval_output).double().norm())))
                 rows[-1]['seconds']=time.perf_counter()-started
                 if admissible and math.isfinite(objective) and objective<best:
@@ -240,13 +244,28 @@ class TangentReconfiguration:
                     solves.extend(A.solves);counts['jvp']+=p.jvp_calls+p.extension_jvp_calls
                     counts['vjp']+=p.vjp_calls+p.extension_vjp_calls
                     return loss-recovery
-            result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,eval_acceptance=self.config.eval_acceptance)
+            def plasticity_qualifier(candidate,score):
+                # Source-score confidence intervals and predicted recovery are
+                # computed for the actual post-swap network (not added columns).
+                if len(scores)<2:return False
+                identity,current=scores[0],scores[-1]
+                lo_recovery=current['predicted_gn_recovery']-current['net_surrogate_error_bound']
+                hi_identity=identity['predicted_gn_recovery']+identity['net_surrogate_error_bound']
+                return bool(
+                    current['net_surrogate_interval'][1]<identity['net_surrogate_interval'][0]
+                    and lo_recovery>hi_identity
+                )
+            qualifier=plasticity_qualifier if self.config.gir_selection=='certified_plasticity' else None
+            result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,
+                eval_acceptance=self.config.eval_acceptance,candidate_qualifier=qualifier)
             for row,score in zip((r for r in result['trials'] if 'solver_failure' not in r),scores[1:]):row.update(score)
+            result['surrogate_wins_identity_certified']=False
             if result['choice']!='identity':
                 chosen=next((row for row in result['trials'] if row['candidate']==result['choice']),None)
                 identity=scores[0] if scores else None
                 result['surrogate_wins_identity_certified']=bool(chosen is not None and identity is not None
                     and chosen.get('net_surrogate_interval',[float('inf'),float('inf')])[1]<identity['net_surrogate_interval'][0])
+            result['gir_selection_policy']=self.config.gir_selection
             if self.max_candidates is not None:
                 for trial in result['trials']:
                     trial['selected_winner']=trial['candidate']==result['choice']

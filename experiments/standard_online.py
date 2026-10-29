@@ -118,7 +118,8 @@ class GeometryPlugin(SupervisedPlugin):
             for weight in sorted(weights):
                 log(f'H2 geometry pilot task={self.task+1} window={len(self.selection_attempts)+1} weight={weight} starting')
                 snapshot.restore();engine=GeometryCorrection(self.engine.config);engine.applications=self.engine.applications
-                event=engine.step(model,opt,x,losses,model.sites(),self.cfg['lr'],replay_inputs=x[mask],geometry_weight=weight)
+                event=engine.step(model,opt,x,losses,model.sites(),self.cfg['lr'],replay_inputs=x[mask],geometry_weight=weight,
+                    feature_drift_budget=self.cfg.get('feature_drift_budget'))
                 score=validation_loss() if event.get('accepted') and event.get('step_norm',0)>0 else None
                 trials.append(dict(weight=weight,validation_loss=score,event=event))
                 log(f'H2 geometry pilot weight={weight} status={event["status"]} validation_loss={score}')
@@ -179,7 +180,8 @@ class GeometryPlugin(SupervisedPlugin):
             log(f'H2 frozen geometry weight={selection["selected_weight"]} validation_loss={selection["selected_validation_loss"]} baseline_validation_loss={selection["baseline_validation_loss"]}')
         weight=self.selection['selected_weight'] if self.selection else self.cfg['geometry_weight']
         row=self.engine.step(strategy.model,strategy.optimizer,x,losses,strategy.model.sites(),self.cfg['lr'],
-            replay_inputs=x[mask],geometry_weight=weight)
+            replay_inputs=x[mask],geometry_weight=weight,
+            feature_drift_budget=self.cfg.get('feature_drift_budget'))
         row.update(task=self.task+1,step=step,effective_geometry_weight=weight)
         if selection is not None:
             row.update(geometry_selection=selection,geometry_selection_seconds=selection['seconds'])

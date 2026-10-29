@@ -30,14 +30,19 @@ class Features(nn.Module):
 
 
 class GeometryCorrection(ReplayCorrection):
-    def step(self,model,optimizer,inputs,losses,sites,step_size,*,replay_inputs,geometry_weight,feature_layers=('features',),**kwargs):
+    def step(self,model,optimizer,inputs,losses,sites,step_size,*,replay_inputs,geometry_weight,
+             feature_layers=('features',),feature_drift_budget=None,**kwargs):
         if inputs.is_cuda:torch.cuda.synchronize(inputs.device)
         started=time.perf_counter()
         if not math.isfinite(geometry_weight) or geometry_weight<0:raise ValueError('finite nonnegative feature penalty required')
+        if feature_drift_budget is not None and (not math.isfinite(feature_drift_budget) or feature_drift_budget<0):
+            raise ValueError('nonnegative finite feature drift budget required')
         if replay_inputs is None or not len(replay_inputs):
             if geometry_weight:raise ValueError('positive H2 penalty needs replay features')
             event=super().step(model,optimizer,inputs,losses,sites,step_size,**kwargs)
-            event.update(branch='H2',geometry_weight=0.,feature_layers=list(feature_layers),no_replay=True)
+            event.update(branch='H2',geometry_weight=0.,feature_drift_budget=feature_drift_budget,
+                feature_layers=list(feature_layers),no_replay=True,
+                feature_drift_gate_scope='not_applicable_without_replay')
             return event
         native=model.native if hasattr(model,'native') else model
         features=Features(native,feature_layers,inference=True)
@@ -48,10 +53,18 @@ class GeometryCorrection(ReplayCorrection):
             train_before=products._call({}).detach().double()
             normalization=max(train_before.numel(),1)
             penalty=lambda d:geometry_weight*products.JT(products.Jv(d)).double()/normalization
-            event=super().step(model,optimizer,inputs,losses,sites,step_size,penalty=penalty,**kwargs)
+            def feature_guard(net):
+                current=predict(features,replay_inputs).double()
+                drift=float((current-before).norm())
+                return dict(passed=math.isfinite(drift) and drift<=feature_drift_budget,
+                            feature_drift=drift,feature_drift_budget=feature_drift_budget)
+            guard=feature_guard if feature_drift_budget is not None else None
+            event=super().step(model,optimizer,inputs,losses,sites,step_size,
+                               penalty=penalty,trial_guard=guard,**kwargs)
             predicted=products.Jv(vector(features)-initial).double()
             event.update(predicted_feature_drift=float(predicted.norm()),feature_jvp=products.jvp_calls,feature_vjp=products.vjp_calls)
-        event.update(branch='H2',geometry_weight=geometry_weight,metric='JtHJ+lambda/Nphi*Jphi_eval_t_Jphi_eval+mu*I',
+        event.update(branch='H2',geometry_weight=geometry_weight,feature_drift_budget=feature_drift_budget,
+            metric='JtHJ+lambda/Nphi*Jphi_eval_t_Jphi_eval+mu*I',
             cotangent_recomputed=True,implementation='VNA feature penalty; not LPR',feature_layers=list(feature_layers),
             geometry_normalization='mean squared feature displacement; divided by sample-feature count',
             penalty_form='fixed lambda; not an inferred constrained-problem KKT multiplier')
