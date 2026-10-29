@@ -1677,3 +1677,18 @@ uses the same drift gate as the actual correction; the example absolute budget
 0.1 is unvalidated and is not a claim of an optimized hyperparameter.
 These are algorithmic ablations, not established improvements. GPU accuracy and
 runtime require future matched-protocol evaluation.
+
+
+## 2026-10-29 — V2 review: physical-size pairing and H3 diagnostics
+
+Implement the supplied VNA_GIR_v2_review_update_report.md directly; its listed
+patch/ZIP deliverables were not attached. Add optional physical norm cap/matched
+controls and paired H1/H4 V1/V2 configs with unvalidated norm0.01. Match nominal
+trial0 size only, retain strict measured norm checking and dyadic backtracking.
+Report both trial0 and accepted norms, acceptance, loss change and solve/time cost;
+equal initial nominal size is neither accepted-size nor compute matching.
+
+Add explicit conditional H3 surrogate/recovery certificate diagnostics and counts.
+The strict V2 gate and numerical solver thresholds are unchanged. H2 calibration
+continues using the same feature drift guard as actual corrections. All registered
+default configs remain unchanged; no benchmark performance claim is made.

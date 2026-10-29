@@ -52,6 +52,22 @@ def reset_sgd_coordinates(optimizer,masks):
         if momentum is not None:momentum.masked_fill_(mask,0)
 
 
+def certified_plasticity_diagnostics(identity,candidate):
+    """Conditional interval ordering for actual networks; not a future-task guarantee."""
+    surrogate=identity['net_surrogate_interval'][0]-candidate['net_surrogate_interval'][1]
+    recovery=(candidate['predicted_gn_recovery']-candidate['net_surrogate_error_bound']
+        -identity['predicted_gn_recovery']-identity['net_surrogate_error_bound'])
+    upper_surrogate=identity['net_surrogate_interval'][1]-candidate['net_surrogate_interval'][0]
+    upper_recovery=(candidate['predicted_gn_recovery']+candidate['net_surrogate_error_bound']
+        -identity['predicted_gn_recovery']+identity['net_surrogate_error_bound'])
+    finite=all(math.isfinite(v) for v in (surrogate,recovery,upper_surrogate,upper_recovery))
+    return dict(surrogate_separation=surrogate,predicted_recovery_separation=recovery,
+        eligible=bool(finite and candidate['net_surrogate_interval'][1]<identity['net_surrogate_interval'][0]
+            and candidate['predicted_gn_recovery']-candidate['net_surrogate_error_bound']>
+                identity['predicted_gn_recovery']+identity['net_surrogate_error_bound']),
+        uncertain=bool(not finite or surrogate<=0<=upper_surrogate or recovery<=0<=upper_recovery))
+
+
 def choose_swap(model,optimizer,inputs,components,candidates,*,surrogate=None,eval_acceptance=True,
                 candidate_qualifier=None):
     """Minimize a specified surrogate over feasible swaps plus identity."""
@@ -249,16 +265,17 @@ class TangentReconfiguration:
                 # computed for the actual post-swap network (not added columns).
                 if len(scores)<2:return False
                 identity,current=scores[0],scores[-1]
-                lo_recovery=current['predicted_gn_recovery']-current['net_surrogate_error_bound']
-                hi_identity=identity['predicted_gn_recovery']+identity['net_surrogate_error_bound']
-                return bool(
-                    current['net_surrogate_interval'][1]<identity['net_surrogate_interval'][0]
-                    and lo_recovery>hi_identity
-                )
+                return certified_plasticity_diagnostics(identity,current)['eligible']
             qualifier=plasticity_qualifier if self.config.gir_selection=='certified_plasticity' else None
             result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,
                 eval_acceptance=self.config.eval_acceptance,candidate_qualifier=qualifier)
-            for row,score in zip((r for r in result['trials'] if 'solver_failure' not in r),scores[1:]):row.update(score)
+            for row,score in zip((r for r in result['trials'] if 'solver_failure' not in r),scores[1:]):
+                row.update(score)
+                row['certified_plasticity_diagnostics']=certified_plasticity_diagnostics(scores[0],score)
+            certificates=[r['certified_plasticity_diagnostics'] for r in result['trials'] if 'certified_plasticity_diagnostics' in r]
+            result['plasticity_certificate_counts']=dict(evaluated=len(certificates),
+                eligible=sum(c['eligible'] for c in certificates),uncertain=sum(c['uncertain'] for c in certificates),
+                solver_failures=result['candidate_solver_failures'])
             result['surrogate_wins_identity_certified']=False
             if result['choice']!='identity':
                 chosen=next((row for row in result['trials'] if row['candidate']==result['choice']),None)

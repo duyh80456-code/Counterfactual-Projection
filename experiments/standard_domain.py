@@ -49,7 +49,8 @@ def run(args):
     if args.solver=='cg':numerical.update(preconditioner_probes=0,damping_retries=0)
     numerical['eval_acceptance']=args.eval_acceptance
     config=CorrectionConfig(kernel=ARMS[args.arm] or 'tiny_V',constrained=args.arm!='vna',mode=args.mode,seed=args.seed,
-        candidate_strategy=args.candidate_strategy,**numerical)
+        candidate_strategy=args.candidate_strategy,physical_update_norm=args.physical_update_norm,
+        physical_budget_policy=args.physical_budget_policy,**numerical)
     engine=ReplayCorrection(config)
     if args.fake_data:
         from torch.utils.data import TensorDataset
@@ -172,6 +173,8 @@ def parser():
     p.add_argument('--arm',choices=tuple(a for a in ARMS if a not in ('h2','lpr')),default='h1');p.add_argument('--normalization',choices=('bn','groupnorm'),default='bn')
     p.add_argument('--solver',choices=('pcg','cg'),default='pcg')
     p.add_argument('--candidate-strategy',choices=('original','pareto_minimax'),default='original')
+    p.add_argument('--physical-update-norm',type=float,default=None)
+    p.add_argument('--physical-budget-policy',choices=('cap','matched'),default='cap')
     p.add_argument('--eval-acceptance',action=argparse.BooleanOptionalAction,default=True)
     p.add_argument('--domain-reference',choices=('previous','mixed'),default='previous')
     p.add_argument('--mode',choices=('intervention','unified'),default='intervention')

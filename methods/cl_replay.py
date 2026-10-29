@@ -117,6 +117,8 @@ class CorrectionConfig:
     kernel: str = 'tiny_V'
     candidate_strategy: str = 'original'  # opt-in: pareto_minimax for pure two-objective VNA
     gir_selection: str = 'original'  # opt-in: certified_plasticity for H3
+    physical_update_norm: float | None = None
+    physical_budget_policy: str = 'cap'
     constrained: bool = True
     mode: str = 'intervention'
     damping_relative: float = .01
@@ -133,6 +135,9 @@ class CorrectionConfig:
     seed: int = 0
 
     def __post_init__(self):
+        if self.physical_budget_policy not in ('cap','matched'):raise ValueError('unknown physical budget policy')
+        if self.physical_update_norm is not None and (not math.isfinite(self.physical_update_norm) or self.physical_update_norm<=0):
+            raise ValueError('physical update norm must be positive finite or None')
         if self.kernel not in ('tiny_V','random','native','gn','gradient'):raise ValueError('unknown candidate kernel')
         if self.mode not in ('intervention','unified'):raise ValueError('unknown integration mode')
         if self.candidate_strategy not in ('original','pareto_minimax'):raise ValueError('unknown VNA candidate strategy')
@@ -341,6 +346,8 @@ class ReplayCorrection:
 
     def step(self,model,optimizer,inputs,losses,sites,step_size,*,penalty=None,damping=None,
              update_norm=None,compute_seconds=None,trial_guard=None):
+        update_norm=self.config.physical_update_norm if update_norm is None else update_norm
+        if self.config.physical_budget_policy=='matched' and update_norm is None:raise ValueError('matched physical budget requires an update norm')
         if not math.isfinite(step_size) or step_size<=0:raise ValueError('positive finite physical step required')
         for name,value in (('damping',damping),('update_norm',update_norm),('compute_seconds',compute_seconds)):
             if value is not None and (not math.isfinite(value) or value<=0):raise ValueError(f'{name} must be positive finite or None')
@@ -352,7 +359,7 @@ class ReplayCorrection:
         row=dict(application=self.applications,mode=self.config.mode,kernel=self.config.kernel,
             constrained=self.config.constrained,loss_components=[c.name for c in losses.components],
             damping_source='shared_diagnostic_lock' if damping is not None else 'window_trace',
-            update_norm_budget=update_norm,compute_budget_seconds=compute_seconds,
+            update_norm_budget=update_norm,physical_budget_policy=self.config.physical_budget_policy,compute_budget_seconds=compute_seconds,
             acceptance='componentwise_nonincrease' if self.config.constrained else 'total_nonincrease')
         token=_compute_deadline.set(started+compute_seconds if compute_seconds is not None else _compute_deadline.get())
         try:
@@ -395,6 +402,8 @@ class ReplayCorrection:
             before=evaluate(model,inputs,losses.components);trials=[];accepted=False;after=before;norm=0.;used=0.
             direction_norm=float(proposal.direction.norm())
             maximum_step=min(step_size,update_norm/direction_norm) if update_norm is not None and direction_norm>0 else step_size
+            if self.config.physical_budget_policy=='matched' and direction_norm>0:
+                maximum_step=(update_norm/direction_norm)*(1-16*torch.finfo(next(model.parameters()).dtype).eps)
             row.update(maximum_step=maximum_step,proposed_direction_norm=direction_norm,
                 first_order_gain_per_unit_norm=sum(row.get('first_order_gains',[0.]))/direction_norm if direction_norm else None)
             for trial in range(self.config.max_trials):
@@ -426,6 +435,8 @@ class ReplayCorrection:
                 in_budget=update_norm is None or physical_norm<=update_norm
                 trials.append(dict(step=s,before=before,after=after,physical_gains=gains.tolist(),feasible=feasible,
                     physical_norm=physical_norm,in_update_budget=in_budget,
+                    nominal_update_norm=s*direction_norm,
+                    physical_budget_fill_ratio=physical_norm/update_norm if update_norm is not None else None,
                     meaningful_improvement=meaningful,improvement_thresholds=thresholds,
                     eval_after=eval_after,eval_nonincrease=eval_ok,train_gate=train_gate,eval_gate=eval_gate,
                     additional_gate=extra_gate,

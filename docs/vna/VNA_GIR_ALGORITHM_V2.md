@@ -62,3 +62,23 @@ H2 calibration trials use the same feature_drift_budget as the applied correctio
 The eight existing main/ablation notebooks are repinned to this source but retain
 their original configs. The four *_v2.json files require explicit selection;
 repinning alone does not activate algorithm V2.
+
+## Review update: opt-in nominal physical-size pairing
+
+CorrectionConfig adds physical_update_norm=None and physical_budget_policy=cap.
+An explicit step(update_norm=...) overrides the configured norm. Default cap
+keeps min(LR, budget/||d||); matched uses (budget/||d||)*(1-16*eps_dtype)
+for trial0 followed by the same dyadic backtracking. Matched requires a budget.
+Trials log nominal_update_norm, measured physical_norm and physical_budget_fill_ratio.
+The measured norm gate remains strict: roundoff can make trial0 exceed the cap
+and require backtracking. Neither accepted norm nor compute is thereby matched.
+
+Separate h1/h4_physical_matched_v1/v2.json configs differ only in candidate
+strategy. Their absolute norm0.01 is an unvalidated example. Existing notebooks
+retain their original configs; choose these paired configs explicitly.
+
+H3 candidate logs include certified_plasticity_diagnostics (surrogate and recovery
+separation, eligibility and uncertainty) and aggregate plasticity_certificate_counts.
+Eligibility still requires strict interval separation in both original V2 gates.
+Uncertainty denotes overlapping/touching comparison intervals or nonfinite bounds;
+these are conditional local surrogate statements, not future-plasticity guarantees.

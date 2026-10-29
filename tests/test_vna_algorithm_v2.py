@@ -132,6 +132,10 @@ def test_h3_certified_plasticity_policy_is_used_for_real_candidate_selection():
         damping_relative=1.),max_candidates=4).step(
         net,opt,x,loss,[HookSite(net,'0','2','linear',between=('1',))])
     assert result['gir_selection_policy']=='certified_plasticity'
+    certificates=[r['certified_plasticity_diagnostics'] for r in result['trials'] if 'certified_plasticity_diagnostics' in r]
+    assert result['plasticity_certificate_counts']['evaluated']==len(certificates)
+    assert result['plasticity_certificate_counts']['eligible']==sum(c['eligible'] for c in certificates)
+    assert result['plasticity_certificate_counts']['uncertain']==sum(c['uncertain'] for c in certificates)
     assert result['status'] in ('ACCEPTED','IDENTITY')
     if result['status']=='ACCEPTED':
         winner=next(t for t in result['trials'] if t['candidate']==result['choice'])
