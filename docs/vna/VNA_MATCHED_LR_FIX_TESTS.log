@@ -1,0 +1,52 @@
+Before fix: expected regression failure
+F
+=================================== FAILURES ===================================
+__________ test_matched_backtracking_reaches_small_lr_reference_step ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x116d203a0>
+
+    def test_matched_backtracking_reaches_small_lr_reference_step(monkeypatch):
+        """An LR-sized valid correction must remain reachable after a large matched trial."""
+        observations={}
+        for policy in ('cap','matched'):
+            net=nn.Linear(1,1,bias=False).double()
+            with torch.no_grad():net.weight.fill_(1e-8)
+            optimizer=torch.optim.SGD(net.parameters(),lr=1e-8,momentum=.9)
+            engine=ReplayCorrection(CorrectionConfig(physical_update_norm=.01,
+                physical_budget_policy=policy,max_trials=12))
+            monkeypatch.setattr(engine,'propose',lambda *a,**kw:CandidateUpdate(
+                torch.ones(1,dtype=torch.double),torch.ones(1,1,dtype=torch.double),None,{}))
+            losses=SimpleNamespace(components=(LossComponent('scaled_square',
+                lambda z:1e16*z.square().mean()),))
+            row=engine.step(net,optimizer,torch.ones(2,1,dtype=torch.double),losses,[],1e-8)
+>           assert row['status']=='ACCEPTED'
+E           AssertionError: assert 'REJECTED' == 'ACCEPTED'
+E             
+E             - ACCEPTED
+E             + REJECTED
+
+tests/test_vna_v2_review.py:120: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_vna_v2_review.py::test_matched_backtracking_reaches_small_lr_reference_step
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 6 deselected in 4.18s
+
+
+After fix: affected test files
+................................................................         [100%]
+=============================== warnings summary ===============================
+tests/test_vna_algorithm_v2.py::test_h2_calibration_trials_use_the_same_drift_gate
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/wandb/sdk/launch/builder/build.py:11: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+tests/test_vna_algorithm_v2.py::test_h2_calibration_trials_use_the_same_drift_gate
+  /private/tmp/vna_h2_final_env/lib/python3.10/site-packages/wandb/analytics/sentry.py:90: SentryHubDeprecationWarning: `sentry_sdk.Hub` is deprecated and will be removed in a future major release. Please consult our 1.x to 2.x migration guide for details on how to migrate `Hub` usage to the new API: https://docs.sentry.io/platforms/python/migration/1.x-to-2.x
+    self.hub = sentry_sdk.Hub(client)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+64 passed, 2 warnings in 42.84s
+
+
+Final reference-field regressions
+..                                                                       [100%]
+2 passed, 6 deselected in 2.82s

@@ -401,13 +401,17 @@ class ReplayCorrection:
             row['eval_losses_before']=eval_losses_before
             before=evaluate(model,inputs,losses.components);trials=[];accepted=False;after=before;norm=0.;used=0.
             direction_norm=float(proposal.direction.norm())
-            maximum_step=min(step_size,update_norm/direction_norm) if update_norm is not None and direction_norm>0 else step_size
+            lr_limited_step=min(step_size,update_norm/direction_norm) if update_norm is not None and direction_norm>0 else step_size
+            maximum_step=lr_limited_step
             if self.config.physical_budget_policy=='matched' and direction_norm>0:
                 maximum_step=(update_norm/direction_norm)*(1-16*torch.finfo(next(model.parameters()).dtype).eps)
             row.update(maximum_step=maximum_step,proposed_direction_norm=direction_norm,
                 first_order_gain_per_unit_norm=sum(row.get('first_order_gains',[0.]))/direction_norm if direction_norm else None)
+            if self.config.physical_budget_policy=='matched':row['lr_limited_reference_step']=lr_limited_step
             for trial in range(self.config.max_trials):
                 self.boundary();state.restore();s=maximum_step*(.5**trial)
+                if trial and self.config.physical_budget_policy=='matched':
+                    s=min(s,lr_limited_step*(.5**(trial-1)))
                 subtract(model,proposal.direction,s)
                 physical=(initial-vector(model))/s
                 gains=proposal.gradients@physical

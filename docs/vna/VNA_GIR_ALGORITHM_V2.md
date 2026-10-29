@@ -68,7 +68,10 @@ repinning alone does not activate algorithm V2.
 CorrectionConfig adds physical_update_norm=None and physical_budget_policy=cap.
 An explicit step(update_norm=...) overrides the configured norm. Default cap
 keeps min(LR, budget/||d||); matched uses (budget/||d||)*(1-16*eps_dtype)
-for trial0 followed by the same dyadic backtracking. Matched requires a budget.
+for trial0. For k>=1 use min(s0/2**k, lr_limited_step/2**(k-1)), where
+lr_limited_step=min(LR,budget/||d||). This reaches at most the initial cap step
+by trial1 when needed while preserving near-LR dyadic trials. Matched requires
+a budget; max_trials=1 tests trial0 only and has no LR fallback.
 Trials log nominal_update_norm, measured physical_norm and physical_budget_fill_ratio.
 The measured norm gate remains strict: roundoff can make trial0 exceed the cap
 and require backtracking. Neither accepted norm nor compute is thereby matched.
@@ -82,3 +85,6 @@ separation, eligibility and uncertainty) and aggregate plasticity_certificate_co
 Eligibility still requires strict interval separation in both original V2 gates.
 Uncertainty denotes overlapping/touching comparison intervals or nonfinite bounds;
 these are conditional local surrogate statements, not future-plasticity guarantees.
+
+Matched rows log lr_limited_reference_step. The trial limit is unchanged;
+matching nominal trial0 still does not match accepted size or total compute.

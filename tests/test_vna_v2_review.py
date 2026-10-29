@@ -101,3 +101,46 @@ def test_paired_configs_and_h4_propagation():
         controls[1]['candidate_strategy']='original';assert pair[0]==pair[1]
     args=parse_args(['--config','configs/standard_cl/h4_physical_matched_v2.json','--data-dir','/tmp/data','--out','/tmp/result'])
     assert args.physical_update_norm==.01 and args.physical_budget_policy=='matched' and args.candidate_strategy=='pareto_minimax'
+
+
+def test_matched_backtracking_reaches_small_lr_reference_step(monkeypatch):
+    """An LR-sized valid correction must remain reachable after a large matched trial."""
+    observations={}
+    for policy in ('cap','matched'):
+        net=nn.Linear(1,1,bias=False).double()
+        with torch.no_grad():net.weight.fill_(1e-8)
+        optimizer=torch.optim.SGD(net.parameters(),lr=1e-8,momentum=.9)
+        engine=ReplayCorrection(CorrectionConfig(physical_update_norm=.01,
+            physical_budget_policy=policy,max_trials=12))
+        monkeypatch.setattr(engine,'propose',lambda *a,**kw:CandidateUpdate(
+            torch.ones(1,dtype=torch.double),torch.ones(1,1,dtype=torch.double),None,{}))
+        losses=SimpleNamespace(components=(LossComponent('scaled_square',
+            lambda z:1e16*z.square().mean()),))
+        row=engine.step(net,optimizer,torch.ones(2,1,dtype=torch.double),losses,[],1e-8)
+        assert row['status']=='ACCEPTED'
+        assert row['acceptance_detail']=='ACCEPTED_WITH_IMPROVEMENT'
+        assert row['step_norm']==pytest.approx(1e-8,abs=1e-15)
+        assert torch.allclose(net.weight.detach(),torch.zeros_like(net.weight),atol=1e-15)
+        observations[policy]=row
+    assert len(observations['cap']['trials'])==1
+    assert 'lr_limited_reference_step' not in observations['cap']
+    assert observations['matched']['lr_limited_reference_step']==pytest.approx(1e-8)
+    assert observations['matched']['trials'][0]['nominal_update_norm']==pytest.approx(.01)
+    assert observations['matched']['trials'][1]['step']==pytest.approx(1e-8)
+    assert len(observations['matched']['trials'])==2
+
+
+def test_matched_backtracking_retains_original_dyadic_trials_near_lr(monkeypatch):
+    net=nn.Linear(1,1,bias=False).double()
+    with torch.no_grad():net.weight.fill_(1.)
+    opt=torch.optim.SGD(net.parameters(),lr=.01)
+    engine=ReplayCorrection(CorrectionConfig(physical_update_norm=.01,
+        physical_budget_policy='matched',max_trials=4))
+    monkeypatch.setattr(engine,'propose',lambda *a,**kw:CandidateUpdate(
+        torch.ones(1,dtype=torch.double),torch.ones(1,1,dtype=torch.double),None,{}))
+    losses=SimpleNamespace(components=(LossComponent('square',lambda z:z.square().mean()),))
+    result=engine.step(net,opt,torch.ones(2,1,dtype=torch.double),losses,[],.02,
+        trial_guard=lambda _:dict(passed=False))
+    initial=result['maximum_step']
+    assert result['status']=='REJECTED'
+    assert [t['step'] for t in result['trials']]==pytest.approx([initial,initial/2,initial/4,initial/8])

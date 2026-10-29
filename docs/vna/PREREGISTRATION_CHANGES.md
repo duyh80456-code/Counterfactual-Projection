@@ -1692,3 +1692,13 @@ Add explicit conditional H3 surrogate/recovery certificate diagnostics and count
 The strict V2 gate and numerical solver thresholds are unchanged. H2 calibration
 continues using the same feature drift guard as actual corrections. All registered
 default configs remain unchanged; no benchmark performance claim is made.
+
+
+## 2026-10-29 — Matched line search retains the learning-rate reference
+
+Reproduced the supplied small-LR regression: matched exhausted its trial budget
+while cap accepted an improving LR-sized step. Keep matched trial0 unchanged;
+for k>=1 use min(s0/2**k, lr_limited_step/2**(k-1)). Log the reference for
+matched only. Cap and maximum trial count remain unchanged. With max_trials=1
+there is no fallback trial. This changes the opt-in matched acceptance trajectory,
+not PCG certificates, candidate construction, physical gates or default configs.
