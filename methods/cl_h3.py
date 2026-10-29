@@ -229,15 +229,24 @@ class TangentReconfiguration:
                     op=GGNProducts(p,losses.targets,losses.spec,losses.ctx)
                     A=helper._operator(p,op,damping=mu)
                     inverse=A.solve(op.gradient);recovery=float(op.gradient@inverse)/2
+                    # Certified interval for the source-score L - .5*g^T*x_hat.
+                    bound=.5*float(op.gradient.norm())*A.solves[-1]['error_bound']
                     split=op.H(p.Jv(inverse));virtual_gain=float(split@p.KE(split).double()) if active else 0.
                     loss=sum(evaluate(net,inputs,losses.components))
                     scores.append(dict(loss=loss,predicted_gn_recovery=recovery,vna_gain=virtual_gain,
-                                       net_surrogate=loss-recovery))
+                                       net_surrogate=loss-recovery,
+                                       net_surrogate_interval=[loss-recovery-bound,loss-recovery+bound],
+                                       net_surrogate_error_bound=bound))
                     solves.extend(A.solves);counts['jvp']+=p.jvp_calls+p.extension_jvp_calls
                     counts['vjp']+=p.vjp_calls+p.extension_vjp_calls
                     return loss-recovery
             result=choose_swap(model,optimizer,inputs,losses.components,candidates,surrogate=objective,eval_acceptance=self.config.eval_acceptance)
             for row,score in zip((r for r in result['trials'] if 'solver_failure' not in r),scores[1:]):row.update(score)
+            if result['choice']!='identity':
+                chosen=next((row for row in result['trials'] if row['candidate']==result['choice']),None)
+                identity=scores[0] if scores else None
+                result['surrogate_wins_identity_certified']=bool(chosen is not None and identity is not None
+                    and chosen.get('net_surrogate_interval',[float('inf'),float('inf')])[1]<identity['net_surrogate_interval'][0])
             if self.max_candidates is not None:
                 for trial in result['trials']:
                     trial['selected_winner']=trial['candidate']==result['choice']

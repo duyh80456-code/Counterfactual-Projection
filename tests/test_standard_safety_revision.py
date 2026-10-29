@@ -191,6 +191,9 @@ def test_h3_current_task_real_correction_and_gir_swap():
     assert result['status']=='ACCEPTED' and result['actual_replacements']==1
     winner=next(t for t in result['trials'] if t['candidate']==result['choice'])
     assert winner['step_norm']>0 and winner['train_gate']['passed'] and winner['eval_gate']['passed']
+    assert isinstance(result['surrogate_wins_identity_certified'],bool)
+    assert len(winner['net_surrogate_interval'])==2
+    assert winner['net_surrogate_interval'][0]<=winner['net_surrogate']<=winner['net_surrogate_interval'][1]
 
 
 def test_iterative_refinement_recovers_solution_without_damping_change(monkeypatch):

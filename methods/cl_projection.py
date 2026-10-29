@@ -124,6 +124,17 @@ class ProjectionOperator:
     def solve(self,rhs):
         started=time.perf_counter();rhs=rhs.detach().double()
         self._audit(rhs)
+        if not bool(torch.isfinite(rhs).all()):
+            raise Uncertified('non-finite linear solve RHS',list(self.solves))
+        if not bool(rhs.any()):
+            # The zero RHS has the exact zero solution for the audited SPD operator.
+            self.solves.append(dict(iterations=0,refinements=[],residual=0.,relative_residual=0.,
+                error_bound=0.,relative_solution_error_bound=0.,
+                max_relative_solution_error=self.max_relative_solution_error,status='CERTIFIED',
+                operator_audit=self.audit,preconditioner_quality=self.preconditioner_quality,
+                mu=self.mu,preconditioner='none',preconditioner_probes=0,breakdown=False,
+                seconds=time.perf_counter()-started))
+            return torch.zeros_like(rhs)
         preconditioner=self._jacobi(rhs)
         result=conjugate_gradient(self,rhs,max_iter=self.max_iterations,tolerance=self.tolerance,
             preconditioner=preconditioner,eps=1e-30,callback=lambda _:self.boundary())
@@ -197,6 +208,10 @@ class ConstraintSolver:
             raise ValueError('finite two-row gradients and aligned candidate required')
         norms=C.norm(dim=1);scales=torch.where(norms>0,norms,torch.ones_like(norms))
         U=C/scales[:,None]
+        if bool((U@d0>=0).all()):
+            # Exactly feasible d0 is the unique metric projection: no constraint solves.
+            if hasattr(self.operator,'_audit'):self.operator._audit(d0)
+            return ConstraintResult(d0,torch.zeros(n,dtype=d0.dtype,device=d0.device),C@d0,0.,0.,0.,'CERTIFIED')
         inverse=torch.stack([self.operator.solve(row) for row in U],1)
         W=U@inverse
         if not torch.isfinite(W).all() or float((W-W.T).norm())>self.tolerance*max(float(W.norm()),1e-30):

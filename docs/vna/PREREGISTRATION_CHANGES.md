@@ -1637,3 +1637,17 @@ H3 keeps its registered cadence and horizon. Save after every epoch containing
 an intervention in addition to periodic saves. An interrupted partial epoch
 replays from the previous checkpoint, with event lists and RNG restored. Increased
 solver and checkpoint cost remains unmeasured on GPU; never truncate automatically.
+
+
+## 2026-10-29 — Correctness integration patch
+
+Apply VNA_GIR_correctness_integration.patch: audited exactly-zero RHS returns
+the exact zero solution; an exactly feasible candidate returns the unchanged
+metric projection without constraint inverse solves. Nonzero RHS certificates
+and physical acceptance gates remain unchanged. This can change numerical
+execution and therefore is not claimed bitwise identical to historical corrections.
+
+H3 logs conditional exact-surrogate intervals using the certified solve error
+bound and the declared SPD lower bound. Strictly separated winner/identity
+intervals are marked surrogate_wins_identity_certified. This is a diagnostic,
+not a new swap gate, a global SPD proof, or a future-accuracy guarantee.

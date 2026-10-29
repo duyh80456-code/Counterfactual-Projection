@@ -62,6 +62,15 @@ stationarity and complementarity and select the lowest primal objective.
 Failure to find a numerically certified active set gives UNCERTIFIED.
 Zero/opposed gradients and zero directions are valid cases.
 
+For a candidate satisfying every normalized halfspace in double precision
+(`U @ d0 >= 0`), the exact metric-projection solution is `d0`, regardless of
+the choice of SPD A. `ConstraintSolver` returns that candidate without the
+two constraint-inverse solves, after the operator's usual finite-probe audit.
+This changes neither the mathematical projection nor the finite physical
+acceptance checks. A right-hand side exactly equal to zero is returned as an
+exact zero solution without Jacobi or PCG, also after the operator audit.
+Neither shortcut weakens the nonzero-RHS residual certificate.
+
 There is **no trust ball** hidden in this QP. The dyadic finite line search
 is separate: initial s is the declared physical LR, at most 12 trials by
 default, each halves s. Constrained arms require both actual window losses
@@ -111,3 +120,11 @@ insertion by recomputation; it is not a nonnegative added-column gain theorem.
 The finite candidate GN objective can change nonmonotonically with its measured
 VNA diagnostic z_c^T K_E,c z_c. Choosing one objective does not prove improvement
 of the other. At most one validated slot replacement is installed per event.
+
+H3 evaluates `Qhat_c = L_c - .5*g_c.T*xhat_c` using an inexact PCG solution.
+If `A_c >= m_c I` and `r_c = g_c - A_c*xhat_c`, then the exact surrogate lies
+within `Qhat_c +/- .5*||g_c||*||r_c||/m_c`. Candidate and identity intervals
+are logged; a winner is marked `surrogate_wins_identity_certified=True` only
+when its upper bound is strictly below the identity's lower bound. This is a
+*conditional exact-surrogate ordering* for fixed actual networks, not a
+guarantee of future-task plasticity or a change to the swap objective.
