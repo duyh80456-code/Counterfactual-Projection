@@ -1,0 +1,5 @@
+setting,site,cases,g_actual_data_q25,g_actual_data_median,g_actual_data_q75,delta_check_q25,delta_check_median,delta_check_q75,delta_check_eval_q25,delta_check_eval_median,delta_check_eval_q75,dead_fraction_q25,dead_fraction_median,dead_fraction_q75,virtual_kept_fraction_q25,virtual_kept_fraction_median,virtual_kept_fraction_q75
+scr,0,60,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.5,0.5,0.6666666666666666,1.0,1.0,1.0
+pmnist,0,60,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.09090909090909091,0.09090909090909091,0.18181818181818182,1.0,1.0,1.0
+pmnist,2,60,0.0,0.011744329382295016,13.59891020672214,0.0,0.0,7.987022399902344e-05,0.0,0.0,7.987022399902344e-05,0.0,0.0,0.18181818181818182,1.0,1.0,1.0
+pmnist,4,60,0.0,0.0,0.9511855923376564,0.0,0.0,8.866190910339355e-07,0.0,0.0,8.866190910339355e-07,0.0,0.0,0.2727272727272727,0.0,1.0,1.0
