@@ -8,7 +8,7 @@ from ett.optim.adam_rowstep import AdamRowStep
 def replace(optimizer,module,name,value,axis,indices):
     old=getattr(module,name)
     if old is None:return
-    new=nn.Parameter(value.detach().clone(),requires_grad=old.requires_grad)
+    new=nn.Parameter(value.detach().to(old).clone(),requires_grad=old.requires_grad)
     state=optimizer.state.pop(old,{})
     mapped={}
     for key,v in state.items():

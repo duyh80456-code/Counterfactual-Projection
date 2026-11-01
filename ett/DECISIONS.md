@@ -69,3 +69,8 @@ Phase0 branch wall times are not a full ETT-vs-BP overhead estimate. No claim of
 
 Configuration files use the JSON subset of YAML1.2, parsed by stdlib json.
 This avoids adding PyYAML to the established .venv CPU runtime.
+
+First real Phase0 attempt at362e8a6 failed before the first valid measurement:
+rebuild installed float64 LS weights into a float32 model. Preserve parameter
+dtype/device during remap; do not change data, seeds or hyperparameters. Retain
+the failed logs and use a new source-tagged output for the corrected run.
