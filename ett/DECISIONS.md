@@ -19,11 +19,11 @@ No old H1–H4 notebook is repurposed to imply it runs ETT. No full pytest or sm
   SWR's original protocol; no SWR baseline or paper result is claimed at Phase0.
 - Seeds data1101/init2201/pool3301 are independent and shared across paired arms.
   Checkpoint pool seed is3301+native step. One experimental seed only.
-- rho0.1, horizons1/10/100;20 evenly spaced anchors including initialization and
-  the final-task tail. Shift an anchor earlier if needed to keep its100 training
-  and8 held-out evaluation examples in its current task. Evaluate all horizons
-  on the same8 future examples starting at anchor+100. No tau gate in Phase0.
-- Statistics use the last4 actual trained batches. No extra SGD updates for ETT.
+- rho0.1, horizons1/10/100;20 eligible anchors after trained-buffer warmup,
+  including the first and final task tails. See Revision1 for reserve/evaluation
+  sizes and validated native-checkpoint reuse. No tau gate in Phase0.
+- Statistics use the Revision1 rolling trained-sample split. No extra SGD
+  updates for ETT apart from the separately declared post-measurement branch.
   Compute cost includes candidate backward, post-training forwards and algebra.
 - Upstream GnT utility is observed without resets on the BP trajectory; at each
   branch checkpoint call its actual test/reset once (replacement rate0.1,
@@ -80,3 +80,56 @@ At81a7d04 SCR hit a zero feature Gram at anchor52625. Core incorrectly tried
 Cholesky before the mandatory C1 dead-first branch. Move exact-zero elimination
 before factorization; no added ridge floor or changed selection heuristic.
 T2 now also checks this singular, all-dead case with BN train/eval adapters.
+
+
+## Revision1 — authoritative window correction (2026-11-01)
+Supersedes every earlier window/evaluation statement above. All measurement
+outputs from81a7d04 are INVALID_WINDOW, including the historical partial report.
+Keep the raw files and native BP checkpoints; never use those losses for a gate.
+
+F1: SCR and PM-small each use1000 *trained* samples, not batches. Samples enter
+a CPU input/label ring after every completed update, including outside a cycle.
+The old chronological800 form G and the GradMax pool; the newest200 are the
+acceptance check. Recompute features at fixed final expanded weights; never
+store feature vectors or aggregate features across changing weights. Contract
+retains the ring. Restore the ring exactly for general ETT checkpoint resume.
+
+MLP capacity=max(1000,20*sum(p_layer)); SCR p7 and PM p36 both yield1000.
+Conv-only capacity=max(5,max_layer ceil(20*p_layer/rows_per_image)), p=9(n+k)+1.
+The adapter caller must declare the actual unfold rows per image for each site;
+missing geometry is rejected. Mixed conv/linear chains also satisfy the MLP
+floor. Conv geometry is a Phase2 prerequisite, not guessed or benchmarked here.
+
+A cycle waits for a full trained buffer. Phase0 first eligible anchor is1000,
+not0; the random untrained checkpoint has no historical samples and cannot meet
+F1/F4. Keep valid saved81a7d04 anchors if >=1000 and the current-task reserve fits,
+then fill the registered20 anchors evenly. Native trajectories/seeds/LR/data are
+unchanged. Only native checkpoints are reused: compare native protocol, dataset
+fingerprint, checkpoint file SHA256, saved state_dict SHA256 and loaded weights.
+Store the hashes and old source in the new protocol. Rerun every branch under
+new source/tag; do not import any old branch metric or old selected coefficient.
+Reconstruct pre-anchor input history from the deterministic stream indices,
+so anchor checkpoints contain model, optimizer and GnT history, not duplicate
+input buffers. The full latest checkpoint still records RNG/measurement progress.
+
+Primary evaluation:1000 untrained current-task examples at anchor+100..1099.
+After that measurement, train N/C/CBP/GM each100 further ordinary stream steps,
+starting at anchor+h, with paired RNG and data. Secondary evaluation uses the
+next disjoint1000 examples at anchor+1100..2099. Shift anchors earlier to keep
+all2100 reserved samples in the current task. net_post is explicitly secondary;
+the original immediate-net sign/median/CBP gate is unchanged.
+
+At h1 compute g_b on b0 *after expansion with the selected incoming weights*.
+Use GE_train=LN(b0 after one step)-LE(b0 after one step) for its C4b ratio.
+Pool ranking energy on the older800 buffer samples is logged separately.
+GradMax-reset uses the same G-buffer pool as ETT. Eval/train acceptance losses
+are computed on the newest200 trained samples, never a next-stream batch.
+
+Storage preflight requires2 GiB free before data creation or experiment output.
+Recheck during checkpoint cadence and pause with state when space drops below
+that threshold. No new Phase0 measurements are authorized by a failed preflight.
+Task-created compressed downloads/SCR data cache may be regenerated from fixed
+seeds/checksums; no checkpoints or historical outputs are deleted to free space.
+
+Targeted verification: only T11/T12 and T2/T9 affected by core buffer/signature
+changes. core/expand.py is unchanged, so no T1 rerun; no full test or smoke.

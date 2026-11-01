@@ -28,13 +28,14 @@ def capture_features(model,x):
     return out,values
 
 
-def single_event(gnt,sites,batch,loss_fn,generator,gradmax=False):
+def single_event(gnt,sites,batch,loss_fn,generator,gradmax=False,*,pool_batch=None):
     with measurement(sites[0].model),torch.no_grad():_,features=capture_features(sites[0].model,batch[0])
     chosen,counts=gnt.test_features(features)
     proposals={}
     if gradmax:
+        if pool_batch is None:raise ValueError('GradMax reset requires trained G-buffer samples')
         for site,units in zip(sites,chosen):
-            if len(units):proposals[site.incoming]=candidates(site,*batch,loss_fn,len(units),generator)
+            if len(units):proposals[site.incoming]=candidates(site,*pool_batch,loss_fn,len(units),generator)
     gnt.gen_new_features(chosen,counts);gnt.update_optim_params(chosen,counts)
     if gradmax:
         with torch.no_grad():

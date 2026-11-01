@@ -10,6 +10,8 @@ from ett.phase0.measure_ge import summarize
 def report(roots,out):
     out=Path(out);out.mkdir(parents=True,exist_ok=True);rows=[];commits=set()
     for root in map(Path,roots):
+        if (root/'VALIDITY.json').exists() and json.loads((root/'VALIDITY.json').read_text()).get('status')=='INVALID_WINDOW':
+            raise ValueError(f'INVALID_WINDOW: {root}')
         state=json.loads((root/'status.json').read_text())
         if state['status']!='COMPLETED':raise ValueError(f'incomplete Phase0 setting: {root}')
         commits.add(state['commit'])

@@ -1,5 +1,5 @@
 {
-  "status": "INCOMPLETE",
+  "status": "INVALID_WINDOW",
   "gate_evaluated": false,
   "source": "81a7d04899c5978a3155df14363c1bd3edcacf0e",
   "tables": [
@@ -166,5 +166,7 @@
     "scr": "Cholesky failure at anchor52625; C1 dead-first ordering fixed subsequently; requires new-source measurement",
     "pmnist": "checkpoint write failure around378912; latest saved BP state at370000; low disk space observed"
   },
-  "note": "Partial diagnostics only. No positive/negative Phase0 gate conclusion; no later phase launched."
+  "note": "INVALID_WINDOW; retain for audit only, never use these measurements for method conclusions or gates.",
+  "date": "2026-11-01",
+  "reason": "ETT revision1: undersampled Gram/pool/acceptance and future-batch first-order ratio; native BP checkpoints remain reusable after validation"
 }

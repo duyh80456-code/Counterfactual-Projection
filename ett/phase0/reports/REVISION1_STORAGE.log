@@ -1,0 +1,3 @@
+STORAGE PREFLIGHT BLOCKED
+Phase0 requires at least 2 GiB free before running; available=163540992 bytes, required=2147483648
+No data generation, branch measurement, or Phase1/2 launched.

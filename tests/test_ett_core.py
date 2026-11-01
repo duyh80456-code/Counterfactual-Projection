@@ -57,10 +57,11 @@ def test_T2_dead_units_exact_train_eval(conv):
     for t,ref in zip((False,True),before):assert float((output(net,x,t)-ref).abs().max())<1e-12
     # C1 also handles a wholly zero feature Gram without inventing a ridge floor.
     with torch.no_grad():site.bn.weight.zero_();site.bn.bias.fill_(-1)
-    ref=output(net,x,False);engine=ETT(net,opt,[site])
+    ref=output(net,x,False);engine=ETT(net,opt,[site],spatial_rows={site.incoming:25} if conv else None)
     engine.active=dict(original={site.incoming:1},trained=0,expand_seconds=0.,train_seconds=0.)
-    engine.recent.append((x,y));engine.ages[site.incoming].fill_(engine.maturity)
-    records=engine.contract((x,y),nn.functional.mse_loss)
+    while len(engine.buffer)<engine.buffer.capacity:engine.buffer.append((x,y))
+    engine.ages[site.incoming].fill_(engine.maturity)
+    records=engine.contract(nn.functional.mse_loss)
     assert records[0]['exact_dead_path'] and records[0]['cholesky_attempts']==[]
     assert float((output(net,x,False)-ref).abs().max())<1e-12
 
@@ -172,3 +173,45 @@ def test_T10_zero_training_drop_virtual_is_bitwise_identity(kind):
     for idx,st in state['state'].items():
         for key,v in st.items():assert torch.equal(now['state'][idx][key],v)
     assert torch.equal(output(net,x,False),ref)
+
+
+def test_T11_trained_buffer_rolls_across_cycles_without_leakage():
+    net=nn.Sequential(nn.Linear(1,2),nn.ReLU(),nn.Linear(2,1)).double()
+    opt=torch.optim.SGD(net.parameters(),lr=.01)
+    engine=ETT(net,opt,[LinearUnitLayer(net,'0','2','1')],T=10000,h=1)
+    assert engine.buffer.capacity==1000
+    for start in range(0,1200,100):
+        x=torch.arange(start,start+100,dtype=torch.double)[:,None]/1500
+        engine.after_step((x,x))
+    assert engine.active is None
+    stats,check,info=engine.buffer.split()
+    assert info['gram_ids']==list(range(200,1000)) and info['check_ids']==list(range(1000,1200))
+    assert set(info['gram_ids']).isdisjoint(info['check_ids'])
+    engine.begin(nn.functional.mse_loss)
+    assert engine.active['init_buffer']['gram_ids']==info['gram_ids']
+    x=torch.arange(1200,1500,dtype=torch.double)[:,None]/1500
+    engine.after_step((x,x))
+    stats,check,info=engine.buffer.split()
+    assert info['gram_ids']==list(range(500,1300)) and info['check_ids']==list(range(1300,1500))
+    assert all(i<engine.buffer.seen for i in info['gram_ids']+info['check_ids'])
+    saved=engine.state_dict();engine.load_state_dict(saved)
+    assert engine.buffer.split()[2]==info
+    records=engine.contract(nn.functional.mse_loss,acceptance=False)
+    assert records[0]['gram_ids']==info['gram_ids'] and records[0]['check_ids']==info['check_ids']
+    assert len(engine.buffer)==1000  # contraction must not discard pre-cycle history
+
+
+def test_T12_out_of_sample_ls_error_is_bounded_with_large_buffer():
+    torch.manual_seed(27)
+    hidden=nn.Linear(10,6).double()
+    X=torch.randn(1000,10,dtype=torch.double);future=torch.randn(1000,10,dtype=torch.double)
+    with torch.no_grad():
+        H=torch.relu(hidden(X));HF=torch.relu(hidden(future))
+    A=torch.cat((H,torch.ones(1000,1,dtype=torch.double)),1)
+    B=torch.cat((HF,torch.ones(1000,1,dtype=torch.double)),1)
+    W=torch.randn(7,2,dtype=torch.double);S=[0,1,3,4,5,6]
+    assert len(A)>=20*A.shape[1]
+    trained=A[:800];fitted=compensate(trained.T@trained,W,S)
+    in_sample=float((trained@W-trained[:,S]@fitted).square().sum()/len(trained))
+    out_sample=float((B@W-B[:,S]@fitted).square().sum()/len(B))
+    assert out_sample<=2*in_sample+1e-8

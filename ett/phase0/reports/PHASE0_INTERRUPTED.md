@@ -1,3 +1,9 @@
+# Superseded: INVALID_WINDOW
+
+The revision1 review invalidates every measurement below; only native BP
+checkpoints may be reused after hash/protocol checks. No numerical or method
+conclusion may be drawn from this historical report.
+
 # Phase0 interrupted — 2026-11-01
 
 Real source81a7d04, unchanged registered data/init/pool seeds and hyperparameters.
