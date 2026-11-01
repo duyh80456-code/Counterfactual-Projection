@@ -32,3 +32,5 @@ not source virtualenv or raw datasets. Data is regenerated/downloaded determinis
 Final output: Phase0 gate table (primary net versus native and CBP), secondary
 net_post, JSONL/CSV/plots ZIP and full resumable archive. Always stop after Phase0.
 The earlier local run did not pass; no Phase1 training is automatically scheduled.
+
+Pinned source:6ea4c7daa029d20aba7c0230bfbf38f9151e935b.
