@@ -147,6 +147,7 @@ def check_storage(path):
 
 
 def reusable_anchors(cfg,batch_fingerprint):
+    if not cfg.get('reuse_native_from'):return {}
     root=Path(cfg['reuse_native_from']);latest=torch.load(root/'latest.pt',weights_only=False)
     if latest['data_fingerprint']!=batch_fingerprint:raise ValueError('native reuse dataset fingerprint mismatch')
     native_keys=('setting','seed','data_seed','init_seed','steps','inputs','hidden','outputs','lr','flip_after','target_features','flipping_bits','beta','tasks','cbp_maturity','rho')
@@ -170,7 +171,8 @@ def run(args):
         raise ValueError('Choose a fresh output tag; INVALID_WINDOW measurements must remain unchanged')
     out.mkdir(parents=True,exist_ok=True)
     commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-    protocol=dict(commit=commit,config=cfg,phase=0,window_protocol='trained_1000_80_20_v1',device='cpu',dtype='float32',batch_size=1,
+    upstream=cbp.upstream_identity()
+    protocol=dict(commit=commit,upstream=upstream,config=cfg,phase=0,window_protocol='trained_1000_80_20_v1',device='cpu',dtype='float32',batch_size=1,
                   config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
                   required_free_bytes=512*1024**2,evaluation_samples=cfg['evaluation_samples'],post_steps=cfg['post_steps'],
                   first_order_scope='same b0 after one native/expanded SGD step; not future evaluation loss')

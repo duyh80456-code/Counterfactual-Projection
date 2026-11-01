@@ -150,3 +150,27 @@ GradMax pool forwards in blocks matching the native training batch size. A
 single pooled800-sample forward changes BN statistics and is not equivalent.
 Current SCR/PM-small models have no BN. Do not use the current pooled-forward
 implementation as a BN Phase3 implementation or as evidence for that setting.
+
+
+## Portable CPU Phase0 notebook — 2026-11-01
+The notebook uses the existing ETT diagnostic runner without changing core,
+losses or gate. It removes only the local reuse_native_from/reuse_source keys
+from effective configs and starts each BP trajectory fresh. There are20 fresh
+evenly spaced anchors (shifted for trained history/current-task reserves), so
+this is not an exact-anchor replay of the local c9fdc52 run. No old Output/Gram/
+source overlay is required. Optional previous notebook Output is for exact resume.
+
+Record/check LoP commit a6b79580d85f3025bdb601566d3627c5f489f13b and hashes of
+used upstream files in protocol.json. The module remains independent of the
+retired VNA runtime. Native reuse remains available to existing local configs.
+Four counterfactual branches run serially with isolated state/RNG; the two
+settings run concurrently in CPU processes. No claim of four-worker parallelism.
+
+This Phase0 PM-small/SGD diagnostic does not reproduce the full Nature benchmark.
+The proposed Phase1 work must first audit official repositories, wrap the native
+training protocols, and validate BP/CBP trends before interpreting baseline tables.
+No Phase1/official-baseline port is implemented or launched by this notebook.
+The completed local Phase0 gate failed; this notebook never promotes itself to
+later phases, regardless of the fresh-run gate result. No additional model test,
+pytest, smoke or local retraining is run for notebook construction; cells are
+compiled statically. Kaggle execution and CPU runtime installation remain untested.

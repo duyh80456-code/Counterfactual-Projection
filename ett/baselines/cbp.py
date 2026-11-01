@@ -2,13 +2,28 @@
 from copy import deepcopy
 from pathlib import Path
 import sys
+import subprocess
+import hashlib
 import torch
 from ett.core.expand import candidates
 from ett.core.stats import measurement
 
 
+UPSTREAM=Path(__file__).resolve().parents[2]/'third_party/loss-of-plasticity'
+UPSTREAM_PIN='a6b79580d85f3025bdb601566d3627c5f489f13b'
+
+
+def upstream_identity():
+    top=Path(subprocess.check_output(['git','-C',str(UPSTREAM),'rev-parse','--show-toplevel'],text=True).strip())
+    actual=subprocess.check_output(['git','-C',str(UPSTREAM),'rev-parse','HEAD'],text=True).strip()
+    if top.resolve()!=UPSTREAM.resolve() or actual!=UPSTREAM_PIN:raise ValueError('ETT upstream loss-of-plasticity pin mismatch')
+    names=('lop/algos/gnt.py','lop/nets/fix_ltu_net.py','lop/utils/ltu.py')
+    return dict(repository='https://github.com/shibhansh/loss-of-plasticity',commit=actual,
+                files={name:hashlib.sha256((UPSTREAM/name).read_bytes()).hexdigest() for name in names})
+
+
 def make(model,opt,cfg):
-    sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'third_party/loss-of-plasticity'))
+    sys.path.insert(0,str(UPSTREAM))
     from lop.algos.gnt import GnT
     return GnT(model,hidden_activation='relu',opt=opt,decay_rate=.99,
         replacement_rate=cfg['rho'],maturity_threshold=cfg['cbp_maturity'],util_type='adaptable_contribution')
