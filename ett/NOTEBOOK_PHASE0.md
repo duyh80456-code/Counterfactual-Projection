@@ -34,3 +34,15 @@ net_post, JSONL/CSV/plots ZIP and full resumable archive. Always stop after Phas
 The earlier local run did not pass; no Phase1 training is automatically scheduled.
 
 Pinned source:6ea4c7daa029d20aba7c0230bfbf38f9151e935b.
+
+## CPU installer correction
+uv prioritizes extra-index-url above index-url. The CPU index is now the extra
+(high-priority) index; PyPI is the default fallback. The earlier inverted flags
+made uv see PyPI torch first and reject the +cpu pin. Keep the same CPU versions
+and default first-index policy; do not switch to CUDA wheels or unsafe-best-match.
+Official index semantics: https://docs.astral.sh/uv/concepts/indexes/
+
+The corrected flags were resolved with uv0.13.6 for Linux x86_64/Python3.10,
+without installing Torch or running models/tests. Full Kaggle execution remains
+unverified. See phase0/reports/CPU_SETUP_RESOLVER.log. The failed setup leaves no
+ready marker, so rerunning the corrected setup cell safely retries installation.

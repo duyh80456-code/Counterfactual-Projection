@@ -53,8 +53,9 @@ if not Path(PYTHON).exists():
 ready=ENV_DIR/'ett_packages.json'
 packages={'torch':'2.2.2+cpu','torchvision':'0.17.2+cpu','numpy':'1.26.4','matplotlib':'3.8.4'}
 if not ready.exists() or json.loads(ready.read_text())!=packages:
+    # uv prioritizes extra-index-url; CPU wheels must be searched before PyPI.
     subprocess.run([sys.executable,'-m','uv','pip','install','--python',PYTHON,
-        '--index-url','https://download.pytorch.org/whl/cpu','--extra-index-url','https://pypi.org/simple',
+        '--index-url','https://pypi.org/simple','--extra-index-url','https://download.pytorch.org/whl/cpu',
         'torch==2.2.2+cpu','torchvision==0.17.2+cpu'],check=True)
     subprocess.run([sys.executable,'-m','uv','pip','install','--python',PYTHON,
         'numpy==1.26.4','matplotlib==3.8.4'],check=True)
