@@ -1,0 +1,20 @@
+setting: pmnist
+seed: 0
+data_seed: 1101
+init_seed: 2201
+ett_seed: 3301
+tasks: 20
+steps: 1200000
+inputs: 784
+hidden: [10, 10, 10]
+outputs: 10
+lr: 0.01
+rho: 0.1
+horizons: [1, 10, 100]
+checkpoints: 20
+evaluation_batches: 8
+T: 10000
+maturity: 10000
+cbp_maturity: 100
+window: 4
+checkpoint_every: 10000

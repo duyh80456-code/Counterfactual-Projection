@@ -1,0 +1,23 @@
+setting: scr
+seed: 0
+data_seed: 1101
+init_seed: 2201
+ett_seed: 3301
+steps: 1000000
+inputs: 20
+hidden: [5]
+outputs: 1
+flip_after: 10000
+target_features: 100
+flipping_bits: 15
+beta: 0.7
+lr: 0.01
+rho: 0.1
+horizons: [1, 10, 100]
+checkpoints: 20
+evaluation_batches: 8
+T: 10000
+maturity: 10000
+cbp_maturity: 100
+window: 4
+checkpoint_every: 10000
