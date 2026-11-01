@@ -66,3 +66,6 @@ Passing this diagnostic is not the final benchmark success criterion. Stop after
 Phase0 either way; Phase1/2 are not automatically authorized by a positive gate.
 Phase0 branch wall times are not a full ETT-vs-BP overhead estimate. No claim of
 <=3% overhead or compute matching until the full-run phase measures it.
+
+Configuration files use the JSON subset of YAML1.2, parsed by stdlib json.
+This avoids adding PyYAML to the established .venv CPU runtime.

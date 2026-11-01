@@ -11,7 +11,6 @@ import subprocess
 import time
 import torch
 from torch import nn
-import yaml
 from experiments.io_utils import atomic_torch_save,atomic_json_save,write_csv
 from ett.core.units import discover
 from ett.core.ett import ETT,measured_loss
@@ -105,7 +104,7 @@ def paired(model,opt,gnt,cfg,batches,eval_batches,step,h,loss_fn,cycle):
 
 
 def run(args):
-    cfg=yaml.safe_load(Path(args.config).read_text());out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
+    cfg=json.loads(Path(args.config).read_text());out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
     protocol=dict(commit=commit,config=cfg,phase=0,device='cpu',dtype='float32',batch_size=1,
                   config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest())
