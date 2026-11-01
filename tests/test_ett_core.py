@@ -55,6 +55,14 @@ def test_T2_dead_units_exact_train_eval(conv):
     W=site.weights();keep=[1,2];idx=columns(keep,site.group_size)+[len(W)-1]
     rebuild(site,opt,keep,W[idx])
     for t,ref in zip((False,True),before):assert float((output(net,x,t)-ref).abs().max())<1e-12
+    # C1 also handles a wholly zero feature Gram without inventing a ridge floor.
+    with torch.no_grad():site.bn.weight.zero_();site.bn.bias.fill_(-1)
+    ref=output(net,x,False);engine=ETT(net,opt,[site])
+    engine.active=dict(original={site.incoming:1},trained=0,expand_seconds=0.,train_seconds=0.)
+    engine.recent.append((x,y));engine.ages[site.incoming].fill_(engine.maturity)
+    records=engine.contract((x,y),nn.functional.mse_loss)
+    assert records[0]['exact_dead_path'] and records[0]['cholesky_attempts']==[]
+    assert float((output(net,x,False)-ref).abs().max())<1e-12
 
 
 @pytest.mark.parametrize('conv',[False,True])

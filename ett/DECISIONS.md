@@ -36,8 +36,9 @@ No old H1–H4 notebook is repurposed to imply it runs ETT. No full pytest or sm
   and compensation are exact in that supplied metric (AppendixB). Report both
   `g_selected_metric` and `g_actual_data`; do not claim ridge costs equal raw LS
   residuals. T5–T7 compare unregularized full-rank problems and AppendixB.
-- An all-zero feature block has zero prescribed ridge scale. No arbitrary damping
-  floor is added. After the prescribed Cholesky retries, log and stop with failure
+- An all-zero feature block has zero prescribed ridge scale. Use the C1 exact-dead
+  path before any factorization. No arbitrary damping floor is added. For genuine
+  remaining failures after the prescribed Cholesky retries, log and stop with failure
   rather than fabricate a result or silently retain a wider deployed model. The
   native Phase0 checkpoint remains resumable. This is deliberately stricter than
   “skip the layer”: skipping cannot leave an expanded deployment, and no fallback
@@ -74,3 +75,8 @@ First real Phase0 attempt at362e8a6 failed before the first valid measurement:
 rebuild installed float64 LS weights into a float32 model. Preserve parameter
 dtype/device during remap; do not change data, seeds or hyperparameters. Retain
 the failed logs and use a new source-tagged output for the corrected run.
+
+At81a7d04 SCR hit a zero feature Gram at anchor52625. Core incorrectly tried
+Cholesky before the mandatory C1 dead-first branch. Move exact-zero elimination
+before factorization; no added ridge floor or changed selection heuristic.
+T2 now also checks this singular, all-dead case with BN train/eval adapters.

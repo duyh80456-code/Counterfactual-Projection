@@ -70,22 +70,38 @@ class ETT:
             row=dict(cycle=self.cycle,step=self.steps,site=site.incoming,k=k,h=self.active['trained'],
                 expand_seconds=self.active['expand_seconds'],train_seconds=self.active['train_seconds'])
             start=time.perf_counter();G=gram(site,list(self.recent));W=site.weights()
-            Greg,L,attempts=regularize(G,site.width*site.group_size)
-            row.update(stats_seconds=time.perf_counter()-start,cholesky_attempts=attempts)
-            if Greg is None:
-                # A failed numeric gate stops the run with expanded state available to checkpoint.
-                row.update(status='FAILED_CHOLESKY');self.events.append(row)
-                raise ArithmeticError('ETT Gram Cholesky failed; preserve expanded checkpoint')
-            start=time.perf_counter()
-            result=select(G,Greg,W,site.width,k,original,self.ages[site.incoming],self.maturity,
-                          self.cycle,group_size=site.group_size)
-            row.update(result,select_seconds=time.perf_counter()-start)
+            energies=G.diag()[:site.width*site.group_size].reshape(site.width,site.group_size).sum(1)
+            threshold=1e-12*float(energies.sum())/site.width
+            dead=[u for u in range(site.width) if (u>=original or self.ages[site.incoming][u]>=self.maturity)
+                  and (float(energies[u])==0 or float(energies[u])<threshold)]
+            dead.sort(key=lambda u:(u>=original,u))
+            exact_dead=len(dead)>=k and all(float(energies[u])==0 for u in dead[:k])
+            if exact_dead:
+                # C1 precedes C3: exact-zero removals need no invertible Gram or LS solve.
+                Greg=G;attempts=[]
+                result=dict(dropped=dead[:k],g_score=0.,g_back=0.,g=0.,dead_units=len(dead),
+                            virtual_kept=k-sum(u>=original for u in dead[:k]))
+                if site.width<=20 and k<=3 and self.cycle%10==0:result.update(opt=0.,ratio=None)
+            else:
+                Greg,L,attempts=regularize(G,site.width*site.group_size)
+                if Greg is None:
+                    row.update(status='FAILED_CHOLESKY',cholesky_attempts=attempts)
+                    self.events.append(row)
+                    raise ArithmeticError('ETT Gram Cholesky failed; preserve expanded checkpoint')
+                result=select(G,Greg,W,site.width,k,original,self.ages[site.incoming],self.maturity,
+                              self.cycle,group_size=site.group_size)
+            row.update(stats_seconds=time.perf_counter()-start,cholesky_attempts=attempts,
+                       exact_dead_path=exact_dead)
+            row.update(result,select_seconds=0. if exact_dead else time.perf_counter()-start)
             dropped=list(range(original,site.width)) if self.drop else result['dropped']
             def build(drop):
                 keep=slot_order(original,[u for u in range(site.width) if u not in drop])
                 cols=columns(keep,site.group_size)
                 if site.intercept:cols.append(len(G)-1)
-                return keep,cols,compensate(Greg,W,cols)
+                removed_cols=columns(drop,site.group_size)
+                if all(float(G.diag()[c])==0 for c in removed_cols):out=W[cols].clone()
+                else:out=compensate(Greg,W,cols)
+                return keep,cols,out
             start=time.perf_counter();kept,cols,out=build(dropped)
             row['compensate_seconds']=time.perf_counter()-start
             reference=measured_loss(self.model,check_batch,loss_fn)
