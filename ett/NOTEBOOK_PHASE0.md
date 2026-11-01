@@ -33,7 +33,7 @@ Final output: Phase0 gate table (primary net versus native and CBP), secondary
 net_post, JSONL/CSV/plots ZIP and full resumable archive. Always stop after Phase0.
 The earlier local run did not pass; no Phase1 training is automatically scheduled.
 
-Pinned source:6ea4c7daa029d20aba7c0230bfbf38f9151e935b.
+Pinned source:d903da6be00016021ca596a2f5ad31c77fdd09c3.
 
 ## CPU installer correction
 uv prioritizes extra-index-url above index-url. The CPU index is now the extra
