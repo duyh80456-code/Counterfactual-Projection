@@ -141,8 +141,8 @@ def state_hash(state):
 def check_storage(path):
     existing=Path(path).resolve()
     while not existing.exists():existing=existing.parent
-    free=shutil.disk_usage(existing).free;required=2*1024**3
-    if free<required:raise OSError(f'Phase0 requires at least 2 GiB free before running; available={free} bytes, required={required}')
+    free=shutil.disk_usage(existing).free;required=512*1024**2
+    if free<required:raise OSError(f'Phase0 requires at least 512 MiB free before running; available={free} bytes, required={required}')
     return free
 
 
@@ -164,7 +164,7 @@ def reusable_anchors(cfg,batch_fingerprint):
 
 def run(args):
     free_bytes=check_storage(args.out)
-    print(f'Phase0 storage preflight free_bytes={free_bytes} required_bytes={2*1024**3}',flush=True)
+    print(f'Phase0 storage preflight free_bytes={free_bytes} required_bytes={512*1024**2}',flush=True)
     cfg=json.loads(Path(args.config).read_text());out=Path(args.out)
     if (out/'VALIDITY.json').exists() and json.loads((out/'VALIDITY.json').read_text()).get('status')=='INVALID_WINDOW':
         raise ValueError('Choose a fresh output tag; INVALID_WINDOW measurements must remain unchanged')
@@ -172,7 +172,7 @@ def run(args):
     commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
     protocol=dict(commit=commit,config=cfg,phase=0,window_protocol='trained_1000_80_20_v1',device='cpu',dtype='float32',batch_size=1,
                   config_sha256=hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
-                  required_free_bytes=2*1024**3,evaluation_samples=cfg['evaluation_samples'],post_steps=cfg['post_steps'],
+                  required_free_bytes=512*1024**2,evaluation_samples=cfg['evaluation_samples'],post_steps=cfg['post_steps'],
                   first_order_scope='same b0 after one native/expanded SGD step; not future evaluation loss')
     torch.set_num_threads(1)
     if cfg['setting']=='scr':
@@ -221,7 +221,7 @@ def run(args):
         write_csv(out/'measurements.csv',flat)
     try:
         while step<cfg['steps']:
-            if step-last_checkpoint>=cfg['checkpoint_every'] and shutil.disk_usage(out).free<2*1024**3:
+            if step-last_checkpoint>=cfg['checkpoint_every'] and shutil.disk_usage(out).free<512*1024**2:
                 save('PAUSED_STORAGE');return 75
             if args.deadline_seconds and time.perf_counter()-start>=args.deadline_seconds:
                 save('PAUSED');return 75

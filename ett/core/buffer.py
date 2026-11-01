@@ -1,6 +1,8 @@
 """F1/F2: only input/label samples from completed training steps, never features."""
 from collections import deque
 from copy import deepcopy
+import hashlib
+import json
 import torch
 
 
@@ -24,7 +26,10 @@ class SampleBuffer:
             return (torch.stack([r[0] for r in rows]).to(device),torch.stack([r[1] for r in rows]).to(device)),[r[2] for r in rows]
         g,gids=pack(items[:cut]);check,cids=pack(items[cut:])
         return g,check,dict(buffer_samples=len(self),gram_samples=cut,check_samples=len(self)-cut,
-            gram_ids=gids,check_ids=cids,trained_samples_seen=self.seen)
+            gram_ids=[gids[0],gids[-1]],check_ids=[cids[0],cids[-1]],
+            gram_ids_sha256=hashlib.sha256(json.dumps(gids,separators=(',',':')).encode('ascii')).hexdigest(),
+            check_ids_sha256=hashlib.sha256(json.dumps(cids,separators=(',',':')).encode('ascii')).hexdigest(),
+            trained_samples_seen=self.seen)
 
     def state_dict(self):return deepcopy(dict(capacity=self.capacity,samples=list(self.samples),seen=self.seen))
 

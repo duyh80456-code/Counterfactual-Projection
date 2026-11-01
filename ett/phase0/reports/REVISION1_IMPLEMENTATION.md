@@ -32,10 +32,14 @@ anchor files (including unusable anchor0). Runtime excludes anchor0 because no
 trained buffer exists, verifies actual stream fingerprints, records eligible
 reuse hashes in protocol.json and remeasures every branch under a new source/tag.
 
-Run only when2 GiB are free, using a fresh output directory:
+Run only when512 MiB are free, using a fresh output directory:
 .venv/bin/python -m ett.phase0.measure_ge --config ett/configs/phase0_scr.yaml \
   --out outputs/ett_phase0_revision1_<commit>/scr --data-dir /tmp/ett_data
 .venv/bin/python -m ett.phase0.measure_ge --config ett/configs/phase0_pmnist.yaml \
   --out outputs/ett_phase0_revision1_<commit>/pmnist --data-dir /tmp/ett_data
 
 Phase0 has no valid new gate result yet. Stop after Phase0.
+
+The earlier2-GiB blocked preflight above is historical. Review follow-up lowers
+the actual startup/periodic gate to512 MiB without changing measurement config.
+Cycle ID logs are now inclusive bounds plus a full-list SHA256; see DECISIONS.

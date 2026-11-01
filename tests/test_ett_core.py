@@ -185,14 +185,20 @@ def test_T11_trained_buffer_rolls_across_cycles_without_leakage():
         engine.after_step((x,x))
     assert engine.active is None
     stats,check,info=engine.buffer.split()
-    assert info['gram_ids']==list(range(200,1000)) and info['check_ids']==list(range(1000,1200))
-    assert set(info['gram_ids']).isdisjoint(info['check_ids'])
+    import hashlib,json
+    digest=lambda ids:hashlib.sha256(json.dumps(ids,separators=(',',':')).encode('ascii')).hexdigest()
+    assert info['gram_ids']==[200,999] and info['check_ids']==[1000,1199]
+    assert info['gram_ids_sha256']==digest(list(range(200,1000)))
+    assert info['check_ids_sha256']==digest(list(range(1000,1200)))
+    assert info['gram_ids'][1]<info['check_ids'][0]
     engine.begin(nn.functional.mse_loss)
     assert engine.active['init_buffer']['gram_ids']==info['gram_ids']
     x=torch.arange(1200,1500,dtype=torch.double)[:,None]/1500
     engine.after_step((x,x))
     stats,check,info=engine.buffer.split()
-    assert info['gram_ids']==list(range(500,1300)) and info['check_ids']==list(range(1300,1500))
+    assert info['gram_ids']==[500,1299] and info['check_ids']==[1300,1499]
+    assert info['gram_ids_sha256']==digest(list(range(500,1300)))
+    assert info['check_ids_sha256']==digest(list(range(1300,1500)))
     assert all(i<engine.buffer.seen for i in info['gram_ids']+info['check_ids'])
     saved=engine.state_dict();engine.load_state_dict(saved)
     assert engine.buffer.split()[2]==info

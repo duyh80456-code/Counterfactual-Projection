@@ -125,7 +125,7 @@ Pool ranking energy on the older800 buffer samples is logged separately.
 GradMax-reset uses the same G-buffer pool as ETT. Eval/train acceptance losses
 are computed on the newest200 trained samples, never a next-stream batch.
 
-Storage preflight requires2 GiB free before data creation or experiment output.
+Storage preflight requires512 MiB free before data creation or experiment output.
 Recheck during checkpoint cadence and pause with state when space drops below
 that threshold. No new Phase0 measurements are authorized by a failed preflight.
 Task-created compressed downloads/SCR data cache may be regenerated from fixed
@@ -133,3 +133,20 @@ seeds/checksums; no checkpoints or historical outputs are deleted to free space.
 
 Targeted verification: only T11/T12 and T2/T9 affected by core buffer/signature
 changes. core/expand.py is unchanged, so no T1 rerun; no full test or smoke.
+
+
+## Revision1 review follow-up — 2026-11-01
+Storage minimum is512 MiB (536870912 bytes), replacing2 GiB, on the user's
+estimate that all required experiment artifacts occupy <300 MB. Apply it to
+startup and periodic free-space checks; do not change any scientific setting.
+Cycle metadata stores gram_ids/check_ids as inclusive [first,last] and SHA256
+of the full chronological integer list encoded as compact ASCII JSON
+(separators comma/colon, no spaces). Counts remain explicit. The actual buffer
+still retains sample IDs for exact resume; inputs/labels are never discarded by
+this logging reduction. Rerun only T11.
+
+Phase3 prerequisite (not implemented now): for BN sites, compute Gram and
+GradMax pool forwards in blocks matching the native training batch size. A
+single pooled800-sample forward changes BN statistics and is not equivalent.
+Current SCR/PM-small models have no BN. Do not use the current pooled-forward
+implementation as a BN Phase3 implementation or as evidence for that setting.
